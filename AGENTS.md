@@ -14,6 +14,7 @@ and power decision on this file, `include/board_pins.h`, or the primary sources 
 | `include/board_pins.h` | **All GPIOs and I2C addresses**, from the schematic. Use these constants; don't hard-code pins |
 | `src/` | Firmware (currently a smoke test: chip/PSRAM report + I2C scan) |
 | `docs/` | Schematic, datasheets, mechanical files, Waveshare wiki as markdown |
+| `.claude/skills/waveshare-epaper-reference/` | Distilled Waveshare sample code: driver snippets, init sequences, power lifecycle, porting notes, one `references/*.md` per subsystem. **Read the relevant one before writing hardware code** |
 
 The PlatformIO CLI isn't on PATH. Use `~/.platformio/penv/Scripts/pio.exe`, or the VS Code PlatformIO extension.
 
@@ -23,8 +24,8 @@ pio run -t upload            # flash over native USB
 pio device monitor           # serial console (115200, exception decoder on)
 ```
 
-Vendor drivers to borrow from: <https://github.com/waveshareteam/ESP32-S3-ePaper-3.97>, especially
-`ESP-IDF/08_ESP32-S3_e-Paper-3.97/components/` (epaper, PMIC, codec, RTC, IMU, SHTC3, SD, buttons).
+Vendor sample code: <https://github.com/waveshareteam/ESP32-S3-ePaper-3.97>. The skill above pins
+the commit and explains how to fetch full files when a snippet isn't enough.
 
 ## Hardware
 
