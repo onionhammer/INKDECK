@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "scanruler": {
+      "type": "stdio",
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "scanruler-mcp@latest"],
+      "env": {}
+    }
+  }
+}

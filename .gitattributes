@@ -1,0 +1,6 @@
+# Vendor reference files: store byte-for-byte, no line-ending conversion or text diffs
+*.pdf  binary
+*.stp  binary
+*.step binary
+*.dxf  binary
+*.webp binary
