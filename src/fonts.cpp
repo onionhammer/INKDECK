@@ -5,6 +5,7 @@
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
+#include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/FreeSerif12pt7b.h>
 #include <Fonts/FreeSerif18pt7b.h>
 #include <Fonts/FreeSerif24pt7b.h>
@@ -32,5 +33,6 @@ const FontFamily kReader[kReaderSizeCount] = {
 const GFXfont *const kUi = &FreeSans12pt7b;
 const GFXfont *const kUiBold = &FreeSansBold12pt7b;
 const GFXfont *const kUiSmall = &FreeSans9pt7b;
+const GFXfont *const kUiLarge = &FreeSansBold18pt7b;
 
 }  // namespace fonts

@@ -24,6 +24,11 @@ class Browser {
   std::string selectedName() const;
   std::string selectedPath() const;
   static bool isEpub(const std::string &name);
+  static bool isMp3(const std::string &name);
+
+  // Full paths of the files in this folder matching pred, in list order. selectedIndex is the
+  // position of the cursor's entry in that list (or -1).
+  std::vector<std::string> filePaths(bool (*pred)(const std::string &), int &selectedIndex) const;
 
   void setMessage(std::string msg) { message_ = std::move(msg); }
   void clearMessage() { message_.clear(); }

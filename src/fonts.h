@@ -20,5 +20,6 @@ constexpr int kDefaultReaderSize = 1;
 extern const GFXfont *const kUi;        // list rows
 extern const GFXfont *const kUiBold;    // headers, folders
 extern const GFXfont *const kUiSmall;   // footers, status bar
+extern const GFXfont *const kUiLarge;   // now-playing title
 
 }  // namespace fonts

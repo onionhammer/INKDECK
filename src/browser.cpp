@@ -7,6 +7,7 @@
 
 #include <algorithm>
 
+#include "audio.h"
 #include "fonts.h"
 #include "screen.h"
 #include "text.h"
@@ -28,6 +29,19 @@ bool endsWithNoCase(const std::string &s, const char *suffix) {
 }  // namespace
 
 bool Browser::isEpub(const std::string &name) { return endsWithNoCase(name, ".epub"); }
+bool Browser::isMp3(const std::string &name) { return endsWithNoCase(name, ".mp3"); }
+
+std::vector<std::string> Browser::filePaths(bool (*pred)(const std::string &),
+                                            int &selectedIndex) const {
+  std::vector<std::string> paths;
+  selectedIndex = -1;
+  for (size_t i = 0; i < entries_.size(); ++i) {
+    if (entries_[i].isDir || !pred(entries_[i].name)) continue;
+    if (static_cast<int>(i) == cursor_) selectedIndex = static_cast<int>(paths.size());
+    paths.push_back(cwd_ + "/" + entries_[i].name);
+  }
+  return paths;
+}
 
 bool Browser::open(const std::string &dir, const std::string &select) {
   cwd_ = dir;
@@ -131,7 +145,15 @@ void Browser::draw(GFXcanvas1 &c) const {
   std::string right;
   if (!entries_.empty()) right = std::to_string(cursor_ + 1) + "/" + std::to_string(entries_.size());
   const int rightW = gfx::textWidth(fonts::kUiSmall, right);
-  const std::string left = message_.empty() ? "Press: open   BOOT: up" : message_;
+  std::string left = message_;
+  if (left.empty()) {
+    const audio::Status s = audio::status();
+    if (s.state == audio::State::Stopped) {
+      left = "Press: open   BOOT: up";
+    } else {
+      left = std::string(s.state == audio::State::Paused ? "Paused: " : "Playing: ") + s.title;
+    }
+  }
   gfx::drawText(c, kPadX, baseline, gfx::ellipsize(fonts::kUiSmall, left, w - 3 * kPadX - rightW),
                 fonts::kUiSmall);
   gfx::drawText(c, w - kPadX - rightW, baseline, right, fonts::kUiSmall);

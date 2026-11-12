@@ -328,6 +328,17 @@ starts MCLK. It works because register writes only need I2C (inferred).
 
 ## 9. Porting notes
 
+**Verified on hardware** (our `src/es8311.cpp` + `src/audio.cpp`, 2026-11-12): Option B works. The
+ES8311 ACKs at 0x18 on the shared `Wire` bus. Our init: REG44=0x08 ×2, REG00=0x1F, 20 ms, then the
+§8 sequence with the 256×fs clock row (REG02=00 03=10 04=10 05=00 06=03 07=00 08=FF), REG09/0A=0x0C,
+and volume from REG32 = 0xBF − (100 − v). Played through the speaker with IDF `i2s_std` TX only,
+master, MCLK 256×fs, 16-bit stereo Philips, with the stereo downmixed into both slots. AMP_EN goes
+HIGH after the codec init and LOW on stop; no pop was reported. Reclocking I2S alone between
+44.1 kHz stereo and 22.05 kHz mono files worked with no codec change. libhelix (core-bundled)
+decodes 44.1 kHz/192 kbps stereo in ~3.8 ms per frame (~14% of one core) with its state in PSRAM.
+With 8×511-frame DMA buffers there were 0 underruns while the UI browsed. One SD CRC error ended
+a track early before we dropped SD to 20 MHz (see `io.md`).
+
 **Option A, recommended: keep `esp_codec_dev` from Arduino.** It isn't in the Arduino 3.3.12 precompiled libs
 (checked `framework-arduinoespressif32-esp32s3-libs/include`). Vendor the Apache-2.0 component into `lib/`
 and compile only `esp_codec_dev*.c`, `audio_codec_sw_vol.c`, `platform/*.c` and `device/es8311/es8311.c`
