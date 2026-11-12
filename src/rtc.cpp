@@ -7,7 +7,10 @@
 #include <sys/time.h>
 #include <time.h>
 
+#include <atomic>
+
 #include "board_pins.h"
+#include "inkdeck_secrets.h"  // TIMEZONE, generated from .env by scripts/gen_secrets.py
 
 namespace rtc {
 namespace {
@@ -17,9 +20,23 @@ constexpr uint8_t kRegSeconds = 0x04;  // 0x04..0x0A: s, min, h, day, weekday, m
 constexpr uint8_t kRegAlarm = 0x0B;    // 0x0B..0x0E: s, min, h, day; bit 7 set = not compared
 constexpr int kMinValidYear = 2025;     // anything earlier was never set (see begin())
 
-bool valid = false;
+std::atomic<bool> valid{false};  // set() runs on the time-sync task
 
 int bcd(uint8_t v) { return (v >> 4) * 10 + (v & 0x0F); }
+uint8_t toBcd(int v) { return static_cast<uint8_t>((v / 10) << 4 | v % 10); }
+
+// Seconds since the epoch for a UTC date and time; mktime() would apply the time zone.
+// Howard Hinnant's days_from_civil.
+time_t utcSeconds(const tm &t) {
+  const int m = t.tm_mon + 1;
+  const int y = t.tm_year + 1900 - (m <= 2);
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(y - era * 400);
+  const unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + t.tm_mday - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  const long days = era * 146097L + static_cast<long>(doe) - 719468;
+  return static_cast<time_t>(days) * 86400 + t.tm_hour * 3600 + t.tm_min * 60 + t.tm_sec;
+}
 
 bool read(uint8_t reg, uint8_t *out, uint8_t n) {
   Wire.beginTransmission(board::I2C_ADDR_PCF85063);
@@ -30,10 +47,23 @@ bool read(uint8_t reg, uint8_t *out, uint8_t n) {
   return true;
 }
 
+// Seconds (OS flag clear) to years, BCD, in one burst: the counters are blocked during the
+// access.
+bool writeTime(const uint8_t (&r)[7]) {
+  Wire.beginTransmission(board::I2C_ADDR_PCF85063);
+  Wire.write(kRegSeconds);
+  Wire.write(r, sizeof r);
+  if (Wire.endTransmission() != 0) {
+    log_e("RTC: write failed");
+    return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 bool begin() {
-  setenv("TZ", "UTC0", 1);  // see rtc.h: wall time is kept as UTC
+  setenv("TZ", TIMEZONE, 1);  // see rtc.h: the RTC and system clock are UTC
   tzset();
 
   uint8_t r[7];
@@ -65,15 +95,43 @@ bool begin() {
           t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, kMinValidYear);
     return false;
   }
-  const timeval tv = {mktime(&t), 0};
+  const timeval tv = {utcSeconds(t), 0};
   settimeofday(&tv, nullptr);
   valid = true;
-  log_i("RTC: %04d-%02d-%02d %02d:%02d:%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
-        t.tm_hour, t.tm_min, t.tm_sec);
+  tm local;
+  localtime_r(&tv.tv_sec, &local);
+  char when[32];
+  strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S %Z", &local);
+  log_i("RTC: %04d-%02d-%02d %02d:%02d:%02d UTC (%s)", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+        t.tm_hour, t.tm_min, t.tm_sec, when);
   return true;
 }
 
 bool timeValid() { return valid; }
+
+bool set(time_t utc) {
+  tm t;
+  gmtime_r(&utc, &t);
+  if (t.tm_year + 1900 < kMinValidYear || t.tm_year + 1900 > 2099) {
+    log_e("RTC: refusing to store year %d", t.tm_year + 1900);
+    return false;
+  }
+  const uint8_t r[7] = {toBcd(t.tm_sec),  toBcd(t.tm_min), toBcd(t.tm_hour),
+                        toBcd(t.tm_mday), static_cast<uint8_t>(t.tm_wday),
+                        toBcd(t.tm_mon + 1), toBcd(t.tm_year - 100)};
+  if (!writeTime(r)) return false;
+  valid = true;
+  log_i("RTC: set to %04d-%02d-%02d %02d:%02d:%02d UTC", t.tm_year + 1900, t.tm_mon + 1,
+        t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+  return true;
+}
+
+bool forget() {
+  const uint8_t r[7] = {0x00, 0x00, 0x00, 0x01, 6, 0x01, 0x00};  // Sat 2000-01-01 00:00:00
+  if (!writeTime(r)) return false;
+  log_w("RTC: reset to 2000-01-01 (unset from the next boot)");
+  return true;
+}
 
 Alarm alarm() {
   Alarm a;

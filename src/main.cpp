@@ -20,8 +20,10 @@
 #include "screen.h"
 #include "sdcard.h"
 #include "sensor_hub.h"
+#include "timesync.h"
 #include "trackinfo.h"
 #include "ui/nav.h"
+#include "wlan.h"
 
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);  // XML scanning + layout; the default 8 KB is tight
 
@@ -45,6 +47,12 @@ void setup() {
   sdcard::mount();
   ui::nav::begin(apps::makeHome());
   devtools::begin();  // after the first frame, so a screenshot never catches a blank buffer
+  // The clock came up unset (first boot, or the battery was out): fetch it from NTP once, in
+  // the background, after the first frame. If that fails, System → SYNC TIME tries by hand.
+  if (!rtc::timeValid() && wlan::configured()) {
+    log_i("RTC unset: syncing the time from NTP");
+    timesync::start();
+  }
 }
 
 void loop() { ui::nav::loop(); }

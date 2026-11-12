@@ -9,7 +9,9 @@
 #include "pmic.h"
 #include "rtc.h"
 #include "sysinfo.h"
+#include "timesync.h"
 #include "ui/menu.h"
+#include "wlan.h"
 
 namespace apps {
 namespace {
@@ -85,16 +87,21 @@ std::string nextWake() {
   if (a.hour < 0 || a.minute < 0) {
     snprintf(buf, sizeof buf, "armed, partial match");
   } else if (a.day >= 0) {
-    snprintf(buf, sizeof buf, "day %d, %02d:%02d", a.day, a.hour, a.minute);
+    snprintf(buf, sizeof buf, "day %d, %02d:%02d UTC", a.day, a.hour, a.minute);
   } else {
-    snprintf(buf, sizeof buf, "%02d:%02d", a.hour, a.minute);
+    snprintf(buf, sizeof buf, "%02d:%02d UTC", a.hour, a.minute);
   }
   return std::string(buf) + (a.fired ? " (fired)" : "");
 }
 
 class SystemScreen : public ui::Screen {
  public:
-  SystemScreen() { cursor_.reset(kActionCount); }
+  SystemScreen() {
+    cursor_.reset(kActionCount);
+    // Opened while a sync runs (the boot-time one, say): follow it like a SYNC TIME press.
+    const timesync::Phase p = timesync::status().phase;
+    syncing_ = p == timesync::Phase::Connecting || p == timesync::Phase::Asking;
+  }
 
   std::string tag() const override { return "10 SYSTEM"; }
   std::string context() const override {
@@ -122,10 +129,21 @@ class SystemScreen : public ui::Screen {
   }
 
   // Live values: battery and power source (the PMIC status is cached for 5 s) and the uptime
-  // minute. Voltage jitter alone doesn't redraw; it refreshes with the rest.
+  // minute. Voltage jitter alone doesn't redraw; it refreshes with the rest. A running time sync
+  // redraws as it moves on (notice and WIFI row); moving the cursor hides its notice until then.
   bool onTick() override {
     if (rebootShown_) reboot();
-    return signature() != drawnSignature_;
+    bool changed = signature() != drawnSignature_;
+    if (syncing_) {
+      const timesync::Status s = timesync::status();
+      if (s.phase != shownPhase_) {
+        shownPhase_ = s.phase;
+        message_ = syncMessage(s);
+        changed = true;
+      }
+      syncing_ = s.phase == timesync::Phase::Connecting || s.phase == timesync::Phase::Asking;
+    }
+    return changed;
   }
 
   void draw(ui::Canvas &c, const Rect &body) override {
@@ -152,8 +170,19 @@ class SystemScreen : public ui::Screen {
   void run(Action a) {
     switch (a) {
       case Action::Sleep: message_ = "POWER-OFF ISN'T BUILT YET"; break;
-      case Action::SyncTime:
-      case Action::Update: message_ = "NEEDS WI-FI, WHICH ISN'T SET UP YET"; break;
+      case Action::SyncTime: {
+        if (!wlan::configured()) {
+          message_ = "NO WI-FI: SET WIFI_SSID IN .ENV, REBUILD";
+          break;
+        }
+        timesync::start();  // if one is already running, follow that
+        const timesync::Status s = timesync::status();
+        shownPhase_ = s.phase;
+        message_ = syncMessage(s);
+        syncing_ = true;
+        break;
+      }
+      case Action::Update: message_ = "UPDATES AREN'T BUILT YET"; break;
       case Action::Reboot:
         ui::nav::push(std::make_unique<ui::MenuScreen>(
             "REBOOT?", std::vector<ui::MenuItem>{
@@ -167,6 +196,17 @@ class SystemScreen : public ui::Screen {
                        }));
         break;
     }
+  }
+
+  static std::string syncMessage(const timesync::Status &s) {
+    switch (s.phase) {
+      case timesync::Phase::Connecting: return "SYNC: JOINING WI-FI\xE2\x80\xA6";
+      case timesync::Phase::Asking: return "SYNC: ASKING NTP\xE2\x80\xA6";
+      case timesync::Phase::Done:
+      case timesync::Phase::Failed: return s.result;
+      case timesync::Phase::Idle: break;
+    }
+    return "";
   }
 
   // Runs on the first tick after the "REBOOTING…" frame was drawn.
@@ -321,6 +361,8 @@ class SystemScreen : public ui::Screen {
   std::string message_;  // shown in place of the ACTIONS header until the cursor moves
   bool rebooting_ = false;
   bool rebootShown_ = false;  // the "REBOOTING…" frame has been drawn
+  bool syncing_ = false;      // following a time sync
+  timesync::Phase shownPhase_ = timesync::Phase::Idle;
   uint32_t drawnSignature_ = 0;
 };
 

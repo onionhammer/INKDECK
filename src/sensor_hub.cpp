@@ -86,12 +86,12 @@ class Lock {
 void appendRow(const shtc3::Reading &env) {
   const qmi8658::Reading m = qmi8658::read();
   const pmic::Detail p = pmic::detail();
-  char when[24] = "";
+  char when[32] = "";
   if (rtc::timeValid()) {
     const time_t now = time(nullptr);
     tm t;
     localtime_r(&now, &t);
-    strftime(when, sizeof when, "%Y-%m-%dT%H:%M:%S", &t);
+    strftime(when, sizeof when, "%Y-%m-%dT%H:%M:%S%z", &t);  // local, with the UTC offset
   }
   fprintf(logFile, "%lu,%s,", static_cast<unsigned long>(sysinfo::uptimeSeconds()), when);
   if (env.ok) {

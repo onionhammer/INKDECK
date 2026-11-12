@@ -6,6 +6,7 @@
 #include "input.h"
 #include "pmic.h"
 #include "qmi8658.h"
+#include "rtc.h"
 #include "screen.h"
 
 namespace devtools {
@@ -26,6 +27,7 @@ void task(void *) {
         case '-': audio::changeVolume(-5); break;  // e.g. silence the speaker before a test
         case '+': audio::changeVolume(+5); break;
         case 'r': pmic::dump(Serial); break;
+        case 'c': rtc::forget(); break;
         case 'i': {
           const qmi8658::Reading m = qmi8658::read();
           Serial.printf("IMU chip acc %+.2f %+.2f %+.2f g, gyro %+.1f %+.1f %+.1f dps\n",

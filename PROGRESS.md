@@ -16,7 +16,7 @@ the board.
   `uv run tools/gen_fonts.py`. The generated `src/ui/fonts/jbmono.*` files are committed.
 - **Checking without the board in hand:** `uv run tools/screenshot.py COM4 shot.png --keys ddp`
   sends keys over USB and saves the framebuffer as a PNG. The keys are `u`/`d` dial, `p`/`P`
-  press/hold, `b`/`B` BOOT/hold BOOT, `-`/`+` for volume, `r` for the PMIC registers and `i` for a raw IMU reading (`src/devtools.h`). Add `--log`
+  press/hold, `b`/`B` BOOT/hold BOOT, `-`/`+` for volume, `r` for the PMIC registers, `i` for a raw IMU reading and `c` to reset the RTC as if the battery had been out (`src/devtools.h`). Unknown keys are ignored, so `.` pads a wait. Add `--log`
   to see render timings and errors as they happen. Turn the volume down (`--keys=------------`)
   before testing playback near people.
 
@@ -235,8 +235,8 @@ Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book'
 - [x] Actions:
   - REBOOT asks first in a sheet, shows "REBOOTING…", then restarts. Checked: the next boot
     reports SOFTWARE RESET.
-  - SLEEP NOW, SYNC TIME and CHECK FOR UPDATE say what's missing (power-off, Wi-Fi) in
-    place of the section header.
+  - SLEEP NOW and CHECK FOR UPDATE say they aren't built yet, in place of the section
+    header. SYNC TIME works (phase 11).
 - [x] Home's SYSTEM row opens it. Its preview shows battery, power, uptime and clock state.
 - [x] New dev key `r`: prints the PMIC's configuration and status registers.
 - [x] Fonts: 96 px digits and a 22 px face. The digit-only faces now also carry `%+-.`.
@@ -301,7 +301,9 @@ Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book'
 ### ⬜ 9. Clock (landscape)
 
 - First landscape screen.
-- Setting the RTC: via NTP once Wi-Fi exists, or a manual set-time screen sooner.
+- [x] Setting the RTC: System → SYNC TIME (NTP, phase 11). A manual set-time screen would
+  still help without Wi-Fi.
+- [x] Time zone: `TIMEZONE` in `.env`, a POSIX TZ string with the DST rule (US Central here).
 - Alarms that boot the board, and a calendar.
 
 ### ⬜ 10. Sleep / power-off
@@ -311,7 +313,24 @@ Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book'
 
 ### ⬜ 11. Wi-Fi, Weather, Podcasts
 
-- Provisioning (`references/network.md`).
+- [x] Credentials are compiled in from the gitignored `.env` (`scripts/gen_secrets.py`, after
+  lollipop-smell), with the time zone. On-device provisioning (`references/network.md` §3)
+  may not be needed while the network comes from `.env`.
+- [x] `wlan` joins on demand and turns the radio off afterwards. The System screen's WIFI row
+  shows off / connecting / on with RSSI.
+- [x] SYNC TIME (`timesync`, its own task): join, SNTP (pool.ntp.org, Cloudflare, Google via
+  `esp_netif_sntp`), write the RTC on a second boundary, Wi-Fi off. The notice reports the
+  phase, then "TIME SET · 16:08 CST", plus how far off the clock was if it was already set.
+  Verified 2026-11-12: joined in 2–4 s, NTP answered in about 2 s, a second sync reported +0.014
+  s ("WAS RIGHT"), and after a reboot the RTC gave the right local time. The first Wi-Fi use
+  costs about 50 KB of heap that stays allocated; repeat syncs don't grow it.
+- [x] Boot-time sync: if the RTC comes up unset (first boot, battery out), `main.cpp` starts
+  one sync after the first frame. Verified with dev key `c` + reboot: started at 2.9 s,
+  joined at 5.8 s, RTC set at 7.0 s. One attempt; after a failure, SYNC TIME retries by hand.
+  The System screen follows a sync that's already running when it opens.
+- Wi-Fi is on only while something needs it (a sync takes about 5 s), so the WIFI row
+  normally reads "off". The radio draws roughly 100 mA, so the network screens should keep
+  sessions short too.
 - Then the two network screens.
 
 ### ⬜ 12. Recorder, Level
@@ -336,6 +355,10 @@ Listed on Home but not designed yet.
   separate screens. Any screen whose spec says "● menu" or "● detail" can use it.
 - **The RTC counts as unset before 2025.** On this board it once came back at 2000-01-01 with
   its oscillator-stop flag clear, so the flag alone isn't enough (verified on hardware).
+- **The RTC and the system clock hold UTC**; `TIMEZONE` from `.env` turns it into local time,
+  DST included. The vendor keeps local time in the RTC with no DST, which a Central-time clock
+  can't use. So RTC alarm registers are UTC: phase 10 converts the local wake time when it arms
+  one. The sensor log's `time` column carries the UTC offset (`…T16:08:26-0600`).
 - **Reading positions live in NVS**, not on the SD card: they belong to the device and survive
   a card swap.
 - **Fonts are generated, not hand-made:** FreeType monochrome hinting from the pinned

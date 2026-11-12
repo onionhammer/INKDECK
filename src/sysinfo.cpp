@@ -12,6 +12,7 @@
 
 #include "pmic.h"
 #include "rtc.h"
+#include "wlan.h"
 
 namespace sysinfo {
 
@@ -68,6 +69,8 @@ std::string memory() {
 }
 
 std::string wifi() {
+  // With a network from .env, its state; the System row has no room for the MAC as well.
+  if (wlan::configured()) return wlan::describe();
   uint8_t mac[6];
   if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) return "off";
   char buf[40];

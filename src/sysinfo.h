@@ -17,7 +17,7 @@ std::string bootReason();
 
 std::string otaState();  // "app0 active · app1 empty"
 std::string memory();    // "heap 182 KB · PSRAM 7.6 MB free"
-std::string wifi();      // "off · MAC 34:85:18:..."
+std::string wifi();      // wlan::describe() with a .env network, else "off · MAC 34:85:18:..."
 
 uint32_t uptimeSeconds();
 std::string uptime();  // "14M", "2H 14M", "3D 2H"
