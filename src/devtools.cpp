@@ -4,6 +4,7 @@
 
 #include "audio.h"
 #include "input.h"
+#include "pmic.h"
 #include "screen.h"
 
 namespace devtools {
@@ -23,6 +24,7 @@ void task(void *) {
         case 's': screen::dump(Serial); break;
         case '-': audio::changeVolume(-5); break;  // e.g. silence the speaker before a test
         case '+': audio::changeVolume(+5); break;
+        case 'r': pmic::dump(Serial); break;
         default: break;
       }
     }

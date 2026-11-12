@@ -12,12 +12,23 @@
 namespace rtc {
 namespace {
 
+constexpr uint8_t kRegControl2 = 0x01;  // bit 7 AIE (alarm interrupt on), bit 6 AF (fired)
 constexpr uint8_t kRegSeconds = 0x04;  // 0x04..0x0A: s, min, h, day, weekday, month, year
+constexpr uint8_t kRegAlarm = 0x0B;    // 0x0B..0x0E: s, min, h, day; bit 7 set = not compared
 constexpr int kMinValidYear = 2025;     // anything earlier was never set (see begin())
 
 bool valid = false;
 
 int bcd(uint8_t v) { return (v >> 4) * 10 + (v & 0x0F); }
+
+bool read(uint8_t reg, uint8_t *out, uint8_t n) {
+  Wire.beginTransmission(board::I2C_ADDR_PCF85063);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) return false;
+  if (Wire.requestFrom(board::I2C_ADDR_PCF85063, n) != n) return false;
+  for (uint8_t i = 0; i < n; ++i) out[i] = Wire.read();
+  return true;
+}
 
 }  // namespace
 
@@ -26,14 +37,10 @@ bool begin() {
   tzset();
 
   uint8_t r[7];
-  Wire.beginTransmission(board::I2C_ADDR_PCF85063);
-  Wire.write(kRegSeconds);
-  if (Wire.endTransmission(false) != 0 ||
-      Wire.requestFrom(board::I2C_ADDR_PCF85063, static_cast<uint8_t>(sizeof r)) != sizeof r) {
+  if (!read(kRegSeconds, r, sizeof r)) {
     log_e("RTC: no response at 0x%02X", board::I2C_ADDR_PCF85063);
     return false;
   }
-  for (auto &b : r) b = Wire.read();
 
   if (r[0] & 0x80) {
     log_w("RTC: oscillator-stop flag set, time not valid (needs setting)");
@@ -67,5 +74,20 @@ bool begin() {
 }
 
 bool timeValid() { return valid; }
+
+Alarm alarm() {
+  Alarm a;
+  uint8_t ctrl, r[4];
+  if (!read(kRegControl2, &ctrl, 1) || !read(kRegAlarm, r, sizeof r)) return a;
+  a.ok = true;
+  a.armed = ctrl & 0x80;
+  a.fired = ctrl & 0x40;
+  static constexpr uint8_t kMask[] = {0x7F, 0x7F, 0x3F, 0x3F};
+  int *fields[] = {&a.second, &a.minute, &a.hour, &a.day};
+  for (int i = 0; i < 4; ++i) {
+    if (!(r[i] & 0x80)) *fields[i] = bcd(r[i] & kMask[i]);
+  }
+  return a;
+}
 
 }  // namespace rtc

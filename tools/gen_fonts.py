@@ -99,14 +99,17 @@ CHARSETS = {
     "upper": (0x20, 0xDE),  # the same without lower-case letters (big titles are upper-cased)
     "ascii": (0x20, 0x7E),
     "caps": (0x30, 0x5A),  # digits, a little punctuation, A-Z (drop caps)
-    "digits": (0x30, 0x3A),  # 0-9 and ':'
+    "digits": (0x25, 0x3A),  # 0-9 and "%+-.:" (big numbers: index, clock, battery %)
 }
+DIGITS = set(b"%+-.0123456789:")
 
 
 def in_charset(charset: str, slot: int) -> bool:
     """Whether a slot inside the charset's range gets a glyph (others stay empty)."""
     if charset in ("latin", "upper"):
         return not (charset == "upper" and ord("a") <= slot <= ord("z"))
+    if charset == "digits":
+        return slot in DIGITS
     return slot <= 0x7E
 
 # C++ name, family, pixel size (= CSS font-size), charset, and the face:
@@ -130,10 +133,12 @@ FONTS = [
     ("kMono17ExtraBold", "jbmono", 17, "latin", {"weight": 800}),
     ("kMono18Medium", "jbmono", 18, "latin", {"weight": 500}),
     ("kMono18Bold", "jbmono", 18, "latin", {"weight": 700}),
+    ("kMono22ExtraBold", "jbmono", 22, "ascii", {"weight": 800}),
     ("kMono38ExtraBold", "jbmono", 38, "upper", {"weight": 800}),
     ("kMono40ExtraBold", "jbmono", 40, "digits", {"weight": 800}),
     ("kMono50ExtraBold", "jbmono", 50, "upper", {"weight": 800}),
     ("kMono68ExtraBold", "jbmono", 68, "caps", {"weight": 800}),
+    ("kMono96ExtraBold", "jbmono", 96, "digits", {"weight": 800}),
     ("kMono104ExtraBold", "jbmono", 104, "digits", {"weight": 800}),
 ]
 # Reader text: three sizes (19 px is the spec's), each regular / bold / italic / bold italic.

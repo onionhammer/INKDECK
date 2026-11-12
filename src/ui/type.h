@@ -37,8 +37,10 @@ inline constexpr TextStyle kRowSmallSelected{&fonts::kMono15ExtraBold, 0};
 inline constexpr TextStyle kBody{&fonts::kMono15Medium, 0};          // blurbs, paragraphs
 inline constexpr TextStyle kValue{&fonts::kMono16Bold, 0};           // stat values
 inline constexpr TextStyle kButton{&fonts::kMono17ExtraBold, 1};     // "● OPEN"
+inline constexpr TextStyle kReading{&fonts::kMono22ExtraBold, 0};    // "4.02 V"; ASCII only
 inline constexpr TextStyle kTitle{&fonts::kMono38ExtraBold, 0};      // ASCII only
-inline constexpr TextStyle kHuge{&fonts::kMono104ExtraBold, -6};     // digits and ':' only
+inline constexpr TextStyle kBig{&fonts::kMono96ExtraBold, -6};       // battery %; digits, "%+-.:"
+inline constexpr TextStyle kHuge{&fonts::kMono104ExtraBold, -6};     // digits and "%+-.:" only
 }  // namespace style
 
 // UTF-8 for the symbols the UI uses (all in the fonts' extra slots or Latin-1).

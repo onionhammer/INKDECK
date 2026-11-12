@@ -50,7 +50,7 @@ Every screen follows this (from `docs/ui-design.md`, "Input mapping"). Details a
 ### ✅ 2. Shared components
 
 - [x] JetBrains Mono as hinted 1-bit bitmap fonts, 12 to 104 px; with Literata (phase 5),
-  about 150 KB in all. They cover ASCII, Latin-1 and the UI symbols (▲▼▶▸●○✓−–—…‘’“”←↑→↓■□•).
+  about 160 KB in all. They cover ASCII, Latin-1 and the UI symbols (▲▼▶▸●○✓−–—…‘’“”←↑→↓■□•).
   Big display faces carry only capitals, digits or symbols. Anything else is transliterated to
   ASCII.
 - [x] Text styles that carry the canvas's letter-spacing; UTF-8 measure, draw, ellipsize,
@@ -216,12 +216,40 @@ Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book'
 - [ ] Not on the canvas, not built: repeat and shuffle (the canvas shows REPEAT ALL / SHUF OFF
   pills), a whole-queue duration, cover art (see 5b).
 
-### ⬜ 7. System
+### ✅ 7. System
 
-- The vendor's PMIC configuration (`references/power.md` §2). This is a power decision, so
-  review it against the datasheet first.
-- Battery V/I and a segmented gauge, the rail table, and sleep/Wi-Fi/OTA/memory state.
-- Actions: sleep now, NTP sync, update check, reboot.
+- [x] `apps/system.cpp`, laid out as on the canvas. All values are live, and the screen only reads:
+  - **Battery:** the gauge percentage in 96 px; the battery voltage from the PMIC ADC;
+    the 10-cell gauge, with a part-full cell dithered.
+  - **Pill:** where power comes from (ON USB / ON BATTERY).
+  - **Charger line:** the settings the PMIC holds now (charge current, target voltage, cut-off).
+  - **Rails:** DC1 and ALDO1–3, on/off state and voltage.
+  - **State rows:** next RTC alarm, boot reason (the ESP32 reset reason; for a cold start,
+    the PMIC's power-on source and its last power-off source), the Wi-Fi MAC, OTA slots,
+    free heap and PSRAM. The section header shows uptime.
+  - Redraws when the battery, power source or uptime minute changes.
+- [x] Not on the canvas: the TG28 has no battery-current ADC, so the canvas's "−62 mA" became
+  the charger state (CHARGING CC/CV, DISCHARGING, FULL, IDLE).
+- [x] Actions:
+  - REBOOT asks first in a sheet, shows "REBOOTING…", then restarts. Checked: the next boot
+    reports SOFTWARE RESET.
+  - SLEEP NOW, SYNC TIME and CHECK FOR UPDATE say what's missing (power-off, Wi-Fi) in
+    place of the section header.
+- [x] Home's SYSTEM row opens it. Its preview shows battery, power, uptime and clock state.
+- [x] New dev key `r`: prints the PMIC's configuration and status registers.
+- [x] Fonts: 96 px digits and a 22 px face. The digit-only faces now also carry `%+-.`.
+- [x] **PMIC configuration** (`pmic::configure()`, every boot; agreed 2026-11-12). The registers
+  this board runs with were dumped and compared with Waveshare's `axp_init()`
+  (`references/power.md` §2). Only five settings are written, each read back:
+  - PWR key: 1 s to power on, 4 s to force off.
+  - ADC: USB and system voltage on (shown under the charger line).
+  - Charging for the 1500 mAh cell: precharge 50 mA, constant current 500 mA (Waveshare
+    uses 200 mA), stop at 25 mA.
+  - Deliberately not copied from Waveshare: ALDO3 stays at the chip's 3.0 V (3.3 V is the
+    panel's maximum), and backup-cell charging stays off (unsafe with a primary coin cell).
+    Rails, cut-off and input limits keep the chip's defaults, which already match.
+- [ ] Chip temperature: the TG28 die-temperature ADC is off by default, and its scaling isn't
+  in the datasheet.
 
 ### ⬜ 8. Sensors
 
@@ -275,6 +303,11 @@ Listed on Home but not designed yet.
 - SD at 20 MHz: the long-run check of the CRC-error fix never reported a result, so it's
   still unconfirmed.
 - 2026-11-12: the board dropped off USB three times during phases 4–6 and came back a few
-  minutes later. Afterwards the PMIC reported no battery (it read 98 % and charging earlier) and the
-  RTC had lost power (oscillator-stop flag set), so the board lost power completely. Check
-  the battery connector and the USB cable.
+  minutes later. Afterwards the PMIC reported no battery (it read 98 % and charging earlier),
+  and the RTC had lost power (oscillator-stop flag set), so the board lost power completely.
+  - The PMIC's power-off source register was empty, which fits a total power loss.
+  - The battery turned out to be unplugged, so nothing carried the board through a USB
+    dropout. The USB side (cable or port) is still the suspect for the drops.
+  - When the battery was plugged back in, the gauge read 5 % with the cell at 4.17 V and
+    charging. The gauge restarts from nothing after a total power loss and has to climb back;
+    the voltage is the reading to trust until it does.

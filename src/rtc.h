@@ -15,4 +15,17 @@ bool begin();
 // True once the system clock holds a real time.
 bool timeValid();
 
+// The alarm registers (read-only). armed = Control_2 AIE; fired = AF (INT is held low, and on
+// this board that holds the PMIC's PWRON low too). Fields the alarm doesn't compare are -1.
+struct Alarm {
+  bool ok = false;  // the RTC answered
+  bool armed = false;
+  bool fired = false;
+  int day = -1;
+  int hour = -1;
+  int minute = -1;
+  int second = -1;
+};
+Alarm alarm();
+
 }  // namespace rtc

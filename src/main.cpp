@@ -33,6 +33,7 @@ void setup() {
                 ESP.getPsramSize() ? "" : "  <-- PSRAM missing: check memory_type");
 
   Wire.begin(board::I2C_SDA, board::I2C_SCL, 400000);  // the one shared I2C bus
+  pmic::configure();  // charger and PWR-key settings; they don't survive a total power loss
   rtc::begin();
   pmic::status();  // first read logs what the PMIC reports
   if (!screen::begin()) Serial.println("screen init failed");

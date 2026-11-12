@@ -116,6 +116,42 @@ Register meanings: XPowersLib's implementation, checked against `docs/datasheets
 | `setLowBatWarnThreshold(10)`, `setLowBatShutdownThreshold(5)` | `0x1A[7:4]`, `0x1A[3:0]` | The datasheet calls these "low battery warning level 2 / level 1". They only raise IRQs, and the IRQ is unused, so they have no effect here **(inferred)**. The real cut-off is VOFF. |
 | `fuelGaugeControl(true, true)` | `0xA2[4]=0`, `0xA2[0]=1` | Selects ROM for gauge data and enables the "brom writer" |
 
+**Verified on hardware: this board's power-on defaults vs `axp_init()`.** This is a dump from our firmware (dev key `r`,
+`pmic::dump()`), which never writes the PMIC. Values marked EFUSE in the datasheet are this chip's. Where a default
+differs from what Waveshare writes, the vendor value applies only while their `axp_init()` runs.
+
+| Setting | Register | Default on this board | `axp_init()` writes | Note |
+| --- | --- | --- | --- | --- |
+| PWRON press to power on | `0x27[1:0]` | 128 ms (`0x27`=`14`) | 1 s | AGENTS.md's "1 s on / 4 s off" is the vendor config, not the chip's |
+| PWRON hold to force off | `0x27[3:2]` | 6 s | 4 s | |
+| VINDPM / input limit | `0x15` / `0x16` | 4.36 V / 1500 mA | same | |
+| VSYS power-off (VOFF) | `0x24` | 2.6 V | same | |
+| DC1 / ALDO1 / ALDO2 | `0x82` / `0x92` / `0x93` | 3.3 V each | same | |
+| ALDO3 (panel) | `0x94` | **3.0 V** (`19`) | 3.3 V | Panel datasheet: VCI 2.2 V min, 3.0 V typ, **3.3 V max**; logic inputs to VDDIO + 0.5 V, so 3.3 V SPI is fine at 3.0 V |
+| Rails enabled | `0x80` / `0x90` / `0x91` | DCDC1–4, every LDO (`0F` / `FF` / `01`) | unchanged | Only DC1 and ALDO1–3 have known loads |
+| ADC channels | `0x30` | VBAT + TS (`03`) | VBAT, VBUS, VSYS, die temp (`1D`) | VBUS/VSYS read 0 until enabled |
+| TS pin | `0x50` | `12`: TS doesn't affect the charger, current source off | unchanged (XPowersLib also clears the TS ADC) | No battery-temperature protection either way; JEITA off (`0x58`=`00`) |
+| Precharge / CC / termination / CV | `0x61`–`0x64` | 125 mA / 200 mA / 125 mA / 4.2 V | 50 mA / 200 mA / 25 mA / 4.2 V | |
+| CHGLED | `0x69` | `01`: on, type A (drives charge status on GPIO2) | off (Hi-Z) | |
+| Backup-cell charging | `0x18[2]` / `0x6A` | off / 2.9 V | **on** / 3.0 V | Charging a primary coin cell (CR1220/CR2032) in the "reserved" RTC socket would be unsafe |
+| Low-battery warnings | `0x1A` | 15 % / 1 % | 10 % / 5 % | IRQ only; nothing listens |
+| Fuel gauge | `0xA2` | `00` | `01` (brom writer on) | No battery parameters are ever written |
+| Battery detection | `0x68` | on | on | |
+
+**What our firmware writes** (`pmic::configure()`, every boot, read-modify-write of only these fields, verified by
+read-back on hardware): `0x27` → `12` (1 s on, 4 s off), `0x30` bits 2–3 on (VBUS, VSYS; read 4.87 V and 4.84 V on
+USB, so 1 mV/LSB for both), `0x61` → 50 mA, `0x62` → 500 mA (the 1500 mAh cell), `0x63` → 25 mA with termination on.
+Everything else keeps the defaults in the table above.
+
+**Verified on hardware: power-on/off source and the gauge after a total power loss.**
+- `0x21` (power-off source) read `00` after the board lost all power, which fits: the datasheet says it resets only on POR.
+- `0x20` read `10` (battery inserted). `pmic::powerOnSource()` reports these registers.
+- With no battery attached, VBAT (`0x34`/`0x35`) read 129 mV and `0x00[3]` was 0.
+- When the battery was plugged in, the gauge (`0xA4`) started at 5 %. It climbed about 4 % a minute (10 → 14 %
+  in 60 s) while VBAT stayed at 4.167 V, charging in constant current at 200 mA. Real charge at that current is
+  well under 1 % a minute. After a POR the gauge has no state and ramps towards the real level, so trust VBAT
+  until it gets there.
+
 **Rail helpers.** `gatpwrstate()`, `enapwrstate()`, `disapwrstate()`, `getpwrVoltage()` and
 `setpwrVoltage()` switch on `axp2101_pwr_tab_t { DC1 = 1, ALDO1, ALDO2, ALDO3, ALDO4 }` and forward to
 the matching XPowersLib calls. DC1 disable/set is refused with a warning. Only ALDO3 is toggled:

@@ -41,10 +41,10 @@ the commit and explains how to fetch full files when a snippet isn't enough.
 ## Power architecture (read before writing sleep/power code)
 
 - **Rails:** DC1 → 3V3 system rail. ALDO1 → `AudioCTR_VCC`. ALDO2 → mic supply. **ALDO3 → the e-paper panel's power switch; if ALDO3 is off, the panel is dead.** These rails are on by default at power-up.
-- **On/off:** the PWR key drives the PMIC's `PWRON` pin (Waveshare config: 1 s press = on, 4 s = forced off). `axp2101.shutdown()` cuts power to everything, including the ESP32.
+- **On/off:** the PWR key drives the PMIC's `PWRON` pin (Waveshare config: 1 s press = on, 4 s = forced off). The chip's own defaults are 128 ms and 6 s (verified on hardware). Our `pmic::configure()` sets 1 s / 4 s at boot; `references/power.md` §2 has the full comparison. `axp2101.shutdown()` cuts power to everything, including the ESP32.
 - **Wake from full power-off:** the RTC's INT output is diode-OR'd onto `PWRON`, so **an RTC alarm boots the board.** The intended low-power loop: update display → panel deep sleep → arm RTC alarm → PMIC shutdown. The e-paper holds its image with no power. The RTC runs from the PMIC's always-on LDO. On boot, `RTC_INT` and `PWR_KEY_SENSE` tell you why the board woke.
 - ESP32 deep sleep also works, but the rails stay up, so it draws more power. Use it only when you need fast wake or wake on a GPIO.
-- **Battery** (Waveshare's settings): 200 mA charge to 4.2 V, 1500 mA VBUS limit, 2.6 V power-down. A 10 k NTC is fitted on TS, but XPowersLib disables TS measurement at init. The vendor also disables the CHGLED output, so GPIO2 (`PMIC_CHG`) shows nothing unless you re-enable it.
+- **Battery:** a 1500 mAh Li-ion cell. Our firmware charges at 500 mA to 4.2 V: 50 mA precharge, stop at 25 mA. Waveshare charges at 200 mA. The input limit is 1500 mA and the power-down threshold 2.6 V (chip defaults, same as Waveshare). A 10 k NTC is fitted on TS. The chip's default (`0x50`) keeps TS out of charge control, and XPowersLib also disables TS measurement. At its default, CHGLED drives charge status onto GPIO2 (`PMIC_CHG`). Waveshare turns it off; we leave it on.
 
 ## Driver notes
 

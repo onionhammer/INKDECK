@@ -6,12 +6,14 @@
 #include "apps/files.h"
 #include "apps/music.h"
 #include "apps/reader.h"
+#include "apps/system.h"
 #include "audio.h"
 #include "fonts.h"
 #include "pmic.h"
 #include "readstate.h"
 #include "rtc.h"
 #include "sdcard.h"
+#include "sysinfo.h"
 
 namespace apps {
 namespace {
@@ -19,7 +21,7 @@ namespace {
 using ui::Key;
 using ui::Rect;
 
-enum class Kind : uint8_t { Reader, Music, Files, NotBuilt };
+enum class Kind : uint8_t { Reader, Music, Files, System, NotBuilt };
 
 struct Module {
   const char *label;
@@ -52,7 +54,7 @@ constexpr Module kModules[] = {
     {"FILES", "SD", "Browse the microSD card. Opens books and plays music.",
      "SDMMC 4-bit \xC2\xB7 20 MHz", Kind::Files, 4},
     {"SYSTEM", "PMIC", "Battery, power rails, sleep schedule, Wi-Fi and firmware updates.",
-     "TG28 (AXP2101) @ 0x34", Kind::NotBuilt, 7},
+     "TG28 (AXP2101) @ 0x34", Kind::System, 7},
 };
 constexpr int kModuleCount = sizeof kModules / sizeof kModules[0];
 
@@ -110,17 +112,19 @@ int statsFor(const Module &m, Stat out[4]) {
       out[1] = {"MOUNT", sdcard::kMountPoint};
       out[2] = {"OPENS", "EPUB \xC2\xB7 MP3"};
       return 3;
+    case Kind::System: {
+      const pmic::Status p = pmic::status();
+      out[0] = {"BATTERY", p.percent >= 0 ? std::to_string(p.percent) + " %" : "NONE"};
+      out[1] = {"POWER", !p.ok ? "?" : p.charging ? "USB, CHARGING" : p.vbus ? "USB" : "BATTERY"};
+      out[2] = {"UPTIME", sysinfo::uptime()};
+      out[3] = {"CLOCK", rtc::timeValid() ? "SET" : "NOT SET"};
+      return 4;
+    }
     case Kind::NotBuilt:
       break;
   }
   out[0] = {"STATUS", "NOT BUILT"};
   out[1] = {"PHASE", std::to_string(m.phase) + " IN PROGRESS.MD"};
-  if (m.kind == Kind::NotBuilt && std::string(m.label) == "SYSTEM") {
-    const pmic::Status p = pmic::status();
-    out[2] = {"BATTERY", p.percent >= 0 ? std::to_string(p.percent) + " %" : "NONE"};
-    out[3] = {"RTC", rtc::timeValid() ? "SET" : "NOT SET"};
-    return 4;
-  }
   return 2;
 }
 
@@ -225,6 +229,7 @@ class HomeScreen : public ui::Screen {
         }
         break;
       case Kind::Files: ui::nav::push(makeFiles(sdcard::kMountPoint)); break;
+      case Kind::System: ui::nav::push(makeSystem()); break;
       case Kind::NotBuilt: ui::nav::push(std::make_unique<NotBuiltScreen>(i)); break;
     }
   }
