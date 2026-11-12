@@ -1,0 +1,485 @@
+#include "epub.h"
+
+#include <ctype.h>
+#include <esp32-hal-log.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <map>
+
+#include "text.h"
+
+namespace {
+
+// ---------------------------------------------------------------------------------------------
+// Tiny tag scanner
+
+struct Tag {
+  std::string name;  // lower-case local name, namespace prefix stripped
+  size_t attrStart = 0, attrEnd = 0;
+  size_t end = 0;    // index just past '>'
+  bool closing = false;
+  bool selfClosing = false;
+  bool special = false;  // comment, doctype, processing instruction, CDATA: skip
+};
+
+std::string localName(const std::string &qname) {
+  const size_t colon = qname.rfind(':');
+  return colon == std::string::npos ? qname : qname.substr(colon + 1);
+}
+
+// s[pos] must be '<'. Returns false if the tag is unterminated.
+bool parseTag(const std::string &s, size_t pos, Tag &t) {
+  const size_t n = s.size();
+  t = Tag{};
+  auto skipTo = [&](const char *terminator, size_t from) {
+    const size_t e = s.find(terminator, from);
+    t.special = true;
+    t.end = e == std::string::npos ? n : e + strlen(terminator);
+    return true;
+  };
+  if (s.compare(pos, 4, "<!--") == 0) return skipTo("-->", pos + 4);
+  if (s.compare(pos, 9, "<![CDATA[") == 0) return skipTo("]]>", pos + 9);
+  if (pos + 1 < n && (s[pos + 1] == '?' || s[pos + 1] == '!')) return skipTo(">", pos);
+
+  size_t i = pos + 1;
+  if (i < n && s[i] == '/') {
+    t.closing = true;
+    ++i;
+  }
+  const size_t nameStart = i;
+  while (i < n && !isspace(static_cast<unsigned char>(s[i])) && s[i] != '>' && s[i] != '/') ++i;
+  t.name = localName(s.substr(nameStart, i - nameStart));
+  for (auto &c : t.name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+
+  t.attrStart = i;
+  char quote = 0;
+  for (; i < n; ++i) {
+    const char c = s[i];
+    if (quote) {
+      if (c == quote) quote = 0;
+    } else if (c == '"' || c == '\'') {
+      quote = c;
+    } else if (c == '>') {
+      break;
+    }
+  }
+  if (i >= n) return false;
+  t.attrEnd = i;
+  t.selfClosing = i > t.attrStart && s[i - 1] == '/';
+  t.end = i + 1;
+  return true;
+}
+
+uint32_t namedEntity(const std::string &name) {
+  static const struct {
+    const char *name;
+    uint32_t cp;
+  } kEntities[] = {
+      {"amp", '&'},       {"lt", '<'},         {"gt", '>'},         {"quot", '"'},
+      {"apos", '\''},     {"nbsp", 0xA0},      {"shy", 0xAD},       {"mdash", 0x2014},
+      {"ndash", 0x2013},  {"hellip", 0x2026},  {"lsquo", 0x2018},   {"rsquo", 0x2019},
+      {"ldquo", 0x201C},  {"rdquo", 0x201D},   {"laquo", 0xAB},     {"raquo", 0xBB},
+      {"copy", 0xA9},     {"reg", 0xAE},       {"trade", 0x2122},   {"bull", 0x2022},
+      {"middot", 0xB7},   {"deg", 0xB0},       {"times", 0xD7},     {"eacute", 0xE9},
+      {"egrave", 0xE8},   {"agrave", 0xE0},    {"ccedil", 0xE7},    {"uuml", 0xFC},
+      {"ouml", 0xF6},     {"auml", 0xE4},      {"szlig", 0xDF},     {"thinsp", 0x2009},
+      {"ensp", 0x2002},   {"emsp", 0x2003},    {"zwnj", 0x200C},    {"zwj", 0x200D},
+  };
+  for (const auto &e : kEntities) {
+    if (name == e.name) return e.cp;
+  }
+  return 0;
+}
+
+// s[i] must be '&'. Advances past the entity; a lone '&' decodes as itself.
+uint32_t decodeEntity(const std::string &s, size_t &i) {
+  const size_t semi = s.find(';', i);
+  if (semi == std::string::npos || semi - i > 12) {
+    ++i;
+    return '&';
+  }
+  const std::string name = s.substr(i + 1, semi - i - 1);
+  uint32_t cp = 0;
+  if (name.size() > 1 && name[0] == '#') {
+    cp = (name[1] == 'x' || name[1] == 'X') ? strtoul(name.c_str() + 2, nullptr, 16)
+                                            : strtoul(name.c_str() + 1, nullptr, 10);
+  } else {
+    cp = namedEntity(name);
+  }
+  if (cp == 0) {
+    ++i;
+    return '&';
+  }
+  i = semi + 1;
+  return cp;
+}
+
+// Raw (entity-encoded) UTF-8 text -> decoded UTF-8. Used for attribute values like hrefs.
+std::string decodeEntitiesUtf8(const std::string &raw) {
+  if (raw.find('&') == std::string::npos) return raw;
+  std::string out;
+  for (size_t i = 0; i < raw.size();) {
+    if (raw[i] != '&') {
+      out += raw[i++];
+      continue;
+    }
+    const uint32_t cp = decodeEntity(raw, i);
+    if (cp < 0x80) {
+      out += static_cast<char>(cp);
+    } else if (cp < 0x800) {
+      out += static_cast<char>(0xC0 | (cp >> 6));
+      out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+      out += static_cast<char>(0xE0 | (cp >> 12));
+      out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+      out += static_cast<char>(0x80 | (cp & 0x3F));
+    } else {
+      out += static_cast<char>(0xF0 | (cp >> 18));
+      out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+      out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+      out += static_cast<char>(0x80 | (cp & 0x3F));
+    }
+  }
+  return out;
+}
+
+// Raw element text -> trimmed, whitespace-collapsed ASCII. Used for title/author.
+std::string decodeText(const std::string &raw) {
+  std::string ascii;
+  for (size_t i = 0; i < raw.size();) {
+    const uint32_t cp = raw[i] == '&' ? decodeEntity(raw, i) : text::nextCodepoint(raw, i);
+    text::appendAscii(ascii, cp);
+  }
+  std::string out;
+  for (const char c : ascii) {
+    if (c == ' ' && (out.empty() || out.back() == ' ')) continue;
+    out += c == flow::kEmDash ? '-' : c;
+  }
+  while (!out.empty() && out.back() == ' ') out.pop_back();
+  return out;
+}
+
+std::string attr(const std::string &s, const Tag &t, const char *wanted) {
+  size_t i = t.attrStart;
+  const size_t e = t.attrEnd;
+  auto skipSpace = [&] {
+    while (i < e && (isspace(static_cast<unsigned char>(s[i])) || s[i] == '/')) ++i;
+  };
+  while (i < e) {
+    skipSpace();
+    const size_t keyStart = i;
+    while (i < e && !isspace(static_cast<unsigned char>(s[i])) && s[i] != '=' && s[i] != '/') ++i;
+    const std::string key = localName(s.substr(keyStart, i - keyStart));
+    while (i < e && isspace(static_cast<unsigned char>(s[i]))) ++i;
+    std::string value;
+    if (i < e && s[i] == '=') {
+      ++i;
+      while (i < e && isspace(static_cast<unsigned char>(s[i]))) ++i;
+      if (i < e && (s[i] == '"' || s[i] == '\'')) {
+        const char quote = s[i++];
+        const size_t valueStart = i;
+        while (i < e && s[i] != quote) ++i;
+        value = s.substr(valueStart, i - valueStart);
+        ++i;
+      } else {
+        const size_t valueStart = i;
+        while (i < e && !isspace(static_cast<unsigned char>(s[i]))) ++i;
+        value = s.substr(valueStart, i - valueStart);
+      }
+    }
+    if (key == wanted) return decodeEntitiesUtf8(value);
+    if (i == keyStart) ++i;  // no progress: skip junk
+  }
+  return {};
+}
+
+// Text from just after an opening tag up to the next '<'.
+std::string elementText(const std::string &s, const Tag &t) {
+  const size_t end = s.find('<', t.end);
+  return s.substr(t.end, (end == std::string::npos ? s.size() : end) - t.end);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Paths inside the zip
+
+std::string urlDecode(const std::string &s) {
+  std::string out;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == '%' && i + 2 < s.size() && isxdigit(static_cast<unsigned char>(s[i + 1])) &&
+        isxdigit(static_cast<unsigned char>(s[i + 2]))) {
+      out += static_cast<char>(strtoul(s.substr(i + 1, 2).c_str(), nullptr, 16));
+      i += 2;
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
+std::string resolvePath(const std::string &baseDir, std::string href) {
+  const size_t hash = href.find('#');
+  if (hash != std::string::npos) href.resize(hash);
+  href = urlDecode(href);
+  const std::string joined = (!href.empty() && href[0] == '/') ? href.substr(1) : baseDir + href;
+
+  std::vector<std::string> parts;
+  size_t start = 0;
+  while (start <= joined.size()) {
+    size_t slash = joined.find('/', start);
+    if (slash == std::string::npos) slash = joined.size();
+    const std::string seg = joined.substr(start, slash - start);
+    if (seg == "..") {
+      if (!parts.empty()) parts.pop_back();
+    } else if (!seg.empty() && seg != ".") {
+      parts.push_back(seg);
+    }
+    start = slash + 1;
+  }
+  std::string out;
+  for (const auto &p : parts) {
+    if (!out.empty()) out += '/';
+    out += p;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// XHTML -> flow
+
+class FlowBuilder {
+ public:
+  explicit FlowBuilder(std::string &out) : out_(out) {}
+
+  void space() {
+    if (!atParaStart_) pendingSpace_ = true;
+  }
+  void para() {
+    if (!atParaStart_) {
+      out_ += flow::kPara;
+      atParaStart_ = true;
+    }
+    pendingSpace_ = false;
+  }
+  void center(bool on) { center_ = on; }
+  void style(uint8_t s) { want_ = s; }
+  void text(const std::string &ascii) {
+    for (const char c : ascii) put(c);
+  }
+  void put(char c) {
+    if (c == ' ') {
+      space();
+      return;
+    }
+    if (atParaStart_ && center_) out_ += flow::kCenter;
+    if (pendingSpace_) out_ += ' ';
+    if (want_ != cur_) {
+      out_ += static_cast<char>(flow::kStyleBase + want_);
+      cur_ = want_;
+    }
+    out_ += c;
+    atParaStart_ = false;
+    pendingSpace_ = false;
+  }
+
+ private:
+  std::string &out_;
+  bool atParaStart_ = true;
+  bool pendingSpace_ = false;
+  bool center_ = false;
+  uint8_t want_ = 0;
+  uint8_t cur_ = 0;
+};
+
+bool isOneOf(const std::string &name, std::initializer_list<const char *> names) {
+  for (const char *n : names) {
+    if (name == n) return true;
+  }
+  return false;
+}
+
+bool isBlock(const std::string &name) {
+  return isOneOf(name, {"p", "div", "section", "article", "aside", "header", "footer", "nav",
+                        "main", "blockquote", "ul", "ol", "dl", "dt", "dd", "table", "tr",
+                        "thead", "tbody", "tfoot", "caption", "figure", "figcaption", "pre",
+                        "address", "center", "body"});
+}
+
+bool isHeading(const std::string &name) {
+  return name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6';
+}
+
+}  // namespace
+
+void xhtmlToFlow(const std::string &s, std::string &out) {
+  out.clear();
+  out.reserve(s.size() / 2);
+  FlowBuilder fb(out);
+  int bold = 0, italic = 0, heading = 0, skip = 0;
+  auto applyStyle = [&] {
+    fb.style((bold > 0 ? flow::kBold : 0) | (italic > 0 ? flow::kItalic : 0));
+  };
+  auto imagePlaceholder = [&] {
+    fb.para();
+    fb.center(true);
+    fb.style(flow::kItalic);
+    fb.text("[image]");
+    fb.para();
+    fb.center(heading > 0);
+    applyStyle();
+  };
+  auto bump = [](int &counter, bool open) { counter = open ? counter + 1 : (counter > 0 ? counter - 1 : 0); };
+
+  std::string ascii;
+  Tag t;
+  const size_t n = s.size();
+  size_t i = 0;
+  while (i < n) {
+    if (s[i] == '<') {
+      if (!parseTag(s, i, t)) break;
+      i = t.end;
+      if (t.special) continue;
+      const std::string &name = t.name;
+      const bool open = !t.closing;
+
+      if (isOneOf(name, {"head", "script", "style", "svg", "math"})) {
+        if (t.selfClosing) continue;
+        if (open && skip == 0 && name == "svg") imagePlaceholder();
+        bump(skip, open);
+        continue;
+      }
+      if (skip) continue;
+
+      if (isHeading(name)) {
+        fb.para();
+        if (!t.selfClosing) {
+          bump(heading, open);
+          bump(bold, open);
+        }
+        fb.center(heading > 0);
+        applyStyle();
+      } else if (isOneOf(name, {"b", "strong", "th"})) {
+        if (!t.selfClosing) bump(bold, open);
+        applyStyle();
+        if (name == "th") fb.space();
+      } else if (isOneOf(name, {"i", "em", "cite", "var", "dfn"})) {
+        if (!t.selfClosing) bump(italic, open);
+        applyStyle();
+      } else if (name == "br") {
+        fb.para();
+      } else if (name == "hr") {
+        fb.para();
+        fb.center(true);
+        fb.text("* * *");
+        fb.para();
+        fb.center(heading > 0);
+      } else if (name == "img" || name == "image") {
+        if (open) imagePlaceholder();
+      } else if (name == "li") {
+        fb.para();
+        if (open && !t.selfClosing) fb.text("* ");
+      } else if (name == "td") {
+        fb.space();
+      } else if (isBlock(name)) {
+        fb.para();
+      }
+      continue;
+    }
+
+    if (skip) {
+      i = s.find('<', i);
+      if (i == std::string::npos) break;
+      continue;
+    }
+    const uint32_t cp = s[i] == '&' ? decodeEntity(s, i) : text::nextCodepoint(s, i);
+    ascii.clear();
+    text::appendAscii(ascii, cp);
+    fb.text(ascii);
+  }
+  fb.para();
+}
+
+// ---------------------------------------------------------------------------------------------
+
+void Epub::close() {
+  zip_.close();
+  title_.clear();
+  author_.clear();
+  spine_.clear();
+}
+
+bool Epub::open(const std::string &path, std::string &err) {
+  close();
+  if (!zip_.open(path, err)) return false;
+
+  std::string xml;
+  if (!zip_.read("META-INF/container.xml", xml, err)) return false;
+  std::string opfPath;
+  Tag t;
+  for (size_t pos = xml.find('<'); pos != std::string::npos; pos = xml.find('<', t.end)) {
+    if (!parseTag(xml, pos, t)) break;
+    if (!t.special && !t.closing && t.name == "rootfile") {
+      opfPath = attr(xml, t, "full-path");
+      break;
+    }
+  }
+  if (opfPath.empty()) {
+    err = "no rootfile in container.xml";
+    return false;
+  }
+
+  if (!zip_.read(opfPath, xml, err)) return false;
+  const size_t slash = opfPath.rfind('/');
+  const std::string opfDir = slash == std::string::npos ? "" : opfPath.substr(0, slash + 1);
+
+  std::map<std::string, std::string> manifest;  // id -> href
+  std::vector<std::string> idrefs;
+  for (size_t pos = xml.find('<'); pos != std::string::npos; pos = xml.find('<', t.end)) {
+    if (!parseTag(xml, pos, t)) break;
+    if (t.special || t.closing) continue;
+    if (t.name == "title" && title_.empty()) {
+      title_ = decodeText(elementText(xml, t));
+    } else if (t.name == "creator" && author_.empty()) {
+      author_ = decodeText(elementText(xml, t));
+    } else if (t.name == "item") {
+      manifest[attr(xml, t, "id")] = attr(xml, t, "href");
+    } else if (t.name == "itemref") {
+      idrefs.push_back(attr(xml, t, "idref"));
+    }
+  }
+
+  for (const auto &idref : idrefs) {
+    const auto it = manifest.find(idref);
+    if (it == manifest.end() || it->second.empty()) continue;
+    const std::string entry = resolvePath(opfDir, it->second);
+    if (zip_.find(entry) < 0) {
+      log_w("EPUB: spine item %s missing from zip", entry.c_str());
+      continue;
+    }
+    spine_.push_back(entry);
+  }
+  if (spine_.empty()) {
+    err = "no readable chapters";
+    return false;
+  }
+
+  if (title_.empty()) {
+    const size_t base = path.rfind('/');
+    title_ = text::toAscii(path.substr(base == std::string::npos ? 0 : base + 1));
+  }
+  log_i("EPUB: \"%s\" by \"%s\", %u spine items", title_.c_str(), author_.c_str(),
+        static_cast<unsigned>(spine_.size()));
+  return true;
+}
+
+bool Epub::chapterFlow(size_t i, std::string &flow, std::string &err) const {
+  flow.clear();
+  if (i >= spine_.size()) {
+    err = "no such chapter";
+    return false;
+  }
+  std::string xhtml;
+  if (!zip_.read(spine_[i], xhtml, err)) return false;
+  xhtmlToFlow(xhtml, flow);
+  return true;
+}

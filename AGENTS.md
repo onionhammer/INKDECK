@@ -12,7 +12,7 @@ and power decision on this file, `include/board_pins.h`, or the primary sources 
 | `platformio.ini` | Single env `epaper397`: official `espressif32 @ ~8.0.0` (Arduino core 3.3.x / IDF 5.5), partition table (2×3 MB OTA + 9.9 MB FAT), log level |
 | `boards/waveshare_esp32_s3_epaper_397.json` | Custom board def: 16 MB QIO flash, **octal PSRAM (`qio_opi`)**, native USB CDC |
 | `include/board_pins.h` | **All GPIOs and I2C addresses**, from the schematic. Use these constants; don't hard-code pins |
-| `src/` | Firmware (currently a smoke test: chip/PSRAM report + I2C scan) |
+| `src/` | Firmware: prototype e-reader (SD file browser + EPUB reader). Controls and shortcuts are listed at the top of `main.cpp` |
 | `docs/` | Schematic, datasheets, mechanical files, Waveshare wiki as markdown |
 | `docs/ui-design.md` | **UI design spec** (INKDECK/OS): orientation, 1-bit visual rules, shared chrome, button mapping, one entry per screen. Links the [design canvas](https://claude.ai/artifact/CkQZ5d3cCFz6dFwQNNuwof). **Read before writing any screen or UI code** |
 | `.claude/skills/waveshare-epaper-reference/` | Distilled Waveshare sample code: driver snippets, init sequences, power lifecycle, porting notes, one `references/*.md` per subsystem. **Read the relevant one before writing hardware code** |
