@@ -4,3 +4,4 @@
 .vscode/launch.json
 .vscode/ipch
 session_*.json
+.cache/

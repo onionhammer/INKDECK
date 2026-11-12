@@ -11,7 +11,7 @@ enum class Key : uint8_t {
   Up,          // rotary wheel up (GPIO4); auto-repeats while held
   Down,        // rotary wheel down (GPIO6); auto-repeats while held
   Select,      // wheel press (GPIO5), released before the long-press time
-  SelectLong,  // wheel press held
+  SelectLong,  // wheel press held about 1 s
   Back,        // BOOT (GPIO0) short press
   BackLong,    // BOOT held
 };
@@ -22,5 +22,8 @@ void begin();
 
 // Blocks up to timeoutMs for the next key. Returns false on timeout.
 bool wait(Key &key, uint32_t timeoutMs);
+
+// Queues a key as if it had been pressed (dev tools drive the UI over serial with this).
+void inject(Key key);
 
 }  // namespace input

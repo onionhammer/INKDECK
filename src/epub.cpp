@@ -144,19 +144,28 @@ std::string decodeEntitiesUtf8(const std::string &raw) {
   return out;
 }
 
-// Raw element text -> trimmed, whitespace-collapsed ASCII. Used for title/author.
+// Raw element text (entities, tags allowed) -> trimmed, whitespace-collapsed UTF-8. Used for
+// the title, author and TOC labels, which the UI draws as UTF-8.
 std::string decodeText(const std::string &raw) {
-  std::string ascii;
-  for (size_t i = 0; i < raw.size();) {
-    const uint32_t cp = raw[i] == '&' ? decodeEntity(raw, i) : text::nextCodepoint(raw, i);
-    text::appendAscii(ascii, cp);
-  }
   std::string out;
-  for (const char c : ascii) {
-    if (c == ' ' && (out.empty() || out.back() == ' ')) continue;
-    out += c == flow::kEmDash ? '-' : c;
+  bool space = false;
+  for (size_t i = 0; i < raw.size();) {
+    if (raw[i] == '<') {  // inline markup inside a label (<span>, <br/>)
+      const size_t close = raw.find('>', i);
+      i = close == std::string::npos ? raw.size() : close + 1;
+      space = true;
+      continue;
+    }
+    const uint32_t cp = raw[i] == '&' ? decodeEntity(raw, i) : text::nextCodepoint(raw, i);
+    if (cp <= 0x20 || cp == 0xA0) {
+      space = true;
+      continue;
+    }
+    if (cp == 0xAD || (cp >= 0x200B && cp <= 0x200D) || cp == 0xFEFF) continue;
+    if (space && !out.empty()) out += ' ';
+    space = false;
+    text::appendUtf8(out, cp);
   }
-  while (!out.empty() && out.back() == ' ') out.pop_back();
   return out;
 }
 
@@ -330,7 +339,7 @@ void xhtmlToFlow(const std::string &s, std::string &out) {
   };
   auto bump = [](int &counter, bool open) { counter = open ? counter + 1 : (counter > 0 ? counter - 1 : 0); };
 
-  std::string ascii;
+  std::string glyphs;  // one code point as flow bytes
   Tag t;
   const size_t n = s.size();
   size_t i = 0;
@@ -377,7 +386,11 @@ void xhtmlToFlow(const std::string &s, std::string &out) {
         if (open) imagePlaceholder();
       } else if (name == "li") {
         fb.para();
-        if (open && !t.selfClosing) fb.text("* ");
+        if (open && !t.selfClosing) {
+          glyphs.clear();
+          text::appendSlots(glyphs, 0x2022);  // •
+          fb.text(glyphs + " ");
+        }
       } else if (name == "td") {
         fb.space();
       } else if (isBlock(name)) {
@@ -392,9 +405,9 @@ void xhtmlToFlow(const std::string &s, std::string &out) {
       continue;
     }
     const uint32_t cp = s[i] == '&' ? decodeEntity(s, i) : text::nextCodepoint(s, i);
-    ascii.clear();
-    text::appendAscii(ascii, cp);
-    fb.text(ascii);
+    glyphs.clear();
+    text::appendSlots(glyphs, cp);
+    fb.text(glyphs);
   }
   fb.para();
 }
@@ -406,6 +419,7 @@ void Epub::close() {
   title_.clear();
   author_.clear();
   spine_.clear();
+  toc_.clear();
 }
 
 bool Epub::open(const std::string &path, std::string &err) {
@@ -432,8 +446,12 @@ bool Epub::open(const std::string &path, std::string &err) {
   const size_t slash = opfPath.rfind('/');
   const std::string opfDir = slash == std::string::npos ? "" : opfPath.substr(0, slash + 1);
 
-  std::map<std::string, std::string> manifest;  // id -> href
+  struct Item {
+    std::string href, mediaType, properties;
+  };
+  std::map<std::string, Item> manifest;  // id -> item
   std::vector<std::string> idrefs;
+  std::string ncxId;
   for (size_t pos = xml.find('<'); pos != std::string::npos; pos = xml.find('<', t.end)) {
     if (!parseTag(xml, pos, t)) break;
     if (t.special || t.closing) continue;
@@ -442,7 +460,10 @@ bool Epub::open(const std::string &path, std::string &err) {
     } else if (t.name == "creator" && author_.empty()) {
       author_ = decodeText(elementText(xml, t));
     } else if (t.name == "item") {
-      manifest[attr(xml, t, "id")] = attr(xml, t, "href");
+      manifest[attr(xml, t, "id")] = {attr(xml, t, "href"), attr(xml, t, "media-type"),
+                                      attr(xml, t, "properties")};
+    } else if (t.name == "spine") {
+      ncxId = attr(xml, t, "toc");
     } else if (t.name == "itemref") {
       idrefs.push_back(attr(xml, t, "idref"));
     }
@@ -450,26 +471,117 @@ bool Epub::open(const std::string &path, std::string &err) {
 
   for (const auto &idref : idrefs) {
     const auto it = manifest.find(idref);
-    if (it == manifest.end() || it->second.empty()) continue;
-    const std::string entry = resolvePath(opfDir, it->second);
-    if (zip_.find(entry) < 0) {
+    if (it == manifest.end() || it->second.href.empty()) continue;
+    const std::string entry = resolvePath(opfDir, it->second.href);
+    const int index = zip_.find(entry);
+    if (index < 0) {
       log_w("EPUB: spine item %s missing from zip", entry.c_str());
       continue;
     }
-    spine_.push_back(entry);
+    spine_.push_back({entry, zip_.entries()[index].size});
   }
   if (spine_.empty()) {
     err = "no readable chapters";
     return false;
   }
 
+  // Table of contents: the EPUB 2 NCX if there is one (simpler), else the EPUB 3 nav document.
+  std::string ncxHref, navHref;
+  if (manifest.count(ncxId)) ncxHref = manifest[ncxId].href;
+  for (const auto &kv : manifest) {
+    const Item &item = kv.second;
+    if (ncxHref.empty() && item.mediaType == "application/x-dtbncx+xml") ncxHref = item.href;
+    if (navHref.empty() && (" " + item.properties + " ").find(" nav ") != std::string::npos) {
+      navHref = item.href;
+    }
+  }
+  const std::string tocPath = resolvePath(opfDir, ncxHref.empty() ? navHref : ncxHref);
+  std::string tocXml, tocErr;
+  if (!tocPath.empty() && zip_.read(tocPath, tocXml, tocErr)) {
+    const size_t s = tocPath.rfind('/');
+    const std::string tocDir = s == std::string::npos ? "" : tocPath.substr(0, s + 1);
+    if (ncxHref.empty()) {
+      parseNav(tocXml, tocDir);
+    } else {
+      parseNcx(tocXml, tocDir);
+    }
+  }
+
   if (title_.empty()) {
     const size_t base = path.rfind('/');
-    title_ = text::toAscii(path.substr(base == std::string::npos ? 0 : base + 1));
+    title_ = path.substr(base == std::string::npos ? 0 : base + 1);
   }
-  log_i("EPUB: \"%s\" by \"%s\", %u spine items", title_.c_str(), author_.c_str(),
-        static_cast<unsigned>(spine_.size()));
+  log_i("EPUB: \"%s\" by \"%s\", %u spine items, %u TOC entries", title_.c_str(),
+        author_.c_str(), static_cast<unsigned>(spine_.size()),
+        static_cast<unsigned>(toc_.size()));
   return true;
+}
+
+void Epub::addTocEntry(const std::string &title, const std::string &dir,
+                       const std::string &href) {
+  const std::string path = resolvePath(dir, href);
+  for (size_t i = 0; i < spine_.size(); ++i) {
+    if (spine_[i].path == path) {
+      toc_.push_back({title.empty() ? "Untitled" : title, i});
+      return;
+    }
+  }
+}
+
+// <navMap><navPoint><navLabel><text>Title</text></navLabel><content src="ch1.xhtml#x"/>...
+// Nested navPoints come in document order, which is reading order.
+void Epub::parseNcx(const std::string &xml, const std::string &dir) {
+  Tag t;
+  bool inMap = false;
+  std::string label;
+  for (size_t pos = xml.find('<'); pos != std::string::npos; pos = xml.find('<', t.end)) {
+    if (!parseTag(xml, pos, t)) break;
+    if (t.special) continue;
+    if (t.name == "navmap") {
+      inMap = !t.closing;  // stop at </navMap>: pageList/navList follow
+      if (t.closing) break;
+    } else if (inMap && !t.closing && t.name == "text") {
+      label = decodeText(elementText(xml, t));
+    } else if (inMap && !t.closing && t.name == "content") {
+      addTocEntry(label, dir, attr(xml, t, "src"));
+      label.clear();
+    }
+  }
+}
+
+// <nav epub:type="toc"><ol><li><a href="ch1.xhtml">Title</a>...</nav>
+void Epub::parseNav(const std::string &xml, const std::string &dir) {
+  Tag t;
+  bool inToc = false;
+  for (size_t pos = xml.find('<'); pos != std::string::npos; pos = xml.find('<', t.end)) {
+    if (!parseTag(xml, pos, t)) break;
+    if (t.special) continue;
+    if (t.name == "nav") {
+      if (t.closing) {
+        if (inToc) break;
+      } else {
+        inToc = (" " + attr(xml, t, "type") + " ").find(" toc ") != std::string::npos;
+      }
+    } else if (inToc && !t.closing && t.name == "a") {
+      size_t end = xml.find("</a", t.end);
+      if (end == std::string::npos) end = xml.size();
+      addTocEntry(decodeText(xml.substr(t.end, end - t.end)), dir, attr(xml, t, "href"));
+    }
+  }
+}
+
+std::string Epub::chapterTitle(size_t i) const {
+  const TocEntry *best = nullptr;  // first entry of the latest chapter at or before i
+  for (const auto &e : toc_) {
+    if (e.chapter <= i && (!best || e.chapter > best->chapter)) best = &e;
+  }
+  return best ? best->title : std::string();
+}
+
+uint64_t Epub::sizeBefore(size_t i) const {
+  uint64_t total = 0;
+  for (size_t k = 0; k < i && k < spine_.size(); ++k) total += spine_[k].size;
+  return total;
 }
 
 bool Epub::chapterFlow(size_t i, std::string &flow, std::string &err) const {
@@ -479,7 +591,7 @@ bool Epub::chapterFlow(size_t i, std::string &flow, std::string &err) const {
     return false;
   }
   std::string xhtml;
-  if (!zip_.read(spine_[i], xhtml, err)) return false;
+  if (!zip_.read(spine_[i].path, xhtml, err)) return false;
   xhtmlToFlow(xhtml, flow);
   return true;
 }

@@ -1,5 +1,7 @@
 #include "text.h"
 
+#include "ui/fonts/glyphs.h"
+
 namespace text {
 namespace {
 
@@ -69,7 +71,7 @@ void appendAscii(std::string &out, uint32_t cp) {
       out += '-';
       return;
     case 0x2014: case 0x2015:
-      out += flow::kEmDash;
+      out += "--";
       return;
     case 0x2026: out += "..."; return;
     case 0x2022: case 0x2023: case 0x25CF: out += '*'; return;
@@ -122,6 +124,34 @@ void appendAscii(std::string &out, uint32_t cp) {
     out += '?';
   }
   // other C0 control characters are dropped
+}
+
+void appendUtf8(std::string &out, uint32_t cp) {
+  if (cp < 0x80) {
+    out += static_cast<char>(cp);
+  } else if (cp < 0x800) {
+    out += static_cast<char>(0xC0 | (cp >> 6));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else if (cp < 0x10000) {
+    out += static_cast<char>(0xE0 | (cp >> 12));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else {
+    out += static_cast<char>(0xF0 | (cp >> 18));
+    out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+    out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    out += static_cast<char>(0x80 | (cp & 0x3F));
+  }
+}
+
+void appendSlots(std::string &out, uint32_t cp) {
+  if (cp == 0xAD) return;           // soft hyphen: no hyphenation yet
+  if (cp == 0x2015) cp = 0x2014;    // horizontal bar: draw an em dash
+  if (const uint8_t slot = ui::fonts::slotFor(cp)) {
+    out += static_cast<char>(slot);
+  } else {
+    appendAscii(out, cp);  // ' ' for other spaces, "" for zero-width characters
+  }
 }
 
 std::string toAscii(const std::string &utf8) {

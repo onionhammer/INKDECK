@@ -15,10 +15,7 @@ const GFXglyph *glyph(const GFXfont *font, char c) {
 
 }  // namespace
 
-int advance(const GFXfont *font, char c) {
-  if (c == flow::kEmDash) return glyph(font, 'M')->xAdvance;
-  return glyph(font, c)->xAdvance;
-}
+int advance(const GFXfont *font, char c) { return glyph(font, c)->xAdvance; }
 
 int textWidth(const GFXfont *font, const std::string &s) {
   int w = 0;
@@ -33,13 +30,6 @@ int ascent(const GFXfont *font) {
 }
 
 int drawChar(GFXcanvas1 &canvas, int x, int baseline, char c, const GFXfont *font, uint16_t color) {
-  if (c == flow::kEmDash) {
-    const int w = advance(font, c);
-    const int xHeight = -glyph(font, 'x')->yOffset;
-    const int thick = std::max(1, font->yAdvance / 24);
-    canvas.fillRect(x + 1, baseline - xHeight / 2 - thick / 2, w - 2, thick, color);
-    return x + w;
-  }
   auto ch = static_cast<uint8_t>(c);
   if (ch < font->first || ch > font->last) ch = '?';
   canvas.setFont(font);
@@ -96,24 +86,42 @@ bool isParagraphStart(const std::string &flow, size_t pos) {
   return true;
 }
 
+bool isAsciiLetter(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+
 }  // namespace
 
 Typesetter::Typesetter(const FontFamily &family, int width, int height)
     : family_(family), width_(width), height_(height) {
   const GFXfont *regular = family.face[0];
-  lineHeight_ = regular->yAdvance;
-  ascent_ = gfx::ascent(regular);
+  lineHeight_ = family.lineHeight ? family.lineHeight : regular->yAdvance;
+  // Centre capitals in the line, as CSS's half-leading roughly does.
+  const int cap = -gfx::glyph(regular, 'H')->yOffset;
+  ascent_ = (lineHeight_ + cap) / 2;
   spaceWidth_ = gfx::advance(regular, ' ');
   indent_ = gfx::advance(regular, 'M');
-  paraGap_ = lineHeight_ / 4;
+  headingGap_ = lineHeight_ / 2;
 }
 
 bool Typesetter::hasContent(const std::string &flow, size_t offset) {
   for (size_t i = offset; i < flow.size(); ++i) {
-    const char c = flow[i];
-    if ((c > ' ' && c < 0x7F) || c == flow::kEmDash) return true;
+    if (flow::isGlyph(flow[i])) return true;
   }
   return false;
+}
+
+uint32_t Typesetter::findDropCap(const std::string &flow, size_t minLength) {
+  size_t start = 0;
+  while (start < flow.size()) {
+    size_t end = flow.find(flow::kPara, start);
+    if (end == std::string::npos) end = flow.size();
+    size_t i = start;
+    while (i < end && flow::isStyle(flow[i])) ++i;
+    if (i < end && flow[i] != flow::kCenter && end - start >= minLength) {
+      return isAsciiLetter(flow[i]) ? static_cast<uint32_t>(i) : DropCap::kNone;
+    }
+    start = end + 1;
+  }
+  return DropCap::kNone;
 }
 
 PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas1 *canvas,
@@ -124,15 +132,20 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
   int lineTop = 0;
   bool firstLine = isParagraphStart(flow, pos);
   bool center = false;
+  bool afterHeading = false;  // no indent on the paragraph after a centred one
+  int dropBottom = 0;         // lines above this y make room for the drop cap
   std::vector<Word> words;
   words.reserve(32);
   int wordsWidth = 0;
   PagePos lineStart{static_cast<uint32_t>(pos), style};
 
+  auto indentNow = [&] {
+    if (lineTop < dropBottom) return drop_.box + drop_.gap;
+    return firstLine && !center && !afterHeading ? indent_ : 0;
+  };
   auto flush = [&](bool justify) {
     if (canvas) {
-      drawLine(*canvas, flow, words, wordsWidth, justify, center,
-               firstLine && !center ? indent_ : 0, x, y + lineTop);
+      drawLine(*canvas, flow, words, wordsWidth, justify, center, indentNow(), x, y + lineTop);
     }
     words.clear();
     wordsWidth = 0;
@@ -149,10 +162,9 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
     }
     const char c = flow[pos];
     if (c == flow::kPara) {
-      if (!words.empty()) {
-        flush(false);
-        lineTop += paraGap_;
-      }
+      if (!words.empty()) flush(false);
+      if (center) lineTop += headingGap_;
+      afterHeading = center;
       ++pos;
       firstLine = true;
       center = false;
@@ -166,12 +178,23 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
       continue;
     }
     if (c == flow::kCenter) {
+      if (lineTop > 0 && words.empty() && !afterHeading) {
+        lineTop += headingGap_;
+        if (!lineFits()) return lineStart;
+      }
       center = true;
       ++pos;
       continue;
     }
 
     Word w{static_cast<uint32_t>(pos), 0, 0, style};
+    if (pos == drop_.at && drop_.font && words.empty()) {
+      // The paragraph that gets the drop cap. Start a new page if the box wouldn't fit.
+      if (lineTop > 0 && lineTop + drop_.top + drop_.box > height_) return lineStart;
+      if (canvas) drawDropCap(*canvas, flow[pos], x, y + lineTop + drop_.top);
+      dropBottom = lineTop + drop_.top + drop_.box;
+      w.start = static_cast<uint32_t>(++pos);  // the letter is in the box, not the line
+    }
     while (pos < n && flow[pos] != ' ' && flow[pos] != flow::kPara) {
       const char d = flow[pos++];
       if (flow::isStyle(d)) {
@@ -181,9 +204,10 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
       }
     }
     w.end = static_cast<uint32_t>(pos);
+    if (w.end == w.start) continue;  // a one-letter word that went into the drop cap
 
-    const int indent = firstLine && !center ? indent_ : 0;
-    const int needed = indent + wordsWidth + static_cast<int>(words.size()) * spaceWidth_ + w.width;
+    const int needed =
+        indentNow() + wordsWidth + static_cast<int>(words.size()) * spaceWidth_ + w.width;
     if (!words.empty() && needed > width_) {
       flush(true);
       lineStart = {w.start, w.style};
@@ -192,6 +216,20 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
     words.push_back(w);
     wordsWidth += w.width;
   }
+}
+
+void Typesetter::drawDropCap(GFXcanvas1 &canvas, char letter, int x, int y) const {
+  canvas.fillRect(x, y, drop_.box, drop_.box, gfx::kBlack);
+  if (letter >= 'a' && letter <= 'z') letter = static_cast<char>(letter - 'a' + 'A');
+  const auto slot = static_cast<uint8_t>(letter);
+  const GFXfont *f = drop_.font;
+  if (slot < f->first || slot > f->last) return;
+  const GFXglyph &g = f->glyph[slot - f->first];
+  // Centre the glyph's ink in the box.
+  const int gx = x + (drop_.box - g.width) / 2 - g.xOffset;
+  const int baseline = y + (drop_.box - g.height) / 2 - g.yOffset;
+  canvas.setFont(f);
+  canvas.drawChar(gx, baseline, slot, gfx::kWhite, gfx::kWhite, 1);
 }
 
 void Typesetter::drawLine(GFXcanvas1 &canvas, const std::string &flow,
@@ -203,10 +241,12 @@ void Typesetter::drawLine(GFXcanvas1 &canvas, const std::string &flow,
   int cursor = x + indent;
   int extra = 0, remainder = 0;
   if (center) {
-    cursor = x + std::max(0, (width_ - natural) / 2);
+    cursor = x + indent + std::max(0, (width_ - natural) / 2);
   } else if (justify && gaps > 0) {
+    // Without hyphenation a long next word can leave a lot of slack. Lines with a few gaps
+    // still justify (like a printed page); a line of two or three words only within reason.
     const int slack = width_ - natural;
-    if (slack > 0 && slack <= gaps * spaceWidth_ * 3) {  // don't stretch sparse lines absurdly
+    if (slack > 0 && (gaps >= 3 || slack <= gaps * spaceWidth_ * 4)) {
       extra = slack / gaps;
       remainder = slack % gaps;
     }

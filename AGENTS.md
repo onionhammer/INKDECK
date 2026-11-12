@@ -12,7 +12,9 @@ and power decision on this file, `include/board_pins.h`, or the primary sources 
 | `platformio.ini` | Single env `epaper397`: official `espressif32 @ ~8.0.0` (Arduino core 3.3.x / IDF 5.5), partition table (2×3 MB OTA + 9.9 MB FAT), log level |
 | `boards/waveshare_esp32_s3_epaper_397.json` | Custom board def: 16 MB QIO flash, **octal PSRAM (`qio_opi`)**, native USB CDC |
 | `include/board_pins.h` | **All GPIOs and I2C addresses**, from the schematic. Use these constants; don't hard-code pins |
-| `src/` | Firmware: prototype e-reader (SD file browser, EPUB reader, MP3 player). Controls and shortcuts are listed at the top of `main.cpp` |
+| `src/` | Firmware. `ui/` is the navigator (screen stack and key language, `ui/nav.h`), components, text styles and generated fonts. `apps/` holds the screens. Drivers sit flat in `src/` |
+| `PROGRESS.md` | **UI build plan and status**: phases, decisions, known issues, how to add a screen. Update it when a phase moves |
+| `tools/` | `gen_fonts.py` (JetBrains Mono → GFX bitmap fonts) and `screenshot.py` (drive the UI over USB, save the framebuffer as PNG). Run both with `uv run` |
 | `docs/` | Schematic, datasheets, mechanical files, Waveshare wiki as markdown |
 | `docs/ui-design.md` | **UI design spec** (INKDECK/OS): orientation, 1-bit visual rules, shared chrome, button mapping, one entry per screen. Links the [design canvas](https://claude.ai/artifact/CkQZ5d3cCFz6dFwQNNuwof). **Read before writing any screen or UI code** |
 | `.claude/skills/waveshare-epaper-reference/` | Distilled Waveshare sample code: driver snippets, init sequences, power lifecycle, porting notes, one `references/*.md` per subsystem. **Read the relevant one before writing hardware code** |
@@ -55,6 +57,7 @@ the commit and explains how to fetch full files when a snippet isn't enough.
 - If the USB port disappears (crashed firmware, board powered off): **hold BOOT, power-cycle (replug USB, or PWR key on battery), release BOOT** to enter ROM download mode, then upload.
 - On battery, hung firmware keeps the board on. Hold PWR for 4 s or more to force it off.
 - Stock firmware: 16 MB full-flash images in the upstream repo under `Firmware/Factory procedure/*.bin`. Write them at `0x0` with esptool.
+- **Opening the serial port can reset the board.** Verified on hardware: a pyserial open with default settings reset it, while setting `dtr = rts = False` before `open()` did not (`tools/screenshot.py` does that). The likely cause is the USB-Serial-JTAG auto-reset (RTS high with DTR low, the same signal esptool uses to reset).
 
 ## Gotchas
 

@@ -1,25 +1,21 @@
-// Font selection. Adafruit GFX FreeFonts, ASCII only (see text.h).
-//
-// The FreeFonts are rasterised at 141 dpi; the panel is ~235 dpi, so "12pt" renders at about
-// 7pt physical size. That's why the reader offers the larger sizes too.
+// Font families for the typesetter (book text). UI fonts are in ui/type.h.
 #pragma once
-#include <Arduino.h>  // gfxfont.h and the font headers need stdint + PROGMEM
+#include <Arduino.h>  // gfxfont.h needs stdint + PROGMEM
 #include <gfxfont.h>
 
 struct FontFamily {
   const char *name;
   const GFXfont *face[4];  // indexed by flow style: regular, bold, italic, bold-italic
+  int lineHeight;          // px; 0 = the regular face's own line height
 };
 
 namespace fonts {
 
+// Literata 16/26, 19/30 (docs/ui-design.md's reader setting) and 23/36.
 constexpr int kReaderSizeCount = 3;
-extern const FontFamily kReader[kReaderSizeCount];  // serif 12 / 18 / 24 pt
+extern const FontFamily kReader[kReaderSizeCount];
 constexpr int kDefaultReaderSize = 1;
 
-extern const GFXfont *const kUi;        // list rows
-extern const GFXfont *const kUiBold;    // headers, folders
-extern const GFXfont *const kUiSmall;   // footers, status bar
-extern const GFXfont *const kUiLarge;   // now-playing title
+extern const GFXfont *const kDropCap;  // JetBrains Mono 68 px ExtraBold, capitals
 
 }  // namespace fonts

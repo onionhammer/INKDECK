@@ -1,5 +1,6 @@
-// Drawing helpers on top of Adafruit GFX, plus a simple typesetter for flow text (text.h):
-// greedy word wrap, justified lines, paragraph indent, bold/italic runs. No hyphenation.
+// Drawing helpers on top of Adafruit GFX, plus the typesetter for flow text (text.h): greedy
+// word wrap, justified lines on a fixed line grid, paragraph indents, bold/italic runs, centred
+// headings with space around them, and an optional drop cap. No hyphenation or kerning.
 #pragma once
 #include <Adafruit_GFX.h>
 
@@ -34,9 +35,21 @@ struct PagePos {
   uint8_t style = 0;
 };
 
+// An inverted square with the paragraph's first letter, text flowing round it.
+struct DropCap {
+  static constexpr uint32_t kNone = UINT32_MAX;
+  uint32_t at = kNone;            // flow offset of the letter (see Typesetter::findDropCap)
+  const GFXfont *font = nullptr;  // capitals; must have the letter
+  int box = 84;                   // square side, px
+  int top = 4;                    // box offset below its first line's top
+  int gap = 12;                   // between the box and the text
+};
+
 class Typesetter {
  public:
   Typesetter(const FontFamily &family, int width, int height);
+
+  void setDropCap(const DropCap &drop) { drop_ = drop; }
 
   // Lays out one page from `start`. Draws it if canvas is given, with the text area's top-left
   // at (x, y). Returns where the next page starts (offset == flow.size() at the end).
@@ -49,6 +62,12 @@ class Typesetter {
   // True if anything printable remains at or after offset.
   static bool hasContent(const std::string &flow, size_t offset);
 
+  // Offset of the first letter of the first paragraph that suits a drop cap: left-aligned, at
+  // least minLength bytes, starting with an ASCII letter. DropCap::kNone if there's none.
+  static uint32_t findDropCap(const std::string &flow, size_t minLength = 200);
+
+  int lineHeight() const { return lineHeight_; }
+
  private:
   struct Word {
     uint32_t start;
@@ -59,6 +78,7 @@ class Typesetter {
 
   void drawLine(GFXcanvas1 &canvas, const std::string &flow, const std::vector<Word> &words,
                 int wordsWidth, bool justify, bool center, int indent, int x, int top) const;
+  void drawDropCap(GFXcanvas1 &canvas, char letter, int x, int y) const;
 
   const FontFamily &family_;
   int width_;
@@ -67,5 +87,6 @@ class Typesetter {
   int ascent_;
   int spaceWidth_;
   int indent_;
-  int paraGap_;
+  int headingGap_;  // space before and after centred paragraphs
+  DropCap drop_;
 };

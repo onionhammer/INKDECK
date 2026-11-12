@@ -15,6 +15,7 @@
 
 #include "board_pins.h"
 #include "es8311.h"
+#include "mp3info.h"
 #include "text.h"
 
 namespace audio {
@@ -146,75 +147,6 @@ void outputSetRate(uint32_t rate) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// ID3v2 (title/artist + where the audio starts)
-
-uint32_t syncsafe(const uint8_t *p) { return (p[0] << 21) | (p[1] << 14) | (p[2] << 7) | p[3]; }
-uint32_t be32(const uint8_t *p) { return (uint32_t(p[0]) << 24) | (p[1] << 16) | (p[2] << 8) | p[3]; }
-
-std::string id3Text(const std::string &raw) {
-  if (raw.empty()) return {};
-  const uint8_t enc = raw[0];
-  std::string out;
-  if (enc == 1 || enc == 2) {  // UTF-16 with BOM / UTF-16BE
-    bool bigEndian = enc == 2;
-    size_t i = 1;
-    if (enc == 1 && raw.size() >= 3) {
-      bigEndian = static_cast<uint8_t>(raw[1]) == 0xFE;
-      i = 3;
-    }
-    for (; i + 1 < raw.size(); i += 2) {
-      const uint8_t a = raw[i], b = raw[i + 1];
-      const uint32_t unit = bigEndian ? (a << 8) | b : (b << 8) | a;
-      if (unit == 0) break;
-      text::appendAscii(out, (unit >= 0xD800 && unit < 0xE000) ? '?' : unit);
-    }
-  } else {
-    std::string body = raw.substr(1);
-    body.resize(strnlen(body.c_str(), body.size()));
-    if (enc == 3) {
-      out = text::toAscii(body);
-    } else {  // ISO-8859-1: bytes are code points
-      for (const char c : body) text::appendAscii(out, static_cast<uint8_t>(c));
-    }
-  }
-  while (!out.empty() && out.back() == ' ') out.pop_back();
-  return out;
-}
-
-// Reads ID3v2.3/2.4 TIT2/TPE1 and returns the offset of the first audio byte.
-long parseId3(FILE *f, std::string &title, std::string &artist) {
-  uint8_t h[10];
-  fseek(f, 0, SEEK_SET);
-  if (fread(h, 1, 10, f) != 10 || memcmp(h, "ID3", 3) != 0) return 0;
-  const uint8_t version = h[3];
-  const uint8_t flags = h[5];
-  const uint32_t tagEnd = 10 + syncsafe(h + 6);
-  const long audioStart = tagEnd + ((flags & 0x10) ? 10 : 0);
-  if (version != 3 && version != 4) return audioStart;
-
-  long pos = 10;
-  if (flags & 0x40) {  // extended header
-    uint8_t ext[4];
-    if (fread(ext, 1, 4, f) != 4) return audioStart;
-    pos += version == 4 ? syncsafe(ext) : be32(ext) + 4;
-  }
-  while (pos + 10 <= static_cast<long>(tagEnd) && (title.empty() || artist.empty())) {
-    uint8_t fh[10];
-    if (fseek(f, pos, SEEK_SET) != 0 || fread(fh, 1, 10, f) != 10 || fh[0] == 0) break;
-    const uint32_t size = version == 4 ? syncsafe(fh + 4) : be32(fh + 4);
-    if (size == 0 || pos + 10 + static_cast<long>(size) > static_cast<long>(tagEnd)) break;
-    const bool isTitle = memcmp(fh, "TIT2", 4) == 0;
-    const bool isArtist = memcmp(fh, "TPE1", 4) == 0;
-    if (isTitle || isArtist) {
-      std::string raw(std::min<uint32_t>(size, 512), '\0');
-      if (fread(&raw[0], 1, raw.size(), f) == raw.size()) (isTitle ? title : artist) = id3Text(raw);
-    }
-    pos += 10 + size;
-  }
-  return audioStart;
-}
-
-// ---------------------------------------------------------------------------------------------
 // Player (audio task only)
 
 struct Player {
@@ -283,7 +215,7 @@ bool openTrack(int index) {
     return false;
   }
   std::string title, artist;
-  const long start = parseId3(p.file, title, artist);
+  const long start = mp3info::readTags(p.file, title, artist);
   fseek(p.file, 0, SEEK_END);
   p.path = path;
   p.fileSize = ftell(p.file);
@@ -293,7 +225,7 @@ bool openTrack(int index) {
   fseek(p.file, start, SEEK_SET);
   if (title.empty()) {
     const size_t slash = path.rfind('/');
-    title = text::toAscii(path.substr(slash + 1));
+    title = path.substr(slash + 1);
     const size_t dot = title.rfind('.');
     if (dot != std::string::npos) title.resize(dot);
   }
@@ -321,6 +253,9 @@ bool openTrack(int index) {
     shared.track = index;
     shared.trackCount = count;
     shared.durationMs = 0;
+    shared.sampleRate = 0;
+    shared.bitrateKbps = 0;
+    shared.channels = 0;
   }
   generation++;
   log_i("audio: track %d/%d %s (\"%s\" / \"%s\")", index + 1, count, path.c_str(), title.c_str(),
@@ -337,6 +272,7 @@ void playFrom(int index) {
   }
   for (; index < count; ++index) {
     if (openTrack(index)) {
+      if (tx) es8311::mute(false);  // a skip while paused: the DAC was muted for the pause
       setState(State::Playing);
       return;
     }
@@ -377,6 +313,13 @@ void handle(const Command &c) {
       } else if (state == State::Paused) {
         es8311::mute(false);
         setState(State::Playing);
+      } else {
+        int track;
+        {
+          Locked l;
+          track = shared.track;
+        }
+        playFrom(track);  // stopped (end of the queue): play the last track again
       }
       break;
     case Cmd::Next:
@@ -492,7 +435,11 @@ void step() {
     {
       Locked l;
       shared.durationMs = duration;
+      shared.sampleRate = info.samprate;
+      shared.bitrateKbps = info.bitrate / 1000;
+      shared.channels = info.nChans;
     }
+    generation++;  // the screen shows the format
     log_i("audio: %d Hz, %d ch, %d kbps", info.samprate, info.nChans, info.bitrate / 1000);
   }
   if (static_cast<uint32_t>(info.samprate) != txRate) outputSetRate(info.samprate);
@@ -582,6 +529,15 @@ Status status() {
 bool active() {
   Locked l;
   return shared.state != State::Stopped;
+}
+
+std::vector<std::string> queue(int from, int count) {
+  Locked l;
+  std::vector<std::string> out;
+  for (int i = std::max(0, from); i < from + count && i < static_cast<int>(playlist.size()); ++i) {
+    out.push_back(playlist[i]);
+  }
+  return out;
 }
 
 }  // namespace audio

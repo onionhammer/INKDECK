@@ -137,6 +137,8 @@ void axp_pwr_off()
 ```
 
 - `getBatteryPercent()`: `-1` if `0x00[3]` (battery present) is 0, else the gauge byte `0xA4` (0–100).
+  **Verified on hardware** (`src/pmic.cpp`): reading `0x00`, `0x01` and `0xA4` with no PMIC init at all
+  (no XPowersLib, nothing written) reported battery present, 98 %, VBUS good and charging on USB.
   `isVbusIn()` = `0x01[3] == 0 && 0x00[5]` ("not in VINDPM and VBUS good"). `isCharging()`,
   `isDischarge()` and `isStandby()` decode `0x01[7:5]`; `getChargerStatus()` = `0x01[2:0]`.
 - `shutdown()` sets `0x10[0]`. Per the datasheet, every output except RTCLDO turns off, DC1 included, so
@@ -212,6 +214,12 @@ void PCF85063_SetTime(Time_data time)  // HMS, YMD, weekday: 7 single-byte write
 `PCF85063_init()` clears the OS flag silently (it can block up to about 5 s waiting for the crystal).
 Nothing records that the time was invalid. After backup power loss the RTC restarts at its reset value,
 2000-01-01 00:00:00, and only NTP in the clock/calendar/weather pages fixes it.
+
+**Verified on hardware** (`src/rtc.cpp`): an RTC that had never been set read 2000-01-01 and was
+counting, with `OS` (0x04 bit 7) **clear**. `OS` alone doesn't prove the time is real, so also reject
+the reset epoch: our firmware treats any year before 2025 as unset. Later, after the board lost power
+with no battery detected (PMIC `0x00[3]` = 0), the RTC came back with `OS` **set**: its oscillator had
+stopped, which fits VRTC going down with the board.
 
 **Alarm.** `PCF85063_alarm_Time_Enabled(t)` normalises overflow (sec→min→hour→day, wrapping the day
 using the length of `t.months`, with `years%4` for leap years), then:

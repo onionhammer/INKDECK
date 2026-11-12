@@ -12,7 +12,7 @@ namespace {
 
 constexpr uint32_t kTickMs = 5;
 constexpr uint8_t kDebounceTicks = 3;  // ~15 ms, like the vendor's MultiButton setup
-constexpr uint32_t kLongPressMs = 800;
+constexpr uint32_t kLongPressMs = 1000;  // docs/ui-design.md: HOLD = ~1 s
 constexpr uint32_t kRepeatDelayMs = 500;
 constexpr uint32_t kRepeatEveryMs = 200;
 
@@ -108,5 +108,7 @@ void begin() {
 bool wait(Key &key, uint32_t timeoutMs) {
   return xQueueReceive(queue, &key, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
 }
+
+void inject(Key key) { emit(key); }
 
 }  // namespace input
