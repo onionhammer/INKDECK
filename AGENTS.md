@@ -14,6 +14,7 @@ and power decision on this file, `include/board_pins.h`, or the primary sources 
 | `include/board_pins.h` | **All GPIOs and I2C addresses**, from the schematic. Use these constants; don't hard-code pins |
 | `src/` | Firmware (currently a smoke test: chip/PSRAM report + I2C scan) |
 | `docs/` | Schematic, datasheets, mechanical files, Waveshare wiki as markdown |
+| `docs/ui-design.md` | **UI design spec** (INKDECK/OS): orientation, 1-bit visual rules, shared chrome, button mapping, one entry per screen. Links the [design canvas](https://claude.ai/artifact/CkQZ5d3cCFz6dFwQNNuwof). **Read before writing any screen or UI code** |
 | `.claude/skills/waveshare-epaper-reference/` | Distilled Waveshare sample code: driver snippets, init sequences, power lifecycle, porting notes, one `references/*.md` per subsystem. **Read the relevant one before writing hardware code** |
 
 The PlatformIO CLI isn't on PATH. Use `~/.platformio/penv/Scripts/pio.exe`, or the VS Code PlatformIO extension.

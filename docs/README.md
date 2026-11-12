@@ -10,6 +10,13 @@ The distilled facts live in [`../include/board_pins.h`](../include/board_pins.h)
 addresses) and [`../AGENTS.md`](../AGENTS.md) (power architecture, driver notes, gotchas). Use this
 folder when you need to check the primary sources.
 
+## ui-design.md
+
+Our own UI design, not vendor material: [`ui-design.md`](ui-design.md) specifies the INKDECK/OS
+screens. It covers portrait vs landscape, 1-bit visual rules, shared chrome, button mapping, and a
+table of every screen with the hardware it uses and its key bindings. The mockups are on the design
+canvas: <https://claude.ai/artifact/CkQZ5d3cCFz6dFwQNNuwof> (private; ask the owner to share it).
+
 ## board/
 
 | File | What it is |
