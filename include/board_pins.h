@@ -50,7 +50,7 @@ constexpr int BTN_DOWN  = 6;
 
 // --- Interrupts / power sense (enable internal pull-ups on the inputs)
 constexpr int PWR_KEY_SENSE = 1;   // HIGH while PMIC PWRON is pulled low (PWR key held or RTC INT asserted)
-constexpr int PMIC_CHG      = 2;   // TG28 CHGLED output
+constexpr int PMIC_CHG      = 2;   // TG28 CHGLED output (Hi-Z unless CHGLED mode is enabled on the PMIC)
 constexpr int PMIC_IRQ      = 38;  // active low
 constexpr int IMU_INT2      = 40;  // use this; INT1 -> GPIO39 only if R9 fitted (NC by default)
 constexpr int RTC_INT       = 45;  // LOW when PCF85063 INT asserted; strapping pin

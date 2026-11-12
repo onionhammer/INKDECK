@@ -30,7 +30,7 @@ the commit and explains how to fetch full files when a snippet isn't enough.
 ## Hardware
 
 - **MCU:** ESP32-S3-WROOM-1-N16R8 (240 MHz dual-core, 16 MB flash, 8 MB octal PSRAM, Wi-Fi + BLE 5). USB-C goes directly to the S3's native USB. No UART bridge, no reset button.
-- **Display:** SSD1677 controller, 4-wire SPI, write-only. Refresh: full ≈3 s, partial ≈0.3 s, 4-grey ≈3 s. Operating range 0–50 °C.
+- **Display:** SSD1677 controller, 4-wire SPI, write-only. Refresh: full ≈3 s, fast ≈1.5 s, partial ≈0.3 s, 4-grey ≈3 s. Operating range 0–50 °C.
 - **PMIC:** TG28, **AXP2101 register-compatible**; Waveshare uses XPowersLib's `XPowersAXP2101`.
 - **Peripherals:** ES8311 codec + NS4150B speaker amp + mic, QMI8658A IMU, SHTC3, PCF85063A RTC, microSD (4-bit SDMMC), 3-way rotary switch, BOOT and PWR buttons.
 - **Connectors:** MX1.25 for the 3.7 V Li-ion battery, the speaker and an RTC backup cell (marked "reserved"). Test pads on the bottom edge: 5V, GND, 3V3, RX, TX, SDA, SCL, GP0, GP1.
@@ -41,12 +41,12 @@ the commit and explains how to fetch full files when a snippet isn't enough.
 - **On/off:** the PWR key drives the PMIC's `PWRON` pin (Waveshare config: 1 s press = on, 4 s = forced off). `axp2101.shutdown()` cuts power to everything, including the ESP32.
 - **Wake from full power-off:** the RTC's INT output is diode-OR'd onto `PWRON`, so **an RTC alarm boots the board.** The intended low-power loop: update display → panel deep sleep → arm RTC alarm → PMIC shutdown. The e-paper holds its image with no power. The RTC runs from the PMIC's always-on LDO. On boot, `RTC_INT` and `PWR_KEY_SENSE` tell you why the board woke.
 - ESP32 deep sleep also works, but the rails stay up, so it draws more power. Use it only when you need fast wake or wake on a GPIO.
-- **Battery** (Waveshare's settings): 200 mA charge to 4.2 V, 1500 mA VBUS limit, 2.6 V power-down, 10 k NTC.
+- **Battery** (Waveshare's settings): 200 mA charge to 4.2 V, 1500 mA VBUS limit, 2.6 V power-down. A 10 k NTC is fitted on TS, but XPowersLib disables TS measurement at init. The vendor also disables the CHGLED output, so GPIO2 (`PMIC_CHG`) shows nothing unless you re-enable it.
 
 ## Driver notes
 
-- **E-paper:** the framebuffer is 48,000 bytes at 1 bpp (96,000 for 4-grey); put it in PSRAM. Wait on BUSY rather than using fixed delays. Always deep-sleep the panel after an update. Partial refreshes accumulate ghosting, so do a full refresh periodically.
-- **Audio:** drive `AMP_EN` HIGH only while playing. The codec is configured over I2C, audio flows over I2S.
+- **E-paper:** the framebuffer is 48,000 bytes at 1 bpp (96,000 for 4-grey); put it in PSRAM. Wait on BUSY rather than using fixed delays. Always deep-sleep the panel after an update. Partial refreshes accumulate ghosting, so do a full refresh periodically. Waveshare's `EPD_Sleep()` also cuts ALDO3, which wipes panel RAM. After that, a partial refresh needs a re-init plus a re-send of the previous frame as the base.
+- **Audio:** the vendor lets `esp_codec_dev` own `AMP_EN`. It stays HIGH from codec open until close, and silence is a DAC mute. Switching the amp per clip would save power but may pop, so test before relying on it. The codec is configured over I2C; audio flows over I2S.
 - **I2C:** all 5 devices share one bus. Create one bus instance and pass it around; don't let each driver initialise its own.
 
 ## Flashing & recovery
@@ -58,5 +58,8 @@ the commit and explains how to fetch full files when a snippet isn't enough.
 ## Gotchas
 
 1. The wiki tutorials say they use the "ESP32-S3-Zero". That's boilerplate; their pins are for this board.
-2. Waveshare's Arduino IMU example uses GPIO39 for the IMU interrupt. GPIO39 is the amp enable, and the IMU's INT1 isn't connected to it (R9 not fitted). Use `IMU_INT2` (GPIO40).
-3. If PSRAM reports 0 KB, the board's `memory_type` isn't `qio_opi`.
+2. Vendor code defines the IMU interrupt (INT1) as GPIO39: IDF `DOF_INT1`, Arduino `SENSOR_IRQ`. GPIO39 is really the amp enable, and INT1 isn't connected to it (R9 not fitted). Use `IMU_INT2` (GPIO40).
+3. The vendor IMU driver has scaling and axis bugs (gyro reads 2× high, gyro X/Y swapped). Check `references/sensors.md` in the skill before reusing it.
+4. An RTC alarm set in the past fires only when that date-time comes round next month. Always compute the next wake time from the current RTC time.
+5. If PSRAM reports 0 KB, the board's `memory_type` isn't `qio_opi`.
+6. On the S3, Arduino's `Serial1` defaults to GPIO15/16, which are SD D0/CLK. Always pass explicit pins.
