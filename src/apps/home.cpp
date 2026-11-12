@@ -6,6 +6,7 @@
 #include "apps/files.h"
 #include "apps/music.h"
 #include "apps/reader.h"
+#include "apps/sensors.h"
 #include "apps/system.h"
 #include "audio.h"
 #include "fonts.h"
@@ -13,7 +14,9 @@
 #include "readstate.h"
 #include "rtc.h"
 #include "sdcard.h"
+#include "sensor_hub.h"
 #include "sysinfo.h"
+#include "units.h"
 
 namespace apps {
 namespace {
@@ -21,7 +24,7 @@ namespace {
 using ui::Key;
 using ui::Rect;
 
-enum class Kind : uint8_t { Reader, Music, Files, System, NotBuilt };
+enum class Kind : uint8_t { Reader, Music, Files, Sensors, System, NotBuilt };
 
 struct Module {
   const char *label;
@@ -44,7 +47,7 @@ constexpr Module kModules[] = {
     {"WEATHER", "NET", "Now, hourly and 6-day forecast, pulled over Wi-Fi every hour.",
      "Wi-Fi \xC2\xB7 PCF85063A alarm", Kind::NotBuilt, 11},
     {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
-     "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::NotBuilt, 8},
+     "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors, 8},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
      "PCF85063A @ 0x51", Kind::NotBuilt, 9},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
@@ -112,6 +115,27 @@ int statsFor(const Module &m, Stat out[4]) {
       out[1] = {"MOUNT", sdcard::kMountPoint};
       out[2] = {"OPENS", "EPUB \xC2\xB7 MP3"};
       return 3;
+    case Kind::Sensors: {
+      const shtc3::Reading e = sensors::env();
+      char temp[16] = "--", rh[16] = "--";
+      if (e.ok) {
+        snprintf(temp, sizeof temp, "%.1f %s", units::temperature(e.tempC),
+                 units::temperatureUnit());
+        snprintf(rh, sizeof rh, "%ld %%", lroundf(e.rh));
+      }
+      out[0] = {"TEMP", temp};
+      out[1] = {"HUMIDITY", rh};
+      const qmi8658::Reading m = sensors::motion();
+      float pitch = 0, roll = 0;
+      sensors::tilt(m, pitch, roll);
+      out[2] = {"TILT", m.ok ? ui::signedNumber(pitch, 1) + "\xC2\xB0 / " +
+                                   ui::signedNumber(roll, 1) + "\xC2\xB0"
+                             : "--"};
+      out[3] = {"BUS", std::to_string(sensors::knownFound()) + "/" +
+                           std::to_string(sensors::kKnownCount) + " ACK" +
+                           (sensors::logging() ? " \xC2\xB7 LOG" : "")};
+      return 4;
+    }
     case Kind::System: {
       const pmic::Status p = pmic::status();
       out[0] = {"BATTERY", p.percent >= 0 ? std::to_string(p.percent) + " %" : "NONE"};
@@ -171,6 +195,13 @@ class HomeScreen : public ui::Screen {
 
   std::string tag() const override { return "INKDECK/OS"; }
   std::string context() const override { return "~/home"; }
+  std::string statusTemp() const override {
+    const shtc3::Reading e = sensors::env();
+    if (!e.ok) return {};
+    char buf[16];
+    snprintf(buf, sizeof buf, "%.1f%s", units::temperature(e.tempC), units::temperatureUnit());
+    return buf;
+  }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kDial, "DIAL"};
     out[1] = {ui::glyph::kPress, "OPEN"};
@@ -229,6 +260,7 @@ class HomeScreen : public ui::Screen {
         }
         break;
       case Kind::Files: ui::nav::push(makeFiles(sdcard::kMountPoint)); break;
+      case Kind::Sensors: ui::nav::push(makeSensors()); break;
       case Kind::System: ui::nav::push(makeSystem()); break;
       case Kind::NotBuilt: ui::nav::push(std::make_unique<NotBuiltScreen>(i)); break;
     }

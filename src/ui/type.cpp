@@ -1,5 +1,8 @@
 #include "ui/type.h"
 
+#include <math.h>
+#include <stdio.h>
+
 #include <algorithm>
 
 #include "text.h"
@@ -144,6 +147,15 @@ std::vector<std::string> wrap(const TextStyle &s, const std::string &text, int w
   }
   for (auto &l : lines) l = ellipsize(s, l, width);
   return lines;
+}
+
+std::string signedNumber(float value, int decimals) {
+  if (fabsf(value) < 0.5f * powf(10.0f, -decimals)) value = 0;
+  char buf[24];
+  snprintf(buf, sizeof buf, "%+.*f", decimals, value);
+  std::string s = buf;
+  if (s[0] == '-') s.replace(0, 1, "\xE2\x88\x92");  // U+2212 minus
+  return s;
 }
 
 std::string upper(const std::string &text) {

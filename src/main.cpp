@@ -19,6 +19,7 @@
 #include "rtc.h"
 #include "screen.h"
 #include "sdcard.h"
+#include "sensor_hub.h"
 #include "trackinfo.h"
 #include "ui/nav.h"
 
@@ -36,6 +37,7 @@ void setup() {
   pmic::configure();  // charger and PWR-key settings; they don't survive a total power loss
   rtc::begin();
   pmic::status();  // first read logs what the PMIC reports
+  sensors::begin();
   if (!screen::begin()) Serial.println("screen init failed");
   input::begin();
   audio::begin();

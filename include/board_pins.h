@@ -23,7 +23,10 @@ constexpr int I2C_SCL = 42;
 constexpr uint8_t I2C_ADDR_ES8311   = 0x18;  // audio codec
 constexpr uint8_t I2C_ADDR_PMIC     = 0x34;  // TG28, AXP2101 register-compatible
 constexpr uint8_t I2C_ADDR_PCF85063 = 0x51;  // RTC
-constexpr uint8_t I2C_ADDR_QMI8658  = 0x6A;  // IMU (SA0 = GND)
+// IMU. Verified on hardware: answers at 0x6B, not 0x6A (an i2c scan finds 0x6B; nothing ACKs at
+// 0x6A). SA0 has an internal 200 kΩ pull-up (datasheet §2), so it isn't grounded on this board;
+// Waveshare's driver probes 0x6A first, then falls back to 0x6B.
+constexpr uint8_t I2C_ADDR_QMI8658  = 0x6B;
 constexpr uint8_t I2C_ADDR_SHTC3    = 0x70;  // temp/humidity
 
 // --- Audio: ES8311 codec + NS4150B amp

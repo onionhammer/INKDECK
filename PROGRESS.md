@@ -16,7 +16,7 @@ the board.
   `uv run tools/gen_fonts.py`. The generated `src/ui/fonts/jbmono.*` files are committed.
 - **Checking without the board in hand:** `uv run tools/screenshot.py COM4 shot.png --keys ddp`
   sends keys over USB and saves the framebuffer as a PNG. The keys are `u`/`d` dial, `p`/`P`
-  press/hold, `b`/`B` BOOT/hold BOOT, and `-`/`+` for volume (`src/devtools.h`). Add `--log`
+  press/hold, `b`/`B` BOOT/hold BOOT, `-`/`+` for volume, `r` for the PMIC registers and `i` for a raw IMU reading (`src/devtools.h`). Add `--log`
   to see render timings and errors as they happen. Turn the volume down (`--keys=------------`)
   before testing playback near people.
 
@@ -42,7 +42,8 @@ Every screen follows this (from `docs/ui-design.md`, "Input mapping"). Details a
 - [x] Navigator stack: `push`/`pop`/`home`/`replace`. Popping is safe from inside `onKey`.
   Global BOOT/HOLD BOOT handling.
 - [x] Render loop: drains queued keys before drawing. A key a screen uses causes a partial
-  refresh. Full refresh on HOLD BOOT, on orientation change, and every 10th partial. The
+  refresh. Full refresh on HOLD BOOT, on orientation change, and when the flip budget is
+  spent (originally every 10th partial; see Decisions). The
   status bar redraws itself when the clock minute or battery changes.
 - [x] Long press is 1 s, per the spec (it was 0.8 s).
 - [x] Serial dev hooks (key injection, framebuffer dump) and `tools/screenshot.py`.
@@ -210,9 +211,10 @@ Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book'
   muted. The unmute is in, but I haven't listened to it.
 - [x] Checked on hardware, muted with the new `-`/`+` dev keys: play from Files, waveform and
   queue fill in, pause, skip, the title falling back to 38 px.
-- [ ] The time and playhead redraw every 10 s while playing (`kLiveRedrawMs`). With a full
-  refresh every 10th partial, that's a full-screen flash about every 100 s while the player
-  is on screen. Tune it, or stop counting these small updates towards the full-refresh budget.
+- [x] The time and playhead redraw every 10 s while playing (`kLiveRedrawMs`). With a full
+  refresh every 10th partial, that meant a full-screen flash about every 100 s. Phase 8's
+  flip budget (see Decisions) now counts the pixels changed rather than the updates, so these
+  small redraws rarely trigger one.
 - [ ] Not on the canvas, not built: repeat and shuffle (the canvas shows REPEAT ALL / SHUF OFF
   pills), a whole-queue duration, cover art (see 5b).
 
@@ -251,12 +253,50 @@ Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book'
 - [ ] Chip temperature: the TG28 die-temperature ADC is off by default, and its scaling isn't
   in the datasheet.
 
-### ⬜ 8. Sensors
+### ✅ 8. Sensors
 
-- SHTC3 and QMI8658A. The vendor IMU driver has scaling and axis bugs; see
-  `references/sensors.md`.
-- PMIC readings and a live `i2cdetect` grid.
-- Temperature in Home's status bar.
+- [x] Drivers, written from the datasheets (`references/sensors.md` lists the vendor bugs
+  avoided):
+  - `shtc3`: ID checked, CRC on every word, sleeps between readings.
+  - `qmi8658`: soft reset; ±4 g and ±256 °/s at 56 Hz with the low-pass filters on;
+    little-endian data (confirmed: about 1 g on one axis at rest).
+- [x] **The IMU is at 0x6B, not 0x6A** (verified on hardware: the bus scan found 0x6B, and
+  reads at 0x6A NACK). Fixed in `board_pins.h`, the design doc and the skill reference.
+- [x] `sensor_hub`, the service layer:
+  - A background task samples temperature/humidity every 5 s and keeps half-hour averages
+    for the 24 h sparkline. They're in RAM, so the history restarts at each boot.
+  - It runs the I2C bus scan and the CSV log.
+  - Gyro zero-rate offset: this chip read −4 °/s on X at rest, within the datasheet's ±10.
+    The hub learns the offset while the board is still and subtracts it.
+  - IMU readings come out in screen axes.
+  - (Named `sensor_hub`, not `sensors`, so `apps/sensors.h` doesn't shadow it.)
+- [x] `apps/sensors.cpp`, laid out as on the canvas: ENV, IMU (bubble level, accel/gyro table,
+  tilt), PMIC and the `i2cdetect` grid with device names. Status bar: `I2C · 5/5 ACK`.
+  - ▲▼ PANEL picks the panel that updates live, shown with an inverted header: ENV every 5 s,
+    IMU every 1 s, PMIC and BUS every 5 s. The others refresh once a minute. A refresh
+    redraws only when a value really moved; deadbands keep sensor noise from redrawing.
+  - ● holds or resumes all readings.
+  - HOLD ● starts or stops the CSV log, `SD:/logs/sensors.csv`. It writes a row every 10 s
+    of every reading (raw chip axes) and keeps going after leaving the screen. Checked: two
+    rows in 25 s.
+  - Not on the canvas: the PMIC panel's IBAT and DIE cells became USB voltage and charger
+    state. The TG28 has no battery-current ADC, and its die temperature isn't enabled.
+- [x] Home: the SENSORS row opens it, the preview shows temp, humidity, tilt and bus, and
+  Home's status bar shows the temperature (`Screen::statusTemp()`).
+- [x] Dev key `i`: one raw IMU reading in chip axes.
+- [x] **IMU axes in portrait** (pose tests with the board in hand, 2026-11-12): screen right
+  = chip −Y, up = chip −X, out of the screen = chip −Z (`kScreenAxes` in `sensor_hub.cpp`).
+  Lying flat it reads about +4.5° on both axes. That's the desk or the accelerometer's
+  factory offset (the datasheet allows ±100 mg, about ±6°). A zero button would belong to
+  the Level app (phase 12).
+- [x] **Temperature calibrated:** the SHTC3 read 25.9 °C and 33 % against a 22.7 °C room,
+  with the board on USB, charging. `sensor_hub` subtracts 3.2 °C and recomputes humidity for
+  the cooler room (same water vapour), which gives about 40 % against the room's 37 %
+  (household hygrometers are ±3–5 %). The board's heat depends on charging and load, so on
+  battery it probably reads a little low.
+- [x] Display units are a build flag: `-DINKDECK_FAHRENHEIT=1` in `platformio.ini` (set, at
+  the user's request) shows °F; unset or 0 shows °C (`src/units.h`). The CSV log stays in
+  °C.
 
 ### ⬜ 9. Clock (landscape)
 
@@ -284,8 +324,14 @@ Listed on Home but not designed yet.
   text size is in its ● menu, and the player's stop was dropped (● pauses).
 - **Lists page whole screens** instead of scrolling a row at a time. That's fewer, cleaner
   e-paper updates.
-- **Screen changes use a partial refresh**, with a full refresh every 10th. Menus are overlays,
-  so opening one only redraws the sheet area.
+- **Screen changes use a partial refresh.** Menus are overlays, so opening one only redraws
+  the sheet area.
+- **Full refreshes come from a flip budget** (`screen.cpp`, since phase 8), not every 10th
+  update. Ghosting builds up with the pixels a partial refresh flips, so a full refresh comes
+  once the flips add up to two whole screens (768,000 px) or after 30 partials. A screen
+  change flips 25–40k pixels, so that's still roughly every 10 screen changes. A live reading
+  flips a few hundred to 2,000, so a live screen rarely flashes. A redraw that changes no
+  pixels is skipped.
 - **Menus are bottom sheets** (`ui::MenuScreen`) over the screen they belong to, rather than
   separate screens. Any screen whose spec says "● menu" or "● detail" can use it.
 - **The RTC counts as unset before 2025.** On this board it once came back at 2000-01-01 with

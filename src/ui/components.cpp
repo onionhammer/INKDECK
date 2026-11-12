@@ -73,12 +73,15 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
 // --- Section header ----------------------------------------------------------------------
 
 void drawSectionHeader(Canvas &c, const Rect &r, const std::string &label,
-                       const std::string &right) {
+                       const std::string &right, SectionOptions options) {
   const Rect band{r.x + kPadX, r.y, r.w - 2 * kPadX, r.h - kRule};
   hrule(c, r.x, band.bottom(), r.w);
+  const uint16_t ink = options.inverted ? kPaper : kInk;
+  if (options.inverted) fill(c, {r.x, r.y, r.w, r.h - kRule}, kInk);
   const int rightW = right.empty() ? 0 : textWidth(style::kSection, right) + kPadX;
-  drawText(c, {band.x, band.y, band.w - rightW, band.h}, "// " + label, style::kSection);
-  if (!right.empty()) drawText(c, band, right, style::kSection, Align::Right);
+  drawText(c, {band.x, band.y, band.w - rightW, band.h}, (options.prefix ? "// " : "") + label,
+           style::kSection, Align::Left, ink);
+  if (!right.empty()) drawText(c, band, right, style::kSection, Align::Right, ink);
 }
 
 void drawNotice(Canvas &c, const Rect &r, const std::string &text) {

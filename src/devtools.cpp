@@ -5,6 +5,7 @@
 #include "audio.h"
 #include "input.h"
 #include "pmic.h"
+#include "qmi8658.h"
 #include "screen.h"
 
 namespace devtools {
@@ -25,6 +26,12 @@ void task(void *) {
         case '-': audio::changeVolume(-5); break;  // e.g. silence the speaker before a test
         case '+': audio::changeVolume(+5); break;
         case 'r': pmic::dump(Serial); break;
+        case 'i': {
+          const qmi8658::Reading m = qmi8658::read();
+          Serial.printf("IMU chip acc %+.2f %+.2f %+.2f g, gyro %+.1f %+.1f %+.1f dps\n",
+                        m.acc[0], m.acc[1], m.acc[2], m.gyro[0], m.gyro[1], m.gyro[2]);
+          break;
+        }
         default: break;
       }
     }

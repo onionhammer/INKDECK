@@ -34,6 +34,7 @@ StatusInfo statusFor(const Screen &s) {
   info.tag = s.tag();
   info.context = s.context();
   info.contextIsPath = s.contextIsPath();
+  info.temp = s.statusTemp();
   const pmic::Status p = pmic::status();
   info.battery = p.percent;
   info.usb = p.vbus;
@@ -51,7 +52,8 @@ StatusInfo statusFor(const Screen &s) {
 }
 
 std::string signature(const StatusInfo &info) {
-  return info.clock + "|" + std::to_string(info.battery) + "|" + (info.usb ? "u" : "");
+  return info.clock + "|" + std::to_string(info.battery) + "|" + (info.usb ? "u" : "") + "|" +
+         info.temp;
 }
 
 // The screen that owns the chrome and body: the top one, or the one under an overlay.

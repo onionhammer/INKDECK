@@ -1,5 +1,6 @@
 // The logical screen: a portrait 480x800 canvas over the panel's native 800x480 framebuffer,
-// plus the refresh policy (partial by default, a full refresh every N updates for ghosting).
+// plus the refresh policy: partial by default, and a full refresh once partial updates have
+// flipped about two screens' worth of pixels (or after 30 of them), against ghosting.
 #pragma once
 #include <Adafruit_GFX.h>
 #include <Print.h>
@@ -13,8 +14,9 @@ bool begin();
 GFXcanvas1 &canvas();
 void clear();  // fill white
 
-// Pushes the canvas to the panel. Partial unless forceFull or the partial budget is spent.
-void present(bool forceFull = false);
+// Pushes the canvas to the panel. Partial unless forceFull or the ghosting budget is spent.
+// A partial update with no changed pixels is skipped; returns false then.
+bool present(bool forceFull = false);
 
 // Portrait (480x800, the default) or the panel's native landscape (800x480). Only changes how
 // drawing maps onto the framebuffer; present() with a full refresh after switching.

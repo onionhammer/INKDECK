@@ -33,8 +33,12 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info);
 int drawBattery(Canvas &c, int x, int centerY, int percent);  // returns its width
 
 // --- Section header: "// LABEL" on the left, a count or address on the right, rule below.
+struct SectionOptions {
+  bool inverted = false;  // white on black: the focused panel of a screen with several
+  bool prefix = true;     // the "// " before the label (off for "$ i2cdetect -y 0")
+};
 void drawSectionHeader(Canvas &c, const Rect &r, const std::string &label,
-                       const std::string &right = "");
+                       const std::string &right = "", SectionOptions options = {});
 
 // --- Notice: an inverted band the height of a section header, "! text". For a one-off
 // message (an error opening a file) in place of the header.

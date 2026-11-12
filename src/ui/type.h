@@ -39,6 +39,7 @@ inline constexpr TextStyle kValue{&fonts::kMono16Bold, 0};           // stat val
 inline constexpr TextStyle kButton{&fonts::kMono17ExtraBold, 1};     // "● OPEN"
 inline constexpr TextStyle kReading{&fonts::kMono22ExtraBold, 0};    // "4.02 V"; ASCII only
 inline constexpr TextStyle kTitle{&fonts::kMono38ExtraBold, 0};      // ASCII only
+inline constexpr TextStyle kReadout{&fonts::kMono64ExtraBold, -3};   // 21.4; digits, "%+-.:"
 inline constexpr TextStyle kBig{&fonts::kMono96ExtraBold, -6};       // battery %; digits, "%+-.:"
 inline constexpr TextStyle kHuge{&fonts::kMono104ExtraBold, -6};     // digits and "%+-.:" only
 }  // namespace style
@@ -84,5 +85,9 @@ std::vector<std::string> wrap(const TextStyle &s, const std::string &text, int w
 
 // Upper-cases ASCII and Latin-1 letters (the design sets most labels in capitals).
 std::string upper(const std::string &text);
+
+// A number with an explicit sign and a real minus (U+2212): "+0.40", "−2.1". Values that
+// round to zero show as "+0.0", never "-0.0".
+std::string signedNumber(float value, int decimals);
 
 }  // namespace ui

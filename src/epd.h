@@ -21,6 +21,10 @@ class Epd {
   // The first update after begin() is always full.
   bool show(const uint8_t *frame, bool full);
 
+  // Pixels that differ between frame and the frame on the panel; every pixel when the panel's
+  // content is unknown (before the first update, after a failed one).
+  uint32_t changedPixels(const uint8_t *frame) const;
+
  private:
   void reset();
   bool waitIdle(uint32_t timeoutMs);

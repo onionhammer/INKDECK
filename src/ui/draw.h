@@ -40,6 +40,7 @@ void fill(Canvas &c, const Rect &r, uint16_t color);
 void hrule(Canvas &c, int x, int y, int w, int thickness = kRule, uint16_t color = kInk);
 void vrule(Canvas &c, int x, int y, int h, int thickness = kRule, uint16_t color = kInk);
 void dashedH(Canvas &c, int x, int y, int w, uint16_t color = kInk);  // 1 px, 3 on / 3 off
+void dashedV(Canvas &c, int x, int y, int h, uint16_t color = kInk);  // 1 px, 3 on / 3 off
 void frame(Canvas &c, const Rect &r, int thickness, uint16_t color = kInk);  // inside r
 
 // Tones. The patterns are anchored to screen coordinates, so adjacent fills line up.

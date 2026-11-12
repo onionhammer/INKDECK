@@ -34,6 +34,8 @@ class Screen {
   virtual std::string tag() const = 0;
   virtual std::string context() const { return {}; }
   virtual bool contextIsPath() const { return false; }  // ellipsize it from the front
+  // Optional reading before the battery ("21.4°C"). Home shows the room temperature.
+  virtual std::string statusTemp() const { return {}; }
   // Up to kMaxHints key hints for the bottom bar, left to right. Returns the count.
   virtual int hints(Hint *out) const { return 0; }
   // false: draw() gets the whole screen and the navigator draws no chrome.

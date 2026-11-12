@@ -18,6 +18,10 @@ void dashedH(Canvas &c, int x, int y, int w, uint16_t color) {
   for (int i = 0; i < w; i += 6) c.drawFastHLine(x + i, y, w - i < 3 ? w - i : 3, color);
 }
 
+void dashedV(Canvas &c, int x, int y, int h, uint16_t color) {
+  for (int i = 0; i < h; i += 6) c.drawFastVLine(x, y + i, h - i < 3 ? h - i : 3, color);
+}
+
 void frame(Canvas &c, const Rect &r, int thickness, uint16_t color) {
   fill(c, {r.x, r.y, r.w, thickness}, color);
   fill(c, {r.x, r.bottom() - thickness, r.w, thickness}, color);

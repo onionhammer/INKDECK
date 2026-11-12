@@ -116,6 +116,13 @@ void Epd::writeRam(uint8_t cmd, const uint8_t *frame) {
   data(frame, kFrameBytes);
 }
 
+uint32_t Epd::changedPixels(const uint8_t *frame) const {
+  if (!prev_ || !hasPrev_) return kWidth * kHeight;
+  uint32_t n = 0;
+  for (size_t i = 0; i < kFrameBytes; ++i) n += __builtin_popcount(frame[i] ^ prev_[i]);
+  return n;
+}
+
 bool Epd::show(const uint8_t *frame, bool full) {
   if (!prev_) return false;
   if (!hasPrev_) full = true;
