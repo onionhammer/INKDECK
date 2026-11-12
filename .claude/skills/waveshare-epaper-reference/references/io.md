@@ -284,7 +284,9 @@ Codes 2, 3, 5, 9, 10, 13, 16, 17 and 19 are generated but never used.
   SDMMC_FREQ_HIGHSPEED, 5)`. On ESP32-S3, `SD_MMC` also uses slot 1, and 40 MHz is its default
   (`BOARD_MAX_SDMMC_FREQ`). **Waveshare's Arduino example passes `mode1bit = true`**, so it runs 1-bit
   even though it sets all six pins. Use 4-bit to match the ESP-IDF app. Drop to `SDMMC_FREQ_DEFAULT`
-  (20 MHz) if you see CRC or timeouts.
+  (20 MHz) if you see CRC or timeouts. **Verified on hardware** (2026-11-12): 4-bit at
+  `SDMMC_FREQ_HIGHSPEED` mounts a 256 GB card, and POSIX `opendir`/`fopen` under `/sdcard`
+  works. With no card inserted, init fails with `0x107` (timeout) in `sdmmc_init_ocr`.
 - **Pin conflicts:** Arduino core 3.3's default `Serial1` pins on ESP32-S3 are **RX1 = GPIO15
   (SD_D0), TX1 = GPIO16 (SD_CLK)**. Never call `Serial1.begin(baud)` without explicit pins. GPIO15/16
   are also `XTAL_32K_P/N`, so don't enable an external 32 kHz crystal. The Arduino SD example mounts

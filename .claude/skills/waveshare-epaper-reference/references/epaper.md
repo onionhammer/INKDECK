@@ -312,6 +312,15 @@ typedef struct { const char *font_name; uint16_t Width; uint16_t Height; uint16_
 
 ## 7. Porting notes
 
+**Verified on hardware** (our `src/epd.cpp`, 2026-11-12): Arduino `SPIClass(HSPI)` at 20 MHz with CS
+framed per transfer; BUSY as `INPUT_PULLUP`; reset 20/2/20 ms; full SWRESET + init before *every*
+update and deep sleep (0x10 `01`) after it; 0x4F = `DF 01` (datasheet) instead of `00 00`. Partial
+refresh = write 0x24 ← new and 0x26 ← previous frame (from our own PSRAM copy), border 0x80,
+0x22 `FF`. That works across panel deep sleep with no vendor-style reset-only partial path.
+Measured end to end, including init and 2×48 KB transfers: **full ≈ 2.2 s, partial ≈ 0.61 s**.
+The rendered image looked correct to the user in portrait (GFX rotation 3 = vendor `ROTATE_270`).
+Nobody has checked rows 0/479 for a one-pixel roll yet.
+
 **Keep**
 - The OTP-LUT sequences byte for byte: 0x0C `AE C7 C3 C0 80`, 0x18 `80`, 0x01 `DF 01 02`, 0x11 `01`, windows, and 0x22 `F7`/`D7`/`FF` with 0x1A `6A`/`5A`. No custom LUT is needed.
 - The Base-then-partial model: write both RAMs on a full refresh, write only 0x24 on partials, and restore the previous frame after any power cut. Keep a copy of the last shown frame in PSRAM, or on SD across PMIC power-off.
