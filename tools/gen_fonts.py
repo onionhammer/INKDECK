@@ -142,7 +142,7 @@ FONTS = [
     ("kMono24ExtraBold", "jbmono", 24, "upper", {"weight": 800}),
     ("kMono28ExtraBold", "jbmono", 28, "upper", {"weight": 800}),  # Weather: the condition
     ("kMono38ExtraBold", "jbmono", 38, "upper", {"weight": 800}),
-    ("kMono40ExtraBold", "jbmono", 40, "digits", {"weight": 800}),
+    ("kMono40ExtraBold", "jbmono", 40, "temps", {"weight": 800}),  # Level: pitch and roll
     ("kMono50ExtraBold", "jbmono", 50, "upper", {"weight": 800}),
     ("kMono64ExtraBold", "jbmono", 64, "digits", {"weight": 800}),
     ("kMono68ExtraBold", "jbmono", 68, "caps", {"weight": 800}),

@@ -21,6 +21,9 @@ bool endsWithNoCase(const std::string &s, const char *suffix) {
 
 bool DirList::isEpub(const std::string &name) { return endsWithNoCase(name, ".epub"); }
 bool DirList::isMp3(const std::string &name) { return endsWithNoCase(name, ".mp3"); }
+bool DirList::isAudio(const std::string &name) {
+  return isMp3(name) || endsWithNoCase(name, ".wav");
+}
 
 bool DirList::open(const std::string &dir) {
   cwd_ = dir;

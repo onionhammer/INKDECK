@@ -7,6 +7,7 @@
 
 #include <map>
 
+#include "flashfs.h"
 #include "text.h"
 
 namespace {
@@ -285,6 +286,12 @@ class FlowBuilder {
     para();
   }
   void style(uint8_t s) { want_ = s; }
+  // A soft hyphen: kept only inside a word, where the line may break.
+  void softHyphen() {
+    if (!atParaStart_ && !pendingSpace_ && !out_.empty() && out_.back() != flow::kSoftHyphen) {
+      out_ += flow::kSoftHyphen;
+    }
+  }
   void text(const std::string &ascii) {
     for (const char c : ascii) put(c);
   }
@@ -647,6 +654,10 @@ void xhtmlToFlow(const std::string &s, std::string &out, std::vector<Epub::Image
       continue;
     }
     const uint32_t cp = s[i] == '&' ? decodeEntity(s, i) : text::nextCodepoint(s, i);
+    if (cp == 0xAD) {
+      fb.softHyphen();
+      continue;
+    }
     glyphs.clear();
     text::appendSlots(glyphs, cp);
     fb.text(glyphs);
@@ -668,6 +679,8 @@ void Epub::close() {
 
 bool Epub::open(const std::string &path, std::string &err) {
   close();
+  // A book on the onboard flash (the last book, after a reboot): mount it first.
+  if (path.rfind(flashfs::kMountPoint, 0) == 0) flashfs::mount();
   if (!zip_.open(path, err)) return false;
 
   std::string xml;

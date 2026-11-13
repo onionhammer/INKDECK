@@ -83,17 +83,20 @@ void drawRow(Canvas &c, const Rect &r, const Row &row, bool selected);
 class ListCursor {
  public:
   void reset(int count, int cursor = 0);
-  // Clamps at the ends, or wraps round (a dial over a short list). True if it moved.
+  // Clamps at the ends, or wraps round (a dial over a short list). True if it moved. While the
+  // dial is held long enough (input::lastKeyFast()), a list longer than a page moves a page at a
+  // time, landing on the first row of the next or previous page.
   bool move(int delta, bool wrap = false);
   void set(int cursor);
   int cursor() const { return cursor_; }
   int count() const { return count_; }
-  int pageStart(int rowsPerPage) const;
+  int pageStart(int rowsPerPage) const;  // also remembers the page size for move()
   std::string label() const;  // "03/10"
 
  private:
   int count_ = 0;
   int cursor_ = 0;
+  mutable int pageRows_ = 0;  // rows per page at the last draw; 0 until drawn
 };
 
 // Draws the page of rows containing the cursor. rowAt(i) builds row i.

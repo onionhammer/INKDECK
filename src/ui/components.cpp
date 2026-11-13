@@ -1,5 +1,7 @@
 #include "ui/components.h"
 
+#include "input.h"
+
 #include <stdio.h>
 
 #include <algorithm>
@@ -225,6 +227,17 @@ void ListCursor::reset(int count, int cursor) {
 
 bool ListCursor::move(int delta, bool wrap) {
   const int before = cursor_;
+  if (input::lastKeyFast() && pageRows_ > 1 && count_ > pageRows_ && delta != 0) {
+    // The dial is held: whole pages, so a long folder takes seconds rather than minutes.
+    const int page = cursor_ / pageRows_ * pageRows_;
+    int target = page + (delta > 0 ? pageRows_ : -pageRows_);
+    if (wrap) {
+      if (target >= count_) target = 0;
+      if (target < 0) target = (count_ - 1) / pageRows_ * pageRows_;
+    }
+    set(target);
+    return cursor_ != before;
+  }
   if (wrap && count_ > 0) {
     cursor_ = ((cursor_ + delta) % count_ + count_) % count_;
   } else {
@@ -236,6 +249,7 @@ bool ListCursor::move(int delta, bool wrap) {
 void ListCursor::set(int cursor) { cursor_ = count_ ? std::clamp(cursor, 0, count_ - 1) : 0; }
 
 int ListCursor::pageStart(int rowsPerPage) const {
+  pageRows_ = rowsPerPage;
   return rowsPerPage > 0 ? cursor_ / rowsPerPage * rowsPerPage : 0;
 }
 

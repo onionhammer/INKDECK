@@ -45,6 +45,7 @@ class DirList {
 
   static bool isEpub(const std::string &name);
   static bool isMp3(const std::string &name);
+  static bool isAudio(const std::string &name);  // what the player takes: MP3 or WAV
 
  private:
   std::string root_;

@@ -7,8 +7,10 @@
 #include "alarms.h"
 #include "apps/clock.h"
 #include "apps/files.h"
+#include "apps/level.h"
 #include "apps/music.h"
 #include "apps/podcasts.h"
+#include "apps/recorder.h"
 #include "apps/reader.h"
 #include "apps/sensors.h"
 #include "apps/system.h"
@@ -20,6 +22,7 @@
 #include "podcast_library.h"
 #include "readstate.h"
 #include "rtc.h"
+#include "flashfs.h"
 #include "sdcard.h"
 #include "sensor_hub.h"
 #include "suntimes.h"
@@ -35,7 +38,7 @@ using ui::Key;
 using ui::Rect;
 
 enum class Kind : uint8_t {
-  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, NotBuilt
+  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder
 };
 
 struct Module {
@@ -44,7 +47,6 @@ struct Module {
   const char *blurb;
   const char *hw;
   Kind kind;
-  int phase;  // PROGRESS.md phase that builds it
 };
 
 // Copy from the design canvas, trimmed to what the firmware does today. The order is the
@@ -53,25 +55,25 @@ struct Module {
 // The \xC2\xB7 escapes in these strings are the middle dot (UTF-8 U+00B7).
 constexpr Module kModules[] = {
     {"READER", "SD", "EPUB books from microSD. Opens where you left off.",
-     "microSD \xC2\xB7 SDMMC 4-bit", Kind::Reader, 5},
+     "microSD \xC2\xB7 SDMMC 4-bit", Kind::Reader},
     {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
-     "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts, 9},
+     "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts},
     {"MUSIC", "I2S", "MP3 files from microSD through the onboard codec and speaker.",
-     "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music, 6},
+     "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music},
     {"WEATHER", "NET", "Now, hourly and 6-day forecast over Wi-Fi, every half hour on USB.",
-     "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather, 9},
+     "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
-     "PCF85063A @ 0x51", Kind::Clock, 9},
+     "PCF85063A @ 0x51", Kind::Clock},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
-     "ES8311 ADC \xC2\xB7 ALDO2", Kind::NotBuilt, 10},
+     "ES8311 ADC \xC2\xB7 ALDO2", Kind::Recorder},
     {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
-     "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors, 8},
-    {"LEVEL", "IMU", "Bubble level and tilt alarm from the 6-axis IMU.",
-     "QMI8658A \xC2\xB7 INT2 GPIO40", Kind::NotBuilt, 10},
-    {"FILES", "SD", "Browse the microSD card. Opens books and plays music.",
-     "SDMMC 4-bit \xC2\xB7 20 MHz", Kind::Files, 4},
+     "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},
+    {"LEVEL", "IMU", "Bubble level for surfaces, a vial for edges, and a tone when it's level.",
+     "QMI8658A @ 0x6B", Kind::Level},
+    {"FILES", "SD", "Browse the microSD card and the onboard flash. Opens books, plays music.",
+     "SDMMC 4-bit \xC2\xB7 16 MB flash", Kind::Files},
     {"SYSTEM", "PMIC", "Battery, power rails, sleep schedule, Wi-Fi and firmware updates.",
-     "TG28 (AXP2101) @ 0x34", Kind::System, 7},
+     "TG28 (AXP2101) @ 0x34", Kind::System},
 };
 constexpr int kModuleCount = sizeof kModules / sizeof kModules[0];
 
@@ -87,6 +89,13 @@ std::string cardSize() {
   if (!sdcard::mounted()) return "NO CARD";
   char buf[16];
   snprintf(buf, sizeof buf, "%.1f GB", sdcard::sizeBytes() / 1e9);
+  return buf;
+}
+
+std::string flashSize() {
+  if (!flashfs::available()) return "NONE";
+  char buf[16];
+  snprintf(buf, sizeof buf, "%.1f MB", flashfs::partitionBytes() / 1048576.0);
   return buf;
 }
 
@@ -126,7 +135,7 @@ int statsFor(const Module &m, Stat out[4]) {
     }
     case Kind::Files:
       out[0] = {"SD CARD", cardSize()};
-      out[1] = {"MOUNT", sdcard::kMountPoint};
+      out[1] = {"FLASH FAT", flashSize()};
       out[2] = {"OPENS", "EPUB \xC2\xB7 MP3"};
       return 3;
     case Kind::Sensors: {
@@ -270,50 +279,36 @@ int statsFor(const Module &m, Stat out[4]) {
       out[3] = {"UPDATED", updated};
       return 4;
     }
-    case Kind::NotBuilt:
-      break;
-  }
-  out[0] = {"STATUS", "NOT BUILT"};
-  out[1] = {"PHASE", std::to_string(m.phase) + " IN PROGRESS.MD"};
-  return 2;
-}
-
-// Stand-in for modules without a screen yet: the chrome, what it will do, which phase.
-class NotBuiltScreen : public ui::Screen {
- public:
-  explicit NotBuiltScreen(int index) : index_(index) {}
-
-  std::string tag() const override { return moduleTag(index_); }
-  std::string context() const override { return "not built yet"; }
-  int hints(ui::Hint *out) const override {
-    out[0] = {"BOOT", "BACK"};
-    return 1;
-  }
-  bool onKey(Key) override { return false; }
-
-  void draw(ui::Canvas &c, const Rect &body) override {
-    const Module &m = kModules[index_];
-    Rect r = body;
-    ui::drawSectionHeader(c, r.takeTop(ui::kSectionH), m.label, std::string("BUS:") + m.bus);
-    Rect p = r.inset(20, 24);
-    int y = p.y + ui::capHeight(ui::style::kTitle);
-    ui::drawText(c, p.x, y, "NOT BUILT", ui::style::kTitle);
-    y += 24;
-    for (const auto &line : ui::wrap(ui::style::kBody, m.blurb, p.w, 4)) {
-      y += 22;
-      ui::drawText(c, p.x, y, line, ui::style::kBody);
+    case Kind::Level: {
+      const qmi8658::Reading m = sensors::motion();
+      if (!m.ok) {
+        out[0] = {"IMU", "NOT ANSWERING"};
+        return 1;
+      }
+      const float g = sqrtf(m.acc[0] * m.acc[0] + m.acc[1] * m.acc[1] + m.acc[2] * m.acc[2]);
+      const bool flat = g > 0 && fabsf(m.acc[2]) / g >= 0.7f;
+      float pitch = 0, roll = 0;
+      sensors::tilt(m, pitch, roll);
+      char tilt[24];
+      snprintf(tilt, sizeof tilt, "%.1f\xC2\xB0", sqrtf(pitch * pitch + roll * roll));
+      out[0] = {"POSE", flat ? "LYING FLAT" : "ON AN EDGE"};
+      out[1] = {"TILT", flat ? tilt : "--"};
+      out[2] = {"OPENS", "LANDSCAPE"};
+      out[3] = {"IMU", "QMI8658A \xC2\xB7 56 Hz"};
+      return 4;
     }
-    y += 22;
-    ui::hrule(c, p.x, y, p.w);
-    y += ui::kRule + 10;
-    ui::drawStat(c, {p.x, y, p.w, 48}, "HARDWARE", m.hw);
-    ui::drawStat(c, {p.x, y + 48, p.w, 48}, "BUILT IN", "PHASE " + std::to_string(m.phase) +
-                                                           " (PROGRESS.MD)");
+    case Kind::Recorder: {
+      const MemoSummary memos = memoSummary();
+      const audio::RecordStatus r = audio::recordStatus();
+      out[0] = {"MEMOS", sdcard::mounted() ? std::to_string(memos.count) : "NO CARD"};
+      out[1] = {"LAST", memos.last.empty() ? "--" : memos.last};
+      out[2] = {"FORMAT", "16 kHz MONO WAV"};
+      out[3] = {"MIC GAIN", std::to_string(r.gainDb) + " dB"};
+      return 4;
+    }
   }
-
- private:
-  int index_;
-};
+  return 0;
+}
 
 class HomeScreen : public ui::Screen {
  public:
@@ -398,7 +393,8 @@ class HomeScreen : public ui::Screen {
       case Kind::Clock: ui::nav::push(makeClock()); break;
       case Kind::Podcasts: ui::nav::push(makePodcasts()); break;
       case Kind::Weather: ui::nav::push(makeWeather()); break;
-      case Kind::NotBuilt: ui::nav::push(std::make_unique<NotBuiltScreen>(i)); break;
+      case Kind::Level: ui::nav::push(makeLevel()); break;
+      case Kind::Recorder: ui::nav::push(makeRecorder()); break;
     }
   }
 

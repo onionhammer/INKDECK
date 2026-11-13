@@ -91,9 +91,12 @@ void markOn() {
 }
 
 void off(Mode m, time_t wakeAt, int standbyCycles) {
-  if (audio::active() || audio::ringing()) {
-    audio::stop();
-    delay(150);  // the audio task mutes and switches the amp off first, so the speaker doesn't pop
+  if (audio::active() || audio::ringing() || audio::recording()) {
+    const bool recording = audio::recording();
+    audio::stop();  // also finishes a recording's file
+    // The audio task mutes and switches the amp off first, so the speaker doesn't pop; a
+    // recording needs its last write and header too.
+    delay(recording ? 400 : 150);
   }
   if (sensors::logging()) sensors::setLogging(false);  // close the CSV before the power goes
   wlan::forceOff();
@@ -127,7 +130,8 @@ bool idle(bool reading) {
   const pmic::Status p = pmic::status();
   if (!p.ok || !p.battery || p.vbus) return false;  // on USB (or unknown): stay on
   if (audio::ringing()) return false;
-  const bool playing = audio::status().state == audio::State::Playing;
+  const bool playing =
+      audio::status().state == audio::State::Playing || audio::recording();  // a memo too
   const bool low = p.percent >= 0 && p.percent < kLowBatteryPercent;
   if ((reading || playing) && !low) return false;
   if (weather::syncing() || podcasts::busy()) return false;

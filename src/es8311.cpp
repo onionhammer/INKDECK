@@ -69,4 +69,17 @@ void setVolume(int volume) {
 
 void mute(bool muted) { write(0x31, muted ? 0x60 : 0x00); }
 
+void setMicGain(int digitalGainDb) {
+  // REG16 bits 2:0: ADC scale-up 0-42 dB in 6 dB steps (datasheet; audio.md §4).
+  write(0x16, static_cast<uint8_t>(constrain(digitalGainDb, 0, kMicDigitalMaxDb) / 6));
+}
+
+void micBegin(int digitalGainDb) {
+  // REG14: bit 4 selects Mic1p-Mic1n, bits 3:0 the PGA in 3 dB steps (0xA = 30 dB). REG17: ADC
+  // volume, 0xBF = 0 dB. The same values esp_codec_dev and Waveshare's driver use (audio.md).
+  write(0x14, 0x10 | (kMicPgaDb / 3));
+  write(0x17, 0xBF);
+  setMicGain(digitalGainDb);
+}
+
 }  // namespace es8311

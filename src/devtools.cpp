@@ -6,11 +6,13 @@
 #include <stdio.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <string>
 
 #include "apps/idle.h"
 #include "audio.h"
 #include "epub.h"
+#include "flashfs.h"
 #include "forecast.h"
 #include "input.h"
 #include "pmic.h"
@@ -24,11 +26,53 @@
 namespace devtools {
 namespace {
 
-// A path on the card, or "" (with a message) for anything else.
+// A path on the card or the onboard flash (mounted on demand), or "" (with a message) for
+// anything else.
 String cardPath(const String &path) {
-  if (path.startsWith("/sdcard/") && path.indexOf("..") < 0) return path;
-  Serial.println("devtools: paths must start with /sdcard/");
+  if (path.indexOf("..") < 0) {
+    if (path.startsWith("/sdcard/")) return path;
+    if (path.startsWith("/ffat/") || path == "/ffat") {
+      if (flashfs::mount()) return path;
+      Serial.println("devtools: the onboard FAT partition won't mount");
+      return "";
+    }
+  }
+  Serial.println("devtools: paths must start with /sdcard/ or /ffat/");
   return "";
+}
+
+// "!cp SRC|DST": copies one file, e.g. a book from the card to the onboard flash.
+void copyFile(const String &src, const String &dst) {
+  FILE *in = fopen(src.c_str(), "rb");
+  if (!in) {
+    Serial.println("devtools: can't open the source");
+    return;
+  }
+  FILE *out = fopen(dst.c_str(), "wb");
+  if (!out) {
+    fclose(in);
+    Serial.println("devtools: can't create the destination (does its folder exist?)");
+    return;
+  }
+  constexpr size_t kChunk = 32 * 1024;
+  // RAM, not flash, as the source of every write (AGENTS.md, Gotchas).
+  auto *buf = static_cast<uint8_t *>(heap_caps_malloc(kChunk, MALLOC_CAP_SPIRAM));
+  size_t total = 0;
+  bool ok = buf != nullptr;
+  const uint32_t t0 = millis();
+  while (ok) {
+    const size_t n = fread(buf, 1, kChunk, in);
+    if (n == 0) break;
+    ok = fwrite(buf, 1, n, out) == n;
+    total += n;
+  }
+  ok = ok && !ferror(in);
+  fclose(in);
+  ok = fclose(out) == 0 && ok;
+  heap_caps_free(buf);
+  if (!ok) remove(dst.c_str());
+  Serial.printf("devtools: %s %u bytes in %lu ms\n", ok ? "copied" : "copy FAILED after",
+                static_cast<unsigned>(total), millis() - t0);
 }
 
 // "!feed https://...", "!append /sdcard/x text", "!rm /sdcard/x", "!wxforget".
@@ -119,6 +163,21 @@ void lineCommand(const String &line) {
     heap_caps_free(check);
     return;
   }
+  if (line.startsWith("cp ")) {
+    const String rest = line.substring(3);
+    const int bar = rest.indexOf('|');
+    const String src = cardPath(bar < 0 ? rest : rest.substring(0, bar));
+    const String dst = bar < 0 ? String() : cardPath(rest.substring(bar + 1));
+    if (bar < 0) Serial.println("devtools: usage !cp SRC|DST");
+    if (!src.isEmpty() && !dst.isEmpty()) copyFile(src, dst);
+    return;
+  }
+  if (line.startsWith("mkdir ")) {
+    const String path = cardPath(line.substring(6));
+    if (path.isEmpty()) return;
+    Serial.println(mkdir(path.c_str(), 0775) == 0 ? "devtools: made" : "devtools: mkdir failed");
+    return;
+  }
   if (line.startsWith("cat ")) {
     const String path = cardPath(line.substring(4));
     if (path.isEmpty()) return;
@@ -179,13 +238,18 @@ void lineCommand(const String &line) {
         shown += '^';
       } else if (c == flow::kPageBreak) {
         shown += "[PAGE]";
+      } else if (c == flow::kSoftHyphen) {
+        shown += "\xC2\xB7";  // a middle dot marks a soft hyphen
       } else if (!flow::isStyle(c)) {
         shown += static_cast<uint8_t>(c) < 0x80 ? c : '~';
       }
     }
-    Serial.printf("%s\ndevtools: chapter %u of %u, %u bytes, %u pictures\n", shown.c_str(),
-                  static_cast<unsigned>(chapter), static_cast<unsigned>(book.chapterCount()),
-                  static_cast<unsigned>(flowText.size()), static_cast<unsigned>(images.size()));
+    const auto softHyphens = std::count(flowText.begin(), flowText.end(), flow::kSoftHyphen);
+    Serial.printf("%s\ndevtools: chapter %u of %u, %u bytes, %u pictures, %u soft hyphens\n",
+                  shown.c_str(), static_cast<unsigned>(chapter),
+                  static_cast<unsigned>(book.chapterCount()),
+                  static_cast<unsigned>(flowText.size()), static_cast<unsigned>(images.size()),
+                  static_cast<unsigned>(softHyphens));
     return;
   }
   if (line.startsWith("unzip ")) {
@@ -243,6 +307,8 @@ void task(void *) {
       switch (Serial.read()) {
         case 'u': input::inject(Key::Up); break;
         case 'd': input::inject(Key::Down); break;
+        case 'U': input::inject(Key::Up, true); break;
+        case 'D': input::inject(Key::Down, true); break;
         case 'p': input::inject(Key::Select); break;
         case 'P': input::inject(Key::SelectLong); break;
         case 'b': input::inject(Key::Back); break;

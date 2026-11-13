@@ -7966,7 +7966,7 @@ const GFXglyph Mono38ExtraBoldGlyphs[] PROGMEM = {
     {8497, 19, 27, 23, 3, -27},  // 0xDE U+00DE Þ
 };
 
-// weight 800 at 40 px, slots 0x25-0x3A
+// weight 800 at 40 px, slots 0x25-0xB0
 const uint8_t Mono40ExtraBoldBitmaps[] PROGMEM = {
     0x1F, 0x80, 0x0F, 0x7F, 0xC0, 0x1E, 0x7F, 0xE0, 0x1E, 0xF9, 0xF0, 0x3C, 0xF0, 0xF0, 0x78, 0xF0,
     0xF0, 0xF8, 0xF0, 0xF0, 0xF0, 0xF0, 0xF1, 0xE0, 0xF0, 0xF3, 0xE0, 0xF9, 0xF3, 0xC0, 0x7F, 0xE7,
@@ -8025,7 +8025,9 @@ const uint8_t Mono40ExtraBoldBitmaps[] PROGMEM = {
     0x7F, 0xFF, 0xE7, 0xFF, 0xFE, 0x3F, 0xFF, 0xE1, 0xFF, 0xFC, 0x07, 0xFF, 0xC0, 0x01, 0xF8, 0x00,
     0x3F, 0x00, 0x07, 0xF0, 0x00, 0x7E, 0x00, 0x0F, 0xE0, 0x00, 0xFC, 0x00, 0x1F, 0xC0, 0x03, 0xF8,
     0x00, 0x3F, 0x80, 0x07, 0xF0, 0x00, 0xFF, 0x00, 0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3C, 0x7E, 0xFF, 0xFF, 0xFF, 0x7E, 0x3C, 0xFF,
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xF0, 0x0F, 0xC0, 0x7F, 0x83, 0xFF, 0x1F, 0xFE, 0x78, 0x7B,
+    0xC0, 0xFF, 0x03, 0xFC, 0x0F, 0xF0, 0x3D, 0xE1, 0xE7, 0xFF, 0x8F, 0xFC, 0x1F, 0xE0, 0x3F, 0x00,
 };
 const GFXglyph Mono40ExtraBoldGlyphs[] PROGMEM = {
     {0, 24, 30, 24, 0, -30},  // 0x25 U+0025 %
@@ -8050,6 +8052,124 @@ const GFXglyph Mono40ExtraBoldGlyphs[] PROGMEM = {
     {754, 20, 30, 24, 2, -30},  // 0x38 U+0038 8
     {829, 20, 30, 24, 2, -30},  // 0x39 U+0039 9
     {904, 8, 23, 24, 8, -23},  // 0x3A U+003A :
+    {927, 0, 0, 0, 0, 0},  // 0x3B U+003B ;
+    {927, 0, 0, 0, 0, 0},  // 0x3C U+003C <
+    {927, 0, 0, 0, 0, 0},  // 0x3D U+003D =
+    {927, 0, 0, 0, 0, 0},  // 0x3E U+003E >
+    {927, 0, 0, 0, 0, 0},  // 0x3F U+003F ?
+    {927, 0, 0, 0, 0, 0},  // 0x40 U+0040 @
+    {927, 0, 0, 0, 0, 0},  // 0x41 U+0041 A
+    {927, 0, 0, 0, 0, 0},  // 0x42 U+0042 B
+    {927, 0, 0, 0, 0, 0},  // 0x43 U+0043 C
+    {927, 0, 0, 0, 0, 0},  // 0x44 U+0044 D
+    {927, 0, 0, 0, 0, 0},  // 0x45 U+0045 E
+    {927, 0, 0, 0, 0, 0},  // 0x46 U+0046 F
+    {927, 0, 0, 0, 0, 0},  // 0x47 U+0047 G
+    {927, 0, 0, 0, 0, 0},  // 0x48 U+0048 H
+    {927, 0, 0, 0, 0, 0},  // 0x49 U+0049 I
+    {927, 0, 0, 0, 0, 0},  // 0x4A U+004A J
+    {927, 0, 0, 0, 0, 0},  // 0x4B U+004B K
+    {927, 0, 0, 0, 0, 0},  // 0x4C U+004C L
+    {927, 0, 0, 0, 0, 0},  // 0x4D U+004D M
+    {927, 0, 0, 0, 0, 0},  // 0x4E U+004E N
+    {927, 0, 0, 0, 0, 0},  // 0x4F U+004F O
+    {927, 0, 0, 0, 0, 0},  // 0x50 U+0050 P
+    {927, 0, 0, 0, 0, 0},  // 0x51 U+0051 Q
+    {927, 0, 0, 0, 0, 0},  // 0x52 U+0052 R
+    {927, 0, 0, 0, 0, 0},  // 0x53 U+0053 S
+    {927, 0, 0, 0, 0, 0},  // 0x54 U+0054 T
+    {927, 0, 0, 0, 0, 0},  // 0x55 U+0055 U
+    {927, 0, 0, 0, 0, 0},  // 0x56 U+0056 V
+    {927, 0, 0, 0, 0, 0},  // 0x57 U+0057 W
+    {927, 0, 0, 0, 0, 0},  // 0x58 U+0058 X
+    {927, 0, 0, 0, 0, 0},  // 0x59 U+0059 Y
+    {927, 0, 0, 0, 0, 0},  // 0x5A U+005A Z
+    {927, 0, 0, 0, 0, 0},  // 0x5B U+005B [
+    {927, 0, 0, 0, 0, 0},  // 0x5C U+005C
+    {927, 0, 0, 0, 0, 0},  // 0x5D U+005D ]
+    {927, 0, 0, 0, 0, 0},  // 0x5E U+005E ^
+    {927, 0, 0, 0, 0, 0},  // 0x5F U+005F _
+    {927, 0, 0, 0, 0, 0},  // 0x60 U+0060 `
+    {927, 0, 0, 0, 0, 0},  // 0x61 U+0061 a
+    {927, 0, 0, 0, 0, 0},  // 0x62 U+0062 b
+    {927, 0, 0, 0, 0, 0},  // 0x63 U+0063 c
+    {927, 0, 0, 0, 0, 0},  // 0x64 U+0064 d
+    {927, 0, 0, 0, 0, 0},  // 0x65 U+0065 e
+    {927, 0, 0, 0, 0, 0},  // 0x66 U+0066 f
+    {927, 0, 0, 0, 0, 0},  // 0x67 U+0067 g
+    {927, 0, 0, 0, 0, 0},  // 0x68 U+0068 h
+    {927, 0, 0, 0, 0, 0},  // 0x69 U+0069 i
+    {927, 0, 0, 0, 0, 0},  // 0x6A U+006A j
+    {927, 0, 0, 0, 0, 0},  // 0x6B U+006B k
+    {927, 0, 0, 0, 0, 0},  // 0x6C U+006C l
+    {927, 0, 0, 0, 0, 0},  // 0x6D U+006D m
+    {927, 0, 0, 0, 0, 0},  // 0x6E U+006E n
+    {927, 0, 0, 0, 0, 0},  // 0x6F U+006F o
+    {927, 0, 0, 0, 0, 0},  // 0x70 U+0070 p
+    {927, 0, 0, 0, 0, 0},  // 0x71 U+0071 q
+    {927, 0, 0, 0, 0, 0},  // 0x72 U+0072 r
+    {927, 0, 0, 0, 0, 0},  // 0x73 U+0073 s
+    {927, 0, 0, 0, 0, 0},  // 0x74 U+0074 t
+    {927, 0, 0, 0, 0, 0},  // 0x75 U+0075 u
+    {927, 0, 0, 0, 0, 0},  // 0x76 U+0076 v
+    {927, 0, 0, 0, 0, 0},  // 0x77 U+0077 w
+    {927, 0, 0, 0, 0, 0},  // 0x78 U+0078 x
+    {927, 0, 0, 0, 0, 0},  // 0x79 U+0079 y
+    {927, 0, 0, 0, 0, 0},  // 0x7A U+007A z
+    {927, 0, 0, 0, 0, 0},  // 0x7B U+007B {
+    {927, 0, 0, 0, 0, 0},  // 0x7C U+007C |
+    {927, 0, 0, 0, 0, 0},  // 0x7D U+007D }
+    {927, 0, 0, 0, 0, 0},  // 0x7E U+007E ~
+    {927, 0, 0, 0, 0, 0},  // 0x7F U+007F 
+    {927, 0, 0, 0, 0, 0},  // 0x80 U+25B2 ▲
+    {927, 0, 0, 0, 0, 0},  // 0x81 U+25BC ▼
+    {927, 0, 0, 0, 0, 0},  // 0x82 U+25B6 ▶
+    {927, 0, 0, 0, 0, 0},  // 0x83 U+25B8 ▸
+    {927, 0, 0, 0, 0, 0},  // 0x84 U+25CF ●
+    {927, 0, 0, 0, 0, 0},  // 0x85 U+25CB ○
+    {927, 0, 0, 0, 0, 0},  // 0x86 U+2713 ✓
+    {927, 12, 5, 24, 6, -16},  // 0x87 U+2212 −
+    {935, 0, 0, 0, 0, 0},  // 0x88 U+2013 –
+    {935, 0, 0, 0, 0, 0},  // 0x89 U+2014 —
+    {935, 0, 0, 0, 0, 0},  // 0x8A U+2026 …
+    {935, 0, 0, 0, 0, 0},  // 0x8B U+2018 ‘
+    {935, 0, 0, 0, 0, 0},  // 0x8C U+2019 ’
+    {935, 0, 0, 0, 0, 0},  // 0x8D U+201C “
+    {935, 0, 0, 0, 0, 0},  // 0x8E U+201D ”
+    {935, 0, 0, 0, 0, 0},  // 0x8F U+2190 ←
+    {935, 0, 0, 0, 0, 0},  // 0x90 U+2191 ↑
+    {935, 0, 0, 0, 0, 0},  // 0x91 U+2192 →
+    {935, 0, 0, 0, 0, 0},  // 0x92 U+2193 ↓
+    {935, 0, 0, 0, 0, 0},  // 0x93 U+25A0 ■
+    {935, 0, 0, 0, 0, 0},  // 0x94 U+25A1 □
+    {935, 0, 0, 0, 0, 0},  // 0x95 U+2022 •
+    {935, 0, 0, 0, 0, 0},  // 0x96 unused
+    {935, 0, 0, 0, 0, 0},  // 0x97 unused
+    {935, 0, 0, 0, 0, 0},  // 0x98 unused
+    {935, 0, 0, 0, 0, 0},  // 0x99 unused
+    {935, 0, 0, 0, 0, 0},  // 0x9A unused
+    {935, 0, 0, 0, 0, 0},  // 0x9B unused
+    {935, 0, 0, 0, 0, 0},  // 0x9C unused
+    {935, 0, 0, 0, 0, 0},  // 0x9D unused
+    {935, 0, 0, 0, 0, 0},  // 0x9E unused
+    {935, 0, 0, 0, 0, 0},  // 0x9F unused
+    {935, 0, 0, 0, 0, 0},  // 0xA0 U+00A0  
+    {935, 0, 0, 0, 0, 0},  // 0xA1 U+00A1 ¡
+    {935, 0, 0, 0, 0, 0},  // 0xA2 U+00A2 ¢
+    {935, 0, 0, 0, 0, 0},  // 0xA3 U+00A3 £
+    {935, 0, 0, 0, 0, 0},  // 0xA4 U+00A4 ¤
+    {935, 0, 0, 0, 0, 0},  // 0xA5 U+00A5 ¥
+    {935, 0, 0, 0, 0, 0},  // 0xA6 U+00A6 ¦
+    {935, 0, 0, 0, 0, 0},  // 0xA7 U+00A7 §
+    {935, 0, 0, 0, 0, 0},  // 0xA8 U+00A8 ¨
+    {935, 0, 0, 0, 0, 0},  // 0xA9 U+00A9 ©
+    {935, 0, 0, 0, 0, 0},  // 0xAA U+00AA ª
+    {935, 0, 0, 0, 0, 0},  // 0xAB U+00AB «
+    {935, 0, 0, 0, 0, 0},  // 0xAC U+00AC ¬
+    {935, 0, 0, 0, 0, 0},  // 0xAD U+00AD ­
+    {935, 0, 0, 0, 0, 0},  // 0xAE U+00AE ®
+    {935, 0, 0, 0, 0, 0},  // 0xAF U+00AF ¯
+    {935, 14, 14, 24, 5, -31},  // 0xB0 U+00B0 °
 };
 
 // weight 800 at 50 px, slots 0x20-0xDE
@@ -12862,7 +12982,7 @@ const GFXfont kMono22ExtraBold PROGMEM = {const_cast<uint8_t *>(Mono22ExtraBoldB
 const GFXfont kMono24ExtraBold PROGMEM = {const_cast<uint8_t *>(Mono24ExtraBoldBitmaps), const_cast<GFXglyph *>(Mono24ExtraBoldGlyphs), 0x20, 0xDE, 32};
 const GFXfont kMono28ExtraBold PROGMEM = {const_cast<uint8_t *>(Mono28ExtraBoldBitmaps), const_cast<GFXglyph *>(Mono28ExtraBoldGlyphs), 0x20, 0xDE, 37};
 const GFXfont kMono38ExtraBold PROGMEM = {const_cast<uint8_t *>(Mono38ExtraBoldBitmaps), const_cast<GFXglyph *>(Mono38ExtraBoldGlyphs), 0x20, 0xDE, 50};
-const GFXfont kMono40ExtraBold PROGMEM = {const_cast<uint8_t *>(Mono40ExtraBoldBitmaps), const_cast<GFXglyph *>(Mono40ExtraBoldGlyphs), 0x25, 0x3A, 53};
+const GFXfont kMono40ExtraBold PROGMEM = {const_cast<uint8_t *>(Mono40ExtraBoldBitmaps), const_cast<GFXglyph *>(Mono40ExtraBoldGlyphs), 0x25, 0xB0, 53};
 const GFXfont kMono50ExtraBold PROGMEM = {const_cast<uint8_t *>(Mono50ExtraBoldBitmaps), const_cast<GFXglyph *>(Mono50ExtraBoldGlyphs), 0x20, 0xDE, 66};
 const GFXfont kMono64ExtraBold PROGMEM = {const_cast<uint8_t *>(Mono64ExtraBoldBitmaps), const_cast<GFXglyph *>(Mono64ExtraBoldGlyphs), 0x25, 0x3A, 84};
 const GFXfont kMono68ExtraBold PROGMEM = {const_cast<uint8_t *>(Mono68ExtraBoldBitmaps), const_cast<GFXglyph *>(Mono68ExtraBoldGlyphs), 0x30, 0x5A, 90};

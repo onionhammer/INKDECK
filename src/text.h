@@ -19,6 +19,9 @@ constexpr uint8_t kImageBase = 0x21;
 constexpr int kMaxImages = 0xFF - kImageBase;
 // At paragraph start: what follows begins a new page (unless the page is still empty).
 constexpr char kPageBreak = 0x07;
+// Inside a word: a soft hyphen (U+00AD). Invisible, unless the line breaks there, when the
+// typesetter draws a hyphen.
+constexpr char kSoftHyphen = 0x08;
 constexpr uint8_t kBold = 1;
 constexpr uint8_t kItalic = 2;
 
@@ -38,7 +41,8 @@ void appendUtf8(std::string &out, uint32_t cp);
 void appendAscii(std::string &out, uint32_t cp);
 
 // Appends cp as flow text: its glyph slot if the fonts have one, else an ASCII approximation.
-// Whitespace becomes ' '; soft hyphens and zero-width characters vanish.
+// Whitespace becomes ' '; soft hyphens and zero-width characters vanish (the EPUB parser keeps
+// soft hyphens itself, as flow::kSoftHyphen).
 void appendSlots(std::string &out, uint32_t cp);
 
 // UTF-8 string -> ASCII approximation.

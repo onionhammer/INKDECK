@@ -1,6 +1,7 @@
 // Serial dev hooks, for driving and checking the UI without touching the board.
 // Single-character commands on the USB console:
 //   u / d    dial up / down          p / P   press / hold the wheel
+//   U / D    dial up / down as a fast repeat (the dial held past 1.7 s: lists move a page)
 //   b / B    BOOT / hold BOOT        s       dump the framebuffer (tools/screenshot.py)
 //   - / +    volume down / up 5 (no redraw; handy to silence the speaker before a test)
 //   r        print the PMIC's configuration and status registers (read-only)
@@ -23,6 +24,9 @@
 //   !cat PATH   print a file on the card
 //   !rm PATH    delete a file on the card
 //   !ls PATH    list a folder on the card, with file sizes
+//   !cp SRC|DST copy a file, e.g. "!cp /sdcard/Books/A.epub|/ffat/A.epub"
+//   !mkdir PATH make a folder
+//               PATH may start with /ffat/ (the onboard FAT partition) as well as /sdcard/
 //   !flow PATH|N   print the start of an EPUB's chapter N (spine item) as the Reader gets it,
 //               without opening it in the Reader (its saved place stays put)
 //   !unzip PATH[|ENTRY]   list the files in a zip on the card (an EPUB), or print one of them

@@ -6,9 +6,8 @@
 //   BOOT  back                          HOLD BOOT  home (with a full refresh)
 //   PWR   the Sleep screen, then power-off (power.h)
 //
-// Screens live in apps/: Home lists the modules, Files browses the SD card, Reader shows books
-// (● opens its menu), Music plays MP3s, Clock (landscape) keeps the alarms. Progress and plans
-// are in PROGRESS.md.
+// Screens live in apps/, one per module on Home (README.md lists them): Reader, Podcasts,
+// Music, Weather, Clock, Recorder, Sensors, Level, Files and System.
 #include <Arduino.h>
 #include <Wire.h>
 

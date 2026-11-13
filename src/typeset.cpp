@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "text.h"
+#include "ui/fonts/glyphs.h"
 
 namespace gfx {
 namespace {
@@ -88,6 +89,13 @@ bool isParagraphStart(const std::string &flow, size_t pos) {
 
 bool isAsciiLetter(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
 
+// A line may break after these: a hyphen, an en dash, an em dash.
+bool isDash(char c) {
+  static const char kEnDash = static_cast<char>(ui::fonts::slotFor(0x2013));
+  static const char kEmDash = static_cast<char>(ui::fonts::slotFor(0x2014));
+  return c == '-' || (c != 0 && (c == kEnDash || c == kEmDash));
+}
+
 }  // namespace
 
 Typesetter::Typesetter(const FontFamily &family, int width, int height)
@@ -137,6 +145,7 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
   int dropBottom = 0;         // lines above this y make room for the drop cap
   std::vector<Word> words;
   words.reserve(32);
+  std::vector<Break> breaks;
   int wordsWidth = 0;
   PagePos lineStart{static_cast<uint32_t>(pos), style};
 
@@ -228,23 +237,60 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
       dropBottom = lineTop + drop_.top + drop_.box;
       w.start = static_cast<uint32_t>(++pos);  // the letter is in the box, not the line
     }
+    // Measure the word, noting where it may break: after a soft hyphen (which then draws as a
+    // hyphen), or after a hyphen or dash.
+    breaks.clear();
+    int glyphs = 0;
     while (pos < n && flow[pos] != ' ' && flow[pos] != flow::kPara) {
       const char d = flow[pos++];
       if (flow::isStyle(d)) {
         style = d - flow::kStyleBase;
+      } else if (d == flow::kSoftHyphen) {
+        if (!center) breaks.push_back({static_cast<uint32_t>(pos), w.width, style, glyphs, true});
       } else if (d != flow::kCenter) {
         w.width += gfx::advance(family_.face[style], d);
+        ++glyphs;
+        if (isDash(d)) breaks.push_back({static_cast<uint32_t>(pos), w.width, style, glyphs, false});
       }
     }
     w.end = static_cast<uint32_t>(pos);
     if (w.end == w.start) continue;  // a one-letter word that went into the drop cap
 
-    const int needed =
-        indentNow() + wordsWidth + static_cast<int>(words.size()) * spaceWidth_ + w.width;
-    if (!words.empty() && needed > width_) {
-      flush(true);
-      lineStart = {w.start, w.style};
-      if (!lineFits()) return lineStart;
+    const int used = indentNow() + wordsWidth + static_cast<int>(words.size()) * spaceWidth_;
+    if (used + w.width > width_) {
+      // Too long for what's left of the line: break it at the last place that fits. A soft
+      // hyphen needs a letter on each side; a hard hyphen or dash, two.
+      const Break *fit = nullptr;
+      for (const Break &b : breaks) {
+        const int minSide = b.soft ? 1 : 2;
+        if (b.glyphs < minSide || glyphs - b.glyphs < minSide) continue;
+        const int hyphen = b.soft ? gfx::advance(family_.face[b.style], '-') : 0;
+        if (used + b.width + hyphen <= width_) fit = &b;
+      }
+      if (fit) {
+        Word head = w;
+        head.end = fit->at;
+        head.hyphen = fit->soft;
+        head.width = fit->width + (fit->soft ? gfx::advance(family_.face[fit->style], '-') : 0);
+        words.push_back(head);
+        wordsWidth += head.width;
+        flush(true);
+        pos = fit->at;  // the rest of the word starts the next line
+        style = fit->style;
+        lineStart = {fit->at, fit->style};
+        if (!lineFits()) return lineStart;
+        continue;
+      }
+      if (!words.empty()) {
+        flush(true);
+        lineStart = {w.start, w.style};
+        if (!lineFits()) return lineStart;
+        // Measure it again on the fresh line, where it may still need breaking.
+        pos = w.start;
+        style = w.style;
+        continue;
+      }
+      // Alone on the line and still too wide, with nowhere to break: it runs over, as before.
     }
     words.push_back(w);
     wordsWidth += w.width;
@@ -293,10 +339,11 @@ void Typesetter::drawLine(GFXcanvas1 &canvas, const std::string &flow,
       const char d = flow[p];
       if (flow::isStyle(d)) {
         style = d - flow::kStyleBase;
-      } else if (d != flow::kCenter) {
+      } else if (d != flow::kCenter && d != flow::kSoftHyphen) {
         cx = gfx::drawChar(canvas, cx, baseline, d, family_.face[style], gfx::kBlack);
       }
     }
+    if (w.hyphen) gfx::drawChar(canvas, cx, baseline, '-', family_.face[style], gfx::kBlack);
     cursor += w.width + spaceWidth_ + extra + (static_cast<int>(i) < remainder ? 1 : 0);
   }
 }

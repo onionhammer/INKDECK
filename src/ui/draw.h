@@ -34,6 +34,12 @@ struct Rect {
     h -= n;
     return {x, y + h, w, n};
   }
+  Rect takeLeft(int n) {
+    const Rect r{x, y, n, h};
+    x += n;
+    w -= n;
+    return r;
+  }
 };
 
 void fill(Canvas &c, const Rect &r, uint16_t color);

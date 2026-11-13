@@ -1,4 +1,5 @@
-// Minimal ES8311 codec control for playback, over the shared Wire bus (begin Wire first).
+// Minimal ES8311 codec control for playback and the microphone, over the shared Wire bus
+// (begin Wire first).
 //
 // Assumes the ESP32 is I2S master and drives MCLK at 256 x fs. For every rate from 8 to 48 kHz
 // that gives the same clock-divider settings, so begin() needs no sample rate and a rate change
@@ -14,5 +15,13 @@ bool begin();
 void setVolume(int volume);
 
 void mute(bool muted);
+
+// Microphone: input Mic1p-Mic1n through the analog PGA at 30 dB and the ADC at 0 dB, then a
+// digital gain of 0-42 dB in 6 dB steps (REG16; values round down to a step). Call after
+// begin(), with MCLK running.
+constexpr int kMicPgaDb = 30;
+constexpr int kMicDigitalMaxDb = 42;
+void micBegin(int digitalGainDb);
+void setMicGain(int digitalGainDb);
 
 }  // namespace es8311

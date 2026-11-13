@@ -444,14 +444,14 @@ void CustomEpdDisplay::lvgl_flush_cb(lv_display_t* disp, const lv_area_t* area, 
 | WebSocket client | No | `esp_websocket_client` is a managed component. Arduino libraries exist (e.g. links2004 `WebSockets`). TLS goes through our `net::begin()` PSRAM buffers |
 | cJSON | Yes, `espressif__cjson` | |
 
-**What our code needs** (from `src/es8311.cpp` and `src/audio.cpp` as they stand):
+**What our code has and still needs** (updated 2026-11-13, when the Recorder was built):
 
-- `es8311::begin()` powers the ADC (REG0D/0E) but never writes REG14/REG16/REG17 (mic select + PGA, ADC gain, ADC
-  volume), which esp_codec_dev and Waveshare's Arduino driver both set. Add REG14 = 0x1A (Mic1p-Mic1n, PGA 30 dB),
-  REG17 = 0xBF (ADC 0 dB) and REG16 for digital gain (audio.md §3–4, §8). REG44 = 0x08 already gives ADC on
-  both slots, which suits a no-reference design.
-- `audio.cpp` creates **TX only** (`din = I2S_GPIO_UNUSED`) and reclocks per file. Voice needs one TX+RX pair at one
-  rate. Pick 24 kHz like XiaoZhi, and let the podcast player and the voice app take turns owning I2S.
+- The mic works: `es8311::micBegin()` writes REG14 = 0x1A (Mic1p-Mic1n, PGA 30 dB), REG17 = 0xBF (ADC 0 dB) and
+  REG16 for 0–42 dB digital gain; REG44 = 0x08 gives ADC on both slots. `audio::record()` captures 16 kHz mono from
+  an RX-only I2S channel into a WAV (verified on hardware; audio.md §9 has the slot-mask trap).
+- Still half the picture for voice: playback (TX) and recording (RX) each create their own simplex channel and take
+  turns. Full-duplex voice needs one TX+RX pair at one rate (`i2s_new_channel(&chan, &tx, &rx)`). Pick 24 kHz like
+  XiaoZhi.
 - Keep XiaoZhi's memory split: AFE stack and buffers in PSRAM (`AFE_MEMORY_ALLOC_MORE_PSRAM`), TCB and DMA internal.
   XiaoZhi reserves 100 KB of internal RAM (`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=102400`). We already have Wi-Fi + TLS
   in the ~230 KB, so measure with dev key `h` before adding WakeNet.
@@ -490,7 +490,8 @@ void voiceBegin() {
                    .din = (gpio_num_t)board::I2S_DIN}};
   i2s_channel_init_std_mode(tx, &sc);  i2s_channel_init_std_mode(rx, &sc);
   i2s_channel_enable(tx);  i2s_channel_enable(rx);                      // MCLK runs before codec init
-  es8311::begin();                                                      // + REG14/16/17 mic setup (above)
+  es8311::begin();
+  es8311::micBegin(12);                                                 // PGA 30 dB + 12 dB digital
   // 2. Opus: encode the 24 kHz mic directly (no resampler), decode at the codec rate.
   int err;
   enc = opus_encoder_create(kRate, 1, OPUS_APPLICATION_AUDIO, &err);    // XiaoZhi's mode; VOIP may suit speech

@@ -26,8 +26,13 @@ void begin();
 // Blocks up to timeoutMs for the next key. Returns false on timeout.
 bool wait(Key &key, uint32_t timeoutMs);
 
+// True if the key wait() last returned is a fast repeat: ▲ or ▼ held past kFastAfterMs. Lists
+// then step a page at a time (ui::ListCursor). False after a wait() that timed out.
+bool lastKeyFast();
+
 // Queues a key as if it had been pressed (dev tools drive the UI over serial with this).
-void inject(Key key);
+// fast: as a repeat from a dial held long enough to page.
+void inject(Key key, bool fast = false);
 
 // Milliseconds since the last key (injected ones count).
 uint32_t idleMs();

@@ -8,6 +8,7 @@
 #include "apps/reader.h"
 #include "audio.h"
 #include "dirlist.h"
+#include "flashfs.h"
 #include "sdcard.h"
 
 namespace apps {
@@ -51,7 +52,7 @@ std::string typeTag(const DirList::Entry &e) {
 
 // EPUB and MP3 names lose their extension; the tag says what they are.
 std::string displayName(const DirList::Entry &e) {
-  if (!e.isDir && (DirList::isEpub(e.name) || DirList::isMp3(e.name))) {
+  if (!e.isDir && (DirList::isEpub(e.name) || DirList::isAudio(e.name))) {
     return e.name.substr(0, e.name.rfind('.'));
   }
   return e.name;
@@ -61,20 +62,28 @@ const char *verbFor(const DirList::Entry *e) {
   if (!e) return nullptr;
   if (e->isDir) return "OPEN";
   if (DirList::isEpub(e->name)) return "READ";
-  if (DirList::isMp3(e->name)) return "PLAY";
+  if (DirList::isAudio(e->name)) return "PLAY";
   return nullptr;
 }
 
+// Which file system a Files screen browses. The card's root lists the onboard flash as an extra
+// first row, which opens a Files screen of its own (BOOT at its root comes back).
+enum class Volume : uint8_t { Sd, Flash };
+
+const char *rootOf(Volume v) { return v == Volume::Sd ? sdcard::kMountPoint : flashfs::kMountPoint; }
+
 class FilesScreen : public ui::Screen {
  public:
-  FilesScreen(const std::string &dir, const std::string &select) : list_(sdcard::kMountPoint) {
+  FilesScreen(Volume volume, const std::string &dir, const std::string &select)
+      : volume_(volume), list_(rootOf(volume)) {
     openDir(dir, select);
   }
 
   std::string tag() const override { return moduleTag("FILES"); }
   std::string context() const override {
+    const std::string prefix = volume_ == Volume::Sd ? "SD:/" : "FLASH:/";
     const std::string rel = list_.relativePath();
-    return rel.empty() ? "SD:/" : "SD:/" + rel + "/";
+    return rel.empty() ? prefix : prefix + rel + "/";
   }
   bool contextIsPath() const override { return true; }
 
@@ -83,8 +92,12 @@ class FilesScreen : public ui::Screen {
     if (!list_.readable()) {
       out[n++] = {ui::glyph::kPress, "RETRY"};
     } else {
-      if (!list_.entries().empty()) out[n++] = {ui::glyph::kDial, "MOVE"};
-      if (const char *verb = verbFor(selected())) out[n++] = {ui::glyph::kPress, verb};
+      if (rowCount() > 0) out[n++] = {ui::glyph::kDial, "MOVE"};
+      if (onFlashRow()) {
+        out[n++] = {ui::glyph::kPress, "OPEN"};
+      } else if (const char *verb = verbFor(selected())) {
+        out[n++] = {ui::glyph::kPress, verb};
+      }
       if (audio::active()) out[n++] = {ui::glyph::kHoldPress, "PLAYER"};
     }
     out[n++] = {"BOOT", list_.atRoot() ? "BACK" : "UP"};
@@ -122,65 +135,107 @@ class FilesScreen : public ui::Screen {
 
     if (!list_.readable()) {
       const std::string retry = std::string(" Press ") + ui::glyph::kPress + " to retry.";
-      if (sdcard::mounted()) {
+      if (volume_ == Volume::Flash) {
+        drawEmpty(c, r, "CAN'T MOUNT", "The onboard FAT partition couldn't be mounted." + retry);
+      } else if (sdcard::mounted()) {
         drawEmpty(c, r, "CAN'T READ", "This folder couldn't be opened." + retry);
       } else {
         drawEmpty(c, r, "NO SD CARD", "Insert a microSD card." + retry);
       }
       return;
     }
-    if (list_.entries().empty()) {
-      drawEmpty(c, r, "EMPTY", "Nothing in this folder.");
+    if (rowCount() == 0) {
+      drawEmpty(c, r, "EMPTY",
+                volume_ == Volume::Flash && list_.atRoot()
+                    ? "Nothing on the onboard flash yet. Copy files here with the !cp dev command."
+                    : "Nothing in this folder.");
       return;
     }
 
     // Sizes cost a stat() each, so only the visible page looks them up.
     const int perPage = r.h / ui::kRowH;
     const int first = cursor_.pageStart(perPage);
-    const int count = static_cast<int>(list_.entries().size());
-    for (int i = first; i < count && i < first + perPage; ++i) list_.sizeOf(i);
+    const int extra = flashRows();
+    for (int i = first; i < rowCount() && i < first + perPage; ++i) {
+      if (i >= extra) list_.sizeOf(i - extra);
+    }
 
     const std::string playing = audio::active() ? audio::status().path : std::string();
     ui::drawList(c, r, ui::kRowH, cursor_, [&](int i) {
-      const DirList::Entry &e = list_.entries()[i];
       ui::Row row;
+      if (i < extra) {
+        row.title = "ONBOARD FLASH";
+        row.tag = "FAT";
+        row.trailing = sizeText(static_cast<int64_t>(flashfs::partitionBytes()));
+        return row;
+      }
+      const DirList::Entry &e = list_.entries()[i - extra];
       row.title = displayName(e);
       row.tag = typeTag(e);
-      row.trailing = !playing.empty() && list_.pathOf(i) == playing ? kPlayingMarker
-                                                                     : sizeText(e.size);
+      row.trailing = !playing.empty() && list_.pathOf(i - extra) == playing ? kPlayingMarker
+                                                                             : sizeText(e.size);
       return row;
     });
   }
 
  private:
+  // The ONBOARD FLASH row: first on the card's root, when the partition exists.
+  int flashRows() const {
+    return volume_ == Volume::Sd && list_.atRoot() && list_.readable() && flashfs::available()
+               ? 1
+               : 0;
+  }
+  int rowCount() const { return static_cast<int>(list_.entries().size()) + flashRows(); }
+  bool onFlashRow() const { return flashRows() > 0 && cursor_.cursor() == 0; }
+  // Index into list_.entries() of the cursor's row; -1 on the flash row or an empty list.
+  int entryIndex() const {
+    const int i = cursor_.cursor() - flashRows();
+    return i >= 0 && i < static_cast<int>(list_.entries().size()) ? i : -1;
+  }
   const DirList::Entry *selected() const {
-    return list_.entries().empty() ? nullptr : &list_.entries()[cursor_.cursor()];
+    const int i = entryIndex();
+    return i < 0 ? nullptr : &list_.entries()[i];
   }
 
   std::string folderLabel() const {
     const std::string rel = list_.relativePath();
-    if (rel.empty()) return "SD CARD";
+    if (rel.empty()) return volume_ == Volume::Sd ? "SD CARD" : "ONBOARD FLASH";
     return ui::upper(rel.substr(rel.rfind('/') + 1));  // npos + 1 = 0: the whole name
   }
 
+  // Puts the cursor on the entry called `name`, or the first row.
+  void resetCursor(const std::string &name) {
+    const int i = list_.indexOf(name);
+    cursor_.reset(rowCount(), i >= 0 ? i + flashRows() : 0);
+  }
+
   void openDir(const std::string &dir, const std::string &select) {
+    if (volume_ == Volume::Flash) flashfs::mount();
     list_.open(dir);
-    cursor_.reset(static_cast<int>(list_.entries().size()), list_.indexOf(select));
+    resetCursor(select);
   }
 
   bool goUp() {
     if (list_.atRoot()) return false;
     const std::string child = list_.cwd().substr(list_.cwd().rfind('/') + 1);
     list_.goUp();
-    cursor_.reset(static_cast<int>(list_.entries().size()), list_.indexOf(child));
+    resetCursor(child);
     return true;
   }
 
   void activate() {
     if (!list_.readable()) {
-      if (!sdcard::mounted()) sdcard::mount();
-      if (!list_.reload()) openDir(sdcard::kMountPoint, "");
-      cursor_.reset(static_cast<int>(list_.entries().size()));
+      if (volume_ == Volume::Flash) {
+        flashfs::mount();
+      } else if (!sdcard::mounted()) {
+        sdcard::mount();
+      }
+      if (!list_.reload()) openDir(rootOf(volume_), "");
+      resetCursor("");
+      return;
+    }
+    if (onFlashRow()) {
+      ui::nav::push(std::make_unique<FilesScreen>(Volume::Flash, flashfs::kMountPoint, ""));
       return;
     }
     const DirList::Entry *e = selected();
@@ -188,10 +243,10 @@ class FilesScreen : public ui::Screen {
       openDir(list_.cwd(), "");
       return;
     }
-    const int i = cursor_.cursor();
+    const int i = entryIndex();
     if (e->isDir) {
       openDir(list_.pathOf(i), "");
-    } else if (DirList::isMp3(e->name)) {
+    } else if (DirList::isAudio(e->name)) {
       play(i);
     } else if (DirList::isEpub(e->name)) {
       std::string err;
@@ -211,7 +266,7 @@ class FilesScreen : public ui::Screen {
     const std::string path = list_.pathOf(i);
     if (!(audio::active() && audio::status().path == path)) {
       int index;
-      std::vector<std::string> playlist = list_.filePaths(DirList::isMp3, i, index);
+      std::vector<std::string> playlist = list_.filePaths(DirList::isAudio, i, index);
       audio::play(std::move(playlist), index);
       delay(50);  // let the audio task pick it up before the player draws
     }
@@ -230,6 +285,7 @@ class FilesScreen : public ui::Screen {
     }
   }
 
+  Volume volume_;
   DirList list_;
   ui::ListCursor cursor_;
   std::string notice_;
@@ -239,7 +295,9 @@ class FilesScreen : public ui::Screen {
 }  // namespace
 
 std::unique_ptr<ui::Screen> makeFiles(const std::string &dir, const std::string &select) {
-  return std::make_unique<FilesScreen>(dir, select);
+  const std::string flash = flashfs::kMountPoint;
+  const bool onFlash = dir.compare(0, flash.size(), flash) == 0;
+  return std::make_unique<FilesScreen>(onFlash ? Volume::Flash : Volume::Sd, dir, select);
 }
 
 std::string sdFolder(const char *name) {

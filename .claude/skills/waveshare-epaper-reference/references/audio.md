@@ -342,6 +342,16 @@ decodes 44.1 kHz/192 kbps stereo in ~3.8 ms per frame (~14% of one core) with it
 With 8×511-frame DMA buffers there were 0 underruns while the UI browsed. One SD CRC error ended
 a track early before we dropped SD to 20 MHz (see `io.md`).
 
+**Recording, verified on hardware** (`src/audio.cpp` recordStart/recordStep, 2026-11-13): I2S_NUM_0
+as RX-only master at 16 kHz, MCLK 256×fs, then `es8311::begin()` plus REG14=0x1A, REG17=0xBF,
+REG16=2 (PGA 30 dB + 12 dB digital); REG44 stays 0x08. Room noise read about −51 dBFS. **On the S3,
+`I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(16BIT, MONO)` leaves `slot_mask = I2S_STD_SLOT_BOTH`** (only the
+classic-ESP32 branch of the macro picks LEFT), so a "mono" RX channel still delivered both slots: a
+19 s timer after 11 s of recording. Set `slot_mask = I2S_STD_SLOT_LEFT` yourself, as Waveshare's
+`configure_recording_mode` does. After that, 10.43 s of wall time gave 330,752 data bytes (10.34 s,
+with ~100 ms of start-up dropped). 8 KB `fwrite`s from internal RAM kept up with no lost samples.
+The memo played back through the normal TX path as a WAV.
+
 **Option A, recommended: keep `esp_codec_dev` from Arduino.** It isn't in the Arduino 3.3.12 precompiled libs
 (checked `framework-arduinoespressif32-esp32s3-libs/include`). Vendor the Apache-2.0 component into `lib/`
 and compile only `esp_codec_dev*.c`, `audio_codec_sw_vol.c`, `platform/*.c` and `device/es8311/es8311.c`

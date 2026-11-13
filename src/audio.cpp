@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
 #include <atomic>
 
 #include "board_pins.h"
@@ -34,10 +35,13 @@ constexpr int kPcmSamples = MAX_NCHAN * MAX_NGRAN * MAX_NSAMP;  // one frame, in
 constexpr uint32_t kDmaDescriptors = 8;
 constexpr uint32_t kDmaFrames = 511;
 
-enum class Cmd : uint8_t { Play, TogglePause, Next, Stop, Volume, Ring };
+enum class Cmd : uint8_t {
+  Play, TogglePause, Next, Stop, Volume, Ring, Beep, Record, RecordStop, RecordPause, MicGain
+};
 struct Command {
   Cmd cmd;
   int arg;
+  int arg2 = 0;
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -54,15 +58,24 @@ std::atomic<int> volume{kDefaultVolume};
 std::atomic<uint32_t> underruns{0};
 std::atomic<bool> countUnderruns{false};
 std::atomic<bool> ringOn{false};
+// Recording: the UI reads these; `recShared` (under `lock`) holds the strings and the bins.
+std::string recordPath;  // where the next Record command writes (under `lock`)
+RecordStatus recShared;
+std::atomic<bool> recOn{false};
+std::atomic<bool> recPaused{false};
+std::atomic<uint32_t> recBytes{0};  // audio data bytes so far
+std::atomic<int> recLevelCenti{-9600};  // levelDb x 100
+std::atomic<int> micDigitalDb{12};  // on top of the PGA's 30 dB: 42 dB in all to start
+std::atomic<uint32_t> recGeneration{0};
 
 struct Locked {
   Locked() { xSemaphoreTake(lock, portMAX_DELAY); }
   ~Locked() { xSemaphoreGive(lock); }
 };
 
-void send(Cmd cmd, int arg = 0) {
+void send(Cmd cmd, int arg = 0, int arg2 = 0) {
   if (!commands) return;  // begin() hasn't run (a standby wake powers off without audio)
-  const Command c{cmd, arg};
+  const Command c{cmd, arg, arg2};
   xQueueSend(commands, &c, portMAX_DELAY);
 }
 
@@ -156,6 +169,9 @@ void outputSetRate(uint32_t rate) {
 
 struct Player {
   HMP3Decoder decoder = nullptr;
+  bool wav = false;  // a WAV track: PCM straight from the file, no decoder
+  uint32_t wavRate = 0;
+  int wavChannels = 0;
   FILE *file = nullptr;
   std::string path;
   long fileSize = 0;
@@ -204,6 +220,50 @@ void closeTrack() {
   p.file = nullptr;
   if (p.decoder) MP3FreeDecoder(p.decoder);
   p.decoder = nullptr;
+  p.wav = false;
+}
+
+bool hasExtension(const std::string &path, const char *ext) {
+  const size_t n = strlen(ext);
+  return path.size() > n && strcasecmp(path.c_str() + path.size() - n, ext) == 0;
+}
+
+uint32_t le32(const uint8_t *b) {
+  return b[0] | b[1] << 8 | b[2] << 16 | static_cast<uint32_t>(b[3]) << 24;
+}
+
+// Finds a WAV file's format and its data chunk. False unless it's 16-bit PCM, 1 or 2
+// channels, 8-48 kHz. dataBytes is what the header says (0 for a recording cut off early).
+bool parseWav(FILE *f, uint32_t &rate, int &channels, long &dataStart, long &dataBytes) {
+  uint8_t h[16];
+  if (fread(h, 1, 12, f) != 12 || memcmp(h, "RIFF", 4) != 0 || memcmp(h + 8, "WAVE", 4) != 0) {
+    return false;
+  }
+  bool haveFormat = false;
+  for (int chunks = 0; chunks < 32; ++chunks) {
+    if (fread(h, 1, 8, f) != 8) return false;
+    const uint32_t size = le32(h + 4);
+    const long body = ftell(f);
+    if (memcmp(h, "fmt ", 4) == 0) {
+      if (size < 16 || fread(h, 1, 16, f) != 16) return false;
+      const int format = h[0] | h[1] << 8;
+      channels = h[2] | h[3] << 8;
+      rate = le32(h + 4);
+      const int bits = h[14] | h[15] << 8;
+      if ((format != 1 && format != 0xFFFE) || bits != 16 || channels < 1 || channels > 2 ||
+          rate < 8000 || rate > 48000) {
+        return false;
+      }
+      haveFormat = true;
+    } else if (memcmp(h, "data", 4) == 0) {
+      if (!haveFormat) return false;
+      dataStart = body;
+      dataBytes = size;
+      return true;
+    }
+    if (fseek(f, body + size + (size & 1), SEEK_SET) != 0) return false;
+  }
+  return false;
 }
 
 bool openTrack(int index) {
@@ -222,7 +282,17 @@ bool openTrack(int index) {
     return false;
   }
   std::string title, artist;
-  const long start = mp3info::readTags(p.file, title, artist);
+  long start = 0, wavBytes = 0;
+  p.wav = hasExtension(path, ".wav");
+  if (p.wav) {
+    if (!parseWav(p.file, p.wavRate, p.wavChannels, start, wavBytes)) {
+      log_w("audio: %s isn't a 16-bit PCM WAV", path.c_str());
+      closeTrack();
+      return false;
+    }
+  } else {
+    start = mp3info::readTags(p.file, title, artist);
+  }
   fseek(p.file, 0, SEEK_END);
   p.path = path;
   p.fileSize = ftell(p.file);
@@ -231,6 +301,7 @@ bool openTrack(int index) {
   p.seekMs = 0;
   p.readFailures = 0;
   p.audioBytes = p.fileSize - start;
+  if (p.wav && wavBytes > 0 && wavBytes < p.audioBytes) p.audioBytes = wavBytes;
   fseek(p.file, start, SEEK_SET);
   if (title.empty()) {
     const size_t slash = path.rfind('/');
@@ -239,11 +310,13 @@ bool openTrack(int index) {
     if (dot != std::string::npos) title.resize(dot);
   }
 
-  p.decoder = MP3InitDecoder();
-  if (!p.decoder) {
-    log_e("audio: MP3InitDecoder out of memory");
-    closeTrack();
-    return false;
+  if (!p.wav) {
+    p.decoder = MP3InitDecoder();
+    if (!p.decoder) {
+      log_e("audio: MP3InitDecoder out of memory");
+      closeTrack();
+      return false;
+    }
   }
   p.readPtr = p.in;
   p.bytesLeft = 0;
@@ -377,14 +450,320 @@ void ringStep() {
   i2s_channel_write(tx, p.pcm, kFrames * 2 * sizeof(int16_t), &written, portMAX_DELAY);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Beep (audio task only): one tone with soft edges, then enough silence to push it through the
+// DMA buffers before the output goes off again.
+
+void beepNow(uint32_t ms, uint32_t hz) {
+  constexpr uint32_t kRate = 16000;
+  if (volume.load() == 0) return;  // at the music volume: turned down to 0, no beep
+  if (!outputStart(kRate)) return;
+  const uint32_t total = ms * kRate / 1000;
+  const uint32_t ramp = kRampMs * kRate / 1000;
+  const uint32_t tail = kDmaDescriptors * kDmaFrames;  // silence that flushes the tone out
+  constexpr int kFrames = 256;
+  for (uint32_t done = 0; done < total + tail;) {
+    const int n = static_cast<int>(std::min<uint32_t>(kFrames, total + tail - done));
+    for (int i = 0; i < n; ++i, ++done) {
+      float amp = 0;
+      if (done < total) {
+        amp = 0.6f;
+        if (done < ramp) amp *= static_cast<float>(done) / ramp;
+        if (total - done < ramp) amp *= static_cast<float>(total - done) / ramp;
+      }
+      const float phase = 2 * static_cast<float>(M_PI) * hz * (done % kRate) / kRate;
+      p.pcm[2 * i] = p.pcm[2 * i + 1] = static_cast<int16_t>(amp * 32767 * sinf(phase));
+    }
+    size_t written = 0;
+    i2s_channel_write(tx, p.pcm, n * 2 * sizeof(int16_t), &written, portMAX_DELAY);
+  }
+  outputStop();
+}
+
+// ---------------------------------------------------------------------------------------------
+// WAV playback (audio task only): 16-bit PCM read straight into the output.
+
+void stepWav() {
+  const uint32_t bytesPerSecond = p.wavRate * p.wavChannels * 2;
+  if (p.firstFrame) {
+    p.firstFrame = false;
+    p.rate = p.wavRate;
+    if (!tx && !outputStart(p.wavRate)) {
+      closeTrack();
+      setState(State::Stopped);
+      return;
+    }
+    if (txRate != p.wavRate) outputSetRate(p.wavRate);
+    {
+      Locked l;
+      shared.durationMs = static_cast<uint32_t>(uint64_t(p.audioBytes) * 1000 / bytesPerSecond);
+      shared.sampleRate = p.wavRate;
+      shared.bitrateKbps = static_cast<int>(bytesPerSecond * 8 / 1000);
+      shared.channels = p.wavChannels;
+    }
+    generation++;
+    if (p.seekMs) {
+      long offset = static_cast<long>(uint64_t(p.seekMs) * bytesPerSecond / 1000);
+      offset -= offset % (2 * p.wavChannels);
+      if (offset < p.audioBytes && fseek(p.file, p.audioStart + offset, SEEK_SET) == 0) {
+        p.filePos = p.audioStart + offset;
+        p.samplesPlayed = offset / (2 * p.wavChannels);
+        elapsedMs = p.seekMs;
+      }
+      p.seekMs = 0;
+    }
+    log_i("audio: WAV %lu Hz, %d ch", (unsigned long)p.wavRate, p.wavChannels);
+  }
+  constexpr int kFramesPerStep = 576;  // p.pcm holds 1152 stereo frames
+  const int frameBytes = 2 * p.wavChannels;
+  long want = std::min<long>(kFramesPerStep * frameBytes, p.audioStart + p.audioBytes - p.filePos);
+  want -= want % frameBytes;
+  const size_t n = want > 0 ? fread(p.in, 1, want, p.file) : 0;
+  p.filePos += n;
+  const int frames = static_cast<int>(n) / frameBytes;
+  if (frames == 0) {
+    trackFinished();
+    return;
+  }
+  const auto *s = reinterpret_cast<const int16_t *>(p.in);
+  for (int i = 0; i < frames; ++i) {  // the DAC plays the left slot: mono into both
+    const int16_t v = p.wavChannels == 1 ? s[i] : (int32_t(s[2 * i]) + s[2 * i + 1]) / 2;
+    p.pcm[2 * i] = p.pcm[2 * i + 1] = v;
+  }
+  size_t written = 0;
+  i2s_channel_write(tx, p.pcm, frames * 2 * sizeof(int16_t), &written, portMAX_DELAY);
+  ++p.frames;
+  p.samplesPlayed += frames;
+  elapsedMs = static_cast<uint32_t>(p.samplesPlayed * 1000 / p.rate);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Recording (audio task only): I2S receive, 16 kHz mono (the left slot, the ADC with REG44 =
+// 0x08), into a WAV file on the card in 8 KB writes from internal RAM.
+
+constexpr int kRecReadSamples = 512;            // 32 ms per read
+constexpr size_t kRecWriteBytes = 8 * 1024;     // gathered in p.in before each fwrite
+constexpr uint32_t kRecWindow = kRecordRate / 10;  // level-meter window: 100 ms
+constexpr int kRecSkipReads = 3;                // ~100 ms of start-up thump dropped
+
+struct Recorder {
+  i2s_chan_handle_t rx = nullptr;
+  FILE *file = nullptr;
+  size_t fill = 0;  // bytes waiting in p.in
+  uint32_t dataBytes = 0;
+  int skip = 0;
+  uint32_t windowSamples = 0;
+  int windowPeak = 0;
+  int windowPeaks[10] = {};  // the last second, for levelDb
+  int windowIndex = 0;
+  uint32_t secondSamples = 0;
+  int secondPeak = 0;
+} rec;
+
+// The 44-byte header of a 16 kHz mono 16-bit WAV with `data` bytes of audio.
+void wavHeader(uint8_t *h, uint32_t data) {
+  auto put32 = [](uint8_t *b, uint32_t v) {
+    b[0] = v; b[1] = v >> 8; b[2] = v >> 16; b[3] = v >> 24;
+  };
+  memcpy(h, "RIFF", 4);
+  put32(h + 4, data ? data + 36 : 0);
+  memcpy(h + 8, "WAVEfmt ", 8);
+  put32(h + 16, 16);
+  h[20] = 1; h[21] = 0;  // PCM
+  h[22] = 1; h[23] = 0;  // mono
+  put32(h + 24, kRecordRate);
+  put32(h + 28, kRecordRate * 2);
+  h[32] = 2; h[33] = 0;   // block align
+  h[34] = 16; h[35] = 0;  // bits
+  memcpy(h + 36, "data", 4);
+  put32(h + 40, data);
+}
+
+float peakDb(int peak) { return peak <= 0 ? -96.0f : 20 * log10f(peak / 32768.0f); }
+
+void recordFail(const char *why);
+
+void recordFlush() {
+  if (!rec.file || rec.fill == 0) return;
+  if (fwrite(p.in, 1, rec.fill, rec.file) != rec.fill) {
+    recordFail("CAN'T WRITE TO THE CARD");
+    return;
+  }
+  rec.fill = 0;
+}
+
+void recordFinish() {
+  if (!recOn) return;
+  recordFlush();
+  if (rec.file) {
+    uint8_t h[44];
+    wavHeader(h, rec.dataBytes);
+    if (fseek(rec.file, 0, SEEK_SET) == 0) fwrite(h, 1, sizeof h, rec.file);
+    fclose(rec.file);
+    rec.file = nullptr;
+  }
+  if (rec.rx) {
+    i2s_channel_disable(rec.rx);
+    i2s_del_channel(rec.rx);
+    rec.rx = nullptr;
+  }
+  recOn = false;
+  recPaused = false;
+  recLevelCenti = -9600;
+  recGeneration++;
+  log_i("audio: recording done, %lu bytes", (unsigned long)rec.dataBytes);
+}
+
+void recordFail(const char *why) {
+  log_e("audio: recording stopped: %s", why);
+  {
+    Locked l;
+    recShared.error = why;
+  }
+  if (rec.file && rec.fill) rec.fill = 0;  // what's buffered can't be written anyway
+  recordFinish();
+}
+
+void recordStart() {
+  if (recOn) return;
+  std::string path;
+  {
+    Locked l;
+    path = recordPath;
+    recShared.error.clear();
+    recShared.bins.clear();
+    recShared.path = path;
+  }
+  // Playback, a paused track or the alarm tone give up the output first.
+  if (ring.on) ringStop();
+  closeTrack();
+  outputStop();
+  setState(State::Stopped);
+
+  rec = Recorder{};
+  rec.file = fopen(path.c_str(), "wb");
+  if (!rec.file) {
+    Locked l;
+    recShared.error = "CAN'T CREATE THE FILE";
+    recGeneration++;
+    return;
+  }
+  uint8_t h[44];
+  wavHeader(h, 0);
+  memcpy(p.in, h, sizeof h);  // written from RAM with the first audio (AGENTS.md, Gotchas)
+  rec.fill = sizeof h;
+
+  i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  chan.dma_desc_num = kDmaDescriptors;  // 8 x 511 frames = 255 ms: rides out an SD write
+  chan.dma_frame_num = kDmaFrames;
+  i2s_std_config_t cfg = stdConfig(kRecordRate);
+  cfg.slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
+  // On the S3 that macro leaves both slots in the mask, so mono would still read the right
+  // slot too, at twice the rate (seen: a 19 s timer after 11 s). The mic is the left slot.
+  cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
+  cfg.gpio_cfg.dout = I2S_GPIO_UNUSED;
+  cfg.gpio_cfg.din = static_cast<gpio_num_t>(board::I2S_DIN);
+  if (i2s_new_channel(&chan, nullptr, &rec.rx) != ESP_OK ||
+      i2s_channel_init_std_mode(rec.rx, &cfg) != ESP_OK || i2s_channel_enable(rec.rx) != ESP_OK) {
+    if (rec.rx) i2s_del_channel(rec.rx);
+    rec.rx = nullptr;
+    fclose(rec.file);
+    rec.file = nullptr;
+    remove(path.c_str());
+    Locked l;
+    recShared.error = "I2S WON'T START";
+    recGeneration++;
+    return;
+  }
+  delay(5);  // MCLK running before the codec's state machine starts
+  es8311::begin();
+  es8311::micBegin(micDigitalDb.load());
+  rec.skip = kRecSkipReads;
+  recBytes = 0;
+  recOn = true;
+  recPaused = false;
+  recGeneration++;
+  log_i("audio: recording to %s, mic gain %d dB", path.c_str(),
+        es8311::kMicPgaDb + micDigitalDb.load());
+}
+
+void recordStep() {
+  size_t got = 0;
+  if (i2s_channel_read(rec.rx, p.pcm, kRecReadSamples * sizeof(int16_t), &got, 200) != ESP_OK) {
+    return;
+  }
+  const int n = static_cast<int>(got / sizeof(int16_t));
+  if (rec.skip > 0) {
+    --rec.skip;
+    return;
+  }
+  for (int i = 0; i < n; ++i) {
+    const int a = std::abs(static_cast<int>(p.pcm[i]));
+    rec.windowPeak = std::max(rec.windowPeak, a);
+    rec.secondPeak = std::max(rec.secondPeak, a);
+    if (++rec.windowSamples == kRecWindow) {
+      rec.windowPeaks[rec.windowIndex] = rec.windowPeak;
+      rec.windowIndex = (rec.windowIndex + 1) % 10;
+      rec.windowSamples = 0;
+      rec.windowPeak = 0;
+      const int loudest = *std::max_element(rec.windowPeaks, rec.windowPeaks + 10);
+      recLevelCenti = static_cast<int>(peakDb(loudest) * 100);
+    }
+    if (++rec.secondSamples == kRecordRate) {
+      // -60..0 dBFS -> 0..255
+      const float db = peakDb(rec.secondPeak);
+      const int bin = static_cast<int>(std::clamp((db + 60) / 60, 0.0f, 1.0f) * 255);
+      if (!recPaused) {
+        Locked l;
+        recShared.bins.push_back(static_cast<uint8_t>(bin));
+        if (recShared.bins.size() > static_cast<size_t>(kRecordBins)) {
+          recShared.bins.erase(recShared.bins.begin());
+        }
+      }
+      rec.secondSamples = 0;
+      rec.secondPeak = 0;
+    }
+  }
+  if (recPaused) return;
+  memcpy(p.in + rec.fill, p.pcm, got);
+  rec.fill += got;
+  rec.dataBytes += got;
+  recBytes = rec.dataBytes;
+  if (rec.fill >= kRecWriteBytes) recordFlush();
+}
+
 void handle(const Command &c) {
-  if (ring.on && c.cmd != Cmd::Ring && c.cmd != Cmd::Volume) ringStop();
+  if (ring.on && c.cmd != Cmd::Ring && c.cmd != Cmd::Volume && c.cmd != Cmd::Beep) ringStop();
+  // Playback (or the alarm) needs the I2S port: a recording in progress is finished first.
+  if (recOn && (c.cmd == Cmd::Play || c.cmd == Cmd::TogglePause || c.cmd == Cmd::Stop ||
+                (c.cmd == Cmd::Ring && c.arg))) {
+    recordFinish();
+  }
   State state;
   {
     Locked l;
     state = shared.state;
   }
   switch (c.cmd) {
+    case Cmd::Beep:
+      if (!recOn && !ring.on && state == State::Stopped) beepNow(c.arg, c.arg2);
+      break;
+    case Cmd::Record:
+      recordStart();
+      break;
+    case Cmd::RecordStop:
+      recordFinish();
+      break;
+    case Cmd::RecordPause:
+      if (recOn) {
+        recPaused = !recPaused;
+        if (recPaused) recordFlush();
+        recGeneration++;
+      }
+      break;
+    case Cmd::MicGain:
+      if (recOn) es8311::setMicGain(c.arg);
+      break;
     case Cmd::Play: {
       uint32_t startMs;
       {
@@ -472,6 +851,10 @@ void refill() {
 
 // Decodes and plays one frame. Called only while playing.
 void step() {
+  if (p.wav) {
+    stepWav();
+    return;
+  }
   if (!p.eof && (p.needRefill || p.bytesLeft < kRefillBelow)) refill();
   if (p.bytesLeft <= 0) {
     if (p.eof) trackFinished();  // otherwise a failed read: retry on the next step
@@ -583,13 +966,16 @@ void task(void *) {
       Locked l;
       state = shared.state;
     }
-    const bool playing = state == State::Playing && p.decoder;
+    const bool playing = state == State::Playing && (p.decoder || p.wav);
+    const bool busy = playing || ring.on || recOn;
     Command c;
-    if (xQueueReceive(commands, &c, playing || ring.on ? 0 : portMAX_DELAY) == pdTRUE) {
+    if (xQueueReceive(commands, &c, busy ? 0 : portMAX_DELAY) == pdTRUE) {
       handle(c);
       continue;
     }
-    if (ring.on) {
+    if (recOn) {
+      recordStep();
+    } else if (ring.on) {
       ringStep();
     } else if (playing) {
       step();
@@ -656,6 +1042,47 @@ Status status() {
 void ring(bool on) { send(Cmd::Ring, on ? 1 : 0); }
 
 bool ringing() { return ringOn.load(); }
+
+void beep(uint32_t ms, uint32_t hz) { send(Cmd::Beep, static_cast<int>(ms), static_cast<int>(hz)); }
+
+void record(const std::string &path) {
+  if (!lock) return;
+  {
+    Locked l;
+    recordPath = path;
+  }
+  send(Cmd::Record);
+}
+
+void stopRecording() { send(Cmd::RecordStop); }
+
+void togglePauseRecording() { send(Cmd::RecordPause); }
+
+void changeMicGain(int deltaDb) {
+  const int db = std::clamp(micDigitalDb.load() + deltaDb, 0, es8311::kMicDigitalMaxDb);
+  micDigitalDb = db;
+  send(Cmd::MicGain, db);
+}
+
+RecordStatus recordStatus() {
+  RecordStatus s;
+  if (!lock) return s;
+  {
+    Locked l;
+    s = recShared;
+  }
+  s.on = recOn.load();
+  s.paused = recPaused.load();
+  const uint32_t bytes = recBytes.load();
+  s.elapsedMs = static_cast<uint32_t>(uint64_t(bytes) * 1000 / (kRecordRate * 2));
+  s.bytes = bytes + 44;
+  s.levelDb = s.on ? recLevelCenti.load() / 100.0f : -96;
+  s.gainDb = es8311::kMicPgaDb + micDigitalDb.load();
+  s.generation = recGeneration.load();
+  return s;
+}
+
+bool recording() { return recOn.load(); }
 
 bool active() {
   if (!lock) return false;

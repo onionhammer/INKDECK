@@ -145,7 +145,7 @@ void appendUtf8(std::string &out, uint32_t cp) {
 }
 
 void appendSlots(std::string &out, uint32_t cp) {
-  if (cp == 0xAD) return;           // soft hyphen: no hyphenation yet
+  if (cp == 0xAD) return;           // soft hyphen (flow text gets flow::kSoftHyphen instead)
   if (cp == 0x2015) cp = 0x2014;    // horizontal bar: draw an em dash
   if (const uint8_t slot = ui::fonts::slotFor(cp)) {
     out += static_cast<char>(slot);

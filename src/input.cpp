@@ -17,6 +17,8 @@ constexpr uint8_t kDebounceTicks = 3;  // ~15 ms, like the vendor's MultiButton 
 constexpr uint32_t kLongPressMs = 1000;  // docs/ui-design.md: HOLD = ~1 s
 constexpr uint32_t kRepeatDelayMs = 500;
 constexpr uint32_t kRepeatEveryMs = 200;
+constexpr uint32_t kFastAfterMs = 1700;  // repeats after this page through lists (6 rows first)
+constexpr uint8_t kFastFlag = 0x80;      // or'd into a queued key
 constexpr uint32_t kPowerMaxMs = 2000;  // a longer PWR hold is heading for the 4 s forced off
 
 struct Button {
@@ -44,10 +46,12 @@ QueueHandle_t queue = nullptr;
 esp_timer_handle_t timer = nullptr;
 
 std::atomic<uint32_t> lastKeyMs{0};
+bool lastFast = false;  // only touched by the task calling wait()
 
-void emit(Key key) {
+void emit(Key key, bool fast = false) {
   lastKeyMs = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-  xQueueSend(queue, &key, 0);
+  const uint8_t item = static_cast<uint8_t>(key) | (fast ? kFastFlag : 0);
+  xQueueSend(queue, &item, 0);
 }
 
 bool isPressed(const Button &b) {
@@ -77,7 +81,7 @@ void tick(void *) {
     if (b.autoRepeat) {
       if (!b.longFired && b.heldMs >= kRepeatDelayMs &&
           (b.heldMs - kRepeatDelayMs) % kRepeatEveryMs == 0) {
-        emit(b.shortKey);
+        emit(b.shortKey, b.heldMs >= kFastAfterMs);
       }
     } else if (b.shortKey == Key::Power) {
       if (b.heldMs > kPowerMaxMs) b.longFired = true;  // released later: no key
@@ -118,7 +122,7 @@ void begin() {
     b.heldMs = b.down ? kPowerMaxMs + 1 : 0;
   }
   lastKeyMs = static_cast<uint32_t>(esp_timer_get_time() / 1000);
-  queue = xQueueCreate(32, sizeof(Key));
+  queue = xQueueCreate(32, sizeof(uint8_t));
   const esp_timer_create_args_t args = {
       .callback = tick,
       .arg = nullptr,
@@ -131,10 +135,19 @@ void begin() {
 }
 
 bool wait(Key &key, uint32_t timeoutMs) {
-  return xQueueReceive(queue, &key, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+  uint8_t item = 0;
+  if (xQueueReceive(queue, &item, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
+    lastFast = false;
+    return false;
+  }
+  key = static_cast<Key>(item & ~kFastFlag);
+  lastFast = (item & kFastFlag) != 0;
+  return true;
 }
 
-void inject(Key key) { emit(key); }
+bool lastKeyFast() { return lastFast; }
+
+void inject(Key key, bool fast) { emit(key, fast); }
 
 bool anyDown() {
   for (const auto &b : buttons) {

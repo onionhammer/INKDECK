@@ -1,6 +1,8 @@
 // Drawing helpers on top of Adafruit GFX, plus the typesetter for flow text (text.h): greedy
 // word wrap, justified lines on a fixed line grid, paragraph indents, bold/italic runs, centred
-// headings with space around them, and an optional drop cap. No hyphenation or kerning.
+// headings with space around them, and an optional drop cap. A word that doesn't fit the line
+// breaks at the last soft hyphen (drawn as a hyphen), hard hyphen or dash that fits. There's no
+// hyphenation dictionary and no kerning.
 #pragma once
 #include <Adafruit_GFX.h>
 
@@ -85,8 +87,17 @@ class Typesetter {
   struct Word {
     uint32_t start;
     uint32_t end;
-    int width;
+    int width;  // a hyphenated word's includes its hyphen
     uint8_t style;
+    bool hyphen = false;  // broken at a soft hyphen: draw '-' after it
+  };
+  // A place a word may break, just after offset `at`.
+  struct Break {
+    uint32_t at;
+    int width;      // of the word up to it (with the dash, without a soft hyphen's '-')
+    uint8_t style;  // in effect there
+    int glyphs;     // glyphs before it
+    bool soft;
   };
 
   void drawLine(GFXcanvas1 &canvas, const std::string &flow, const std::vector<Word> &words,
