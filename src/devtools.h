@@ -16,10 +16,17 @@
 //               it next opens)
 //   !wxforget   drop the saved weather forecast (the Weather screen shows the room instead until
 //               the next sync)
+//   !wxmodels A,B,...   log the sky now (weather code, cloud layers) from each Open-Meteo model
+//               named, e.g. "!wxmodels best_match,gfs_hrrr,ecmwf_ifs025"
 //   !append PATH TEXT   add a line to a file on the card (PATH starts with /sdcard/), e.g.
 //               "!append /sdcard/inkdeck.ini timezone = PST8PDT,M3.2.0,M11.1.0"
 //   !cat PATH   print a file on the card
 //   !rm PATH    delete a file on the card
+//   !ls PATH    list a folder on the card, with file sizes
+//   !flow PATH|N   print the start of an EPUB's chapter N (spine item) as the Reader gets it,
+//               without opening it in the Reader (its saved place stays put)
+//   !unzip PATH[|ENTRY]   list the files in a zip on the card (an EPUB), or print one of them
+//               ("!unzip /sdcard/Books/Some Book.epub|OEBPS/style.css")
 //   !sdtest     write test patterns to the card from internal RAM, PSRAM and flash, read them
 //               back and report wrong bytes (flash in one large write is known to fail)
 #pragma once

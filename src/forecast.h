@@ -1,11 +1,12 @@
 // The forecast, from Open-Meteo (open-meteo.com: no API key, free for non-commercial use) for
 // LATITUDE/LONGITUDE in .env: current conditions, 48 hours and 7 days. Values stay in SI (°C,
-// km/h, mm); units.h converts them for the screens.
+// km/h, mm); units.h converts them for the screens. Inside the contiguous US it asks for the
+// National Blend of Models (NBM), elsewhere Open-Meteo's best match (forecast.cpp, modelFor()).
 //
 // The last forecast is kept in NVS, so the Weather screen opens at once and works offline;
 // when the "current" block is more than an hour old, the hour of the forecast stands in for
-// it. While the board is on, poll() syncs once an hour (join Wi-Fi, one HTTPS request, Wi-Fi
-// off) on its own task.
+// it. While the board is on, poll() syncs once an hour, or every half hour on USB (join Wi-Fi,
+// one HTTPS request, Wi-Fi off) on its own task.
 #pragma once
 #include <stdint.h>
 #include <time.h>
@@ -64,6 +65,9 @@ bool configured();
 bool get(Forecast &out);
 // Dev tool: drops the saved forecast (RAM and NVS), as on a new board.
 void forget();
+// Dev tool: asks Open-Meteo for the sky now from each of `models` (comma-separated model
+// names) and logs the reply, to compare them against the window.
+void compareModels(const std::string &models);
 
 // Conditions at t: the current block if the forecast is under an hour old, otherwise the hour
 // that contains t. nullptr if the forecast doesn't reach t.
@@ -92,8 +96,8 @@ bool syncing();
 // When poll() syncs next; 0 if it won't (not configured, or the clock isn't set).
 time_t nextSync();
 
-// From loop(): starts the hourly sync while the board is on. Skipped on battery below
-// power::kLowBatteryPercent.
+// From loop(): starts the scheduled sync while the board is on (hourly, half-hourly on USB).
+// Skipped on battery below power::kLowBatteryPercent.
 void poll();
 
 }  // namespace weather

@@ -1,16 +1,33 @@
 // EPUB: container.xml -> OPF (title, author, manifest, spine, table of contents) -> per-chapter
 // XHTML converted to flow text (see text.h). Quick-and-dirty string scanning, not a real XML
-// parser. Ignores CSS and tables. Pictures become flow::kImage paragraphs pointing into the
-// chapter's picture list (SVG wrappers around an <image> included); the Reader draws them.
+// parser. Ignores tables, and CSS except display:none (elements the book hides, like the
+// "Cover" heading over a cover picture). Pictures become flow::kImage paragraphs pointing into
+// the chapter's picture list (SVG wrappers around an <image> included); the Reader draws them.
 //
 // "Chapter" here means a spine item (one XHTML file), which is what the reader pages through.
 #pragma once
 #include <stdint.h>
 
+#include <map>
 #include <string>
 #include <vector>
 
 #include "zip.h"
+
+// A selector from a CSS rule that says display:none, kept only if it's a compound this can
+// match: an optional tag, classes, an id, and one [class^= / *= / ~= / =] test (books use
+// those for their "Nonprinting" classes). Combinators, pseudo-classes and rules inside @media
+// are ignored.
+struct HiddenSelector {
+  std::string tag;  // lower-case; "" for any
+  std::vector<std::string> classes;
+  std::string id;
+  char classOp = 0;  // '^', '*', '~', '=' or 0 for none
+  std::string classValue;
+};
+
+// The display:none selectors in a stylesheet.
+std::vector<HiddenSelector> hiddenSelectors(const std::string &css);
 
 class Epub {
  public:
@@ -61,16 +78,23 @@ class Epub {
   void parseNav(const std::string &xml, const std::string &dir);
   void addTocEntry(const std::string &title, const std::string &dir, const std::string &href);
 
+  // The display:none selectors of the chapter's stylesheets and <style> blocks.
+  std::vector<HiddenSelector> chapterHidden(const std::string &xhtml,
+                                            const std::string &dir) const;
+
   ZipFile zip_;
   std::string title_;
   std::string author_;
   std::string cover_;
   std::vector<Chapter> spine_;  // reading order
   std::vector<TocEntry> toc_;
+  mutable std::map<std::string, std::vector<HiddenSelector>> css_;  // per stylesheet file
 };
 
 // Exposed for reuse/testing: XHTML (UTF-8) -> flow text. With images, pictures are collected
 // (paths resolved against baseDir, the chapter's folder with a trailing '/'); without, they
-// become "[image]" placeholders.
+// become "[image]" placeholders. Elements matching hidden, or with an inline display:none or a
+// hidden attribute, are left out.
 void xhtmlToFlow(const std::string &xhtml, std::string &flow,
-                 std::vector<Epub::Image> *images = nullptr, const std::string &baseDir = {});
+                 std::vector<Epub::Image> *images = nullptr, const std::string &baseDir = {},
+                 const std::vector<HiddenSelector> *hidden = nullptr);

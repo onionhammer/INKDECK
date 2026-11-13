@@ -169,7 +169,9 @@ std::string decodeText(const std::string &raw) {
   return out;
 }
 
-std::string attr(const std::string &s, const Tag &t, const char *wanted) {
+// The value of attribute `wanted`, or "" if it's missing; *found tells the two apart.
+std::string attr(const std::string &s, const Tag &t, const char *wanted, bool *found = nullptr) {
+  if (found) *found = false;
   size_t i = t.attrStart;
   const size_t e = t.attrEnd;
   auto skipSpace = [&] {
@@ -197,7 +199,10 @@ std::string attr(const std::string &s, const Tag &t, const char *wanted) {
         value = s.substr(valueStart, i - valueStart);
       }
     }
-    if (key == wanted) return decodeEntitiesUtf8(value);
+    if (key == wanted) {
+      if (found) *found = true;
+      return decodeEntitiesUtf8(value);
+    }
     if (i == keyStart) ++i;  // no progress: skip junk
   }
   return {};
@@ -326,15 +331,208 @@ bool isHeading(const std::string &name) {
   return name.size() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6';
 }
 
+// Elements that never have a closing tag, even written without "/>".
+bool isVoid(const std::string &name) {
+  return isOneOf(name, {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+                        "param", "source", "track", "wbr"});
+}
+
+// ---------------------------------------------------------------------------------------------
+// CSS: only display:none
+
+std::string lowerNoSpace(const std::string &s) {
+  std::string out;
+  out.reserve(s.size());
+  for (const char c : s) {
+    if (!isspace(static_cast<unsigned char>(c))) {
+      out += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    }
+  }
+  return out;
+}
+
+// A declaration block (or a style attribute) that sets display:none.
+bool saysDisplayNone(const std::string &declarations) {
+  const std::string d = lowerNoSpace(declarations);
+  for (size_t at = d.find("display:none"); at != std::string::npos;
+       at = d.find("display:none", at + 1)) {
+    if (at == 0 || d[at - 1] == ';' || d[at - 1] == '{') return true;  // not "-x-display:"
+  }
+  return false;
+}
+
+bool isIdentChar(char c) {
+  return isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_' ||
+         static_cast<unsigned char>(c) >= 0x80;
+}
+
+// One compound selector: "h1.ChapTitle", ".Nonprinting", "*[class*=\"Nonprinting\"]", "#x".
+// False for anything else (combinators, pseudo-classes, other attributes).
+bool parseSelector(const std::string &raw, HiddenSelector &out) {
+  size_t b = 0, e = raw.size();
+  while (b < e && isspace(static_cast<unsigned char>(raw[b]))) ++b;
+  while (e > b && isspace(static_cast<unsigned char>(raw[e - 1]))) --e;
+  const std::string s = raw.substr(b, e - b);
+  size_t i = 0;
+  const auto ident = [&] {
+    const size_t start = i;
+    while (i < s.size() && isIdentChar(s[i])) ++i;
+    return s.substr(start, i - start);
+  };
+  if (i < s.size() && s[i] == '*') {
+    ++i;
+  } else {
+    for (char c : ident()) out.tag += static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  }
+  while (i < s.size()) {
+    if (s[i] == '.') {
+      ++i;
+      out.classes.push_back(ident());
+      if (out.classes.back().empty()) return false;
+    } else if (s[i] == '#') {
+      ++i;
+      out.id = ident();
+      if (out.id.empty()) return false;
+    } else if (s[i] == '[') {
+      const size_t close = s.find(']', i);
+      if (close == std::string::npos || out.classOp) return false;
+      const std::string inner = s.substr(i + 1, close - i - 1);
+      i = close + 1;
+      const size_t eq = inner.find('=');
+      if (eq == std::string::npos || eq == 0) return false;
+      char op = '=';
+      size_t nameEnd = eq;
+      if (strchr("^*~", inner[eq - 1])) {
+        op = inner[eq - 1];
+        nameEnd = eq - 1;
+      }
+      if (lowerNoSpace(inner.substr(0, nameEnd)) != "class") return false;
+      std::string value = inner.substr(eq + 1);
+      size_t vb = 0, ve = value.size();
+      while (vb < ve && (isspace(static_cast<unsigned char>(value[vb])) || value[vb] == '"' ||
+                         value[vb] == '\'')) {
+        ++vb;
+      }
+      while (ve > vb && (isspace(static_cast<unsigned char>(value[ve - 1])) ||
+                         value[ve - 1] == '"' || value[ve - 1] == '\'')) {
+        --ve;
+      }
+      out.classOp = op;
+      out.classValue = value.substr(vb, ve - vb);
+      if (out.classValue.empty()) return false;
+    } else {
+      return false;
+    }
+  }
+  if (out.tag == "html" || out.tag == "body") return false;  // never the whole chapter
+  return !out.tag.empty() || !out.classes.empty() || !out.id.empty() || out.classOp;
+}
+
+// Whether the whitespace-separated list `list` has the word `word`.
+bool hasWord(const std::string &list, const std::string &word) {
+  for (size_t at = list.find(word); at != std::string::npos; at = list.find(word, at + 1)) {
+    const size_t end = at + word.size();
+    if ((at == 0 || isspace(static_cast<unsigned char>(list[at - 1]))) &&
+        (end == list.size() || isspace(static_cast<unsigned char>(list[end])))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool matches(const HiddenSelector &h, const std::string &tag, const std::string &cls,
+             const std::string &id) {
+  if (!h.tag.empty() && h.tag != tag) return false;
+  if (!h.id.empty() && h.id != id) return false;
+  for (const auto &c : h.classes) {
+    if (!hasWord(cls, c)) return false;
+  }
+  switch (h.classOp) {
+    case '^': return cls.compare(0, h.classValue.size(), h.classValue) == 0;
+    case '*': return cls.find(h.classValue) != std::string::npos;
+    case '~': return hasWord(cls, h.classValue);
+    case '=': return cls == h.classValue;
+    default: return true;
+  }
+}
+
 }  // namespace
 
+std::vector<HiddenSelector> hiddenSelectors(const std::string &css) {
+  std::string s;  // without comments
+  s.reserve(css.size());
+  for (size_t i = 0; i < css.size();) {
+    if (css.compare(i, 2, "/*") == 0) {
+      const size_t end = css.find("*/", i + 2);
+      i = end == std::string::npos ? css.size() : end + 2;
+      s += ' ';
+    } else {
+      s += css[i++];
+    }
+  }
+  std::vector<HiddenSelector> out;
+  size_t i = 0;
+  while (i < s.size()) {
+    if (isspace(static_cast<unsigned char>(s[i])) || s[i] == '}' || s[i] == ';') {
+      ++i;
+      continue;
+    }
+    if (s[i] == '@') {  // @media, @font-face, @page, @import: nothing for us, nested or not
+      const size_t semi = s.find(';', i), brace = s.find('{', i);
+      if (brace == std::string::npos || (semi != std::string::npos && semi < brace)) {
+        i = semi == std::string::npos ? s.size() : semi + 1;
+        continue;
+      }
+      int depth = 0;
+      size_t j = brace;
+      for (; j < s.size(); ++j) {
+        if (s[j] == '{') ++depth;
+        if (s[j] == '}' && --depth == 0) break;
+      }
+      i = j + 1;
+      continue;
+    }
+    const size_t open = s.find('{', i);
+    if (open == std::string::npos) break;
+    const size_t close = s.find('}', open);
+    if (close == std::string::npos) break;
+    if (saysDisplayNone(s.substr(open + 1, close - open - 1))) {
+      const std::string selectors = s.substr(i, open - i);
+      size_t start = 0;
+      while (start <= selectors.size()) {
+        size_t comma = selectors.find(',', start);
+        if (comma == std::string::npos) comma = selectors.size();
+        HiddenSelector h;
+        if (parseSelector(selectors.substr(start, comma - start), h)) out.push_back(std::move(h));
+        start = comma + 1;
+      }
+    }
+    i = close + 1;
+  }
+  return out;
+}
+
 void xhtmlToFlow(const std::string &s, std::string &out, std::vector<Epub::Image> *images,
-                 const std::string &baseDir) {
+                 const std::string &baseDir, const std::vector<HiddenSelector> *hidden) {
   out.clear();
   out.reserve(s.size() / 2);
   FlowBuilder fb(out);
   int bold = 0, italic = 0, heading = 0, skip = 0, svg = 0;
   bool svgHadImage = false;
+  // Inside an element the book hides: its tag name, and how deep in same-named tags.
+  std::string hideName;
+  int hideDepth = 0;
+  const auto isHidden = [&](const Tag &t) {
+    bool flagged = false;
+    attr(s, t, "hidden", &flagged);
+    if (flagged || saysDisplayNone(attr(s, t, "style"))) return true;
+    if (!hidden || hidden->empty()) return false;
+    const std::string cls = attr(s, t, "class"), id = attr(s, t, "id");
+    for (const HiddenSelector &h : *hidden) {
+      if (matches(h, t.name, cls, id)) return true;
+    }
+    return false;
+  };
   auto applyStyle = [&] {
     fb.style((bold > 0 ? flow::kBold : 0) | (italic > 0 ? flow::kItalic : 0));
   };
@@ -370,12 +568,23 @@ void xhtmlToFlow(const std::string &s, std::string &out, std::vector<Epub::Image
       const std::string &name = t.name;
       const bool open = !t.closing;
 
+      if (hideDepth) {  // only its own tag name counts until it closes
+        if (name == hideName && !t.selfClosing && !isVoid(name)) hideDepth += open ? 1 : -1;
+        continue;
+      }
       if (isOneOf(name, {"head", "script", "style", "math"})) {
         if (t.selfClosing) continue;
         bump(skip, open);
         continue;
       }
       if (skip) continue;
+      if (open && isHidden(t)) {
+        if (!t.selfClosing && !isVoid(name)) {
+          hideName = name;
+          hideDepth = 1;
+        }
+        continue;
+      }
       // SVG: covers often wrap a bitmap in <svg><image href=...>; draw that, skip the rest.
       if (name == "svg") {
         if (t.selfClosing) continue;
@@ -432,7 +641,7 @@ void xhtmlToFlow(const std::string &s, std::string &out, std::vector<Epub::Image
       continue;
     }
 
-    if (skip || svg) {
+    if (skip || svg || hideDepth) {
       i = s.find('<', i);
       if (i == std::string::npos) break;
       continue;
@@ -454,6 +663,7 @@ void Epub::close() {
   cover_.clear();
   spine_.clear();
   toc_.clear();
+  css_.clear();
 }
 
 bool Epub::open(const std::string &path, std::string &err) {
@@ -660,8 +870,45 @@ bool Epub::chapterFlow(size_t i, std::string &flow, std::vector<Image> &images,
   std::string xhtml;
   if (!zip_.read(spine_[i].path, xhtml, err)) return false;
   const std::string &path = spine_[i].path;
-  xhtmlToFlow(xhtml, flow, &images, path.substr(0, path.rfind('/') + 1));
+  const std::string dir = path.substr(0, path.rfind('/') + 1);
+  const std::vector<HiddenSelector> hidden = chapterHidden(xhtml, dir);
+  xhtmlToFlow(xhtml, flow, &images, dir, &hidden);
   return true;
+}
+
+std::vector<HiddenSelector> Epub::chapterHidden(const std::string &xhtml,
+                                                const std::string &dir) const {
+  std::vector<HiddenSelector> hidden;
+  const auto add = [&](const std::vector<HiddenSelector> &rules) {
+    hidden.insert(hidden.end(), rules.begin(), rules.end());
+  };
+  const size_t body = xhtml.find("<body");
+  const size_t headEnd = body == std::string::npos ? xhtml.size() : body;
+  Tag t;
+  for (size_t pos = xhtml.find('<'); pos < headEnd; pos = xhtml.find('<', t.end)) {
+    if (!parseTag(xhtml, pos, t)) break;
+    if (t.special || t.closing) continue;
+    if (t.name == "link") {
+      const std::string rel = lowerNoSpace(attr(xhtml, t, "rel"));
+      if (rel.find("stylesheet") == std::string::npos || rel.find("alternate") != std::string::npos) {
+        continue;
+      }
+      const std::string css = resolvePath(dir, attr(xhtml, t, "href"));
+      auto it = css_.find(css);
+      if (it == css_.end()) {
+        std::string text, err;
+        std::vector<HiddenSelector> rules;
+        if (zip_.read(css, text, err)) rules = hiddenSelectors(text);
+        log_i("EPUB: %s hides %u selectors", css.c_str(), static_cast<unsigned>(rules.size()));
+        it = css_.emplace(css, std::move(rules)).first;
+      }
+      add(it->second);
+    } else if (t.name == "style" && !t.selfClosing) {
+      const size_t end = xhtml.find("</style", t.end);
+      add(hiddenSelectors(xhtml.substr(t.end, (end == std::string::npos ? headEnd : end) - t.end)));
+    }
+  }
+  return hidden;
 }
 
 bool Epub::readFile(const std::string &path, std::string &out, std::string &err) const {

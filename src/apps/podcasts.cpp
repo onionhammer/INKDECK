@@ -5,6 +5,7 @@
 
 #include <algorithm>
 
+#include "apps/home.h"
 #include "apps/music.h"
 #include "podcast_library.h"
 #include "trackinfo.h"
@@ -110,7 +111,7 @@ class PodcastsScreen : public Screen {
     autoRefresh();
   }
 
-  std::string tag() const override { return "03 PODCASTS"; }
+  std::string tag() const override { return moduleTag("PODCASTS"); }
   std::string context() const override {
     const podcasts::Activity a = podcasts::activity();
     if (!a.text.empty()) return a.text;

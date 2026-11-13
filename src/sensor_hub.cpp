@@ -151,6 +151,17 @@ shtc3::Reading env() {
   return latest;
 }
 
+shtc3::Reading steadyEnv() {
+  constexpr float kTempStepC = 0.3f, kRhStep = 2.0f;
+  static shtc3::Reading held;
+  Lock lock;
+  if (!latest.ok) return latest;
+  if (!held.ok || fabsf(latest.tempC - held.tempC) >= kTempStepC) held.tempC = latest.tempC;
+  if (!held.ok || fabsf(latest.rh - held.rh) >= kRhStep) held.rh = latest.rh;
+  held.ok = true;
+  return held;
+}
+
 std::vector<float> history() {
   Lock lock;
   std::vector<float> out = slots;

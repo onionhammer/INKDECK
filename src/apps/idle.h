@@ -1,5 +1,6 @@
 // What the board does when nobody touches it (power.h has the mechanisms):
-//   - On USB: nothing; it stays on.
+//   - On USB: nothing; it stays on. PWR shows the desk face (the Clock with the weather, kept
+//     current) instead of powering off.
 //   - On battery, after 10 minutes without a key: standby (the Clock face, redrawn each
 //     minute), or Sleep (the frog) once the battery is below 15 %. Reading (the Reader open)
 //     and playing music never power off until the battery is below 15 %.
@@ -15,6 +16,10 @@ namespace apps {
 
 // Call from loop(): powers off when power::idle() says so (or when requested).
 void pollPower();
+
+// The PWR key (the navigator's handler): on USB the desk face, on battery Sleep; on the desk
+// face, wake.
+void powerKey();
 
 // Call from loop() before the navigator: naps if the conditions above hold. Returns true if it
 // napped (loop() should then start over).

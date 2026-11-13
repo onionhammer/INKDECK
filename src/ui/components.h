@@ -35,6 +35,8 @@ struct StatusInfo {
 };
 void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info);
 int drawBattery(Canvas &c, int x, int centerY, int percent);  // returns its width
+// The inverted ▶ or ‖ box, 22 x 20, left edge at x; returns its width (0 for None).
+int drawPlaybackMark(Canvas &c, int x, int centerY, Playback playback);
 
 // --- Section header: "// LABEL" on the left, a count or address on the right, rule below.
 struct SectionOptions {

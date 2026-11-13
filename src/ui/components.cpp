@@ -26,6 +26,22 @@ int drawBattery(Canvas &c, int x, int centerY, int percent) {
   return kW + 2;
 }
 
+int drawPlaybackMark(Canvas &c, int x, int centerY, Playback playback) {
+  constexpr int kW = 22, kH = 20;
+  if (playback == Playback::None) return 0;
+  // Inverted, like a pill: a play triangle or two pause bars in paper.
+  const Rect box{x, centerY - kH / 2, kW, kH};
+  fill(c, box, kInk);
+  const int cy = box.centerY();
+  if (playback == Playback::Playing) {
+    c.fillTriangle(box.x + 7, cy - 6, box.x + 7, cy + 6, box.x + 16, cy, kPaper);
+  } else {
+    fill(c, {box.x + 6, cy - 6, 4, 12}, kPaper);
+    fill(c, {box.x + 12, cy - 6, 4, 12}, kPaper);
+  }
+  return kW;
+}
+
 void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   const Rect band{r.x, r.y, r.w, r.h - kRule};
   hrule(c, r.x, band.bottom(), r.w);
@@ -39,7 +55,7 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   // Right block: [▶/‖] [WIFI] [temp] [battery glyph + %] [clock], after a 3 px rule.
   constexpr int kGap = 14;
   constexpr int kBatteryGlyphW = 28 + 6;
-  constexpr int kPlaybackW = 22, kPlaybackH = 20;
+  constexpr int kPlaybackW = 22;
   std::string batteryText;
   if (info.battery >= 0) {
     batteryText = std::to_string(info.battery) + "%";
@@ -58,17 +74,7 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   const int baseline = baselineCentered(style::kStatus, band.y, band.h);
   int x = blockX;
   if (info.playback != Playback::None) {
-    // Inverted, like a pill: a play triangle or two pause bars in paper.
-    const Rect box{x, band.centerY() - kPlaybackH / 2, kPlaybackW, kPlaybackH};
-    fill(c, box, kInk);
-    const int cy = box.centerY();
-    if (info.playback == Playback::Playing) {
-      c.fillTriangle(box.x + 7, cy - 6, box.x + 7, cy + 6, box.x + 16, cy, kPaper);
-    } else {
-      fill(c, {box.x + 6, cy - 6, 4, 12}, kPaper);
-      fill(c, {box.x + 12, cy - 6, 4, 12}, kPaper);
-    }
-    x += kPlaybackW + kGap;
+    x += drawPlaybackMark(c, x, band.centerY(), info.playback) + kGap;
   }
   for (int i = 0; i < 4; ++i) {
     if (texts[i].empty()) continue;

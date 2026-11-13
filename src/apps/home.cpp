@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "alarms.h"
 #include "apps/clock.h"
@@ -46,23 +47,25 @@ struct Module {
   int phase;  // PROGRESS.md phase that builds it
 };
 
-// Order and copy from the design canvas, trimmed to what the firmware does today.
+// Copy from the design canvas, trimmed to what the firmware does today. The order is the
+// user's (2026-11-13): what's used most first, related modules together. Screen tags follow it
+// through moduleTag().
 // The \xC2\xB7 escapes in these strings are the middle dot (UTF-8 U+00B7).
 constexpr Module kModules[] = {
     {"READER", "SD", "EPUB books from microSD. Opens where you left off.",
      "microSD \xC2\xB7 SDMMC 4-bit", Kind::Reader, 5},
-    {"MUSIC", "I2S", "MP3 files from microSD through the onboard codec and speaker.",
-     "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music, 6},
     {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
      "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts, 9},
-    {"WEATHER", "NET", "Now, hourly and 6-day forecast, pulled over Wi-Fi every hour.",
+    {"MUSIC", "I2S", "MP3 files from microSD through the onboard codec and speaker.",
+     "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music, 6},
+    {"WEATHER", "NET", "Now, hourly and 6-day forecast over Wi-Fi, every half hour on USB.",
      "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather, 9},
-    {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
-     "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors, 8},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
      "PCF85063A @ 0x51", Kind::Clock, 9},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
      "ES8311 ADC \xC2\xB7 ALDO2", Kind::NotBuilt, 10},
+    {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
+     "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors, 8},
     {"LEVEL", "IMU", "Bubble level and tilt alarm from the 6-axis IMU.",
      "QMI8658A \xC2\xB7 INT2 GPIO40", Kind::NotBuilt, 10},
     {"FILES", "SD", "Browse the microSD card. Opens books and plays music.",
@@ -318,8 +321,9 @@ class HomeScreen : public ui::Screen {
 
   std::string tag() const override { return "INKDECK/OS"; }
   std::string context() const override { return "~/home"; }
+  // The room temperature, held so its wandering last digit doesn't redraw the status bar.
   std::string statusTemp() const override {
-    const shtc3::Reading e = sensors::env();
+    const shtc3::Reading e = sensors::steadyEnv();
     if (!e.ok) return {};
     char buf[16];
     snprintf(buf, sizeof buf, "%.1f%s", units::temperature(e.tempC), units::temperatureUnit());
@@ -464,5 +468,12 @@ class HomeScreen : public ui::Screen {
 }  // namespace
 
 std::unique_ptr<ui::Screen> makeHome() { return std::make_unique<HomeScreen>(); }
+
+std::string moduleTag(const char *label) {
+  for (int i = 0; i < kModuleCount; ++i) {
+    if (strcmp(kModules[i].label, label) == 0) return twoDigits(i + 1) + " " + label;
+  }
+  return label;
+}
 
 }  // namespace apps

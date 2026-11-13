@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "apps/home.h"
 #include "board_pins.h"
 #include "pmic.h"
 #include "sensor_hub.h"
@@ -81,7 +82,7 @@ std::string chargeState(const pmic::Detail &d) {
 
 class SensorsScreen : public ui::Screen {
  public:
-  std::string tag() const override { return "05 SENSORS"; }
+  std::string tag() const override { return moduleTag("SENSORS"); }
   std::string context() const override {
     // "I2C · 5/5 ACK" as on the canvas; flags replace the "I2C ·" so they fit.
     std::string flags;

@@ -5,6 +5,7 @@
 
 #include <vector>
 
+#include "apps/home.h"
 #include "audio.h"
 #include "pmic.h"
 #include "trackinfo.h"
@@ -68,7 +69,7 @@ class MusicScreen : public ui::Screen {
   ~MusicScreen() override {
     if (shortcutPlayer == this) shortcutPlayer = nullptr;
   }
-  std::string tag() const override { return "02 MUSIC"; }
+  std::string tag() const override { return moduleTag("MUSIC"); }
   bool isPlayer() const override { return true; }
   std::string context() const override {
     const std::string path = audio::status().path;

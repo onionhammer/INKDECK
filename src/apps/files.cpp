@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <stdio.h>
 
+#include "apps/home.h"
 #include "apps/music.h"
 #include "apps/reader.h"
 #include "audio.h"
@@ -70,7 +71,7 @@ class FilesScreen : public ui::Screen {
     openDir(dir, select);
   }
 
-  std::string tag() const override { return "09 FILES"; }
+  std::string tag() const override { return moduleTag("FILES"); }
   std::string context() const override {
     const std::string rel = list_.relativePath();
     return rel.empty() ? "SD:/" : "SD:/" + rel + "/";

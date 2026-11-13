@@ -2,20 +2,30 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <math.h>
 #include <stdio.h>
 #include <time.h>
 
+#include <algorithm>
+#include <memory>
 
 #include "alarms.h"
+#include "apps/home.h"
 #include "apps/sleep.h"
+#include "apps/weather.h"
 #include "audio.h"
+#include "forecast.h"
 #include "pmic.h"
 #include "power.h"
 #include "rtc.h"
 #include "screen.h"
+#include "sensor_hub.h"
 #include "suntimes.h"
 #include "timesync.h"
 #include "timeutil.h"
+#include "trackinfo.h"
+#include "ui/icons.h"
+#include "wlan.h"
 
 namespace apps {
 namespace {
@@ -41,6 +51,10 @@ constexpr TextStyle kEditTime{&ui::fonts::kMono64ExtraBold, -3};
 constexpr TextStyle kEditKey{&ui::fonts::kMono13Medium, 1};
 constexpr TextStyle kEditValue{&ui::fonts::kMono17Bold, 0};
 constexpr TextStyle kEditValueSelected{&ui::fonts::kMono17ExtraBold, 0};
+// The weather strip (not on the canvas either).
+constexpr TextStyle kStripTemp{&ui::fonts::kMono28ExtraBold, 0};
+constexpr TextStyle kStripLabel{&ui::fonts::kMono13Bold, 1};
+constexpr TextStyle kPlaying{&ui::fonts::kMono13Bold, 0};  // what's playing, in its own case
 
 // Geometry, in body coordinates (the body is 800 x 410 between the chrome bands).
 constexpr int kAsideW = 272;  // right column, including its 3 px left rule
@@ -61,6 +75,10 @@ constexpr int kCalH = kCalPadTop + kCalRowH + kCalWeeks * (kCalGap + kCalRowH) +
 constexpr int kAsidePadX = 14;
 constexpr int kMarkerW = 14;  // ▶ column in the alarm rows
 constexpr int kPillH = 22;
+// The weather strip, between the date and the day bar: a dashed rule, then a 40 px row.
+constexpr int kStripRuleY = 256;
+constexpr int kStripTop = kStripRuleY + 7;
+constexpr int kStripH = 40;
 
 const char *const kWeekdayNames[] = {"SUNDAY",   "MONDAY", "TUESDAY", "WEDNESDAY",
                                      "THURSDAY", "FRIDAY", "SATURDAY"};
@@ -123,6 +141,27 @@ struct Face {
   time_t snoozeAt = 0;
   time_t lastSync = 0;
   int cursor = -1;  // selected alarm row; -1 in standby
+
+  // The weather strip (addStrip()): on the Clock and the desk face. Not in battery standby,
+  // whose minute wakes have no fresh forecast or room reading, so it isn't in the NVS record.
+  bool strip = false;
+  bool outOk = false;  // the forecast has the present hour
+  float outC = 0;
+  ui::icons::Weather outIcon = ui::icons::Weather::Cloud;
+  const char *outCondition = "";
+  bool dayOk = false;  // today's high and low
+  float hiC = 0, loC = 0;
+  time_t fetched = 0;  // when the forecast was fetched; 0 if there's none
+  bool inOk = false;   // the SHTC3 has a reading
+  float inC = 0;
+  int inRh = 0;
+
+  // Music or a podcast (addPlaying()): on the Clock it takes the header line. Not in the NVS
+  // record either: the board is off in standby, so nothing plays.
+  ui::Playback playback = ui::Playback::None;
+  std::string playTitle;   // UTF-8
+  std::string playArtist;  // UTF-8, may be empty
+  int minutesLeft = -1;    // -1: length unknown
 };
 
 Face liveFace(int cursor) {
@@ -137,6 +176,53 @@ Face liveFace(int cursor) {
   f.lastSync = timesync::lastSync();
   f.cursor = cursor;
   return f;
+}
+
+// Fills in the weather strip: the forecast for now and today, and the room.
+void addStrip(Face &f) {
+  f.strip = true;
+  const shtc3::Reading in = sensors::steadyEnv();
+  f.inOk = in.ok;
+  f.inC = in.tempC;
+  f.inRh = static_cast<int>(lroundf(in.rh));
+  if (!f.valid) return;
+  std::unique_ptr<weather::Forecast> fc(new weather::Forecast);  // about 2 KB
+  if (!weather::get(*fc)) return;
+  f.fetched = fc->fetched;
+  const time_t now = time(nullptr);
+  if (const weather::Hour *h = weather::at(*fc, now)) {
+    f.outOk = true;
+    f.outC = h->tempC;
+    f.outIcon = weatherIcon(*h, now);
+    f.outCondition = weather::condition(h->code);
+  }
+  const weather::Day *today[1];
+  if (weather::daysFrom(*fc, now, today, 1) == 1 && !isnan(today[0]->loC) &&
+      !isnan(today[0]->hiC)) {
+    f.dayOk = true;
+    f.hiC = today[0]->hiC;
+    f.loC = today[0]->loC;
+  }
+}
+
+// Fills in what's playing or paused, if anything.
+void addPlaying(Face &f) {
+  const audio::Status s = audio::status();
+  if (s.state == audio::State::Stopped || s.path.empty()) return;
+  f.playback = s.state == audio::State::Playing ? ui::Playback::Playing : ui::Playback::Paused;
+  f.playTitle = s.title;
+  f.playArtist = s.artist;
+  // The length from the file's VBR header if trackinfo has read it; else the player's estimate.
+  trackinfo::Info info;
+  uint32_t duration = s.durationMs;
+  if (trackinfo::get(s.path, info) && info.meta.durationMs) {
+    duration = info.meta.durationMs;
+  } else {
+    trackinfo::request(s.path, false);  // for the next redraw
+  }
+  if (duration > s.elapsedMs) {
+    f.minutesLeft = static_cast<int>((duration - s.elapsedMs + 59999) / 60000);  // rounded up
+  }
 }
 
 // NVS record of the last standby face; bump kFaceVersion when Face or the drawing changes.
@@ -191,6 +277,9 @@ bool loadFace(Face &f) {
   f.lastSync = r.lastSync;
   return true;
 }
+
+// The minute on the clock, to redraw when it changes; -1 while the clock isn't set.
+long minuteKey() { return rtc::timeValid() ? static_cast<long>(time(nullptr) / 60) : -1; }
 
 // The soonest ring among the face's alarms (and its snooze) after `after`; 0 if none.
 time_t nextRing(const Face &f, time_t after) {
@@ -250,6 +339,50 @@ void drawAlarmRow(ui::Canvas &c, const Rect &row, const alarms::Alarm &a,
            Align::Left, ink);
 }
 
+// The weather strip, w wide at (x, ruleY): outside on the left (icon, temperature, condition,
+// today's high and low), inside on the right (temperature, humidity).
+void drawStrip(ui::Canvas &c, int x, int ruleY, int w, const Face &f) {
+  using namespace ui;
+  dashedH(c, x, ruleY, w);
+  const int top = ruleY + (kStripTop - kStripRuleY);
+  const int tempBase = top + (kStripH + capHeight(kStripTemp)) / 2;
+  // Two label lines beside each temperature, each in half the row.
+  const auto label = [&](int line, int lx, int lw, const std::string &text) {
+    drawText(c, {lx, top + line * kStripH / 2, lw, kStripH / 2}, text, kStripLabel);
+  };
+
+  // Inside, against the right edge.
+  const std::string inTemp = temperatureText(f.inOk ? f.inC : NAN);
+  const std::string inRh = f.inOk ? "RH " + std::to_string(f.inRh) + " %" : "RH --";
+  const int inLabelW = std::max(textWidth(kStripLabel, "INSIDE"), textWidth(kStripLabel, inRh));
+  const int inLabelX = x + w - inLabelW;
+  const int inTempX = inLabelX - 10 - textWidth(kStripTemp, inTemp);
+  drawText(c, inTempX, tempBase, inTemp, kStripTemp);
+  label(0, inLabelX, inLabelW, "INSIDE");
+  label(1, inLabelX, inLabelW, inRh);
+  const int ruleX = inTempX - 18;
+  dashedV(c, ruleX, top, kStripH);
+
+  // Outside, from the left; the labels get what's left and ellipsize.
+  int ox = x;
+  if (f.outOk) {
+    icons::drawWeather(c, ox, top, kStripH, f.outIcon, 4);
+    ox += kStripH + 12;
+  }
+  ox = drawText(c, ox, tempBase, temperatureText(f.outOk ? f.outC : NAN), kStripTemp) + 10;
+  const int labelW = ruleX - 18 - ox;
+  if (f.outOk) {
+    label(0, ox, labelW, f.outCondition);
+    label(1, ox, labelW,
+          f.dayOk ? "H " + temperatureText(f.hiC) + " " + glyph::kDot + " L " +
+                        temperatureText(f.loC)
+                  : "OUTSIDE");
+  } else {
+    label(0, ox, labelW, "OUTSIDE");
+    label(1, ox, labelW, !weather::configured() ? "NOT SET UP" : "NO FORECAST");
+  }
+}
+
 // Left column: header, the time, weekday and date, the day bar.
 void drawMain(ui::Canvas &c, const Rect &area, const Face &f) {
   using namespace ui;
@@ -258,9 +391,21 @@ void drawMain(ui::Canvas &c, const Rect &area, const Face &f) {
   const int x = area.x + kMainPadX;
   const int w = area.w - 2 * kMainPadX;
 
-  // "// LOCAL TIME" and the ISO week / day of the year.
+  // "// LOCAL TIME" and the ISO week / day of the year; while something plays, what it is and
+  // how long it has left.
   const Rect head{x, area.y + kMainPadTop, w, kLabelH};
-  drawText(c, head, "// LOCAL TIME", kHead);
+  if (f.playback != Playback::None) {
+    const std::string left = f.minutesLeft < 0 ? std::string()
+                                               : std::to_string(f.minutesLeft) + " MIN LEFT";
+    const int leftW = left.empty() ? 0 : textWidth(kHead, left) + 16;
+    const int markW = drawPlaybackMark(c, x, head.centerY(), f.playback) + 10;
+    std::string what = f.playTitle;
+    if (!f.playArtist.empty()) what += std::string(" ") + glyph::kDot + " " + f.playArtist;
+    drawText(c, {x + markW, head.y, w - markW - leftW, head.h}, what, kPlaying);
+    if (!left.empty()) drawText(c, head, left, kHead, Align::Right);
+  } else {
+    drawText(c, head, "// LOCAL TIME", kHead);
+  }
   std::string weekDay = "WK -- \xC2\xB7 DAY ---";
   if (f.valid) {
     char iso[4];
@@ -268,7 +413,7 @@ void drawMain(ui::Canvas &c, const Rect &area, const Face &f) {
     weekDay = "WK " + std::to_string(atoi(iso)) + " \xC2\xB7 DAY " +
               std::to_string(t.tm_yday + 1);
   }
-  drawText(c, head, weekDay, kHead, Align::Right);
+  if (f.playback == Playback::None) drawText(c, head, weekDay, kHead, Align::Right);
 
   // The time, then weekday and date on one baseline.
   const int timeBase = area.y + kTimeCapTop + capHeight(kTime);
@@ -284,6 +429,7 @@ void drawMain(ui::Canvas &c, const Rect &area, const Face &f) {
     drawText(c, after + 12, dateBase, std::string("SYSTEM ") + glyph::kPointer + " SYNC TIME",
              kDate);
   }
+  if (f.strip) drawStrip(c, x, area.y + kStripRuleY, w, f);
 
   // Day bar, from the bottom up: hour labels, the 24 cells, then progress and sun times.
   const int bottom = area.bottom() - kMainPadBottom;
@@ -385,18 +531,38 @@ void drawFace(ui::Canvas &c, const Rect &body, const Face &f) {
   drawAside(c, body, f);
 }
 
-// The whole standby frame: chrome drawn here, since no screen is running it.
-void drawStandbyFace(ui::Canvas &c, const Face &f) {
+// A whole "off" frame, chrome included: the standby face is drawn with no screen running it,
+// and the desk face mirrors it.
+void drawOffFace(ui::Canvas &c, const Face &f, const std::string &context, const ui::Hint &hint,
+                 bool wifi = false) {
   Rect r{0, 0, c.width(), c.height()};
   ui::StatusInfo info;
-  info.tag = "06 CLOCK";
-  info.context = "STANDBY \xC2\xB7 " + syncText(f);
+  info.tag = moduleTag("CLOCK");
+  info.context = context;
   info.battery = f.battery;
   info.usb = f.usb;
+  info.wifi = wifi;
   ui::drawStatusBar(c, r.takeTop(ui::kStatusBarH), info);
-  const ui::Hint hint[] = {{"PWR", "HOLD 1 S TO WAKE"}};
-  ui::drawHintBar(c, r.takeBottom(ui::kHintBarH), hint, 1);
+  ui::drawHintBar(c, r.takeBottom(ui::kHintBarH), &hint, 1);
   drawFace(c, r, f);
+}
+
+void drawStandbyFace(ui::Canvas &c, const Face &f) {
+  drawOffFace(c, f, "STANDBY \xC2\xB7 " + syncText(f), {"PWR", "HOLD 1 S TO WAKE"});
+}
+
+// The desk face's status context: when the forecast it shows was fetched.
+std::string deskContext(const Face &f) {
+  std::string s = "ON USB \xC2\xB7 ";
+  if (weather::syncing()) return s + "WEATHER SYNCING\xE2\x80\xA6";
+  if (!f.fetched) return s + "NO FORECAST";
+  tm a, n;
+  localtime_r(&f.fetched, &a);
+  localtime_r(&f.now, &n);
+  if (sameDay(a, n)) return s + "WEATHER " + hhmm(a.tm_hour, a.tm_min);
+  char buf[24];
+  snprintf(buf, sizeof buf, "WEATHER %d %s", a.tm_mday, kMonthNames[a.tm_mon]);
+  return s + buf;
 }
 
 // --- Alarm editor ---------------------------------------------------------------------------
@@ -419,8 +585,10 @@ class AlarmEditor : public ui::Screen {
 
   bool onKey(Key key) override {
     switch (key) {
-      case Key::Up: adjust(+1); return true;
-      case Key::Down: adjust(-1); return true;
+      // Reversed from portrait: with the board turned to landscape the dial runs the other way
+      // for a value (the user's report, 2026-11-13). The alarm list keeps the usual direction.
+      case Key::Up: adjust(-1); return true;
+      case Key::Down: adjust(+1); return true;
       case Key::Select:
         if (field_ == Field::On) {
           save();
@@ -609,7 +777,7 @@ class ClockScreen : public ui::Screen {
  public:
   ClockScreen() { cursor_.reset(alarms::kCount); }
 
-  std::string tag() const override { return "06 CLOCK"; }
+  std::string tag() const override { return moduleTag("CLOCK"); }
   std::string context() const override {
     return "RTC PCF85063A \xC2\xB7 " + syncText(liveFace(-1));
   }
@@ -640,21 +808,68 @@ class ClockScreen : public ui::Screen {
     }
   }
 
-  // Redraws once a minute (and when the clock gets set). One-off alarms that rang have
-  // switched themselves off by the next minute.
-  bool onTick() override { return minuteKey() != drawnMinute_; }
+  // Redraws once a minute (and when the clock gets set), which also brings the weather strip
+  // and the minutes left up to date, and when a track starts, pauses or ends. One-off alarms
+  // that rang have switched themselves off by the next minute.
+  bool onTick() override {
+    return minuteKey() != drawnMinute_ || audio::status().generation != drawnAudio_;
+  }
 
   void draw(ui::Canvas &c, const Rect &body) override {
     drawnMinute_ = minuteKey();
-    drawFace(c, body, liveFace(cursor_.cursor()));
+    drawnAudio_ = audio::status().generation;
+    Face f = liveFace(cursor_.cursor());
+    addStrip(f);
+    addPlaying(f);
+    drawFace(c, body, f);
   }
 
  private:
-  static long minuteKey() {
-    return rtc::timeValid() ? static_cast<long>(time(nullptr) / 60) : -1;
+  ui::ListCursor cursor_;
+  long drawnMinute_ = -2;
+  uint32_t drawnAudio_ = 0;
+};
+
+// --- Desk -----------------------------------------------------------------------------------
+
+const ui::Screen *desk = nullptr;  // the desk screen while it's on the stack
+
+// The "off" screen on USB (the user's request, 2026-11-13): PWR shows the Clock face with the
+// weather strip instead of Sleep, and the board stays on to keep it current: the time and the
+// room once a minute, the forecast every half hour (weather::poll() on USB). Any key wakes it,
+// back to the screen it covered. Unplugged, it becomes a real Sleep.
+class DeskScreen : public ui::Screen {
+ public:
+  DeskScreen() { desk = this; }
+  ~DeskScreen() override {
+    if (desk == this) desk = nullptr;
   }
 
-  ui::ListCursor cursor_;
+  std::string tag() const override { return moduleTag("CLOCK"); }
+  bool chrome() const override { return false; }  // drawOffFace() draws its own
+  bool landscape() const override { return true; }
+  bool onKey(Key) override {
+    ui::nav::pop();
+    return true;
+  }
+  bool onTick() override {
+    const pmic::Status p = pmic::status();
+    if (p.ok && !p.vbus) {
+      log_i("desk: USB gone, sleeping");
+      ui::nav::pop();
+      sleepNow();
+      return false;
+    }
+    return minuteKey() != drawnMinute_;
+  }
+  void draw(ui::Canvas &c, const Rect &) override {
+    drawnMinute_ = minuteKey();
+    Face f = liveFace(-1);
+    addStrip(f);
+    drawOffFace(c, f, deskContext(f), {"ANY KEY", "WAKE"}, wlan::radioOn());
+  }
+
+ private:
   long drawnMinute_ = -2;
 };
 
@@ -666,7 +881,7 @@ class StandbyScreen : public ui::Screen {
  public:
   explicit StandbyScreen(int cycles) : cycles_(cycles), face_(liveFace(-1)) {}
 
-  std::string tag() const override { return "06 CLOCK"; }
+  std::string tag() const override { return moduleTag("CLOCK"); }
   bool chrome() const override { return false; }  // drawStandbyFace() draws its own
   bool landscape() const override { return true; }
   bool onKey(Key) override {  // a key in the second before power-off: stay on
@@ -733,6 +948,22 @@ void pollAlarms() {
   if (slot < 0) return;
   log_i("alarm %d rings", slot + 1);
   ui::nav::push(std::make_unique<RingScreen>(slot));
+}
+
+void enterDesk() {
+  if (desk || poweringOff()) return;
+  if (audio::status().state == audio::State::Playing) audio::togglePause();  // "off" is quiet
+  ui::nav::push(std::make_unique<DeskScreen>());
+  ui::nav::invalidate(ui::Refresh::Full);
+}
+
+bool wakeDesk() {
+  // base() == desk also means it's still on the stack: a popped one lingers until the
+  // navigator retires it.
+  if (!desk || ui::nav::base() != desk) return false;
+  while (ui::nav::top() != desk) ui::nav::pop();  // a ring sheet over it
+  ui::nav::pop();
+  return true;
 }
 
 void enterStandby(int cycles) {

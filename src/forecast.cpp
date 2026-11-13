@@ -26,6 +26,7 @@ constexpr uint32_t kConnectTimeoutMs = 20000;
 constexpr int kHttpTimeoutMs = 15000;
 constexpr size_t kMaxBody = 32 * 1024;  // a reply is about 6 KB
 constexpr time_t kHour = 3600;
+constexpr time_t kOnUsbEvery = 30 * 60;  // automatic syncs on USB (the user's choice, 2026-11-13)
 constexpr time_t kRetryAfter = 15 * 60;  // after a failed automatic sync
 
 constexpr const char *kNamespace = "weather";
@@ -36,13 +37,22 @@ constexpr uint32_t kVersion = 2;  // bump when Forecast changes
 // location's own time zone (timezone=auto).
 constexpr const char *kQuery =
     "&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,"
-    "wind_speed_10m,wind_direction_10m,is_day"
+    "wind_speed_10m,wind_direction_10m,is_day,cloud_cover"
     "&hourly=temperature_2m,apparent_temperature,relative_humidity_2m,"
     "precipitation_probability,weather_code,wind_speed_10m,wind_direction_10m,is_day"
     "&daily=weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,"
     "precipitation_probability_max,precipitation_sum,wind_speed_10m_max,"
     "wind_direction_10m_dominant"
     "&timezone=auto&timeformat=unixtime&forecast_days=7&forecast_hours=48";
+
+// The model: inside the contiguous US, the National Blend of Models (NBM, the basis of NWS
+// forecasts, updated hourly); elsewhere Open-Meteo's best match. On the morning of
+// 2026-11-13 best match (GFS/HRRR here) gave 81 % low cloud and "overcast" under a sunny sky,
+// while NBM, ECMWF, ICON and GEM gave clear; the user chose NBM. It has every field above.
+const char *modelFor(double lat, double lon) {
+  const bool conus = lat >= 24 && lat <= 50 && lon >= -125 && lon <= -66;
+  return conus ? "ncep_nbm_conus" : "best_match";
+}
 
 std::mutex forecastMutex;  // guards cache and loaded
 Forecast cache;
@@ -115,12 +125,17 @@ esp_err_t onEvent(esp_http_client_event_t *e) {
   return ESP_OK;
 }
 
-bool fetch(std::string &body, std::string &error) {
-  char url[768];
+// query: the fields, then "&models=..."
+bool fetch(std::string &body, std::string &error, const std::string &query) {
+  char url[1024];
   // Two decimals is about a kilometre: plenty for a forecast, and all the service needs.
-  snprintf(url, sizeof url,
-           "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f%s",
-           settings::latitude(), settings::longitude(), kQuery);
+  const int n = snprintf(url, sizeof url,
+                         "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f%s",
+                         settings::latitude(), settings::longitude(), query.c_str());
+  if (n < 0 || n >= static_cast<int>(sizeof url)) {
+    error = "REQUEST TOO LONG";
+    return false;
+  }
   esp_http_client_config_t cfg = {};
   cfg.url = url;
   cfg.event_handler = onEvent;
@@ -210,6 +225,9 @@ bool parse(const std::string &body, Forecast &f, std::string &error) {
   bool ok = cJSON_IsObject(current) && cJSON_IsObject(hourly) && cJSON_IsObject(daily);
   if (ok) {
     f.current = readHour(current, -1);
+    // The sky code is the model's, worked out from its cloud cover.
+    log_i("weather: now code %u, cloud cover %u %%", f.current.code,
+          percent(current, "cloud_cover", -1));
     f.hourCount = 0;
     const int hours = cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(hourly, "time"));
     for (int i = 0; i < hours && f.hourCount < kHours; ++i) f.hours[f.hourCount++] = readHour(hourly, i);
@@ -236,7 +254,8 @@ void run(void *) {
   phase = Phase::Fetching;
   std::string body;
   body.reserve(8 * 1024);
-  bool ok = fetch(body, error);
+  const char *model = modelFor(settings::latitude(), settings::longitude());
+  bool ok = fetch(body, error, std::string(kQuery) + "&models=" + model);
   wlan::disconnect();
   auto f = std::make_unique<Forecast>();
   if (ok) ok = parse(body, *f, error);
@@ -253,13 +272,13 @@ void run(void *) {
   localtime_r(&f->fetched, &local);
   char text[32];
   strftime(text, sizeof text, "UPDATED %H:%M", &local);
-  log_i("weather: %d hours, %d days, %u bytes in %lu ms", f->hourCount, f->dayCount,
+  log_i("weather: %s, %d hours, %d days, %u bytes in %lu ms", model, f->hourCount, f->dayCount,
         static_cast<unsigned>(body.size()), static_cast<unsigned long>(millis() - t0));
   finish(Phase::Done, text);
   vTaskDelete(nullptr);
 }
 
-time_t floorHour(time_t t) { return t - t % kHour; }
+time_t floorTo(time_t t, time_t period) { return t - t % period; }
 
 // The forecast is for the location set now (a card can move it): within about a kilometre.
 bool forHere(const Forecast &f) {
@@ -375,6 +394,38 @@ const char *compass(uint16_t degrees) {
   return kPoints[((degrees % 360) * 2 + 45) / 90 % 8];
 }
 
+void compareModels(const std::string &models) {
+  if (!configured()) return;
+  auto *list = new std::string(models);
+  // One request per model: with several models in one request, "current" comes back blended.
+  const auto task = [](void *arg) {
+    std::unique_ptr<std::string> names(static_cast<std::string *>(arg));
+    std::string error;
+    if (!wlan::connect(kConnectTimeoutMs, error)) {
+      log_w("weather: models: %s", error.c_str());
+      vTaskDelete(nullptr);
+      return;
+    }
+    size_t start = 0;
+    while (start < names->size()) {
+      size_t comma = names->find(',', start);
+      if (comma == std::string::npos) comma = names->size();
+      const std::string model = names->substr(start, comma - start);
+      start = comma + 1;
+      std::string body;
+      fetch(body, error,
+            "&current=weather_code,cloud_cover,cloud_cover_low,cloud_cover_mid,cloud_cover_high"
+            "&timezone=auto&timeformat=unixtime&models=" + model);
+      const size_t at = body.find("\"current\":");
+      log_i("weather: %s: %s", model.c_str(),
+            at != std::string::npos ? body.c_str() + at : body.empty() ? error.c_str() : body.c_str());
+    }
+    wlan::disconnect();
+    vTaskDelete(nullptr);
+  };
+  if (xTaskCreate(task, "wxmodels", 10240, list, 1, nullptr) != pdPASS) delete list;
+}
+
 bool start() {
   const Phase p = phase.load();
   if (p == Phase::Connecting || p == Phase::Fetching) return false;
@@ -412,9 +463,11 @@ time_t nextSync() {
     loadLocked();
     fetched = forHere(cache) ? cache.fetched : 0;
   }
-  // On the hour after the last forecast; one fetched in the last quarter of an hour skips the
-  // next top of the hour.
-  const time_t due = fetched ? floorHour(fetched + 15 * 60) + kHour : 0;
+  // On the hour after the last forecast (on the half hour while on USB); one fetched in the
+  // last quarter of a period skips the next boundary.
+  const pmic::Status p = pmic::status();
+  const time_t every = p.ok && p.vbus ? kOnUsbEvery : kHour;
+  const time_t due = fetched ? floorTo(fetched + every / 4, every) + every : 0;
   const time_t attempt = lastAttempt.load();
   if (attempt > fetched && phase.load() == Phase::Failed) return std::max(due, attempt + kRetryAfter);
   return due ? due : time(nullptr);
@@ -435,7 +488,7 @@ void poll() {
     finish(Phase::Failed, "BATTERY LOW: NO AUTOMATIC SYNC");
     return;
   }
-  log_i("weather: hourly sync");
+  log_i("weather: scheduled sync");
   start();
 }
 

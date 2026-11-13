@@ -105,6 +105,16 @@ void pollPower() {
   }
 }
 
+void powerKey() {
+  if (wakeDesk()) return;
+  const pmic::Status p = pmic::status();
+  if (p.ok && p.vbus) {
+    enterDesk();
+  } else {
+    sleepNow();
+  }
+}
+
 bool napIfIdle() {
   restartIfUsbStuck();
   if (!mayNap()) {

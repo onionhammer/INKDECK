@@ -23,6 +23,10 @@ void begin();
 // offset, with humidity recomputed for the cooler room); ok = false until the first one (or
 // with no SHTC3). The CSV log records these corrected values too.
 shtc3::Reading env();
+// The same, for screens that show the room in passing (status bars, the Clock): each value
+// is held until it moves by more than the sensor's sample-to-sample wander (0.3 °C, 2 %RH),
+// so a reading sitting on a rounding edge doesn't redraw the screen every few seconds.
+shtc3::Reading steadyEnv();
 
 // Half-hour temperature averages, oldest first, at most kHistorySlots. The last entry is the
 // half hour in progress.

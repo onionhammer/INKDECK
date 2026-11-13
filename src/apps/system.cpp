@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "alarms.h"
+#include "apps/home.h"
 #include "apps/idle.h"
 #include "apps/sleep.h"
 #include "audio.h"
@@ -117,7 +118,7 @@ class SystemScreen : public ui::Screen {
     syncing_ = p == timesync::Phase::Connecting || p == timesync::Phase::Asking;
   }
 
-  std::string tag() const override { return "10 SYSTEM"; }
+  std::string tag() const override { return moduleTag("SYSTEM"); }
   std::string context() const override {
     return std::string("FW ") + sysinfo::kFirmwareVersion + " \xC2\xB7 IDF " +
            sysinfo::idfVersion();

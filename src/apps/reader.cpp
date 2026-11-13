@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "apps/files.h"
+#include "apps/home.h"
 #include "fonts.h"
 #include "book_reader.h"
 #include "readstate.h"
@@ -84,7 +85,7 @@ class ContentsScreen : public ui::Screen {
     cursor_.reset(static_cast<int>(entries_.size()), current_);
   }
 
-  std::string tag() const override { return "01 READER"; }
+  std::string tag() const override { return moduleTag("READER"); }
   std::string context() const override { return ui::upper(reader_->book().title()); }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kDial, "MOVE"};
@@ -131,7 +132,7 @@ class ReaderScreen : public ui::Screen {
   explicit ReaderScreen(bool fromFiles) : reader_(kTextW, kTextH), fromFiles_(fromFiles) {}
   bool open(const std::string &path, std::string &err) { return reader_.open(path, err); }
 
-  std::string tag() const override { return "01 READER"; }
+  std::string tag() const override { return moduleTag("READER"); }
   std::string context() const override { return ui::upper(reader_.book().title()); }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kUp, "PREV"};

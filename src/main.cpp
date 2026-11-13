@@ -68,7 +68,7 @@ void setup() {
   sdcard::mount();
   settings::loadCard();  // SD:/inkdeck.ini: time zone and location
   ui::nav::begin(apps::makeHome());
-  ui::nav::onPowerKey(apps::sleepNow);
+  ui::nav::onPowerKey(apps::powerKey);
   ui::nav::onHoldBack(apps::openPlayer);
   // Woken for an alarm: show the Clock, and pollAlarms() rings over it.
   if (power::wake() == power::Wake::Alarm) ui::nav::push(apps::makeClock());

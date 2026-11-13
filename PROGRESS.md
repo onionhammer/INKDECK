@@ -18,7 +18,9 @@ the board.
   sends keys over USB and saves the framebuffer as a PNG. The keys are `u`/`d` dial, `p`/`P`
   press/hold, `b`/`B` BOOT/hold BOOT, `-`/`+` for volume, `r` for the PMIC registers, `i` for a raw IMU reading, `c` to reset the RTC as if the battery had been out, `o` to press PWR (Sleep, then power-off) and `z` for two minutes of standby (`src/devtools.h`). Unknown keys are ignored, so `.` pads a wait. Add `--log`
   to see render timings and errors as they happen. Turn the volume down (`--keys=------------`)
-  before testing playback near people.
+  before testing playback near people. Line commands start with `!` (`!ls`, `!cat`, `!unzip`,
+  `!flow` to print an EPUB chapter as the Reader gets it, `!wxmodels` to compare forecast
+  models, …); `src/devtools.h` lists them all.
 
 ## Key language
 
@@ -67,21 +69,24 @@ Every screen follows this (from `docs/ui-design.md`, "Input mapping"). Details a
   - A notice band (inverted, in place of a section header, for one-off errors).
   - Front-ellipsized path context in the status bar.
   - Named UI glyphs (`ui::glyph::kDial`, `kPress`, …).
-- [ ] Still to do, each with the phase that first needs it:
-  - Stroke icons on the 48-unit grid (none of the designed screens needs one yet).
-  - Temperature in the status bar (8).
+- [x] Added with the phases that first needed them:
   - Literata (5).
+  - Temperature in the status bar (8).
+  - Stroke icons on the 48-unit grid, drawn from the canvas's paths at any size
+    (`ui/icons.*`, the weather set, 9d).
 
 ### ✅ 3. Home, v1
 
 - [x] Preview of the selected module: big index, bus tag, name, blurb, 2×2 live stats, HW
   line, `● OPEN` button. Below it the 10-row module list; the dial wraps around.
+- [x] Reordered by use (the user's order, 2026-11-13): Reader, Podcasts, Music, Weather, Clock,
+  Recorder, Sensors, Level, Files, System. Screens take their status-bar number from the list
+  (`apps::moduleTag("CLOCK")` is `05 CLOCK`), so the next reorder is one edit.
 - [x] FILES opens Files at the card root. READER opens Files in `/Books`, and MUSIC opens
   Files in `/Music` (any case; the root if the folder is missing), or the player while
   something is playing. The other modules open a placeholder that shows what's planned and in
   which phase.
-- [ ] The READER preview needs reading state (last book, place, library size), which comes
-  with phase 5.
+- [x] The READER preview shows the last book, place and font (phase 5) and its cover (5b).
 
 ### ✅ 4. Files
 
@@ -104,8 +109,10 @@ There's no artboard, so it follows Home's list language (`src/apps/files.cpp`).
 - [x] Checked on hardware: browsing, paging (23 books, then a 686-file folder), opening a book,
   BOOT up. Drawing a page takes 16 ms, or 145 ms with 20 size look-ups in the 686-file folder,
   plus 0.6 s for the partial refresh.
-- [ ] Not exercised on hardware yet: playing an MP3 from this screen (the playlist code is
-  unchanged from the prototype), the notice band, and the no-card state.
+- [x] Checked on hardware (2026-11-13): playing an MP3 from this screen (the player opens with
+  the folder as its queue; back in Files the track is marked ▶ and HOLD ● PLAYER is offered),
+  and the notice band (● on `inkdeck.ini` shows `! CAN'T OPEN INI FILES`).
+- [ ] Not exercised on hardware yet: the no-card state (needs the card taken out).
 - [ ] Long folders are slow to cross: 686 files is 35 pages, and the dial steps one row at a
   time. Option: let a held ▲▼ speed up to page steps, in `input` or `ListCursor`, so every list
   gets it.
@@ -191,7 +198,17 @@ Started 2026-11-12: pictures in the text work (`picture.*`, `book_pictures.*`). 
   `/sdcard/.inkdeck/covers/` (Files hides dot-folders). Books without a usable cover are
   cached too, so they aren't retried. The last one is also kept in RAM. Checked on hardware:
   Home draws in 77 ms at boot with the cached cover (61 ms without one).
-- [ ] Headings that books hide with CSS ("Cover", "Title Page") still show; CSS is ignored.
+- [x] **CSS display:none** (2026-11-13): elements a book hides no longer show, such as
+  *All Systems Red*'s `<h1 class="Nonprinting">Cover</h1>` over the cover picture, its
+  print-only space breaks, and Calibre's `.squeeze-amzn` spacers. The chapter's linked
+  stylesheets (parsed once per file) and `<style>` blocks give the selectors; only compounds
+  are matched: tag, classes, id, and one `[class^= *= ~= =]` test. Combinators, pseudo-classes
+  and anything inside `@media` are ignored, so a Kindle-only rule can't hide text. An inline
+  `style="display:none"` or a `hidden` attribute hides too. Checked with dev command `!flow`
+  (prints a chapter as the Reader gets it, without moving its saved place) on all 23 books,
+  chapters 2, 4 and 8: six have rules, and none lost text it shouldn't.
+- [ ] A chapter the CSS hides completely would read as one blank page (none of the 23 books
+  does this in the chapters checked).
 
 Still to do:
 - [x] The cover as the first page for books that name a cover picture but don't open with a
@@ -309,7 +326,11 @@ Still to do:
   - Not on the canvas: the PMIC panel's IBAT and DIE cells became USB voltage and charger
     state. The TG28 has no battery-current ADC, and its die temperature isn't enabled.
 - [x] Home: the SENSORS row opens it, the preview shows temp, humidity, tilt and bus, and
-  Home's status bar shows the temperature (`Screen::statusTemp()`).
+  Home's status bar shows the temperature (`Screen::statusTemp()`). Status bars and the Clock
+  show `sensors::steadyEnv()`, which holds each value until it moves 0.3 °C or 2 %RH
+  (2026-11-13): every 0.1° change used to redraw Home every 5–30 s, and Weather's whole
+  degrees flipped 73↔74 as often when the room sat near the edge. Checked: Home and Weather
+  each redraw only on the minute now.
 - [x] Dev key `i`: one raw IMU reading in chip axes.
 - [x] **IMU axes in portrait** (pose tests with the board in hand, 2026-11-12): screen right
   = chip −Y, up = chip −X, out of the screen = chip −Z (`kScreenAxes` in `sensor_hub.cpp`).
@@ -350,6 +371,8 @@ screen shows that wake plan. In the end the weather sync runs only while the boa
 - [x] Not on the canvas: the editor, a panel over the right column. The hour is set first
   (inverted), then minutes, repeat and on/off: ▲▼ sets, ● moves to the next field, HOLD ●
   saves, BOOT cancels. It shows when the alarm will next ring. Opening it turns the alarm on.
+  The dial runs reversed in the editor (the user's report, 2026-11-13): turned to landscape,
+  the portrait direction set values backwards. The alarm list keeps the usual direction.
 - [x] Sunrise and sunset computed on the board (`suntimes.*`, the Almanac for Computers
   method; checked against NOAA for Chicago and London) from `LATITUDE`/`LONGITUDE` in `.env`
   (shared with Weather). Without them the day bar shows no sun times and Home's preview says
@@ -377,8 +400,9 @@ screen shows that wake plan. In the end the weather sync runs only while the boa
   was playing is paused, and stays paused.
 - [x] A one-off alarm turns itself off once it rings.
 - [x] Checked on hardware: alarm 3 set to 16:38 rang at 16:38:00 on the Clock, the sheet
-  appeared, ● stopped it and the alarm switched itself off. Snooze isn't checked on hardware
-  yet.
+  appeared, ● stopped it and the alarm switched itself off. Snooze (2026-11-13): alarm 3 at
+  08:35 rang, HOLD ● snoozed it (the header read NEXT 08:44 with the one-off alarm already
+  off), and it rang again at 08:44.
 - [x] While the board is on, alarms are checked in software and the RTC's alarm interrupt
   stays off. With it on, INT holds PWRON low until the flag is cleared, and 4 s of that
   forces the PMIC off (`references/power.md` §7, pitfall 1).
@@ -499,9 +523,9 @@ screen shows that wake plan. In the end the weather sync runs only while the boa
   sheet, the forecast surviving a reboot from NVS, and Home's preview. The first attempt
   failed with "HTTP_CLIENT: Out of buffer": the request line (about 600 bytes) didn't fit
   `esp_http_client`'s default 512-byte send buffer, so it's 1 KB now.
-- Not seen yet: the hourly sync firing at the top of the hour, a failed sync's message with
-  the network down, and the icons other than moon, cloud and partly cloudy (all ten checked
-  in an offline render of the same paths).
+- Seen 2026-11-13: the scheduled sync firing on the boundary (09:00, on USB) and the sun
+  icon. Not seen yet: a failed sync's message with the network down, and the icons other than
+  sun, moon, cloud and partly cloudy (all ten checked in an offline render of the same paths).
 - [x] No RTC wake for weather while off (the user's choice, 2026-11-12). Neither the Sleep
   screen nor the standby face shows weather, so it would only pre-fetch for the next time
   Weather opens, at about 6 s of Wi-Fi (roughly 100 mA) a wake. Power-off stays radio-free;
@@ -514,6 +538,14 @@ screen shows that wake plan. In the end the weather sync runs only while the boa
   re-sync ran, then the forecast.
 - [x] The NOW icon picks day or night from the sun times worked out on the board; the
   forecast's own flag is for the start of its hour, so at 07:47 it still showed the moon.
+- [x] **The model: NBM in the US** (the user's choice, 2026-11-13). Open-Meteo's best match
+  (GFS/HRRR here) said overcast, with 81 % low cloud, on a sunny morning. Asked one model at a
+  time (dev command `!wxmodels best_match,ncep_nbm_conus,...`), NBM, ECMWF, ICON and GEM said
+  clear, while GFS, HRRR and UKMO said overcast. Inside the contiguous US the request now asks
+  for `ncep_nbm_conus` (the National Blend that NWS forecasts come from, updated hourly; it has
+  every field the screens use); elsewhere best match (`modelFor()` in `forecast.cpp`). Each
+  sync logs the model, the sky code and the cloud cover. Checked: the 09:00 sync came back
+  clear at 8 %.
 - [x] **Fixed: a stale Weather screen** (the user saw it on the morning of 2026-11-13). Two
   causes. The navigator called `onTick()` only for the top screen, so Weather under its day
   sheet never reloaded after a sync; the screen under an overlay now ticks too. And while the
@@ -558,11 +590,19 @@ screen shows that wake plan. In the end the weather sync runs only while the boa
   to the shows).
 - [x] Home: the PODCASTS row opens it; the preview shows shows, new episodes, network
   activity and the space used.
-- Not checked yet: marking played at the end of an episode, cancel, a non-MP3 feed, a full
-  card, a feed that fails.
+- [x] Checked on hardware (2026-11-13):
+  - Cancel: HOLD ● during a download stopped it (`STOPPED: …` in the status bar), and the row
+    kept `[11%]` with PARTIAL and ● RESUME DL.
+  - A feed that fails (an `.invalid` host): `1 OF 2 FEEDS FAILED`, and the show is listed
+    under its host name with `REFRESH FAILED: NO CONNECTION`. Nothing is cached for it.
+  - Marked played at the end: the episode turned `[✓]`, with HOLD ● UNPLAYED. The test showed
+    that NPR's files run longer than the feed says (15:18 against 13:19, ads stitched in), and
+    the player rightly counts against the file.
+- Not checked yet: a non-MP3 feed, a full card.
 - Test data left on the card: the NPR *Up First* feed in `feeds.txt` (dev command `!feed`)
-  and four of its episodes, about 80 MB, in `SD:/Podcasts/Up First from NPR/`. The *Colom*
-  episode there predates the `If-Range` fix and may have a splice.
+  and four of its episodes, about 80 MB, in `SD:/Podcasts/Up First from NPR/`, plus a 1.3 MB
+  `.part` of a fifth from the cancel test. The *Colom* episode there predates the `If-Range`
+  fix and may have a splice.
 
 **Playback from anywhere (the user's request, 2026-11-13)**
 - [x] While music or a podcast is playing or paused, the status bar shows an inverted ▶ or
@@ -574,6 +614,37 @@ screen shows that wake plan. In the end the weather sync runs only while the boa
   Podcasts → HOLD BOOT → player → HOLD BOOT → the same Podcasts list.
 - [x] `audio::play()` keeps at most 64 tracks from the chosen one (a folder of 686 made a
   685-path queue).
+
+**Weather on the Clock, and the desk face on USB (the user's request, 2026-11-13)**
+(`apps/clock.cpp`, `apps/idle.cpp`)
+- [x] The Clock shows a weather strip between the date and the day bar (not on the canvas):
+  the forecast's icon for now, the outside temperature, the condition and today's high and
+  low on the left; the room's temperature and humidity (SHTC3) on the right, after a dashed
+  rule. Without a forecast for the present hour it says NO FORECAST. It updates with the
+  minute redraw.
+- [x] **The desk face:** on USB, PWR no longer powers off. It shows the Clock face with the
+  strip, full screen (status bar `ON USB · WEATHER 09:00`, hint "ANY KEY WAKE"), and the board
+  stays on to keep it current: the time and the room once a minute, the forecast every half
+  hour. Any key goes back to the screen it covered, and alarms ring over it. Music that was
+  playing is paused. Unplugging USB turns it into a real Sleep (the frog, powered off). On
+  battery PWR goes to Sleep as before, and System → SLEEP NOW still powers off on USB too.
+- [x] Weather syncs every half hour on USB (on the hour and the half hour after the last
+  forecast) and hourly on battery (`weather::nextSync()`).
+- [x] **Now playing on the Clock** (the user's request, 2026-11-13):
+  while music or a podcast plays or is paused, the header line above the time shows the
+  inverted ▶ or ‖ mark (`ui::drawPlaybackMark()`, now shared with the status bar), the title
+  and artist, and `13 MIN LEFT` (from trackinfo's length when it has one), in place of
+  `// LOCAL TIME` and the week and day. The Clock also redraws when a track starts, pauses or
+  ends. Not on the desk face, which pauses playback anyway. Checked on the board with an
+  Up First episode: `[▶] 2026-11-13 Nvidia's Future, Trump's Ties…  5 MIN LEFT`. Podcast
+  downloads without an ID3 title show their file name (date first) and no show name.
+- [x] Checked on hardware: the strip on the Clock; PWR from the Clock and from Home showing
+  the desk face (`ON USB · WEATHER 08:45`, a full refresh), its minute redraw (about 7,000
+  px), a key and a second PWR each waking it to the screen it covered; Weather's NEXT reading
+  09:00 on USB, and the 09:00 sync firing. Not checked: unplugging USB while it shows (needs
+  a hand on the cable), and an alarm ringing over it.
+- Battery standby keeps its face without the strip: its minute wakes don't run the sensors or
+  the radio, so it would show stale values.
 
 **Settings on the card (the user's idea, 2026-11-13)** (`settings.*`)
 - [x] `SD:/inkdeck.ini` overrides the time zone and the location built in from `.env`:
@@ -667,11 +738,13 @@ Listed on Home but not designed yet.
 - Podcast downloads run at about 275 KB/s, so a 100 MB episode takes about 6 minutes. Not
   profiled yet: candidates are Wi-Fi modem sleep, TLS, and SD writes from PSRAM buffers.
 
-- SD at 20 MHz: the long-run check of the CRC-error fix never reported a result, so it's
-  still unconfirmed.
-- Home redraws whenever its status-bar temperature moves by 0.1°, every 5–30 s in the logs
-  (about 30 px each). Harmless on USB, but on battery it's wasted refreshes until the 10-minute
-  auto-off. A deadband in `statusTemp()` would fix it.
+- SD at 20 MHz: the long-run check of the CRC-error fix never reported a result. Partial
+  evidence (2026-11-13): no read CRC errors in about an hour of heavy card use (MP3 playback,
+  a podcast download, about 70 chapter loads across all 23 books).
+- I2C: two `i2cWrite(): ... ESP_ERR_INVALID_STATE` errors in about an hour on 2026-11-13, both
+  while audio was playing or pausing. The log doesn't say which device. All five chips share
+  one `Wire` across several tasks (audio, sensors, PMIC, UI). If it's the codec, a mute or
+  unmute could be lost. Not investigated yet.
 - 2026-11-12: the board dropped off USB three times during phases 4–6 and came back a few
   minutes later. Afterwards the PMIC reported no battery (it read 98 % and charging earlier),
   and the RTC had lost power (oscillator-stop flag set), so the board lost power completely.

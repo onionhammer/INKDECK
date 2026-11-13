@@ -1,6 +1,7 @@
 #include "devtools.h"
 
 #include <Arduino.h>
+#include <dirent.h>
 #include <esp_heap_caps.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -9,6 +10,7 @@
 
 #include "apps/idle.h"
 #include "audio.h"
+#include "epub.h"
 #include "forecast.h"
 #include "input.h"
 #include "pmic.h"
@@ -16,6 +18,8 @@
 #include "qmi8658.h"
 #include "rtc.h"
 #include "screen.h"
+#include "text.h"
+#include "zip.h"
 
 namespace devtools {
 namespace {
@@ -31,6 +35,10 @@ String cardPath(const String &path) {
 void lineCommand(const String &line) {
   if (line == "wxforget") {
     weather::forget();
+    return;
+  }
+  if (line.startsWith("wxmodels ")) {
+    weather::compareModels(line.substring(9).c_str());
     return;
   }
   if (line.startsWith("append ")) {
@@ -123,6 +131,86 @@ void lineCommand(const String &line) {
     size_t n;
     while ((n = fread(buf, 1, sizeof buf, f)) > 0) Serial.write(reinterpret_cast<uint8_t *>(buf), n);
     fclose(f);
+    Serial.println("\ndevtools: end of file");
+    return;
+  }
+  if (line.startsWith("ls ")) {
+    const String path = cardPath(line.substring(3));
+    if (path.isEmpty()) return;
+    DIR *dir = opendir(path.c_str());
+    if (!dir) {
+      Serial.println("devtools: can't open that folder");
+      return;
+    }
+    while (const dirent *e = readdir(dir)) {
+      const String full = path + "/" + e->d_name;
+      struct stat st;
+      const bool isDir = e->d_type == DT_DIR;
+      const long size = !isDir && stat(full.c_str(), &st) == 0 ? static_cast<long>(st.st_size) : 0;
+      Serial.printf("%10ld  %s%s\n", size, e->d_name, isDir ? "/" : "");
+    }
+    closedir(dir);
+    Serial.println("devtools: end of listing");
+    return;
+  }
+  if (line.startsWith("flow ")) {
+    // The start of chapter N as the Reader gets it: ¶ paragraph, [IMG n] picture, ^ centred,
+    // [PAGE] page break; styles dropped, typographic slots as '~'.
+    const String rest = line.substring(5);
+    const int bar = rest.indexOf('|');
+    const String path = cardPath(bar < 0 ? rest : rest.substring(0, bar));
+    if (path.isEmpty()) return;
+    Epub book;
+    std::string err, flowText;
+    std::vector<Epub::Image> images;
+    const size_t chapter = bar < 0 ? 0 : rest.substring(bar + 1).toInt();
+    if (!book.open(path.c_str(), err) || !book.chapterFlow(chapter, flowText, images, err)) {
+      Serial.printf("devtools: %s\n", err.c_str());
+      return;
+    }
+    std::string shown;
+    for (size_t i = 0; i < flowText.size() && i < 1200; ++i) {
+      const char c = flowText[i];
+      if (c == flow::kPara) {
+        shown += "\xC2\xB6\n";
+      } else if (c == flow::kImage && i + 1 < flowText.size()) {
+        shown += "[IMG " + std::to_string(static_cast<uint8_t>(flowText[++i]) - flow::kImageBase) + "]";
+      } else if (c == flow::kCenter) {
+        shown += '^';
+      } else if (c == flow::kPageBreak) {
+        shown += "[PAGE]";
+      } else if (!flow::isStyle(c)) {
+        shown += static_cast<uint8_t>(c) < 0x80 ? c : '~';
+      }
+    }
+    Serial.printf("%s\ndevtools: chapter %u of %u, %u bytes, %u pictures\n", shown.c_str(),
+                  static_cast<unsigned>(chapter), static_cast<unsigned>(book.chapterCount()),
+                  static_cast<unsigned>(flowText.size()), static_cast<unsigned>(images.size()));
+    return;
+  }
+  if (line.startsWith("unzip ")) {
+    const String rest = line.substring(6);
+    const int bar = rest.indexOf('|');
+    const String path = cardPath(bar < 0 ? rest : rest.substring(0, bar));
+    if (path.isEmpty()) return;
+    ZipFile zip;
+    std::string err;
+    if (!zip.open(path.c_str(), err)) {
+      Serial.printf("devtools: %s\n", err.c_str());
+      return;
+    }
+    if (bar < 0) {
+      for (const ZipFile::Entry &e : zip.entries()) {
+        Serial.printf("%8u  %s\n", static_cast<unsigned>(e.size), e.name.c_str());
+      }
+    } else {
+      std::string data;
+      if (!zip.read(rest.substring(bar + 1).c_str(), data, err)) {
+        Serial.printf("devtools: %s\n", err.c_str());
+        return;
+      }
+      Serial.write(reinterpret_cast<const uint8_t *>(data.data()), data.size());
+    }
     Serial.println("\ndevtools: end of file");
     return;
   }

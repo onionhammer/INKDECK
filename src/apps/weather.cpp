@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "apps/home.h"
 #include "rtc.h"
 #include "sensor_hub.h"
 #include "suntimes.h"
@@ -244,7 +245,7 @@ class WeatherScreen : public Screen {
  public:
   WeatherScreen() : view_(std::make_shared<View>()) {}
 
-  std::string tag() const override { return "04 WEATHER"; }
+  std::string tag() const override { return moduleTag("WEATHER"); }
   std::string context() const override {
     const weather::Status s = weather::status();
     switch (s.phase) {
@@ -258,9 +259,9 @@ class WeatherScreen : public Screen {
     }
     return "LOC:HOME";
   }
-  // The room, from the board's SHTC3, in whole degrees (so it doesn't redraw for every tenth).
+  // The room, from the board's SHTC3, in whole degrees.
   std::string statusTemp() const override {
-    const shtc3::Reading in = sensors::env();
+    const shtc3::Reading in = sensors::steadyEnv();
     if (!in.ok) return {};
     return "IN " + std::to_string(lroundf(units::temperature(in.tempC))) + units::temperatureUnit();
   }
@@ -380,7 +381,7 @@ class WeatherScreen : public Screen {
                             : indoor ? shownIndoor_.substr(0, bar)
                                      : "--" + std::string(kDegree);
     drawText(c, x, y + 99, big, kBigTemp);
-    if (h) icons::drawWeather(c, x + w - 100, y + 4, 100, iconFor(h->code, isDay(*h, now)), 3);
+    if (h) icons::drawWeather(c, x + w - 100, y + 4, 100, weatherIcon(*h, now), 3);
     y += 104 + 8;
 
     drawText(c, {x, y, w, 37}, h ? weather::condition(h->code) : emptyReason(), kCondition);
@@ -502,6 +503,8 @@ std::string temperatureText(float celsius) {
   const long v = lroundf(units::temperature(celsius));
   return (v < 0 ? kMinus + std::to_string(-v) : std::to_string(v)) + kDegree;
 }
+
+ui::icons::Weather weatherIcon(const Hour &h, time_t t) { return iconFor(h.code, isDay(h, t)); }
 
 std::unique_ptr<ui::Screen> makeWeather() { return std::make_unique<WeatherScreen>(); }
 
