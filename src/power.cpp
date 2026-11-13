@@ -13,6 +13,7 @@
 #include "rtc.h"
 #include "sensor_hub.h"
 #include "timesync.h"
+#include "forecast.h"
 #include "wlan.h"
 
 namespace power {
@@ -94,7 +95,7 @@ void off(Mode m, time_t wakeAt, int standbyCycles) {
     delay(150);  // the audio task mutes and switches the amp off first, so the speaker doesn't pop
   }
   if (sensors::logging()) sensors::setLogging(false);  // close the CSV before the power goes
-  if (wlan::radioOn()) wlan::disconnect();
+  wlan::forceOff();
 
   if (wakeAt) {
     const time_t now = time(nullptr);
@@ -128,6 +129,7 @@ bool idle(bool reading) {
   const bool playing = audio::status().state == audio::State::Playing;
   const bool low = p.percent >= 0 && p.percent < kLowBatteryPercent;
   if ((reading || playing) && !low) return false;
+  if (weather::syncing()) return false;
   const timesync::Phase t = timesync::status().phase;
   return t != timesync::Phase::Connecting && t != timesync::Phase::Asking;
 }

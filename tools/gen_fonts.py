@@ -100,6 +100,7 @@ CHARSETS = {
     "ascii": (0x20, 0x7E),
     "caps": (0x30, 0x5A),  # digits, a little punctuation, A-Z (drop caps)
     "digits": (0x25, 0x3A),  # 0-9 and "%+-.:" (big numbers: index, clock, battery %)
+    "temps": (0x25, 0xB0),  # the digits plus the minus sign (slot 0x87) and the degree sign
 }
 DIGITS = set(b"%+-.0123456789:")
 
@@ -110,6 +111,8 @@ def in_charset(charset: str, slot: int) -> bool:
         return not (charset == "upper" and ord("a") <= slot <= ord("z"))
     if charset == "digits":
         return slot in DIGITS
+    if charset == "temps":
+        return slot in DIGITS or slot in (0x80 + EXTRAS.index(0x2212), 0xB0)
     return slot <= 0x7E
 
 # C++ name, family, pixel size (= CSS font-size), charset, and the face:
@@ -136,6 +139,7 @@ FONTS = [
     ("kMono20Medium", "jbmono", 20, "upper", {"weight": 500}),
     ("kMono22ExtraBold", "jbmono", 22, "ascii", {"weight": 800}),
     ("kMono24ExtraBold", "jbmono", 24, "upper", {"weight": 800}),
+    ("kMono28ExtraBold", "jbmono", 28, "upper", {"weight": 800}),  # Weather: the condition
     ("kMono38ExtraBold", "jbmono", 38, "upper", {"weight": 800}),
     ("kMono40ExtraBold", "jbmono", 40, "digits", {"weight": 800}),
     ("kMono50ExtraBold", "jbmono", 50, "upper", {"weight": 800}),
@@ -144,6 +148,7 @@ FONTS = [
     ("kMono80ExtraBold", "jbmono", 80, "digits", {"weight": 800}),  # Sleep: wake time
     ("kMono96ExtraBold", "jbmono", 96, "digits", {"weight": 800}),
     ("kMono104ExtraBold", "jbmono", 104, "digits", {"weight": 800}),
+    ("kMono130ExtraBold", "jbmono", 130, "temps", {"weight": 800}),  # Weather: the temperature
     ("kMono172ExtraBold", "jbmono", 172, "digits", {"weight": 800}),  # Clock (176 overflows int8 yOffset)
 ]
 # Reader text: three sizes (19 px is the spec's), each regular / bold / italic / bold italic.

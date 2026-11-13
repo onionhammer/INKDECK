@@ -30,6 +30,7 @@
 #include "timesync.h"
 #include "trackinfo.h"
 #include "ui/nav.h"
+#include "forecast.h"
 #include "wlan.h"
 
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);  // XML scanning + layout; the default 8 KB is tight
@@ -76,6 +77,7 @@ void setup() {
 void loop() {
   apps::pollAlarms();
   apps::pollPower();
+  weather::poll();  // the hourly forecast sync, in the background
   if (apps::napIfIdle()) return;  // reading on battery: light sleep until a key or the minute
   ui::nav::loop();
 }

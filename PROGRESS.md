@@ -327,9 +327,10 @@ Still to do:
 
 ### 🔶 9. Clock, power-off and the network (was phases 9, 10 and 11)
 
-Combined on 2026-11-12 because the three share one mechanism: the RTC alarm boots the board,
-both for the user's alarms and for the hourly weather sync, and the Sleep screen shows that
-wake plan. Built in this order, each step flashed and checked on the board.
+Combined on 2026-11-12 because the three were planned around one mechanism: the RTC alarm
+boots the board, both for the user's alarms and for the hourly weather sync, and the Sleep
+screen shows that wake plan. In the end the weather sync runs only while the board is on
+(9d). Built in this order, each step flashed and checked on the board.
 
 **✅ 9a. Clock (landscape)** (`apps/clock.cpp`)
 - [x] Landscape chrome: the navigator already switched orientation (full refresh on the
@@ -461,10 +462,49 @@ wake plan. Built in this order, each step flashed and checked on the board.
 - Not measured: the current while napping. The rails (audio codec, mic, panel) stay up;
   switching ALDO1/ALDO2 off while reading would save more but is a PMIC write.
 
-**9d. Weather**
-- [ ] Open-Meteo (no API key): now, 12 hours, 6 days, sunrise/sunset. Location from `.env`.
-- [ ] The last forecast cached, so the screen opens at once and works offline.
-- [ ] HOLD ● syncs; hourly while on; an RTC wake for it while off.
+**✅ 9d. Weather** (`forecast.*`, `apps/weather.cpp`, `ui/icons.*`)
+- [x] Open-Meteo (open-meteo.com, no API key, free for non-commercial use): one HTTPS request
+  (`esp_http_client` with the core's certificate bundle, parsed with cJSON) for the current
+  conditions, 48 hours and 7 days. The location comes from `.env`, rounded to two decimals
+  (about 1 km) in the request. Values stay in SI. `INKDECK_FAHRENHEIT` now means US units:
+  °F, plus mph and inches (`units.h`). The file is `forecast.h`, since a `weather.h` in `src/`
+  is shadowed by `apps/weather.h` for includes from `apps/`.
+- [x] Laid out as on the artboard: NOW (UPDATED and NEXT sync times, the temperature in
+  JetBrains Mono ExtraBold 130 px with an icon, the condition in 28 px, FEELS / WIND / RH /
+  the next sunrise or sunset), NEXT 12 H (temperature, rain-chance bars, hour), 6 DAYS
+  (inverted tag on the cursor's day, icon, condition, lo-hi range bars on a shared scale).
+  The status bar's context reads `LOC:HOME`, or the sync state. The 6-day temperature columns
+  are 6 px wider than on the canvas, so "−12°" and "102°" fit.
+- [x] Icons (`ui/icons.*`): the canvas's sun, cloud, partly cloudy, rain and showers, drawn
+  from its 48-unit paths at any size. Moon, fog, snow and storm were drawn to match. At night
+  the NOW icon shows the moon for clear and partly cloudy skies.
+- [x] Not on the canvas: ▲▼ moves a day cursor and ● opens a sheet for that day: sky,
+  high/low, rain chance and amount, wind, sunrise and sunset, daylight, and that day's hours
+  every 3 h (as far as the 48 hours reach). ▲▼ steps through the days inside it; ● or BOOT
+  closes it.
+- [x] Cache: the last forecast is kept in NVS (about 2 KB, namespace `weather`), so the screen
+  opens at once and works offline. Once the current conditions are over an hour old, the
+  forecast for the present hour stands in for them.
+- [x] Sync: HOLD ● syncs now. While the board is on, `weather::poll()` (from `loop()`) syncs
+  at the top of the hour after the last forecast. It retries 15 minutes after a failure and
+  skips automatic syncs on battery below 15 %. Power-off and reading naps wait for a running
+  sync. `wlan` is shared now: each connect has a matching disconnect, and the radio goes off
+  after the last user, so a time sync and a weather sync can overlap.
+- [x] Home: the WEATHER row opens it; the preview shows now, today's low and high, the
+  likeliest rain in the next 12 hours, and when the forecast was fetched. It redraws when a
+  background sync starts or ends.
+- [x] Checked on hardware (2026-11-12): the boot sync (Wi-Fi join plus fetch in 4.6 s, a
+  3.7 KB reply, 48 hours and 7 days), the layout with real data, the day cursor, the day
+  sheet, the forecast surviving a reboot from NVS, and Home's preview. The first attempt
+  failed with "HTTP_CLIENT: Out of buffer": the request line (about 600 bytes) didn't fit
+  `esp_http_client`'s default 512-byte send buffer, so it's 1 KB now.
+- Not seen yet: the hourly sync firing at the top of the hour, a failed sync's message with
+  the network down, and the icons other than moon, cloud and partly cloudy (all ten checked
+  in an offline render of the same paths).
+- [x] No RTC wake for weather while off (the user's choice, 2026-11-12). Neither the Sleep
+  screen nor the standby face shows weather, so it would only pre-fetch for the next time
+  Weather opens, at about 6 s of Wi-Fi (roughly 100 mA) a wake. Power-off stays radio-free;
+  a stale forecast syncs at the next boot.
 
 **9e. Podcasts**
 - [ ] Feeds listed on the SD card, RSS fetched and parsed, episodes downloaded to SD and played

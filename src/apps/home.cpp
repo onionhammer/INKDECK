@@ -10,6 +10,7 @@
 #include "apps/reader.h"
 #include "apps/sensors.h"
 #include "apps/system.h"
+#include "apps/weather.h"
 #include "audio.h"
 #include "covers.h"
 #include "fonts.h"
@@ -22,6 +23,7 @@
 #include "sysinfo.h"
 #include "timesync.h"
 #include "units.h"
+#include "forecast.h"
 
 namespace apps {
 namespace {
@@ -29,7 +31,7 @@ namespace {
 using ui::Key;
 using ui::Rect;
 
-enum class Kind : uint8_t { Reader, Music, Files, Sensors, System, Clock, NotBuilt };
+enum class Kind : uint8_t { Reader, Music, Files, Sensors, System, Clock, Weather, NotBuilt };
 
 struct Module {
   const char *label;
@@ -50,7 +52,7 @@ constexpr Module kModules[] = {
     {"PODCASTS", "NET", "RSS over Wi-Fi. Episodes cache to SD for offline listening.",
      "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::NotBuilt, 9},
     {"WEATHER", "NET", "Now, hourly and 6-day forecast, pulled over Wi-Fi every hour.",
-     "Wi-Fi \xC2\xB7 PCF85063A alarm", Kind::NotBuilt, 9},
+     "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather, 9},
     {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors, 8},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
@@ -192,6 +194,54 @@ int statsFor(const Module &m, Stat out[4]) {
       out[3] = {"NTP SYNC", ntp};
       return 4;
     }
+    case Kind::Weather: {
+      weather::Forecast f;
+      const time_t now = time(nullptr);
+      const bool has = rtc::timeValid() && weather::get(f);
+      const weather::Hour *h = has ? weather::at(f, now) : nullptr;
+      out[0] = {"NOW", h ? temperatureText(h->tempC) + " " + weather::condition(h->code)
+                         : ui::glyph::kEmDash};
+      const weather::Day *today[1];
+      std::string range = ui::glyph::kEmDash;
+      if (has && weather::daysFrom(f, now, today, 1)) {
+        range = temperatureText(today[0]->loC) + " / " + temperatureText(today[0]->hiC);
+      }
+      out[1] = {"TODAY LO / HI", range};
+      // The likeliest rain in the next 12 hours, and when.
+      const weather::Hour *hours[12];
+      const int n = has ? weather::hoursAfter(f, now, hours, 12) : 0;
+      const weather::Hour *wettest = nullptr;
+      for (int i = 0; i < n; ++i) {
+        if (hours[i]->rain != weather::kUnknown && (!wettest || hours[i]->rain > wettest->rain)) {
+          wettest = hours[i];
+        }
+      }
+      std::string rain = ui::glyph::kEmDash;
+      if (wettest) {
+        char buf[24];
+        tm t;
+        localtime_r(&wettest->time, &t);
+        if (wettest->rain == 0) {
+          snprintf(buf, sizeof buf, "NONE");
+        } else {
+          snprintf(buf, sizeof buf, "%u %% AT %02d:00", wettest->rain, t.tm_hour);
+        }
+        rain = buf;
+      }
+      out[2] = {"RAIN, 12 H", rain};
+      std::string updated = weather::configured() ? "NEVER" : "SET LAT/LON, WI-FI";
+      if (weather::syncing()) {
+        updated = "SYNCING\xE2\x80\xA6";
+      } else if (has) {
+        char buf[24];
+        tm t;
+        localtime_r(&f.fetched, &t);
+        strftime(buf, sizeof buf, "%a %H:%M", &t);
+        updated = ui::upper(buf);
+      }
+      out[3] = {"UPDATED", updated};
+      return 4;
+    }
     case Kind::NotBuilt:
       break;
   }
@@ -270,13 +320,19 @@ class HomeScreen : public ui::Screen {
   // The MUSIC preview shows the playing track.
   bool onTick() override {
     const uint32_t g = audio::status().generation;
-    const bool changed = g != drawnGeneration_ && kModules[cursor_.cursor()].kind == Kind::Music;
+    const Kind kind = kModules[cursor_.cursor()].kind;
+    bool changed = g != drawnGeneration_ && kind == Kind::Music;
     drawnGeneration_ = g;
+    // A forecast sync starting or finishing in the background.
+    const weather::Phase w = weather::status().phase;
+    changed |= w != drawnWeather_ && kind == Kind::Weather;
+    drawnWeather_ = w;
     return changed;
   }
 
   void draw(ui::Canvas &c, const Rect &body) override {
     drawnGeneration_ = audio::status().generation;
+    drawnWeather_ = weather::status().phase;
     Rect r = body;
     const Rect list = r.takeBottom(kModuleCount * ui::kRowH);
     const Rect header = r.takeBottom(ui::kSectionH);
@@ -311,6 +367,7 @@ class HomeScreen : public ui::Screen {
       case Kind::Sensors: ui::nav::push(makeSensors()); break;
       case Kind::System: ui::nav::push(makeSystem()); break;
       case Kind::Clock: ui::nav::push(makeClock()); break;
+      case Kind::Weather: ui::nav::push(makeWeather()); break;
       case Kind::NotBuilt: ui::nav::push(std::make_unique<NotBuiltScreen>(i)); break;
     }
   }
@@ -375,6 +432,7 @@ class HomeScreen : public ui::Screen {
 
   ui::ListCursor cursor_;
   uint32_t drawnGeneration_ = 0;
+  weather::Phase drawnWeather_ = weather::Phase::Idle;
 };
 
 }  // namespace
