@@ -8,6 +8,7 @@
 #include "pmic.h"
 #include "rtc.h"
 #include "screen.h"
+#include "wlan.h"
 
 namespace ui::nav {
 namespace {
@@ -19,6 +20,7 @@ std::vector<std::unique_ptr<Screen>> retired;  // popped during dispatch; freed 
 Refresh pending = Refresh::None;
 uint32_t lastTick = 0;
 std::string drawnStatus;  // clock + battery as last drawn, to spot when they change
+void (*powerKeyHandler)() = nullptr;
 
 void request(Refresh r) {
   if (r > pending) pending = r;
@@ -38,7 +40,10 @@ StatusInfo statusFor(const Screen &s) {
   const pmic::Status p = pmic::status();
   info.battery = p.percent;
   info.usb = p.vbus;
-  if (rtc::timeValid()) {
+  info.wifi = wlan::radioOn();
+  if (!s.statusClock()) {
+    info.clock.clear();
+  } else if (rtc::timeValid()) {
     const time_t now = time(nullptr);
     tm t;
     localtime_r(&now, &t);
@@ -52,8 +57,8 @@ StatusInfo statusFor(const Screen &s) {
 }
 
 std::string signature(const StatusInfo &info) {
-  return info.clock + "|" + std::to_string(info.battery) + "|" + (info.usb ? "u" : "") + "|" +
-         info.temp;
+  return info.clock + "|" + std::to_string(info.battery) + "|" + (info.usb ? "u" : "") +
+         (info.wifi ? "w" : "") + "|" + info.temp;
 }
 
 // The screen that owns the chrome and body: the top one, or the one under an overlay.
@@ -99,6 +104,10 @@ void dispatch(Key key) {
   log_d("key %s", input::name(key));
   if (key == Key::BackLong) {
     home();
+    return;
+  }
+  if (key == Key::Power) {
+    if (powerKeyHandler) powerKeyHandler();
     return;
   }
   if (stack.back()->onKey(key)) {
@@ -181,5 +190,9 @@ void replace(std::unique_ptr<Screen> screen) {
 void invalidate(Refresh refresh) { request(refresh); }
 
 Screen *top() { return stack.empty() ? nullptr : stack.back().get(); }
+
+Screen *base() { return stack.empty() ? nullptr : &baseScreen(); }
+
+void onPowerKey(void (*handler)()) { powerKeyHandler = handler; }
 
 }  // namespace ui::nav

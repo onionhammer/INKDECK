@@ -1,7 +1,9 @@
 // Buttons -> debounced key events on a FreeRTOS queue.
 //
 // Sampled every 5 ms from an esp_timer, so presses made while the e-paper is refreshing are
-// queued rather than lost.
+// queued rather than lost. PWR goes to the PMIC; GPIO1 (PWR_KEY_SENSE) reads HIGH while it's
+// held, so it can be a key too. A button already down at begin() (PWR held to power on)
+// reports nothing until it has been released.
 #pragma once
 #include <stdint.h>
 
@@ -14,6 +16,7 @@ enum class Key : uint8_t {
   SelectLong,  // wheel press held about 1 s
   Back,        // BOOT (GPIO0) short press
   BackLong,    // BOOT held
+  Power,       // PWR released within 2 s (longer is someone forcing the PMIC off)
 };
 
 const char *name(Key key);
@@ -25,5 +28,11 @@ bool wait(Key &key, uint32_t timeoutMs);
 
 // Queues a key as if it had been pressed (dev tools drive the UI over serial with this).
 void inject(Key key);
+
+// Milliseconds since the last key (injected ones count).
+uint32_t idleMs();
+
+// A button (PWR included) is down right now.
+bool anyDown();
 
 }  // namespace input

@@ -13,6 +13,7 @@ namespace {
 
 constexpr uint8_t kRegStatus1 = 0x00;  // bit 5 VBUS good, bit 3 battery present (.1)
 constexpr uint8_t kRegStatus2 = 0x01;  // 6:5 current direction, 2:0 charger state (.2)
+constexpr uint8_t kRegCommon = 0x10;      // bit 0 soft power-off (.7)
 constexpr uint8_t kRegInputLimit = 0x16;  // 2:0 VBUS current limit (.12)
 constexpr uint8_t kRegPowerOn = 0x20;     // power-on source bits (.17)
 constexpr uint8_t kRegPowerOff = 0x21;    // power-off source bits (.18)
@@ -216,6 +217,16 @@ void dump(Print &out) {
              "input limit %d mA, on: %s, last off: %s\n",
              d.vbatMv, d.vbusMv, d.vsysMv, d.chargeMa, d.chargeToMv, d.cutoffMv, d.inputLimitMa,
              powerOnSource(), powerOffSource());
+}
+
+int powerOnBits() { return read1(kRegPowerOn); }
+
+bool powerOff() {
+  const int v = read1(kRegCommon);
+  if (v < 0) return false;
+  log_w("PMIC: soft power-off");
+  Serial.flush();
+  return write1(kRegCommon, static_cast<uint8_t>(v | 0x01));
 }
 
 }  // namespace pmic

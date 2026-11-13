@@ -16,7 +16,7 @@ the board.
   `uv run tools/gen_fonts.py`. The generated `src/ui/fonts/jbmono.*` files are committed.
 - **Checking without the board in hand:** `uv run tools/screenshot.py COM4 shot.png --keys ddp`
   sends keys over USB and saves the framebuffer as a PNG. The keys are `u`/`d` dial, `p`/`P`
-  press/hold, `b`/`B` BOOT/hold BOOT, `-`/`+` for volume, `r` for the PMIC registers, `i` for a raw IMU reading and `c` to reset the RTC as if the battery had been out (`src/devtools.h`). Unknown keys are ignored, so `.` pads a wait. Add `--log`
+  press/hold, `b`/`B` BOOT/hold BOOT, `-`/`+` for volume, `r` for the PMIC registers, `i` for a raw IMU reading, `c` to reset the RTC as if the battery had been out, `o` to press PWR (Sleep, then power-off) and `z` for two minutes of standby (`src/devtools.h`). Unknown keys are ignored, so `.` pads a wait. Add `--log`
   to see render timings and errors as they happen. Turn the volume down (`--keys=------------`)
   before testing playback near people.
 
@@ -70,7 +70,6 @@ Every screen follows this (from `docs/ui-design.md`, "Input mapping"). Details a
 - [ ] Still to do, each with the phase that first needs it:
   - Stroke icons on the 48-unit grid (none of the designed screens needs one yet).
   - Temperature in the status bar (8).
-  - Landscape chrome (9).
   - Literata (5).
 
 ### ✅ 3. Home, v1
@@ -236,7 +235,7 @@ Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book'
   - REBOOT asks first in a sheet, shows "REBOOTING…", then restarts. Checked: the next boot
     reports SOFTWARE RESET.
   - SLEEP NOW and CHECK FOR UPDATE say they aren't built yet, in place of the section
-    header. SYNC TIME works (phase 11).
+    header. SYNC TIME works (phase 9).
 - [x] Home's SYSTEM row opens it. Its preview shows battery, power, uptime and clock state.
 - [x] New dev key `r`: prints the PMIC's configuration and status registers.
 - [x] Fonts: 96 px digits and a 22 px face. The digit-only faces now also carry `%+-.`.
@@ -288,7 +287,7 @@ Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book'
   = chip −Y, up = chip −X, out of the screen = chip −Z (`kScreenAxes` in `sensor_hub.cpp`).
   Lying flat it reads about +4.5° on both axes. That's the desk or the accelerometer's
   factory offset (the datasheet allows ±100 mg, about ±6°). A zero button would belong to
-  the Level app (phase 12).
+  the Level app (phase 10).
 - [x] **Temperature calibrated:** the SHTC3 read 25.9 °C and 33 % against a 22.7 °C room,
   with the board on USB, charging. `sensor_hub` subtracts 3.2 °C and recomputes humidity for
   the cooler room (same water vapour), which gives about 40 % against the room's 37 %
@@ -298,21 +297,146 @@ Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book'
   the user's request) shows °F; unset or 0 shows °C (`src/units.h`). The CSV log stays in
   °C.
 
-### ⬜ 9. Clock (landscape)
+### 🔶 9. Clock, power-off and the network (was phases 9, 10 and 11)
 
-- First landscape screen.
-- [x] Setting the RTC: System → SYNC TIME (NTP, phase 11). A manual set-time screen would
-  still help without Wi-Fi.
+Combined on 2026-11-12 because the three share one mechanism: the RTC alarm boots the board,
+both for the user's alarms and for the hourly weather sync, and the Sleep screen shows that
+wake plan. Built in this order, each step flashed and checked on the board.
+
+**✅ 9a. Clock (landscape)** (`apps/clock.cpp`)
+- [x] Landscape chrome: the navigator already switched orientation (full refresh on the
+  change); the status and hint bars just draw at 800 px. New: a screen can drop the status-bar
+  clock (`Screen::statusClock()`; the Clock does, since it is one), and every status bar shows
+  `WIFI` while the radio is on.
+- [x] Laid out as on the artboard: HH:MM in JetBrains Mono ExtraBold 172 px (176 px overflows
+  the GFX glyph format's 8-bit y offset; the difference doesn't show), weekday and date, ISO
+  week and day of the year, the 24-cell day bar (past hours solid, the current one dithered)
+  with the day's progress and sunrise/sunset, the month calendar (Monday first, today
+  inverted, always six rows tall so the alarms don't move), the alarm list with the next
+  ring in its header. The status bar says when NTP last set the clock (`timesync::lastSync()`,
+  kept in NVS). Redraws once a minute; a full refresh comes every 30 minutes (flip budget).
+- [x] Alarms (`alarms.*`): three slots in NVS, each a local time (so daylight saving moves
+  with it), a repeat (once, every day, Mon–Fri, Sat–Sun or one weekday) and on/off. ▲▼ picks
+  one, ● turns it on or off, HOLD ● edits it.
+- [x] Not on the canvas: the editor, a panel over the right column. The hour is set first
+  (inverted), then minutes, repeat and on/off: ▲▼ sets, ● moves to the next field, HOLD ●
+  saves, BOOT cancels. It shows when the alarm will next ring. Opening it turns the alarm on.
+- [x] Sunrise and sunset computed on the board (`suntimes.*`, the Almanac for Computers
+  method; checked against NOAA for Chicago and London) from `LATITUDE`/`LONGITUDE` in `.env`
+  (shared with Weather). Without them the day bar shows no sun times and Home's preview says
+  to set them. Set in this board's `.env` since 2026-11-12.
+- [x] Home's CLOCK row opens it; the preview shows the time, next alarm, sun times and the
+  last NTP sync.
+- [x] Checked on hardware: layout, the minute redraw, editing and saving an alarm, ● on/off,
+  the alarms surviving a reboot (NVS), WK 46 · DAY 316 for 2026-11-12 (as on the canvas), the
+  sync time after SYNC TIME.
+- [x] Setting the RTC: System → SYNC TIME (NTP). A manual set-time screen would still help
+  without Wi-Fi.
 - [x] Time zone: `TIMEZONE` in `.env`, a POSIX TZ string with the DST rule (US Central here).
-- Alarms that boot the board, and a calendar.
 
-### ⬜ 10. Sleep / power-off
+**✅ 9b. Alarms that ring**
+- [x] `apps::pollAlarms()`, called from `loop()` about once a second, checks each window
+  (last check, now] so a ring is never missed or repeated while the UI is busy. A clock that
+  jumps more than 10 minutes (NTP, first set) doesn't ring for what it skipped.
+- [x] The ring sheet: an overlay at the bottom of whatever screen is showing (portrait or
+  landscape), inverted, with the time in 96 px and the snooze time. ● or BOOT stops, HOLD ●
+  snoozes 9 minutes (kept in NVS, so a power-off can wake for it). The tone stops by itself
+  after 2 minutes; the sheet then says MISSED until a key.
+- [x] The tone (`audio::ring()`): 2 kHz, four 120 ms beeps and a 600 ms pause, with 5 ms ramps
+  against clicks, generated in the audio task at the music volume but at least 50 %. Music that
+  was playing is paused, and stays paused.
+- [x] A one-off alarm turns itself off once it rings.
+- [x] Checked on hardware: alarm 3 set to 16:38 rang at 16:38:00 on the Clock, the sheet
+  appeared, ● stopped it and the alarm switched itself off. Snooze isn't checked on hardware
+  yet.
+- [x] While the board is on, alarms are checked in software and the RTC's alarm interrupt
+  stays off. With it on, INT holds PWRON low until the flag is cleared, and 4 s of that
+  forces the PMIC off (`references/power.md` §7, pitfall 1).
 
-- The frog screen.
-- The RTC-alarm → PWRON wake lifecycle and PMIC shutdown (AGENTS.md, "Power architecture").
+**✅ 9c. Power-off: Sleep and standby** (`power.*`, `apps/sleep.cpp`, standby in
+`apps/clock.cpp`)
+- [x] **PMIC write agreed 2026-11-12:** the soft power-off, register 0x10 bit 0 (datasheet
+  §6.5.4.3; what XPowersLib's `shutdown()` does), `pmic::powerOff()`. Every rail but RTCLDO
+  goes off, the ESP32 included; the panel keeps its image.
+- [x] **Sleep** (the frog), laid out as on the artboard: the halt time, the dot-matrix field
+  (36 × 28 cells: ink, 50 % dither body, paper belly, 25 % dither shadow, 2 px dots), RESUME
+  with the last book, and the inverted wake panel (80 px wake time, reason, path, battery and
+  voltage, the alarm). Entry: System → SLEEP NOW, or a short press of PWR from any screen.
+  It wakes only for the next alarm or snooze; with none it says NO WAKE SET and only PWR
+  brings it back.
+- [x] **Standby** (agreed with the user: idle auto-off on battery should keep the clock
+  current): after 10 minutes without a key, on battery only (not on USB), with nothing
+  playing or syncing, the board shows the Clock face (no cursor, "STANDBY", hint "PWR hold 1 s
+  to wake") and powers off. The RTC wakes it every minute: `apps::standbyWake()` at the start
+  of `setup()` redraws the face and powers off again, with no radio, audio, SD or sensors.
+  The face is drawn from a small record in NVS (time, battery, alarms, last sync), so the
+  previous frame can be redrawn as the panel's "old" image and the update is a partial
+  refresh; a full one at :00 and :30 clears the ghosting. An alarm due at that wake boots
+  normally instead, and rings.
+- [x] The PWR key needs no PMIC change: GPIO1 (`PWR_KEY_SENSE`) reads HIGH while PWRON is
+  low, so `input` treats it as a key (`Key::Power`, released within 2 s; longer is someone
+  forcing the board off). A press already held at boot (PWR held to power on) is ignored
+  until released. The navigator sends it to `apps::sleepNow()`; screens never see it.
+- [x] Power-off order (`power::off()`): stop audio (with a pause against a speaker pop, only
+  if it was on), close the sensor CSV, Wi-Fi off, arm the RTC (moved on a minute if the
+  target is less than 2 s away, since a missed alarm only fires next month), record the mode
+  in NVS, PMIC off. Both screens wait one second after drawing, so a key can still cancel.
+- [x] Boot (`power::begin()`, right after `rtc::begin()`): reads the alarm flag, then
+  disarms the RTC (AIE off, AF cleared) before anything slow, so INT can't hold PWRON low
+  into the 4 s forced-off. The wake reason comes from the alarm flag, the ESP32 reset reason
+  and PMIC 0x20. An alarm wake opens the Clock and rings over it (the alarm window starts at
+  the armed time, since booting takes a couple of seconds). The 500 ms wait for the USB
+  console is skipped on RTC wakes.
+- [x] System: SLEEP NOW works; the SLEEP row states the auto-off rule; NEXT WAKE shows the
+  wake a power-off would arm (the RTC is armed only on the way off).
+- [x] Dev keys: `o` presses PWR; `z` enters standby for two wakes, then the board stays on,
+  so the USB console comes back. `tools/screenshot.py --after b` grabs the Sleep screen in
+  its last second, then cancels the power-off.
+- [x] Checked on hardware, on USB with the battery in:
+  - Standby: off at 23:00:41; the RTC woke it at 23:01:00; `setup()` began at 13 ms, the
+    partial refresh (5,822 px) was done at 0.83 s, then off again; the next wake booted
+    normally (dev-tool limit).
+  - Sleep with alarm 3 set three minutes ahead: off at 23:13; the RTC woke it at 23:16:00,
+    Home, then the Clock with the ring sheet 2.7 s after power-on; ● stopped it.
+  - PMIC 0x20 read `01` (PWRON) after an RTC wake. The soft power-off works with USB
+    attached; the board stays off until the alarm.
+  - Not checked yet: waking with the PWR key and the boot ignoring that press (needs a hand
+    on the board), and the idle auto-off (needs the board off USB).
+- [ ] Battery life in standby isn't measured. Each wake is about 1 s awake plus a 0.6 s
+  partial refresh, much like the vendor's clock mode (which claims 15 days on the 1500 mAh
+  cell).
 
-### ⬜ 11. Wi-Fi, Weather, Podcasts
+**9c+. Reading and music (the user's rules, 2026-11-12)** (`apps/idle.*`, `power::nap()`)
+- [x] Reading (the Reader open, its menu included) and playing music never power off on
+  idle until the battery is below 15 % (`power::kLowBatteryPercent`). Paused music counts as
+  idle. Below 15 % any idle power-off goes to Sleep (no minute wakes) instead of standby.
+- [x] Reading on battery light-sleeps 3 s after the last key (`Screen::reading()`): the CPUs
+  stop and RAM, PSRAM and peripherals keep their state, until a button (dial, press, BOOT, PWR,
+  as GPIO wake sources) or the next minute boundary, for alarms. The IMU goes to standby while
+  napping, and the Reader saves its place when a nap starts (`Screen::onNap()`). Nothing
+  redraws while napping, so the status-bar clock updates with the next page turn. The System
+  screen's SLEEP row shows "napped N min · M naps" once it has happened.
+- [x] Checked on hardware by the user: on battery, every page turn came instantly out of
+  light sleep. The wake pins are kept in their awake configuration during sleep
+  (`gpio_sleep_sel_dis`); before that, a BOOT press seemed not to wake it.
+- [ ] **Light sleep breaks the USB console until a reset.** After napping, the board's USB
+  device didn't come back when USB was plugged in again (seen twice; once it ended in a
+  watchdog reset). Reading on battery is unaffected. Planned fix: restart cleanly when USB
+  power appears after the board has napped (the place is already saved).
+- Not measured: the current while napping. The rails (audio codec, mic, panel) stay up;
+  switching ALDO1/ALDO2 off while reading would save more but is a PMIC write.
 
+**9d. Weather**
+- [ ] Open-Meteo (no API key): now, 12 hours, 6 days, sunrise/sunset. Location from `.env`.
+- [ ] The last forecast cached, so the screen opens at once and works offline.
+- [ ] HOLD ● syncs; hourly while on; an RTC wake for it while off.
+
+**9e. Podcasts**
+- [ ] Feeds listed on the SD card, RSS fetched and parsed, episodes downloaded to SD and played
+  through the music player, with the artboard's states (`[NEW]`, `[DL 62%]`, `[▶ 23m]`,
+  `[✓]`) and the SD cache meter.
+
+**Network groundwork (done)**
 - [x] Credentials are compiled in from the gitignored `.env` (`scripts/gen_secrets.py`, after
   lollipop-smell), with the time zone. On-device provisioning (`references/network.md` §3)
   may not be needed while the network comes from `.env`.
@@ -331,9 +455,8 @@ Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book'
 - Wi-Fi is on only while something needs it (a sync takes about 5 s), so the WIFI row
   normally reads "off". The radio draws roughly 100 mA, so the network screens should keep
   sessions short too.
-- Then the two network screens.
 
-### ⬜ 12. Recorder, Level
+### ⬜ 10. Recorder, Level
 
 Listed on Home but not designed yet.
 
@@ -357,7 +480,7 @@ Listed on Home but not designed yet.
   its oscillator-stop flag clear, so the flag alone isn't enough (verified on hardware).
 - **The RTC and the system clock hold UTC**; `TIMEZONE` from `.env` turns it into local time,
   DST included. The vendor keeps local time in the RTC with no DST, which a Central-time clock
-  can't use. So RTC alarm registers are UTC: phase 10 converts the local wake time when it arms
+  can't use. So RTC alarm registers are UTC: phase 9 converts the local wake time when it arms
   one. The sensor log's `time` column carries the UTC offset (`…T16:08:26-0600`).
 - **Reading positions live in NVS**, not on the SD card: they belong to the device and survive
   a card swap.
@@ -367,10 +490,11 @@ Listed on Home but not designed yet.
 
 ## Known issues
 
-- The clock shows `--:--`: the RTC has never been set. Something has to set it (phase 7, 9
-  or 11).
 - SD at 20 MHz: the long-run check of the CRC-error fix never reported a result, so it's
   still unconfirmed.
+- Home redraws whenever its status-bar temperature moves by 0.1°, every 5–30 s in the logs
+  (about 30 px each). Harmless on USB, but on battery it's wasted refreshes until the 10-minute
+  auto-off. A deadband in `statusTemp()` would fix it.
 - 2026-11-12: the board dropped off USB three times during phases 4–6 and came back a few
   minutes later. Afterwards the PMIC reported no battery (it read 98 % and charging earlier),
   and the RTC had lost power (oscillator-stop flag set), so the board lost power completely.

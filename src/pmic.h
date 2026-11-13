@@ -63,6 +63,14 @@ Detail detail();
 const char *powerOnSource();
 const char *powerOffSource();
 
+// Raw power-on source bits (0x20): bit 0 PWRON pulled low (the key, or the RTC's INT), bit 2
+// USB plugged in, bit 4 battery inserted. -1 if the PMIC didn't answer.
+int powerOnBits();
+
+// Soft power-off (0x10 bit 0, datasheet §6.5.4.3): every output except RTCLDO turns off, the
+// ESP32 included. Returns false if the write failed; otherwise power goes within milliseconds.
+bool powerOff();
+
 // Logs the configuration and status registers as hex, for checking against the datasheet.
 void dump(Print &out);
 

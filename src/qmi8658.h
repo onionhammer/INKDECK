@@ -21,4 +21,8 @@ struct Reading {
 
 Reading read();
 
+// Both sensors off (standby, a few µA) or back on with the configuration above. The Reader's
+// light sleep turns them off; the first readings after turning them on may still be settling.
+bool setEnabled(bool on);
+
 }  // namespace qmi8658

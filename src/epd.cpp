@@ -123,6 +123,12 @@ uint32_t Epd::changedPixels(const uint8_t *frame) const {
   return n;
 }
 
+void Epd::assumeShown(const uint8_t *frame) {
+  if (!prev_) return;
+  memcpy(prev_, frame, kFrameBytes);
+  hasPrev_ = true;
+}
+
 bool Epd::show(const uint8_t *frame, bool full) {
   if (!prev_) return false;
   if (!hasPrev_) full = true;

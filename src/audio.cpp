@@ -4,6 +4,7 @@
 #include <driver/i2s_std.h>
 #include <errno.h>
 #include <esp_heap_caps.h>
+#include <math.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
@@ -32,7 +33,7 @@ constexpr int kPcmSamples = MAX_NCHAN * MAX_NGRAN * MAX_NSAMP;  // one frame, in
 constexpr uint32_t kDmaDescriptors = 8;
 constexpr uint32_t kDmaFrames = 511;
 
-enum class Cmd : uint8_t { Play, TogglePause, Next, Stop, Volume };
+enum class Cmd : uint8_t { Play, TogglePause, Next, Stop, Volume, Ring };
 struct Command {
   Cmd cmd;
   int arg;
@@ -50,6 +51,7 @@ std::atomic<uint32_t> generation{0};
 std::atomic<int> volume{kDefaultVolume};
 std::atomic<uint32_t> underruns{0};
 std::atomic<bool> countUnderruns{false};
+std::atomic<bool> ringOn{false};
 
 struct Locked {
   Locked() { xSemaphoreTake(lock, portMAX_DELAY); }
@@ -57,6 +59,7 @@ struct Locked {
 };
 
 void send(Cmd cmd, int arg = 0) {
+  if (!commands) return;  // begin() hasn't run (a standby wake powers off without audio)
   const Command c{cmd, arg};
   xQueueSend(commands, &c, portMAX_DELAY);
 }
@@ -296,7 +299,80 @@ void trackFinished() {
   advance();
 }
 
+// ---------------------------------------------------------------------------------------------
+// Alarm tone (audio task only)
+
+constexpr uint32_t kRingRate = 16000;  // when the output isn't already on for music
+constexpr int kRingMinVolume = 50;
+constexpr float kRingHz = 2000;  // small speakers are loudest around 2 kHz
+// One cycle: four 120 ms beeps 80 ms apart, then 600 ms of quiet.
+constexpr uint32_t kBeepMs = 120, kGapMs = 80, kBeeps = 4, kQuietMs = 600;
+constexpr uint32_t kCycleMs = kBeeps * (kBeepMs + kGapMs) + kQuietMs;
+constexpr uint32_t kRampMs = 5;  // soft edges, so the beeps don't click
+
+struct Ring {
+  bool on = false;
+  bool ownsOutput = false;  // the output was off (no music) and goes off again afterwards
+  uint64_t sample = 0;
+} ring;
+
+void ringStart() {
+  if (ring.on) return;
+  State state;
+  {
+    Locked l;
+    state = shared.state;
+  }
+  if (state == State::Playing) setState(State::Paused);
+  ring.ownsOutput = !tx;
+  if (!tx && !outputStart(kRingRate)) return;
+  es8311::setVolume(std::max(volume.load(), kRingMinVolume));
+  es8311::mute(false);
+  ring.on = true;
+  ring.sample = 0;
+  ringOn = true;
+  log_i("audio: ringing");
+}
+
+void ringStop() {
+  if (!ring.on) return;
+  ring.on = false;
+  ringOn = false;
+  if (ring.ownsOutput) {
+    outputStop();
+  } else {
+    es8311::mute(true);  // the music it interrupted stays paused
+    es8311::setVolume(volume.load());
+  }
+  log_i("audio: ring stopped");
+}
+
+// Writes about 16 ms of the pattern (blocks while the DMA buffers are full).
+void ringStep() {
+  constexpr int kFrames = 256;
+  const uint32_t rate = txRate ? txRate : kRingRate;
+  const uint32_t cycle = kCycleMs * rate / 1000;
+  const uint32_t beep = kBeepMs * rate / 1000, period = (kBeepMs + kGapMs) * rate / 1000;
+  const uint32_t ramp = kRampMs * rate / 1000;
+  for (int i = 0; i < kFrames; ++i, ++ring.sample) {
+    const uint32_t inCycle = ring.sample % cycle;
+    const uint32_t inBeep = inCycle % period;
+    float amp = 0;
+    if (inCycle < kBeeps * period && inBeep < beep) {
+      amp = 0.6f;
+      if (inBeep < ramp) amp *= static_cast<float>(inBeep) / ramp;
+      if (beep - inBeep < ramp) amp *= static_cast<float>(beep - inBeep) / ramp;
+    }
+    const float phase = 2 * static_cast<float>(M_PI) * kRingHz * (ring.sample % rate) / rate;
+    const int16_t v = static_cast<int16_t>(amp * 32767 * sinf(phase));
+    p.pcm[2 * i] = p.pcm[2 * i + 1] = v;
+  }
+  size_t written = 0;
+  i2s_channel_write(tx, p.pcm, kFrames * 2 * sizeof(int16_t), &written, portMAX_DELAY);
+}
+
 void handle(const Command &c) {
+  if (ring.on && c.cmd != Cmd::Ring && c.cmd != Cmd::Volume) ringStop();
   State state;
   {
     Locked l;
@@ -335,7 +411,14 @@ void handle(const Command &c) {
       setState(State::Stopped);
       break;
     case Cmd::Volume:
-      if (tx) es8311::setVolume(c.arg);
+      if (tx && !ring.on) es8311::setVolume(c.arg);
+      break;
+    case Cmd::Ring:
+      if (c.arg) {
+        ringStart();
+      } else {
+        ringStop();
+      }
       break;
   }
 }
@@ -471,11 +554,15 @@ void task(void *) {
     }
     const bool playing = state == State::Playing && p.decoder;
     Command c;
-    if (xQueueReceive(commands, &c, playing ? 0 : portMAX_DELAY) == pdTRUE) {
+    if (xQueueReceive(commands, &c, playing || ring.on ? 0 : portMAX_DELAY) == pdTRUE) {
       handle(c);
       continue;
     }
-    if (playing) step();
+    if (ring.on) {
+      ringStep();
+    } else if (playing) {
+      step();
+    }
   }
 }
 
@@ -516,6 +603,7 @@ void changeVolume(int delta) {
 
 Status status() {
   Status s;
+  if (!lock) return s;
   {
     Locked l;
     s = shared;
@@ -526,12 +614,18 @@ Status status() {
   return s;
 }
 
+void ring(bool on) { send(Cmd::Ring, on ? 1 : 0); }
+
+bool ringing() { return ringOn.load(); }
+
 bool active() {
+  if (!lock) return false;
   Locked l;
   return shared.state != State::Stopped;
 }
 
 std::vector<std::string> queue(int from, int count) {
+  if (!lock) return {};
   Locked l;
   std::vector<std::string> out;
   for (int i = std::max(0, from); i < from + count && i < static_cast<int>(playlist.size()); ++i) {

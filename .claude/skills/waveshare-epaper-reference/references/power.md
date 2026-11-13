@@ -180,6 +180,9 @@ void axp_pwr_off()
 - `shutdown()` sets `0x10[0]`. Per the datasheet, every output except RTCLDO turns off, DC1 included, so
   the ESP32 loses power. The audio cleanup before it (mute, volume 0, disable I2S, close codec, about
   300 ms of delays) presumably avoids a speaker pop **(inferred)**.
+- **Verified on hardware** (`pmic::powerOff()`, `src/power.cpp`): setting `0x10[0]` powers the board off
+  even with USB attached, and it stays off (VBUS power-on is an edge, not a level) until the RTC alarm, the
+  PWR key or a USB re-plug. After an RTC wake, `0x20` read `01` (PWRON low).
 - `axp2101_getVoltage_Task()` (logs the values above once a second) is never created. `getstat()` is only
   referenced from a commented-out line.
 - **IRQ: unused.** GPIO38 (`PMIC_IRQ`) is never configured and no IRQ calls exist. The PWR key isn't
@@ -273,7 +276,10 @@ void PCF85063_clear_alarm_flag()     // Control_2 &= 0xBF (clear AF)
 ```
 
 All four fields (day, hour, minute, second) are compared, so the alarm is a one-shot absolute
-date-time within the month. `PCF85063_get_alarm_flag()` (Control_2 & 0x40) and `rtcRunAlarm()` are
+date-time within the month. **Verified on hardware** (`rtc::arm()`, burst write of `0x0B`–`0x0F` with the
+weekday field disabled, then AIE): the alarm booted the board from PMIC-off on the armed second, and
+with the panel's last frame redrawn into the driver's "old" buffer, the first refresh after the wake can
+be partial (`src/apps/clock.cpp`, standby). `PCF85063_get_alarm_flag()` (Control_2 & 0x40) and `rtcRunAlarm()` are
 unused.
 
 **INT pin.** INT is open-drain. With AIE=1 it "follows the condition of bit AF" and stays low until AF

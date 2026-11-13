@@ -1,8 +1,9 @@
 """PlatformIO pre-build hook: generate inkdeck_secrets.h from the gitignored .env.
 
 Settings: WIFI_SSID and WIFI_PASSWORD (the network that SYNC TIME, and later the network
-screens, join) and TIMEZONE (a POSIX TZ string, so local time follows daylight saving; empty
-means UTC).
+screens, join), TIMEZONE (a POSIX TZ string, so local time follows daylight saving; empty
+means UTC), and LATITUDE/LONGITUDE in decimal degrees (sunrise and sunset on the Clock, the
+Weather forecast; optional, but both or neither).
 
 The secrets go into a header in the build directory rather than -D flags, so they never appear
 on compiler command lines or in verbose build logs, and any character in a Wi-Fi password
@@ -25,7 +26,7 @@ import re
 Import("env")  # noqa: F821 - SCons injects Import into extra scripts
 
 HEADER = "inkdeck_secrets.h"
-KEYS = ("WIFI_SSID", "WIFI_PASSWORD", "TIMEZONE")
+KEYS = ("WIFI_SSID", "WIFI_PASSWORD", "TIMEZONE", "LATITUDE", "LONGITUDE")
 DEFAULT_TIMEZONE = "UTC0"
 
 # POSIX TZ, the only form newlib's tzset() understands: std offset [dst [offset] [,start,end]],
@@ -37,6 +38,15 @@ TZ_RE = re.compile(
     r"^%s%s(?:%s(?:%s)?(?:,%s,%s)?)?$"
     % (_TZ_NAME, _TZ_OFFSET, _TZ_NAME, _TZ_OFFSET, _TZ_RULE, _TZ_RULE)
 )
+DEGREES_RE = re.compile(r"^[+-]?\d{1,3}(?:\.\d+)?$")
+
+
+def degrees(text, limit):
+    """The value as a float within +-limit, or None."""
+    if not DEGREES_RE.match(text):
+        return None
+    value = float(text)
+    return value if -limit <= value <= limit else None
 
 
 def parse_env_file(path):
@@ -92,11 +102,32 @@ def build_header(values):
         ):
             errors.append("WIFI_PASSWORD must be empty, 8-63 bytes, or a 64-hex-digit PSK")
 
+    lat_text = values.get("LATITUDE", "")
+    lon_text = values.get("LONGITUDE", "")
+    location = None
+    if lat_text or lon_text:
+        lat, lon = degrees(lat_text, 90), degrees(lon_text, 180)
+        if lat is None or lon is None:
+            errors.append(
+                "LATITUDE and LONGITUDE must both be set, in decimal degrees"
+                " (north and east positive, e.g. 41.88 and -87.63)"
+            )
+        else:
+            location = (lat, lon)
+
     if errors:
         lines += ['#error "%s: see .env.example"' % e for e in errors]
         return "\n".join(lines) + "\n", errors, False
 
     lines.append("#define TIMEZONE %s" % c_string(timezone))
+    if location:
+        lines += [
+            "#define LOCATION_CONFIGURED 1",
+            "#define LATITUDE (%.5ff)" % location[0],
+            "#define LONGITUDE (%.5ff)" % location[1],
+        ]
+    else:
+        lines += ["#define LOCATION_CONFIGURED 0", "#define LATITUDE 0.0f", "#define LONGITUDE 0.0f"]
     if ssid:
         lines += [
             "#define WIFI_CONFIGURED 1",

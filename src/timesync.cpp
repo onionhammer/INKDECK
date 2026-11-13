@@ -1,6 +1,7 @@
 #include "timesync.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <esp_netif_sntp.h>
 #include <esp_timer.h>
 #include <math.h>
@@ -21,7 +22,11 @@ constexpr uint32_t kConnectTimeoutMs = 20000;
 // lwIP holds the first request back by a random 0-5 s (CONFIG_LWIP_SNTP_MAXIMUM_STARTUP_DELAY).
 constexpr uint32_t kSntpTimeoutMs = 15000;
 
+constexpr const char *kNamespace = "clock";
+constexpr const char *kSyncedKey = "synced";
+
 std::atomic<Phase> phase{Phase::Idle};
+std::atomic<int64_t> lastSynced{-1};  // lastSync() cache; -1 = not read from NVS yet
 std::mutex resultMutex;
 std::string result;
 
@@ -86,6 +91,14 @@ void run(void *) {
   delay((1000000 - now.tv_usec) / 1000 + 1);
   const time_t utc = time(nullptr);
   const bool stored = rtc::set(utc);
+  if (stored) {
+    Preferences prefs;
+    if (prefs.begin(kNamespace, false)) {
+      prefs.putULong64(kSyncedKey, static_cast<uint64_t>(utc));
+      prefs.end();
+    }
+    lastSynced = utc;
+  }
 
   tm local;
   localtime_r(&utc, &local);
@@ -119,6 +132,21 @@ bool start() {
     return false;
   }
   return true;
+}
+
+time_t lastSync() {
+  int64_t t = lastSynced.load();
+  if (t < 0) {
+    t = 0;
+    Preferences prefs;
+    // Read-write: a read-only open fails (and logs an error) until the namespace exists.
+    if (prefs.begin(kNamespace, false)) {
+      if (prefs.isKey(kSyncedKey)) t = static_cast<int64_t>(prefs.getULong64(kSyncedKey));
+      prefs.end();
+    }
+    lastSynced = t;
+  }
+  return static_cast<time_t>(t);
 }
 
 Status status() {

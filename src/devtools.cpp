@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 
+#include "apps/idle.h"
 #include "audio.h"
 #include "input.h"
 #include "pmic.h"
@@ -28,6 +29,8 @@ void task(void *) {
         case '+': audio::changeVolume(+5); break;
         case 'r': pmic::dump(Serial); break;
         case 'c': rtc::forget(); break;
+        case 'o': input::inject(Key::Power); break;
+        case 'z': apps::requestStandby(2); break;
         case 'i': {
           const qmi8658::Reading m = qmi8658::read();
           Serial.printf("IMU chip acc %+.2f %+.2f %+.2f g, gyro %+.1f %+.1f %+.1f dps\n",

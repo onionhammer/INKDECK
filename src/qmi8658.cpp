@@ -80,6 +80,8 @@ bool begin() {
 
 bool present() { return found; }
 
+bool setEnabled(bool on) { return found && write(kRegCtrl7, on ? kCtrl7 : 0x00); }
+
 Reading read() {
   Reading r;
   uint8_t b[14];

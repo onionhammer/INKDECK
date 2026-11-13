@@ -25,6 +25,10 @@ class Epd {
   // content is unknown (before the first update, after a failed one).
   uint32_t changedPixels(const uint8_t *frame) const;
 
+  // Records frame as what the panel shows now, without refreshing: after a power-off the panel
+  // still holds its image, and redrawing it here lets the next show() be partial.
+  void assumeShown(const uint8_t *frame);
+
  private:
   void reset();
   bool waitIdle(uint32_t timeoutMs);

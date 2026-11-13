@@ -36,30 +36,30 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   drawText(c, {band.x + 12, band.y, tagW - 24, band.h}, info.tag, style::kStatusTag, Align::Left,
            kPaper);
 
-  // Right block: [temp] [battery glyph + %] clock, after a 3 px rule.
+  // Right block: [WIFI] [temp] [battery glyph + %] [clock], after a 3 px rule.
   constexpr int kGap = 14;
+  constexpr int kBatteryGlyphW = 28 + 6;
   std::string batteryText;
   if (info.battery >= 0) {
     batteryText = std::to_string(info.battery) + "%";
   } else if (info.usb) {
     batteryText = "USB";
   }
-  int blockW = textWidth(style::kStatus, info.clock);
-  if (!info.temp.empty()) blockW += textWidth(style::kStatus, info.temp) + kGap;
-  if (!batteryText.empty()) {
-    blockW += textWidth(style::kStatus, batteryText) + kGap;
-    if (info.battery >= 0) blockW += 28 + 6;
+  const std::string texts[] = {info.wifi ? "WIFI" : "", info.temp, batteryText, info.clock};
+  int blockW = -kGap;
+  for (const std::string &t : texts) {
+    if (!t.empty()) blockW += textWidth(style::kStatus, t) + kGap;
   }
-  const int blockX = band.right() - blockW - 12;
+  if (info.battery >= 0) blockW += kBatteryGlyphW;
+  const int blockX = band.right() - std::max(blockW, 0) - 12;
   vrule(c, blockX - 12 - kRule, band.y, band.h);
   const int baseline = baselineCentered(style::kStatus, band.y, band.h);
   int x = blockX;
-  if (!info.temp.empty()) x = drawText(c, x, baseline, info.temp, style::kStatus) + kGap;
-  if (!batteryText.empty()) {
-    if (info.battery >= 0) x += drawBattery(c, x, band.centerY(), info.battery) + 6;
-    x = drawText(c, x, baseline, batteryText, style::kStatus) + kGap;
+  for (int i = 0; i < 4; ++i) {
+    if (texts[i].empty()) continue;
+    if (i == 2 && info.battery >= 0) x += drawBattery(c, x, band.centerY(), info.battery) + 6;
+    x = drawText(c, x, baseline, texts[i], style::kStatus) + kGap;
   }
-  drawText(c, x, baseline, info.clock, style::kStatus);
 
   // Context fills what's left between the tag and the right block.
   const int ctxX = band.x + tagW + 12;

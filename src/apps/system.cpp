@@ -4,6 +4,9 @@
 #include <esp_system.h>
 #include <stdio.h>
 
+#include "alarms.h"
+#include "apps/idle.h"
+#include "apps/sleep.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "pmic.h"
@@ -79,19 +82,29 @@ std::string chargeConfig(const pmic::Detail &d) {
          volts(d.cutoffMv, 1);
 }
 
+// The idle rule, or once the Reader has light-slept, how much: "napped 41 min · 63 naps".
+std::string sleepState() {
+  const apps::NapStats n = apps::napStats();
+  if (!n.naps) return "off after 10 min idle on battery";
+  char buf[48];
+  snprintf(buf, sizeof buf, "napped %lu min \xC2\xB7 %lu naps",
+           static_cast<unsigned long>(n.asleepSeconds / 60), static_cast<unsigned long>(n.naps));
+  return buf;
+}
+
+// The RTC is armed only on the way to a power-off (power.h), so while the board runs this is
+// the wake that a power-off now would set: the next alarm or snooze.
 std::string nextWake() {
-  const rtc::Alarm a = rtc::alarm();
-  if (!a.ok) return "RTC not answering";
-  if (!a.armed) return "none (RTC alarm off)";
-  char buf[40];
-  if (a.hour < 0 || a.minute < 0) {
-    snprintf(buf, sizeof buf, "armed, partial match");
-  } else if (a.day >= 0) {
-    snprintf(buf, sizeof buf, "day %d, %02d:%02d UTC", a.day, a.hour, a.minute);
-  } else {
-    snprintf(buf, sizeof buf, "%02d:%02d UTC", a.hour, a.minute);
-  }
-  return std::string(buf) + (a.fired ? " (fired)" : "");
+  if (!rtc::timeValid()) return "none (clock not set)";
+  const time_t now = time(nullptr);
+  int slot = -1;
+  const time_t next = alarms::next(now, &slot);
+  if (!next) return "none: PWR key only";
+  tm t;
+  localtime_r(&next, &t);
+  char buf[48];
+  strftime(buf, sizeof buf, next - now < 86400 ? "%H:%M" : "%a %H:%M", &t);
+  return std::string(buf) + " \xC2\xB7 alarm " + std::to_string(slot + 1) + ", at power-off";
 }
 
 class SystemScreen : public ui::Screen {
@@ -169,7 +182,7 @@ class SystemScreen : public ui::Screen {
 
   void run(Action a) {
     switch (a) {
-      case Action::Sleep: message_ = "POWER-OFF ISN'T BUILT YET"; break;
+      case Action::Sleep: apps::sleepNow(); break;
       case Action::SyncTime: {
         if (!wlan::configured()) {
           message_ = "NO WI-FI: SET WIFI_SSID IN .ENV, REBUILD";
@@ -313,7 +326,7 @@ class SystemScreen : public ui::Screen {
     drawSectionHeader(c, r.takeTop(kSectionH), "STATE", "UP " + sysinfo::uptime());
     r.takeTop(4);
     const std::pair<const char *, std::string> rows[kStateRows] = {
-        {"SLEEP", "always on (no auto-off yet)"},
+        {"SLEEP", sleepState()},
         {"NEXT WAKE", nextWake()},
         {"LAST BOOT", sysinfo::bootReason()},
         {"WIFI", sysinfo::wifi()},

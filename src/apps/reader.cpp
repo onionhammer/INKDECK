@@ -141,6 +141,8 @@ class ReaderScreen : public ui::Screen {
     return 4;
   }
 
+  bool reading() const override { return true; }  // light sleep between page turns
+  void onNap() override { reader_.save(); }
   void onLeave() override { reader_.save(); }  // covered by the menu, or closed
 
   bool onKey(Key key) override {

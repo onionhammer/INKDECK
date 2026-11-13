@@ -223,6 +223,7 @@ const char *deviceName(uint8_t address) {
 }
 
 bool logging() {
+  if (!mutex) return false;  // begin() hasn't run (a standby wake)
   Lock lock;
   return logFile != nullptr;
 }

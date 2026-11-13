@@ -19,7 +19,7 @@ constexpr int kPadX = 14;  // side padding of chrome bands and list rows
 constexpr int kRowH = 34;  // single-line list row
 constexpr int kRowTallH = 48;  // two-line list row
 
-// --- Status bar: inverted module tag, context text, then [temp] battery % and clock.
+// --- Status bar: inverted module tag, context text, then [WIFI] [temp] battery % and clock.
 struct StatusInfo {
   std::string tag;      // "01 READER"
   std::string context;  // "~/home", a path, a book title
@@ -27,7 +27,8 @@ struct StatusInfo {
   std::string temp;     // optional, e.g. "21.4°C"
   int battery = -1;     // percent; -1 = no battery reading
   bool usb = false;     // on USB power (shown when there's no battery reading)
-  std::string clock;    // "14:32", or "--:--" when the time isn't known
+  std::string clock;    // "14:32", or "--:--" when the time isn't known; empty: none
+  bool wifi = false;    // the radio is on: "WIFI" before the rest
 };
 void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info);
 int drawBattery(Canvas &c, int x, int centerY, int percent);  // returns its width

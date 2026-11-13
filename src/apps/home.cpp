@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <stdio.h>
 
+#include "alarms.h"
+#include "apps/clock.h"
 #include "apps/files.h"
 #include "apps/music.h"
 #include "apps/reader.h"
@@ -15,7 +17,9 @@
 #include "rtc.h"
 #include "sdcard.h"
 #include "sensor_hub.h"
+#include "suntimes.h"
 #include "sysinfo.h"
+#include "timesync.h"
 #include "units.h"
 
 namespace apps {
@@ -24,7 +28,7 @@ namespace {
 using ui::Key;
 using ui::Rect;
 
-enum class Kind : uint8_t { Reader, Music, Files, Sensors, System, NotBuilt };
+enum class Kind : uint8_t { Reader, Music, Files, Sensors, System, Clock, NotBuilt };
 
 struct Module {
   const char *label;
@@ -43,17 +47,17 @@ constexpr Module kModules[] = {
     {"MUSIC", "I2S", "MP3 files from microSD through the onboard codec and speaker.",
      "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music, 6},
     {"PODCASTS", "NET", "RSS over Wi-Fi. Episodes cache to SD for offline listening.",
-     "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::NotBuilt, 11},
+     "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::NotBuilt, 9},
     {"WEATHER", "NET", "Now, hourly and 6-day forecast, pulled over Wi-Fi every hour.",
-     "Wi-Fi \xC2\xB7 PCF85063A alarm", Kind::NotBuilt, 11},
+     "Wi-Fi \xC2\xB7 PCF85063A alarm", Kind::NotBuilt, 9},
     {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors, 8},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
-     "PCF85063A @ 0x51", Kind::NotBuilt, 9},
+     "PCF85063A @ 0x51", Kind::Clock, 9},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
-     "ES8311 ADC \xC2\xB7 ALDO2", Kind::NotBuilt, 12},
+     "ES8311 ADC \xC2\xB7 ALDO2", Kind::NotBuilt, 10},
     {"LEVEL", "IMU", "Bubble level and tilt alarm from the 6-axis IMU.",
-     "QMI8658A \xC2\xB7 INT2 GPIO40", Kind::NotBuilt, 12},
+     "QMI8658A \xC2\xB7 INT2 GPIO40", Kind::NotBuilt, 10},
     {"FILES", "SD", "Browse the microSD card. Opens books and plays music.",
      "SDMMC 4-bit \xC2\xB7 20 MHz", Kind::Files, 4},
     {"SYSTEM", "PMIC", "Battery, power rails, sleep schedule, Wi-Fi and firmware updates.",
@@ -142,6 +146,49 @@ int statsFor(const Module &m, Stat out[4]) {
       out[1] = {"POWER", !p.ok ? "?" : p.charging ? "USB, CHARGING" : p.vbus ? "USB" : "BATTERY"};
       out[2] = {"UPTIME", sysinfo::uptime()};
       out[3] = {"CLOCK", rtc::timeValid() ? "SET" : "NOT SET"};
+      return 4;
+    }
+    case Kind::Clock: {
+      const bool valid = rtc::timeValid();
+      const time_t now = time(nullptr);
+      tm t;
+      localtime_r(&now, &t);
+      char buf[24] = "--:--";
+      if (valid) strftime(buf, sizeof buf, "%H:%M %Z", &t);
+      out[0] = {"TIME", buf};
+
+      const time_t next = valid ? alarms::next(now) : 0;
+      std::string alarm = valid ? "ALL OFF" : ui::glyph::kEmDash;
+      if (next) {
+        tm a;
+        localtime_r(&next, &a);
+        strftime(buf, sizeof buf, next - now < 86400 ? "%H:%M" : "%a %H:%M", &a);
+        alarm = ui::upper(buf);
+      }
+      out[1] = {"NEXT ALARM", alarm};
+
+      std::string sunText = sun::configured() ? ui::glyph::kEmDash : "SET LAT/LON IN .ENV";
+      const sun::Day d = valid ? sun::on(now) : sun::Day{};
+      if (d.ok) {
+        char rise[8], set[8];
+        tm r, s;
+        localtime_r(&d.rise, &r);
+        localtime_r(&d.set, &s);
+        strftime(rise, sizeof rise, "%H:%M", &r);
+        strftime(set, sizeof set, "%H:%M", &s);
+        sunText = std::string("\xE2\x86\x91") + rise + " \xE2\x86\x93" + set;  // ↑ ↓
+      }
+      out[2] = {"SUN", sunText};
+
+      const time_t synced = timesync::lastSync();
+      std::string ntp = "NEVER";
+      if (synced) {
+        tm s;
+        localtime_r(&synced, &s);
+        strftime(buf, sizeof buf, "%d %b %H:%M", &s);
+        ntp = ui::upper(buf);
+      }
+      out[3] = {"NTP SYNC", ntp};
       return 4;
     }
     case Kind::NotBuilt:
@@ -262,6 +309,7 @@ class HomeScreen : public ui::Screen {
       case Kind::Files: ui::nav::push(makeFiles(sdcard::kMountPoint)); break;
       case Kind::Sensors: ui::nav::push(makeSensors()); break;
       case Kind::System: ui::nav::push(makeSystem()); break;
+      case Kind::Clock: ui::nav::push(makeClock()); break;
       case Kind::NotBuilt: ui::nav::push(std::make_unique<NotBuiltScreen>(i)); break;
     }
   }

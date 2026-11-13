@@ -133,14 +133,18 @@ FONTS = [
     ("kMono17ExtraBold", "jbmono", 17, "latin", {"weight": 800}),
     ("kMono18Medium", "jbmono", 18, "latin", {"weight": 500}),
     ("kMono18Bold", "jbmono", 18, "latin", {"weight": 700}),
+    ("kMono20Medium", "jbmono", 20, "upper", {"weight": 500}),
     ("kMono22ExtraBold", "jbmono", 22, "ascii", {"weight": 800}),
+    ("kMono24ExtraBold", "jbmono", 24, "upper", {"weight": 800}),
     ("kMono38ExtraBold", "jbmono", 38, "upper", {"weight": 800}),
     ("kMono40ExtraBold", "jbmono", 40, "digits", {"weight": 800}),
     ("kMono50ExtraBold", "jbmono", 50, "upper", {"weight": 800}),
     ("kMono64ExtraBold", "jbmono", 64, "digits", {"weight": 800}),
     ("kMono68ExtraBold", "jbmono", 68, "caps", {"weight": 800}),
+    ("kMono80ExtraBold", "jbmono", 80, "digits", {"weight": 800}),  # Sleep: wake time
     ("kMono96ExtraBold", "jbmono", 96, "digits", {"weight": 800}),
     ("kMono104ExtraBold", "jbmono", 104, "digits", {"weight": 800}),
+    ("kMono172ExtraBold", "jbmono", 172, "digits", {"weight": 800}),  # Clock (176 overflows int8 yOffset)
 ]
 # Reader text: three sizes (19 px is the spec's), each regular / bold / italic / bold italic.
 # Bold is 600, the weight the design canvas loads.

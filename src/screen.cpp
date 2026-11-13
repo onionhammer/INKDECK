@@ -70,6 +70,8 @@ bool present(bool forceFull) {
   return true;
 }
 
+void assumeShown() { epd.assumeShown(fb->getBuffer()); }
+
 void setLandscape(bool landscape) { fb->setRotation(landscape ? 0 : kRotation); }
 
 bool landscape() { return fb->getRotation() == 0; }

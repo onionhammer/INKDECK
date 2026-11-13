@@ -36,6 +36,8 @@ class Screen {
   virtual bool contextIsPath() const { return false; }  // ellipsize it from the front
   // Optional reading before the battery ("21.4°C"). Home shows the room temperature.
   virtual std::string statusTemp() const { return {}; }
+  // false: no clock in the status bar (the Clock is one).
+  virtual bool statusClock() const { return true; }
   // Up to kMaxHints key hints for the bottom bar, left to right. Returns the count.
   virtual int hints(Hint *out) const { return 0; }
   // false: draw() gets the whole screen and the navigator draws no chrome.
@@ -44,6 +46,14 @@ class Screen {
   // true: drawn on top of the screen below it (menus, sheets). The status bar and body come
   // from the screen below; the hints come from this one.
   virtual bool overlay() const { return false; }
+  // true for a screen that is read for long stretches without keys (the Reader): the idle
+  // power-off waits for a low battery, and the board light-sleeps between keys (apps/idle.h).
+  // Such a screen must not need onTick() while idle; its status-bar clock then updates with
+  // the next key.
+  virtual bool reading() const { return false; }
+  // Called when the board starts light-sleeping under this screen: save anything that a power
+  // loss shouldn't take (the Reader saves its place).
+  virtual void onNap() {}
 
   // Called when the screen becomes the top of the stack (pushed, or uncovered by a pop) and
   // when it stops being the top (popped, or covered by a push).
@@ -77,6 +87,10 @@ void replace(std::unique_ptr<Screen> screen);
 
 void invalidate(Refresh refresh = Refresh::Partial);
 Screen *top();
+Screen *base();  // the top screen that isn't an overlay (the one under a menu)
+
+// What a PWR press does (input::Key::Power; screens never see it).
+void onPowerKey(void (*handler)());
 
 }  // namespace nav
 }  // namespace ui

@@ -21,4 +21,6 @@ bool connect(uint32_t timeoutMs, std::string &error);
 
 void disconnect();  // and radio off
 
+bool radioOn();  // connecting or connected (the status bar shows WIFI)
+
 }  // namespace wlan

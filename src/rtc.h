@@ -26,6 +26,15 @@ bool set(time_t utc);
 // treats as unset, as if the battery had been out. The system clock keeps running.
 bool forget();
 
+// Wake alarm: compares day of month, hour, minute and second (UTC), so it fires once, at
+// `utc`, which must be in the future and within the month (a time that has passed fires next
+// month). Sets AIE and clears AF. While armed and fired, INT holds the PMIC's PWRON low, which
+// powers the board on from off, but forces it off after 4 s if it is running: arm it only on
+// the way to a power-off, and disarm() early at boot.
+bool arm(time_t utc);
+// AIE off, AF cleared (releases INT), every alarm field disabled.
+bool disarm();
+
 // The alarm registers (read-only). armed = Control_2 AIE; fired = AF (INT is held low, and on
 // this board that holds the PMIC's PWRON low too). Fields the alarm doesn't compare are -1.
 // The times are UTC.

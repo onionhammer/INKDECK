@@ -7,6 +7,9 @@
 //   i        print one raw IMU reading (chip axes)
 //   c        reset the RTC to 2000-01-01, as after a battery pull (the boot-time sync then
 //            runs on the next boot)
+//   o        press PWR: the Sleep screen, then power-off (an armed alarm wakes it)
+//   z        standby for two wakes: the Clock face, off, redrawn by the next minute's RTC wake,
+//            then the board stays on at the one after (so the USB console comes back)
 #pragma once
 
 namespace devtools {

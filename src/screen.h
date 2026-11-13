@@ -18,6 +18,10 @@ void clear();  // fill white
 // A partial update with no changed pixels is skipped; returns false then.
 bool present(bool forceFull = false);
 
+// Tells the panel driver the canvas holds what the panel shows now (it kept its image through a
+// power-off), so the next present() can be a partial refresh against it.
+void assumeShown();
+
 // Portrait (480x800, the default) or the panel's native landscape (800x480). Only changes how
 // drawing maps onto the framebuffer; present() with a full refresh after switching.
 void setLandscape(bool landscape);

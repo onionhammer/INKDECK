@@ -1,0 +1,280 @@
+#include "apps/sleep.h"
+
+#include <Arduino.h>
+#include <stdio.h>
+#include <time.h>
+
+
+#include "alarms.h"
+#include "pmic.h"
+#include "power.h"
+#include "readstate.h"
+#include "rtc.h"
+
+namespace apps {
+namespace {
+
+using ui::Key;
+using ui::Rect;
+using ui::TextStyle;
+
+// Sizes, weights and letter-spacing from the Sleep artboard.
+constexpr TextStyle kStripTag{&ui::fonts::kMono13ExtraBold, 1};
+constexpr TextStyle kStrip{&ui::fonts::kMono13Bold, 1};
+constexpr TextStyle kResumeKey{&ui::fonts::kMono13Medium, 1};
+constexpr TextStyle kResume{&ui::fonts::kMono14Bold, 1};
+constexpr TextStyle kWakeTime{&ui::fonts::kMono80ExtraBold, -4};
+constexpr TextStyle kWakeDate{&ui::fonts::kMono15Bold, 1};
+constexpr TextStyle kKey{&ui::fonts::kMono14Medium, 1};
+constexpr TextStyle kValue{&ui::fonts::kMono14Bold, 0};
+constexpr TextStyle kBoot{&ui::fonts::kMono14Bold, 1};
+constexpr TextStyle kBootCap{&ui::fonts::kMono14ExtraBold, 0};
+
+constexpr int kPanelW = 292;  // the inverted wake panel
+constexpr int kTopH = 40;     // strips, including their 3 px rules
+constexpr int kBottomH = 44;
+constexpr int kCols = 36;     // dot-matrix field: 36 x 28 cells of 14 px
+constexpr int kRows = 28;
+constexpr int kCell = 14;
+
+// The artboard's sprites: '#' ink, '+' 50 % dither, 'o' paper inside the sprite.
+const char *const kFrog[] = {
+    "    ######      ######    ", "   #++++++#    #++++++#   ", "  #+#++++#+#  #+#++++#+#  ",
+    "  #++####++####++####++#  ", " #++++++++++++++++++++++# ", "#++++++++++#++#++++++++++#",
+    "#+#++++++++++++++++++++#+#", "#++####################++#", "#+++oooooooooooooooooo+++#",
+    " #++oooooooooooooooooo++# ", "#++++#oooooooooooooo#++++#", "#++++#o#oooooooooo#o#++++#",
+    "#++++#o#oooooooooo#o#++++#", " #+++#o#oooooooooo#o#+++# ", "  ######################  ",
+    "     # # #      # # #     ",
+};
+const char *const kPad[] = {
+    "   ########################   ",
+    " ##oooooooooooooooooooooooo## ",
+    "   ########################   ",
+};
+const char *const kZBig[] = {"#####", "...#.", "..#..", ".#...", "#####"};
+const char *const kZSmall[] = {"####", "..#.", ".#..", "####"};
+
+const char *const kWeekdayShort[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+const char *const kMonthNames[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+
+std::string hhmm(int hour, int minute) {
+  char buf[8];
+  snprintf(buf, sizeof buf, "%02d:%02d", hour, minute);
+  return buf;
+}
+
+// The frog field: which character each cell holds (0 = empty).
+class Field {
+ public:
+  Field() {
+    stamp(kFrog, sizeof kFrog / sizeof *kFrog, 3, 8);
+    stamp(kPad, sizeof kPad / sizeof *kPad, 1, 24);
+    stamp(kZSmall, sizeof kZSmall / sizeof *kZSmall, 28, 6);
+    stamp(kZBig, sizeof kZBig / sizeof *kZBig, 31, 1);
+  }
+  char at(int x, int y) const {
+    return x < 0 || y < 0 || x >= kCols || y >= kRows ? 0 : cells_[y][x];
+  }
+
+ private:
+  void stamp(const char *const *rows, int n, int x0, int y0) {
+    for (int r = 0; r < n; ++r) {
+      for (int c = 0; rows[r][c]; ++c) {
+        const char ch = rows[r][c];
+        if (ch != ' ' && ch != '.') cells_[y0 + r][x0 + c] = ch;
+      }
+    }
+  }
+  char cells_[kRows][kCols] = {};
+};
+
+void drawField(ui::Canvas &c, const Rect &area) {
+  using namespace ui;
+  static const Field field;
+  const int x0 = area.x + (area.w - kCols * kCell) / 2;
+  const int y0 = area.y + (area.h - kRows * kCell) / 2;
+  for (int y = 0; y < kRows; ++y) {
+    for (int x = 0; x < kCols; ++x) {
+      const Rect cell{x0 + x * kCell + 1, y0 + y * kCell + 1, kCell - 2, kCell - 2};
+      const char ch = field.at(x, y);
+      if (ch == '#') {
+        fill(c, cell, kInk);
+      } else if (ch == '+') {
+        dither50(c, cell);
+      } else if (!ch && field.at(x - 1, y - 1)) {
+        dither25(c, cell);  // the shadow, one cell down and right
+      } else if (!ch) {
+        fill(c, {x0 + x * kCell + 6, y0 + y * kCell + 6, 2, 2}, kInk);  // unlit dot
+      }
+    }
+  }
+}
+
+// 2 px dashed rule, 3 on / 3 off, in `color`.
+void dashed2(ui::Canvas &c, int x, int y, int w, uint16_t color) {
+  ui::dashedH(c, x, y, w, color);
+  ui::dashedH(c, x, y + 1, w, color);
+}
+
+class SleepScreen : public ui::Screen {
+ public:
+  SleepScreen() {
+    now_ = time(nullptr);
+    wakeAt_ = rtc::timeValid() ? alarms::next(now_, &slot_) : 0;
+    int snoozeSlot = -1;
+    snoozed_ = wakeAt_ && wakeAt_ == alarms::snoozedUntil(&snoozeSlot) && snoozeSlot == slot_;
+    detail_ = pmic::detail();
+    std::string path, title;
+    readstate::Position pos;
+    resume_ = readstate::last(path, title, pos)
+                  ? "Reader \xC2\xB7 " + title + " \xC2\xB7 " + std::to_string(pos.percent) + "%"
+                  : "Home";
+  }
+
+  std::string tag() const override { return "SLEEP"; }
+  bool chrome() const override { return false; }
+  bool landscape() const override { return true; }
+  bool onKey(Key) override {  // a key in the second before power-off: stay on
+    ui::nav::pop();
+    return true;
+  }
+  bool onTick() override {
+    // The first tick can come straight after the refresh; wait for the next, so a key has a
+    // second to cancel.
+    if (!drawn_ || ++ticks_ < 2) return false;
+    power::off(power::Mode::Sleep, wakeAt_);
+    ui::nav::pop();  // still here: the power-off failed
+    return true;
+  }
+
+  void draw(ui::Canvas &c, const Rect &body) override {
+    using namespace ui;
+    drawn_ = true;
+    const Rect left{body.x, body.y, body.w - kPanelW, body.h};
+    const Rect panel{left.right(), body.y, kPanelW, body.h};
+    drawLeft(c, left);
+    drawPanel(c, panel);
+  }
+
+ private:
+  void drawLeft(ui::Canvas &c, const Rect &area) const {
+    using namespace ui;
+    vrule(c, area.right() - kRule, area.y, area.h);
+    const Rect inner{area.x, area.y, area.w - kRule, area.h};
+
+    // Top strip: INKDECK/OS, then when it halted.
+    const Rect top{inner.x, inner.y, inner.w, kTopH - kRule};
+    hrule(c, inner.x, top.bottom(), inner.w);
+    const char *tag = "INKDECK/OS";
+    const int tagW = textWidth(kStripTag, tag) + 2 * kPadX;
+    fill(c, {top.x, top.y, tagW, top.h}, kInk);
+    drawText(c, {top.x + kPadX, top.y, tagW - 2 * kPadX, top.h}, tag, kStripTag, Align::Left,
+             kPaper);
+    std::string halted = "HALTED";
+    if (rtc::timeValid()) {
+      tm t;
+      localtime_r(&now_, &t);
+      char buf[48];
+      snprintf(buf, sizeof buf, "HALTED %02d:%02d \xC2\xB7 %s %d %s %d", t.tm_hour, t.tm_min,
+               kWeekdayShort[t.tm_wday], t.tm_mday, kMonthNames[t.tm_mon], t.tm_year + 1900);
+      halted = buf;
+    }
+    drawText(c, {top.x + tagW + kPadX, top.y, top.w - tagW - 2 * kPadX, top.h}, halted, kStrip);
+
+    // The field, between the strips.
+    drawField(c, {inner.x, inner.y + kTopH, inner.w, inner.h - kTopH - kBottomH});
+
+    // Bottom strip: what to come back to.
+    const int by = inner.bottom() - kBottomH;
+    hrule(c, inner.x, by, inner.w);
+    const Rect strip{inner.x + kPadX, by + kRule, inner.w - 2 * kPadX, kBottomH - kRule};
+    const std::string key = std::string("RESUME ") + glyph::kPointer;
+    const int keyW = textWidth(kResumeKey, key);
+    drawText(c, {strip.x, strip.y, keyW, strip.h}, key, kResumeKey);
+    drawText(c, {strip.x + keyW + 10, strip.y, strip.w - keyW - 10, strip.h}, resume_, kResume);
+  }
+
+  void drawPanel(ui::Canvas &c, const Rect &area) const {
+    using namespace ui;
+    fill(c, area, kInk);
+    const Rect p{area.x + 24, area.y + 30, area.w - 48, area.h - 30 - 24};
+
+    // The wake time.
+    int y = p.y + capHeight(kWakeTime);
+    std::string date = "NO WAKE SET";
+    if (wakeAt_) {
+      tm w;
+      localtime_r(&wakeAt_, &w);
+      drawText(c, p.x, y, hhmm(w.tm_hour, w.tm_min), kWakeTime, kPaper);
+      char buf[40];
+      snprintf(buf, sizeof buf, "%s %d %s \xC2\xB7 RTC ALARM", kWeekdayShort[w.tm_wday],
+               w.tm_mday, kMonthNames[w.tm_mon]);
+      date = buf;
+    } else {
+      drawText(c, p.x, y, "--:--", kWakeTime, kPaper);
+    }
+    y += 14 + 6;
+    drawText(c, {p.x, y, p.w, 19}, date, kWakeDate, Align::Left, kPaper);
+    y += 19 + 18;
+    dashed2(c, p.x, y, p.w, kPaper);
+    y += 2 + 18;
+
+    // REASON / PATH / BATTERY / ALARM.
+    std::string reason = "none: PWR key only";
+    std::string alarm = "none set";
+    if (wakeAt_ && slot_ >= 0) {
+      const alarms::Alarm a = alarms::get(slot_);
+      reason = (snoozed_ ? "snooze, alarm " : "alarm ") + std::to_string(slot_ + 1);
+      alarm = hhmm(a.hour, a.minute) + " " + alarms::repeatLabel(a.days);
+    }
+    std::string battery = "no battery";
+    if (detail_.status.percent >= 0) {
+      char buf[32];
+      snprintf(buf, sizeof buf, "%d %% \xC2\xB7 %.2f V", detail_.status.percent,
+               detail_.vbatMv / 1000.0);
+      battery = buf;
+    }
+    const std::pair<const char *, std::string> rows[] = {
+        {"REASON", reason},
+        {"PATH", wakeAt_ ? "RTC INT \xE2\x86\x92 PWRON" : "PWR \xE2\x86\x92 PWRON"},
+        {"BATTERY", battery},
+        {"ALARM", alarm},
+    };
+    for (const auto &row : rows) {
+      drawText(c, {p.x, y, 76, 18}, row.first, kKey, Align::Left, kPaper);
+      drawText(c, {p.x + 76, y, p.w - 76, 18}, row.second, kValue, Align::Left, kPaper);
+      y += 18 + 10;
+    }
+
+    // HOLD [PWR] 1 s TO BOOT, at the bottom.
+    const Rect line{p.x, p.bottom() - 24, p.w, 24};
+    const int base = baselineCentered(kBoot, line.y, line.h);
+    int x = drawText(c, p.x, base, "HOLD", kBoot, kPaper) + 8;
+    const int capW = textWidth(kBootCap, "PWR") + 14 + 4;
+    frame(c, {x, line.y, capW, line.h}, 2, kPaper);
+    drawText(c, x + 9, baselineCentered(kBootCap, line.y, line.h), "PWR", kBootCap, kPaper);
+    x += capW + 8;
+    drawText(c, x, base, "1 s TO BOOT", kBoot, kPaper);
+  }
+
+  time_t now_ = 0;
+  time_t wakeAt_ = 0;
+  int slot_ = -1;
+  bool snoozed_ = false;
+  pmic::Detail detail_;
+  std::string resume_;
+  bool drawn_ = false;
+  int ticks_ = 0;  // since drawn
+};
+
+}  // namespace
+
+void sleepNow() {
+  const ui::Screen *top = ui::nav::top();
+  if (top && top->landscape() && !top->chrome()) return;  // Sleep or Standby already showing
+  ui::nav::push(std::make_unique<SleepScreen>());
+  ui::nav::invalidate(ui::Refresh::Full);
+}
+
+}  // namespace apps

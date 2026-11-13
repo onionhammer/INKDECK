@@ -3,6 +3,7 @@
 // (core 1) is busy refreshing the panel or loading a book.
 //
 // The amp (AMP_EN) and I2S/MCLK are only on during a playback session; pause just mutes the DAC.
+// The same task rings alarms: ring() pauses any music and plays a beep pattern until stopped.
 #pragma once
 #include <stdint.h>
 
@@ -29,7 +30,7 @@ struct Status {
   uint32_t generation = 0;  // changes on every track, state or format change (not time/volume)
 };
 
-void begin();
+void begin();  // the calls below do nothing (or report stopped) until it has run
 
 // Plays playlist[index], then the following entries, then stops.
 void play(std::vector<std::string> playlist, int index);
@@ -44,5 +45,10 @@ bool active();  // playing or paused (the amp and I2S are on)
 
 // Paths of playlist entries [from, from + count), clipped to the playlist.
 std::vector<std::string> queue(int from, int count);
+
+// Alarm tone: four short beeps, a pause, repeated, at the music volume but never below half.
+// Music that was playing stays paused afterwards.
+void ring(bool on);
+bool ringing();
 
 }  // namespace audio

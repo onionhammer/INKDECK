@@ -11,6 +11,8 @@
 each redraw finishes first: u/d dial up/down, p/P press/hold the wheel, b/B BOOT/hold BOOT.
 The image is the framebuffer as drawn (portrait screens come out 480x800), 1 = paper.
 --log prints the firmware's log lines that arrive meanwhile (render timings, errors).
+--after sends more keys once the frame is in, e.g. --keys o.... --delay 0.4 --after b grabs
+the Sleep screen in its last second, then cancels the power-off.
 """
 
 from __future__ import annotations
@@ -81,6 +83,7 @@ def main() -> None:
     ap.add_argument("--delay", type=float, default=1.5, help="seconds after each key")
     ap.add_argument("--timeout", type=float, default=15)
     ap.add_argument("--log", action="store_true", help="print firmware log lines")
+    ap.add_argument("--after", default="", help="devtools keys to send after the frame")
     args = ap.parse_args()
 
     # Open with DTR and RTS held low: a default pyserial open resets the board (verified),
@@ -102,6 +105,8 @@ def main() -> None:
             port.write(b"s")
             port.flush()
             if (img := read_frame(port, args.timeout)) is not None:
+                port.write(args.after.encode())
+                port.flush()
                 img.save(args.out)
                 print(f"saved {args.out} ({img.width}x{img.height})")
                 return

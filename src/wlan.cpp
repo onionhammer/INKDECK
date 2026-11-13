@@ -63,6 +63,8 @@ bool connect(uint32_t timeoutMs, std::string &error) {
   return true;
 }
 
+bool radioOn() { return state.load() != State::Off; }
+
 void disconnect() {
   WiFi.disconnect(true);  // and Wi-Fi off
   WiFi.mode(WIFI_OFF);
