@@ -12,6 +12,11 @@ namespace flow {
 constexpr char kPara = '\n';        // paragraph break
 constexpr char kStyleBase = 0x01;   // 0x01..0x04 set style: kStyleBase + (bold | italic << 1)
 constexpr char kCenter = 0x05;      // at paragraph start: centre this paragraph
+// A picture: kImage, then one byte (kImageBase + its index in the chapter's picture list), as a
+// paragraph of its own. The index byte is never a control byte, a space or a paragraph break.
+constexpr char kImage = 0x06;
+constexpr uint8_t kImageBase = 0x21;
+constexpr int kMaxImages = 0xFF - kImageBase;
 constexpr uint8_t kBold = 1;
 constexpr uint8_t kItalic = 2;
 

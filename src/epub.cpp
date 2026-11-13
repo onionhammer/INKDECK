@@ -271,6 +271,14 @@ class FlowBuilder {
     pendingSpace_ = false;
   }
   void center(bool on) { center_ = on; }
+  // A picture paragraph (flow::kImage).
+  void image(int index) {
+    para();
+    out_ += flow::kImage;
+    out_ += static_cast<char>(flow::kImageBase + index);
+    atParaStart_ = false;
+    para();
+  }
   void style(uint8_t s) { want_ = s; }
   void text(const std::string &ascii) {
     for (const char c : ascii) put(c);
@@ -320,11 +328,13 @@ bool isHeading(const std::string &name) {
 
 }  // namespace
 
-void xhtmlToFlow(const std::string &s, std::string &out) {
+void xhtmlToFlow(const std::string &s, std::string &out, std::vector<Epub::Image> *images,
+                 const std::string &baseDir) {
   out.clear();
   out.reserve(s.size() / 2);
   FlowBuilder fb(out);
-  int bold = 0, italic = 0, heading = 0, skip = 0;
+  int bold = 0, italic = 0, heading = 0, skip = 0, svg = 0;
+  bool svgHadImage = false;
   auto applyStyle = [&] {
     fb.style((bold > 0 ? flow::kBold : 0) | (italic > 0 ? flow::kItalic : 0));
   };
@@ -336,6 +346,15 @@ void xhtmlToFlow(const std::string &s, std::string &out) {
     fb.para();
     fb.center(heading > 0);
     applyStyle();
+  };
+  auto addImage = [&](const std::string &src, const std::string &alt) {
+    if (!images || src.empty() || static_cast<int>(images->size()) >= flow::kMaxImages) {
+      imagePlaceholder();
+      return;
+    }
+    images->push_back({resolvePath(baseDir, src), alt});
+    fb.image(static_cast<int>(images->size()) - 1);
+    fb.center(heading > 0);
   };
   auto bump = [](int &counter, bool open) { counter = open ? counter + 1 : (counter > 0 ? counter - 1 : 0); };
 
@@ -351,13 +370,27 @@ void xhtmlToFlow(const std::string &s, std::string &out) {
       const std::string &name = t.name;
       const bool open = !t.closing;
 
-      if (isOneOf(name, {"head", "script", "style", "svg", "math"})) {
+      if (isOneOf(name, {"head", "script", "style", "math"})) {
         if (t.selfClosing) continue;
-        if (open && skip == 0 && name == "svg") imagePlaceholder();
         bump(skip, open);
         continue;
       }
       if (skip) continue;
+      // SVG: covers often wrap a bitmap in <svg><image href=...>; draw that, skip the rest.
+      if (name == "svg") {
+        if (t.selfClosing) continue;
+        if (open && svg == 0) svgHadImage = false;
+        bump(svg, open);
+        if (!open && svg == 0 && !svgHadImage) imagePlaceholder();
+        continue;
+      }
+      if (svg) {
+        if (open && name == "image") {
+          addImage(attr(s, t, "href"), "");
+          svgHadImage = true;
+        }
+        continue;
+      }
 
       if (isHeading(name)) {
         fb.para();
@@ -383,7 +416,7 @@ void xhtmlToFlow(const std::string &s, std::string &out) {
         fb.para();
         fb.center(heading > 0);
       } else if (name == "img" || name == "image") {
-        if (open) imagePlaceholder();
+        if (open) addImage(attr(s, t, name == "img" ? "src" : "href"), attr(s, t, "alt"));
       } else if (name == "li") {
         fb.para();
         if (open && !t.selfClosing) {
@@ -399,7 +432,7 @@ void xhtmlToFlow(const std::string &s, std::string &out) {
       continue;
     }
 
-    if (skip) {
+    if (skip || svg) {
       i = s.find('<', i);
       if (i == std::string::npos) break;
       continue;
@@ -584,14 +617,21 @@ uint64_t Epub::sizeBefore(size_t i) const {
   return total;
 }
 
-bool Epub::chapterFlow(size_t i, std::string &flow, std::string &err) const {
+bool Epub::chapterFlow(size_t i, std::string &flow, std::vector<Image> &images,
+                       std::string &err) const {
   flow.clear();
+  images.clear();
   if (i >= spine_.size()) {
     err = "no such chapter";
     return false;
   }
   std::string xhtml;
   if (!zip_.read(spine_[i].path, xhtml, err)) return false;
-  xhtmlToFlow(xhtml, flow);
+  const std::string &path = spine_[i].path;
+  xhtmlToFlow(xhtml, flow, &images, path.substr(0, path.rfind('/') + 1));
   return true;
+}
+
+bool Epub::readFile(const std::string &path, std::string &out, std::string &err) const {
+  return zip_.read(path, out, err);
 }

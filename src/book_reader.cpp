@@ -4,6 +4,7 @@
 
 #include "fonts.h"
 #include "readstate.h"
+#include "text.h"
 
 namespace {
 
@@ -61,22 +62,29 @@ void Reader::moved() {
 
 void Reader::makeTypesetter() {
   typesetter_.reset(new Typesetter(fonts::kReader[fontSize_], width_, height_));
+  typesetter_->setImages(&pictures_);
+  pictures_.setFont(fonts::kReader[fontSize_].face[flow::kItalic]);
 }
 
 void Reader::loadChapter(size_t index, bool atEnd) {
   const uint32_t t0 = millis();
   chapter_ = index;
   std::string err;
-  if (!book_.chapterFlow(index, flow_, err)) {
+  std::vector<Epub::Image> images;
+  if (!book_.chapterFlow(index, flow_, images, err)) {
     flow_ = "Couldn't load this chapter: " + err;
   }
+  const size_t pictureCount = images.size();
+  pictures_.reset(&book_, std::move(images));
   const uint32_t t1 = millis();
   layoutChapter();
   page_ = atEnd ? pages_.size() - 1 : 0;
-  log_i("reader: chapter %u/%u %s: %u bytes of text, %u pages (load %lu ms, layout %lu ms)",
+  log_i("reader: chapter %u/%u %s: %u bytes of text, %u pictures, %u pages (load %lu ms, "
+        "layout %lu ms)",
         static_cast<unsigned>(index + 1), static_cast<unsigned>(book_.chapterCount()),
         book_.chapterPath(index).c_str(), static_cast<unsigned>(flow_.size()),
-        static_cast<unsigned>(pages_.size()), (unsigned long)(t1 - t0),
+        static_cast<unsigned>(pictureCount), static_cast<unsigned>(pages_.size()),
+        (unsigned long)(t1 - t0),
         (unsigned long)(millis() - t1));
 }
 

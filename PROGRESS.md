@@ -157,9 +157,35 @@ position); `src/typeset.*` for the layout.
 - [ ] Every spine item can get a drop cap, front matter included (the copyright notice had
   one). Limiting them to TOC chapters is an easy tweak if it bothers you.
 
-### ⬜ 5b. Reader: images and cover art
+### 🔶 5b. Reader: images and cover art
 
-Show the pictures in EPUBs instead of the `[image]` placeholder, plus each book's cover.
+Started 2026-11-12: pictures in the text work (`picture.*`, `book_pictures.*`). Done so far:
+- [x] Decoders: bitbank2's JPEGDEC 1.8.5 (8-bit grey output, its free 1/2-1/8 scaling,
+  progressive files at 1/8 from their DC scan) and PNGdec 1.1.6. Both are Apache-2.0.
+  PNGdec's line buffer is raised to 2400 px RGBA with a build flag (the default fits 320 px).
+  Its ESP32-S3 SIMD file includes an esp-dsp header the assembler can't resolve, so
+  `compat/dsps_fft2r_platform.h` stands in. Work buffers are in PSRAM.
+- [x] Parsing: `<img src alt>` and the `<svg><image href>` wrapper covers use become a
+  `flow::kImage` paragraph pointing into the chapter's picture list (`Epub::Image`). GIF,
+  SVG files and broken pictures take one line: `[alt text]`, or `[image]`.
+- [x] Layout: a centred block with half a line of space around it, and the text after it
+  back on the line grid. A picture shrinks to fit the column and page, and grows up to 2x
+  only if it's already a good part of the column (ornaments keep their size). If it doesn't
+  fit what's left of a page, it shrinks into it when it keeps at least half its height,
+  otherwise it starts the next page.
+- [x] Rendering: area-average scaling, a 1st-99th percentile contrast stretch with a gamma
+  of 0.8 (dithered pictures read dark on the panel), then Atkinson dithering, which keeps
+  line art and small print crisp. The last 3 bitmaps of the chapter are cached and copied
+  straight into the framebuffer.
+- [x] Checked on hardware with *All Systems Red*: the cover (a 500×800 JPEG drawn at 362×579
+  under the chapter's "Cover" heading) and the title page, itself a picture of typeset
+  text, which stays legible. The first draw takes 1.4 s for the cover (decode 680 ms,
+  scale + dither 349 ms) and 0.7 s for the title page (decode 154 ms); redraws from the
+  cache 145 ms. JPEG decode time depends on the file, not just its size.
+- [ ] Not checked on hardware: a PNG, a progressive JPEG, a chapter with several pictures.
+- [ ] Headings that books hide with CSS ("Cover", "Title Page") still show; CSS is ignored.
+
+Still to do, from the original plan:
 - **Decode:**
   - JPEG, PNG and GIF read from the EPUB zip (manifest media types).
   - JPEG via the ROM's TJpgDec or bitbank2's JPEGDEC; PNG via PNGdec.
@@ -410,7 +436,8 @@ wake plan. Built in this order, each step flashed and checked on the board.
 - [x] Reading (the Reader open, its menu included) and playing music never power off on
   idle until the battery is below 15 % (`power::kLowBatteryPercent`). Paused music counts as
   idle. Below 15 % any idle power-off goes to Sleep (no minute wakes) instead of standby.
-- [x] Reading on battery light-sleeps 3 s after the last key (`Screen::reading()`): the CPUs
+- [x] Reading on battery light-sleeps as soon as the page is drawn (`Screen::reading()`; it
+  first waited 3 s, which wasn't needed: a held button or a queued key keeps it awake): the CPUs
   stop and RAM, PSRAM and peripherals keep their state, until a button (dial, press, BOOT, PWR,
   as GPIO wake sources) or the next minute boundary, for alarms. The IMU goes to standby while
   napping, and the Reader saves its place when a nap starts (`Screen::onNap()`). Nothing
@@ -419,10 +446,16 @@ wake plan. Built in this order, each step flashed and checked on the board.
 - [x] Checked on hardware by the user: on battery, every page turn came instantly out of
   light sleep. The wake pins are kept in their awake configuration during sleep
   (`gpio_sleep_sel_dis`); before that, a BOOT press seemed not to wake it.
-- [ ] **Light sleep breaks the USB console until a reset.** After napping, the board's USB
-  device didn't come back when USB was plugged in again (seen twice; once it ended in a
-  watchdog reset). Reading on battery is unaffected. Planned fix: restart cleanly when USB
-  power appears after the board has napped (the place is already saved).
+- [x] **USB after light sleep is unreliable.** Each nap drops the USB connection. Twice the
+  board's USB device then stayed dead after USB was plugged back in, until a reset (once a
+  watchdog reset): after a test mode that napped on USB in 5 s cycles, and after one battery
+  session. Another battery session (7 naps) came back by itself. So the board naps only on
+  battery, and once it has napped, USB power with no host talking for 3 s
+  (`usb_serial_jtag_is_connected()`) makes it restart cleanly, the Reader's place saved
+  first (`restartIfUsbStuck()` in `apps/idle.cpp`). On a charger with no computer that's one
+  restart. The restart path itself hasn't been triggered on hardware yet.
+- Testing note: light sleep can't be watched over USB. The System screen's nap count is the
+  check; plug in afterwards.
 - Not measured: the current while napping. The rails (audio codec, mic, panel) stay up;
   switching ALDO1/ALDO2 off while reading would save more but is a PMIC write.
 

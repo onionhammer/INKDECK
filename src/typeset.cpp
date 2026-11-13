@@ -104,7 +104,7 @@ Typesetter::Typesetter(const FontFamily &family, int width, int height)
 
 bool Typesetter::hasContent(const std::string &flow, size_t offset) {
   for (size_t i = offset; i < flow.size(); ++i) {
-    if (flow::isGlyph(flow[i])) return true;
+    if (flow::isGlyph(flow[i]) || flow[i] == flow::kImage) return true;
   }
   return false;
 }
@@ -133,6 +133,7 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
   bool firstLine = isParagraphStart(flow, pos);
   bool center = false;
   bool afterHeading = false;  // no indent on the paragraph after a centred one
+  bool afterPicture = false;  // nor after a picture
   int dropBottom = 0;         // lines above this y make room for the drop cap
   std::vector<Word> words;
   words.reserve(32);
@@ -164,7 +165,8 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
     if (c == flow::kPara) {
       if (!words.empty()) flush(false);
       if (center) lineTop += headingGap_;
-      afterHeading = center;
+      afterHeading = center || afterPicture;
+      afterPicture = false;
       ++pos;
       firstLine = true;
       center = false;
@@ -175,6 +177,31 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
     if (flow::isStyle(c)) {
       style = c - flow::kStyleBase;
       ++pos;
+      continue;
+    }
+    if (c == flow::kImage) {
+      if (!words.empty()) flush(false);
+      const int index =
+          pos + 1 < n ? static_cast<uint8_t>(flow[pos + 1]) - flow::kImageBase : -1;
+      int w = 0, h = 0;
+      if (images_ && index >= 0) images_->layoutSize(index, width_, height_, w, h);
+      if (h > 0) {
+        const int gap = lineTop > 0 ? headingGap_ : 0;
+        if (lineTop > 0 && lineTop + gap + h > height_) {
+          // Shrink it into what's left of the page if it keeps at least half its height (a
+          // cover under its heading); otherwise it starts the next page.
+          int sw = 0, sh = 0;
+          images_->layoutSize(index, width_, height_ - lineTop - gap, sw, sh);
+          if (sh * 2 < h || sh <= 0) return {static_cast<uint32_t>(pos), style};
+          w = sw;
+          h = sh;
+        }
+        if (canvas) images_->draw(*canvas, index, x + (width_ - w) / 2, y + lineTop + gap, w, h);
+        lineTop += gap + h + headingGap_;
+        lineTop = (lineTop + lineHeight_ - 1) / lineHeight_ * lineHeight_;  // back on the grid
+        afterPicture = true;
+      }
+      pos += 2;
       continue;
     }
     if (c == flow::kCenter) {

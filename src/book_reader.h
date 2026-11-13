@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "book_pictures.h"
 #include "epub.h"
 #include "typeset.h"
 
@@ -56,5 +57,6 @@ class Reader {
   size_t page_ = 0;
   int fontSize_ = 1;
   std::unique_ptr<Typesetter> typesetter_;
+  BookPictures pictures_;  // the current chapter's
   int movesSinceSave_ = 0;
 };

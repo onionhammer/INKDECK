@@ -143,6 +143,8 @@ bool anyDown() {
   return false;
 }
 
+bool pending() { return queue && uxQueueMessagesWaiting(queue) > 0; }
+
 uint32_t idleMs() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000) - lastKeyMs.load();
 }

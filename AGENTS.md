@@ -15,6 +15,7 @@ and power decision on this file, `include/board_pins.h`, or the primary sources 
 | `src/` | Firmware. `ui/` is the navigator (screen stack and key language, `ui/nav.h`), components, text styles and generated fonts. `apps/` holds the screens. Drivers sit flat in `src/` |
 | `PROGRESS.md` | **UI build plan and status**: phases, decisions, known issues, how to add a screen. Update it when a phase moves |
 | `tools/` | `gen_fonts.py` (JetBrains Mono → GFX bitmap fonts) and `screenshot.py` (drive the UI over USB, save the framebuffer as PNG). Run both with `uv run` |
+| `compat/` | Stand-in headers for library builds: `dsps_fft2r_platform.h` lets PNGdec's ESP32-S3 SIMD file assemble (on the include path via `platformio.ini`) |
 | `scripts/gen_secrets.py` | PlatformIO pre-build hook. Reads the gitignored `.env` (template: `.env.example`) and writes `inkdeck_secrets.h` (`WIFI_CONFIGURED`, `WIFI_SSID`, `WIFI_PASSWORD`, `TIMEZONE` as a POSIX TZ string, and `LOCATION_CONFIGURED`, `LATITUDE`, `LONGITUDE`) into the build directory. Include that header only where it's needed. Wi-Fi is optional, but an invalid value stops the build. The values are stored as plain text in the firmware image |
 | `docs/` | Schematic, datasheets, mechanical files, Waveshare wiki as markdown |
 | `docs/ui-design.md` | **UI design spec** (INKDECK/OS): orientation, 1-bit visual rules, shared chrome, button mapping, one entry per screen. Links the [design canvas](https://claude.ai/artifact/CkQZ5d3cCFz6dFwQNNuwof). **Read before writing any screen or UI code** |

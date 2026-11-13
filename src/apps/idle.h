@@ -3,10 +3,11 @@
 //   - On battery, after 10 minutes without a key: standby (the Clock face, redrawn each
 //     minute), or Sleep (the frog) once the battery is below 15 %. Reading (the Reader open)
 //     and playing music never power off until the battery is below 15 %.
-//   - Reading on battery: 3 s after the last key the board light-sleeps until the next key or
+//   - Reading on battery: once the page is drawn the board light-sleeps until the next key or
 //     the next minute (alarms ring on the minute), with the IMU in standby. A page turn wakes
 //     it in milliseconds. Nothing redraws while it naps, so the status-bar clock updates with
-//     the next page. Never on USB: light sleep drops the USB console (see PROGRESS.md).
+//     the next page. Never on USB: light sleep drops the USB console, and it stays dead until
+//     a reset, so USB power after naps with no host talking restarts the board cleanly.
 #pragma once
 #include <stdint.h>
 

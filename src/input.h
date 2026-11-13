@@ -32,7 +32,10 @@ void inject(Key key);
 // Milliseconds since the last key (injected ones count).
 uint32_t idleMs();
 
-// A button (PWR included) is down right now.
+// A button (PWR included) is down right now, or its release hasn't been debounced yet.
 bool anyDown();
+
+// Keys queued and not yet taken by wait().
+bool pending();
 
 }  // namespace input

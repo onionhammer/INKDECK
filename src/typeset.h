@@ -45,11 +45,24 @@ struct DropCap {
   int gap = 12;                   // between the box and the text
 };
 
+// Pictures in the flow (flow::kImage): the Reader works out their size and draws them.
+class ImageSource {
+ public:
+  virtual ~ImageSource() = default;
+  // The size picture `index` takes in a column maxW wide, at most maxH tall. 0 x 0: nothing.
+  virtual void layoutSize(int index, int maxW, int maxH, int &w, int &h) = 0;
+  // Draws it with its top-left at (x, y), in the size layoutSize() gave.
+  virtual void draw(GFXcanvas1 &canvas, int index, int x, int y, int w, int h) = 0;
+};
+
 class Typesetter {
  public:
   Typesetter(const FontFamily &family, int width, int height);
 
   void setDropCap(const DropCap &drop) { drop_ = drop; }
+  // Pictures: centred blocks with half a line of space around them, the text after them back
+  // on the line grid. One that doesn't fit what's left of the page starts the next.
+  void setImages(ImageSource *images) { images_ = images; }
 
   // Lays out one page from `start`. Draws it if canvas is given, with the text area's top-left
   // at (x, y). Returns where the next page starts (offset == flow.size() at the end).
@@ -89,4 +102,5 @@ class Typesetter {
   int indent_;
   int headingGap_;  // space before and after centred paragraphs
   DropCap drop_;
+  ImageSource *images_ = nullptr;
 };
