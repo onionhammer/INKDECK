@@ -4,6 +4,7 @@
 // Atkinson diffuses only 3/4 of the error, which keeps line art crisp and photos from going
 // muddy. GIF and SVG files aren't decoded; the Reader shows a placeholder for them.
 #pragma once
+#include <Adafruit_GFX.h>
 #include <stdint.h>
 
 #include <string>
@@ -25,6 +26,13 @@ struct Bitmap {
   int h = 0;
   std::vector<uint8_t> bits;
 };
+
+// Pixel size that fits a w x h picture into a box (aspect kept, never larger than the box).
+void fit(int w, int h, int boxW, int boxH, int &outW, int &outH);
+
+// Copies a bitmap into the canvas with its top-left at (x, y): ink black, the rest white. Writes
+// the canvas buffer directly (honouring its rotation), much faster than drawBitmap().
+void draw(GFXcanvas1 &canvas, int x, int y, const Bitmap &bitmap);
 
 // Decodes, scales and dithers to exactly w x h. False if it can't: an unsupported format, a
 // broken file, a picture over about 4 megapixels (PNG), or no memory.

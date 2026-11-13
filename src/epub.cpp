@@ -451,6 +451,7 @@ void Epub::close() {
   zip_.close();
   title_.clear();
   author_.clear();
+  cover_.clear();
   spine_.clear();
   toc_.clear();
 }
@@ -484,7 +485,7 @@ bool Epub::open(const std::string &path, std::string &err) {
   };
   std::map<std::string, Item> manifest;  // id -> item
   std::vector<std::string> idrefs;
-  std::string ncxId;
+  std::string ncxId, coverId;
   for (size_t pos = xml.find('<'); pos != std::string::npos; pos = xml.find('<', t.end)) {
     if (!parseTag(xml, pos, t)) break;
     if (t.special || t.closing) continue;
@@ -499,7 +500,38 @@ bool Epub::open(const std::string &path, std::string &err) {
       ncxId = attr(xml, t, "toc");
     } else if (t.name == "itemref") {
       idrefs.push_back(attr(xml, t, "idref"));
+    } else if (t.name == "meta" && attr(xml, t, "name") == "cover") {
+      coverId = attr(xml, t, "content");
     }
+  }
+
+  // The cover picture: EPUB 3 marks it (properties="cover-image"); EPUB 2 names its manifest id
+  // in <meta name="cover" content=...> (some books put the file there instead); failing both,
+  // an image whose id or file name says "cover".
+  std::string coverHref;
+  for (const auto &kv : manifest) {
+    if ((" " + kv.second.properties + " ").find(" cover-image ") != std::string::npos) {
+      coverHref = kv.second.href;
+    }
+  }
+  if (coverHref.empty() && !coverId.empty()) {
+    const auto it = manifest.find(coverId);
+    coverHref = it != manifest.end() ? it->second.href : coverId;
+  }
+  if (coverHref.empty()) {
+    for (const auto &kv : manifest) {
+      if (kv.second.mediaType.compare(0, 6, "image/") != 0) continue;
+      std::string key = kv.first + " " + kv.second.href;
+      for (char &ch : key) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+      if (key.find("cover") != std::string::npos) {
+        coverHref = kv.second.href;
+        break;
+      }
+    }
+  }
+  if (!coverHref.empty()) {
+    const std::string entry = resolvePath(opfDir, coverHref);
+    if (zip_.find(entry) >= 0) cover_ = entry;
   }
 
   for (const auto &idref : idrefs) {

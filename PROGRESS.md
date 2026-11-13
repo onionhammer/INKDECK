@@ -182,25 +182,21 @@ Started 2026-11-12: pictures in the text work (`picture.*`, `book_pictures.*`). 
   text, which stays legible. The first draw takes 1.4 s for the cover (decode 680 ms,
   scale + dither 349 ms) and 0.7 s for the title page (decode 154 ms); redraws from the
   cache 145 ms. JPEG decode time depends on the file, not just its size.
-- [ ] Not checked on hardware: a PNG, a progressive JPEG, a chapter with several pictures.
+- [x] **Cover thumbnail on Home** (`covers.*`): the READER preview shows the last book's
+  cover (about 70 × 110 px) framed in 2 px, with a dithered shadow like the OPEN button's
+  (not on the canvas, which has no spot for one). The stats move right of it. The cover is
+  found from the OPF: the EPUB 3 `cover-image` property, else EPUB 2's
+  `<meta name="cover">`, else an image named "cover" (`Epub::coverPath()`). It's rendered
+  once per book file and box, and cached as 1-bit on the card in
+  `/sdcard/.inkdeck/covers/` (Files hides dot-folders). Books without a usable cover are
+  cached too, so they aren't retried. The last one is also kept in RAM. Checked on hardware:
+  Home draws in 77 ms at boot with the cached cover (61 ms without one).
 - [ ] Headings that books hide with CSS ("Cover", "Title Page") still show; CSS is ignored.
 
-Still to do, from the original plan:
-- **Decode:**
-  - JPEG, PNG and GIF read from the EPUB zip (manifest media types).
-  - JPEG via the ROM's TJpgDec or bitbank2's JPEGDEC; PNG via PNGdec.
-  - Work buffers in PSRAM.
-- **Fit to the panel:** scale to the text column, or the full page for large images. Dither to
-  1-bit, with Floyd–Steinberg or Atkinson for photos and a threshold for line art. Option: the
-  panel's 4-grey mode for image pages (about 3 s refresh).
-- **Layout:** an image is a block in the flow text: its own page when tall, or a fixed-height
-  block between paragraphs. Keep the alt text as a caption fallback. Also handle SVG `<image>`
-  wrappers, which many covers use.
-- **Cover art:**
-  - Find it from the OPF's `<meta name="cover">` or the manifest's `properties="cover-image"`.
-  - Show it as the book's first page.
-  - Show it as a thumbnail in Home's READER preview (last book) and maybe in Files rows.
-  - Cache the 1-bit thumbnail on SD, so Home doesn't decode JPEGs on every draw.
+Still to do:
+- [ ] The cover as the first page for books that name a cover picture but have no cover page.
+- [ ] Maybe: thumbnails in Files rows; GIF pictures; the panel's 4-grey mode for picture pages
+  (about 3 s refresh); faster JPEG decode for heavy files (680 ms for this cover).
 - The same decoder can show embedded MP3 cover art (ID3 `APIC`) later; the Music artboard has
   no spot for it yet.
 

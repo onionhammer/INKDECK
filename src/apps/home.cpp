@@ -11,6 +11,7 @@
 #include "apps/sensors.h"
 #include "apps/system.h"
 #include "audio.h"
+#include "covers.h"
 #include "fonts.h"
 #include "pmic.h"
 #include "readstate.h"
@@ -338,12 +339,33 @@ class HomeScreen : public ui::Screen {
     hrule(c, p.x, y, p.w);
     y += kRule + 10;
 
+    // READER: the last book's cover, framed, with a dithered shadow like the button's; the
+    // stats move right of it.
+    Rect statsArea{p.x, y, p.w, 96};
+    if (m.kind == Kind::Reader) {
+      constexpr int kFrame = 2, kShadow = 4, kMaxW = 84, kGap = 16;
+      const int maxH = (p.bottom() - 44 - 10) - y - kShadow - 2 * kFrame;
+      std::string path, title;
+      readstate::Position pos;
+      picture::Bitmap cover;
+      if (readstate::last(path, title, pos) && covers::thumbnail(path, kMaxW, maxH, cover)) {
+        const Rect box{p.x, y, cover.w + 2 * kFrame, cover.h + 2 * kFrame};
+        dither50(c, {box.x + kShadow, box.bottom(), box.w, kShadow});
+        dither50(c, {box.right(), box.y + kShadow, kShadow, box.h - kShadow});
+        frame(c, box, kFrame);
+        picture::draw(c, box.x + kFrame, box.y + kFrame, cover);
+        const int shift = box.w + kShadow + kGap;
+        statsArea.x += shift;
+        statsArea.w -= shift;
+      }
+    }
+
     Stat stats[4];
     const int n = statsFor(m, stats);
-    const int colW = (p.w - 20) / 2;
+    const int colW = (statsArea.w - 20) / 2;
     for (int k = 0; k < n; ++k) {
-      drawStat(c, {p.x + (k % 2) * (colW + 20), y + (k / 2) * 48, colW, 48}, stats[k].key,
-               stats[k].value);
+      drawStat(c, {statsArea.x + (k % 2) * (colW + 20), y + (k / 2) * 48, colW, 48},
+               stats[k].key, stats[k].value);
     }
 
     const Rect button = drawButton(c, p.right() - 6, p.bottom() - 44, glyph::kPress, "OPEN");

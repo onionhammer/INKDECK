@@ -29,6 +29,8 @@ class Epub {
 
   const std::string &title() const { return title_; }    // UTF-8
   const std::string &author() const { return author_; }  // UTF-8
+  // Zip entry of the cover picture, or "" if the book names none (see open()).
+  const std::string &coverPath() const { return cover_; }
   size_t chapterCount() const { return spine_.size(); }
   const std::string &chapterPath(size_t i) const { return spine_[i].path; }
 
@@ -62,6 +64,7 @@ class Epub {
   ZipFile zip_;
   std::string title_;
   std::string author_;
+  std::string cover_;
   std::vector<Chapter> spine_;  // reading order
   std::vector<TocEntry> toc_;
 };

@@ -7,44 +7,6 @@
 
 #include "text.h"
 
-namespace {
-
-// Copies a bitmap into the canvas's buffer directly (drawBitmap() is a virtual drawPixel per
-// pixel, about 4x slower for a page-sized picture), honouring the canvas rotation the way
-// GFXcanvas1::drawPixel does. Pixels off the canvas are dropped.
-void blit(GFXcanvas1 &canvas, int x0, int y0, const picture::Bitmap &b) {
-  uint8_t *buf = canvas.getBuffer();
-  const int rot = canvas.getRotation();
-  const int cw = canvas.width(), ch = canvas.height();
-  const int rawW = (rot & 1) ? ch : cw, rawH = (rot & 1) ? cw : ch;
-  const int stride = (b.w + 7) / 8;
-  for (int y = 0; y < b.h; ++y) {
-    const int py = y0 + y;
-    if (py < 0 || py >= ch) continue;
-    const uint8_t *row = b.bits.data() + y * stride;
-    for (int x = 0; x < b.w; ++x) {
-      const int px = x0 + x;
-      if (px < 0 || px >= cw) continue;
-      int rx = px, ry = py;
-      switch (rot) {
-        case 1: rx = rawW - 1 - py; ry = px; break;
-        case 2: rx = rawW - 1 - px; ry = rawH - 1 - py; break;
-        case 3: rx = py; ry = rawH - 1 - px; break;
-        default: break;
-      }
-      uint8_t &byte = buf[(rx + ry * rawW) / 8];
-      const uint8_t mask = 0x80 >> (rx & 7);
-      if (row[x / 8] & (0x80 >> (x & 7))) {
-        byte &= ~mask;  // ink: bit 0 on this panel (gfx::kBlack)
-      } else {
-        byte |= mask;
-      }
-    }
-  }
-}
-
-}  // namespace
-
 void BookPictures::reset(const Epub *book, std::vector<Epub::Image> images) {
   book_ = book;
   images_ = std::move(images);
@@ -112,7 +74,7 @@ void BookPictures::draw(GFXcanvas1 &canvas, int index, int x, int y, int w, int 
     std::rotate(it, it + 1, cache_.end());  // now the most recent
     it = cache_.end() - 1;
   }
-  blit(canvas, x, y, it->bitmap);
+  picture::draw(canvas, x, y, it->bitmap);
 }
 
 void BookPictures::drawPlaceholder(GFXcanvas1 &canvas, int index, int x, int y, int w,

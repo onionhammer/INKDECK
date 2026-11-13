@@ -266,6 +266,47 @@ bool size(const std::string &data, int &w, int &h) {
   }
 }
 
+void fit(int w, int h, int boxW, int boxH, int &outW, int &outH) {
+  if (w <= 0 || h <= 0) {
+    outW = outH = 0;
+    return;
+  }
+  const float scale = std::min(static_cast<float>(boxW) / w, static_cast<float>(boxH) / h);
+  outW = std::max(1, static_cast<int>(lroundf(w * scale)));
+  outH = std::max(1, static_cast<int>(lroundf(h * scale)));
+}
+
+void draw(GFXcanvas1 &canvas, int x0, int y0, const Bitmap &b) {
+  uint8_t *buf = canvas.getBuffer();
+  const int rot = canvas.getRotation();
+  const int cw = canvas.width(), ch = canvas.height();
+  const int rawW = (rot & 1) ? ch : cw, rawH = (rot & 1) ? cw : ch;
+  const int stride = (b.w + 7) / 8;
+  for (int y = 0; y < b.h; ++y) {
+    const int py = y0 + y;
+    if (py < 0 || py >= ch) continue;
+    const uint8_t *row = b.bits.data() + y * stride;
+    for (int x = 0; x < b.w; ++x) {
+      const int px = x0 + x;
+      if (px < 0 || px >= cw) continue;
+      int rx = px, ry = py;  // GFXcanvas1::drawPixel's rotation mapping
+      switch (rot) {
+        case 1: rx = rawW - 1 - py; ry = px; break;
+        case 2: rx = rawW - 1 - px; ry = rawH - 1 - py; break;
+        case 3: rx = py; ry = rawH - 1 - px; break;
+        default: break;
+      }
+      uint8_t &byte = buf[(rx + ry * rawW) / 8];
+      const uint8_t mask = 0x80 >> (rx & 7);
+      if (row[x / 8] & (0x80 >> (x & 7))) {
+        byte &= ~mask;  // ink: bit 0 on this panel
+      } else {
+        byte |= mask;
+      }
+    }
+  }
+}
+
 bool render(const std::string &data, int w, int h, Bitmap &out) {
   if (w <= 0 || h <= 0) return false;
   const uint32_t t0 = millis();
