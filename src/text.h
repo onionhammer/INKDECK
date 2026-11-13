@@ -17,6 +17,8 @@ constexpr char kCenter = 0x05;      // at paragraph start: centre this paragraph
 constexpr char kImage = 0x06;
 constexpr uint8_t kImageBase = 0x21;
 constexpr int kMaxImages = 0xFF - kImageBase;
+// At paragraph start: what follows begins a new page (unless the page is still empty).
+constexpr char kPageBreak = 0x07;
 constexpr uint8_t kBold = 1;
 constexpr uint8_t kItalic = 2;
 

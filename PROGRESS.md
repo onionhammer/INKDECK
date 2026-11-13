@@ -194,7 +194,13 @@ Started 2026-11-12: pictures in the text work (`picture.*`, `book_pictures.*`). 
 - [ ] Headings that books hide with CSS ("Cover", "Title Page") still show; CSS is ignored.
 
 Still to do:
-- [ ] The cover as the first page for books that name a cover picture but have no cover page.
+- [x] The cover as the first page for books that name a cover picture but don't open with a
+  page showing it (`Reader::addCoverPage()`): the cover goes on a page of its own before the
+  first chapter's text, using a new `flow::kPageBreak`. A first chapter that already shows the
+  cover, or is a picture with little text (a cover page using another file), is left alone.
+  Positions saved in that first chapter before this change can land a page early. Checked
+  only that *Consider Phlebas*, which has its own cover page, gets no second one; not yet
+  seen on a book that needs it (testing stopped at the user's request).
 - [ ] Maybe: thumbnails in Files rows; GIF pictures; the panel's 4-grey mode for picture pages
   (about 3 s refresh); faster JPEG decode for heavy files (680 ms for this cover).
 - The same decoder can show embedded MP3 cover art (ID3 `APIC`) later; the Music artboard has

@@ -74,6 +74,7 @@ void Reader::loadChapter(size_t index, bool atEnd) {
   if (!book_.chapterFlow(index, flow_, images, err)) {
     flow_ = "Couldn't load this chapter: " + err;
   }
+  if (index == 0) addCoverPage(images);
   const size_t pictureCount = images.size();
   pictures_.reset(&book_, std::move(images));
   const uint32_t t1 = millis();
@@ -86,6 +87,28 @@ void Reader::loadChapter(size_t index, bool atEnd) {
         static_cast<unsigned>(pictureCount), static_cast<unsigned>(pages_.size()),
         (unsigned long)(t1 - t0),
         (unsigned long)(millis() - t1));
+}
+
+void Reader::addCoverPage(std::vector<Epub::Image> &images) {
+  const std::string &cover = book_.coverPath();
+  if (cover.empty() || static_cast<int>(images.size()) >= flow::kMaxImages) return;
+  for (const auto &image : images) {
+    if (image.path == cover) return;  // the first chapter shows it already
+  }
+  // A first chapter that is a picture and little text is a cover page of its own (some books
+  // use a different file there than the one the metadata names).
+  size_t letters = 0;
+  for (const char ch : flow_) letters += flow::isGlyph(ch) ? 1 : 0;
+  if (!images.empty() && letters < 200 + 2 * images.size()) return;
+  images.push_back({cover, ""});
+  std::string page;
+  page += flow::kImage;
+  page += static_cast<char>(flow::kImageBase + images.size() - 1);
+  page += flow::kPara;
+  page += flow::kPageBreak;
+  page += flow::kPara;
+  flow_.insert(0, page);
+  log_i("reader: added a cover page (%s)", cover.c_str());
 }
 
 void Reader::layoutChapter() {

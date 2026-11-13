@@ -179,6 +179,12 @@ PagePos Typesetter::layoutPage(const std::string &flow, PagePos start, GFXcanvas
       ++pos;
       continue;
     }
+    if (c == flow::kPageBreak) {
+      if (!words.empty()) flush(false);
+      ++pos;
+      if (lineTop > 0) return {static_cast<uint32_t>(pos), style};
+      continue;
+    }
     if (c == flow::kImage) {
       if (!words.empty()) flush(false);
       const int index =

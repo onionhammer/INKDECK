@@ -43,6 +43,9 @@ class Reader {
 
  private:
   void loadChapter(size_t index, bool atEnd);
+  // Puts the cover picture on a page of its own before the first chapter's text, if the book
+  // names a cover but doesn't open with a page showing it.
+  void addCoverPage(std::vector<Epub::Image> &images);
   void layoutChapter();  // drop cap + pagination for the current flow and typesetter
   void makeTypesetter();
   void moved();  // after a page turn: save now and then
