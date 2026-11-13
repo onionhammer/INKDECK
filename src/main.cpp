@@ -16,12 +16,15 @@
 #include "apps/clock.h"
 #include "apps/home.h"
 #include "apps/idle.h"
+#include "apps/music.h"
 #include "apps/sleep.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "devtools.h"
 #include "input.h"
+#include "netget.h"
 #include "pmic.h"
+#include "podcast_library.h"
 #include "power.h"
 #include "rtc.h"
 #include "screen.h"
@@ -56,6 +59,7 @@ void setup() {
   apps::standbyWake();
   power::markOn();
   pmic::status();  // first read logs what the PMIC reports
+  net::begin();  // TLS buffers in PSRAM
   sensors::begin();
   input::begin();
   audio::begin();
@@ -63,6 +67,7 @@ void setup() {
   sdcard::mount();
   ui::nav::begin(apps::makeHome());
   ui::nav::onPowerKey(apps::sleepNow);
+  ui::nav::onHoldBack(apps::openPlayer);
   // Woken for an alarm: show the Clock, and pollAlarms() rings over it.
   if (power::wake() == power::Wake::Alarm) ui::nav::push(apps::makeClock());
   devtools::begin();  // after the first frame, so a screenshot never catches a blank buffer
@@ -78,6 +83,7 @@ void loop() {
   apps::pollAlarms();
   apps::pollPower();
   weather::poll();  // the hourly forecast sync, in the background
+  podcasts::poll();  // saves the playing episode's position
   if (apps::napIfIdle()) return;  // reading on battery: light sleep until a key or the minute
   ui::nav::loop();
 }

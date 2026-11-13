@@ -136,6 +136,7 @@ FONTS = [
     ("kMono17ExtraBold", "jbmono", 17, "latin", {"weight": 800}),
     ("kMono18Medium", "jbmono", 18, "latin", {"weight": 500}),
     ("kMono18Bold", "jbmono", 18, "latin", {"weight": 700}),
+    ("kMono18ExtraBold", "jbmono", 18, "latin", {"weight": 800}),  # Podcasts: episode title
     ("kMono20Medium", "jbmono", 20, "upper", {"weight": 500}),
     ("kMono22ExtraBold", "jbmono", 22, "ascii", {"weight": 800}),
     ("kMono24ExtraBold", "jbmono", 24, "upper", {"weight": 800}),

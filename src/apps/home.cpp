@@ -7,6 +7,7 @@
 #include "apps/clock.h"
 #include "apps/files.h"
 #include "apps/music.h"
+#include "apps/podcasts.h"
 #include "apps/reader.h"
 #include "apps/sensors.h"
 #include "apps/system.h"
@@ -15,6 +16,7 @@
 #include "covers.h"
 #include "fonts.h"
 #include "pmic.h"
+#include "podcast_library.h"
 #include "readstate.h"
 #include "rtc.h"
 #include "sdcard.h"
@@ -31,7 +33,9 @@ namespace {
 using ui::Key;
 using ui::Rect;
 
-enum class Kind : uint8_t { Reader, Music, Files, Sensors, System, Clock, Weather, NotBuilt };
+enum class Kind : uint8_t {
+  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, NotBuilt
+};
 
 struct Module {
   const char *label;
@@ -49,8 +53,8 @@ constexpr Module kModules[] = {
      "microSD \xC2\xB7 SDMMC 4-bit", Kind::Reader, 5},
     {"MUSIC", "I2S", "MP3 files from microSD through the onboard codec and speaker.",
      "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music, 6},
-    {"PODCASTS", "NET", "RSS over Wi-Fi. Episodes cache to SD for offline listening.",
-     "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::NotBuilt, 9},
+    {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
+     "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts, 9},
     {"WEATHER", "NET", "Now, hourly and 6-day forecast, pulled over Wi-Fi every hour.",
      "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather, 9},
     {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
@@ -192,6 +196,27 @@ int statsFor(const Module &m, Stat out[4]) {
         ntp = ui::upper(buf);
       }
       out[3] = {"NTP SYNC", ntp};
+      return 4;
+    }
+    case Kind::Podcasts: {
+      static bool loaded = false;  // the library is read when the row is first shown
+      if (!loaded) loaded = podcasts::load(false);
+      const int shows = podcasts::showCount();
+      out[0] = {"SHOWS", shows ? std::to_string(shows) : "NONE"};
+      const int fresh = podcasts::freshTotal();
+      out[1] = {"NEW", fresh ? std::to_string(fresh) : ui::glyph::kEmDash};
+      const podcasts::Activity a = podcasts::activity();
+      out[2] = {"NETWORK", a.text.empty() ? "IDLE" : a.text};
+      const int64_t used = podcasts::usedBytes();
+      char buf[24];
+      if (used < 0) {
+        snprintf(buf, sizeof buf, "%s", "\xE2\x80\xA6");
+      } else if (used < 1000000000LL) {
+        snprintf(buf, sizeof buf, "%.0f MB", used / 1e6);
+      } else {
+        snprintf(buf, sizeof buf, "%.1f GB", used / 1e9);
+      }
+      out[3] = {"ON SD", buf};
       return 4;
     }
     case Kind::Weather: {
@@ -367,6 +392,7 @@ class HomeScreen : public ui::Screen {
       case Kind::Sensors: ui::nav::push(makeSensors()); break;
       case Kind::System: ui::nav::push(makeSystem()); break;
       case Kind::Clock: ui::nav::push(makeClock()); break;
+      case Kind::Podcasts: ui::nav::push(makePodcasts()); break;
       case Kind::Weather: ui::nav::push(makeWeather()); break;
       case Kind::NotBuilt: ui::nav::push(std::make_unique<NotBuiltScreen>(i)); break;
     }

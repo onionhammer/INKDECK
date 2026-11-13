@@ -10,6 +10,9 @@
 //   o        press PWR: the Sleep screen, then power-off (an armed alarm wakes it)
 //   z        standby for two wakes: the Clock face, off, redrawn by the next minute's RTC wake,
 //            then the board stays on at the one after (so the USB console comes back)
+// Line commands start with '!' and end with a newline:
+//   !feed URL   add a podcast feed to SD:/Podcasts/feeds.txt (the Podcasts screen reads it when
+//               it next opens)
 #pragma once
 
 namespace devtools {

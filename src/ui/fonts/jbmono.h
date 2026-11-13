@@ -23,6 +23,7 @@ extern const GFXfont kMono17Bold;  // weight 700, 17 px, line 22 px
 extern const GFXfont kMono17ExtraBold;  // weight 800, 17 px, line 22 px
 extern const GFXfont kMono18Medium;  // weight 500, 18 px, line 24 px
 extern const GFXfont kMono18Bold;  // weight 700, 18 px, line 24 px
+extern const GFXfont kMono18ExtraBold;  // weight 800, 18 px, line 24 px
 extern const GFXfont kMono20Medium;  // weight 500, 20 px, line 26 px
 extern const GFXfont kMono22ExtraBold;  // weight 800, 22 px, line 29 px
 extern const GFXfont kMono24ExtraBold;  // weight 800, 24 px, line 32 px

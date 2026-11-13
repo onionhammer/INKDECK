@@ -1,5 +1,7 @@
 #include "sdcard.h"
 
+#include <esp_vfs_fat.h>
+
 #include <Arduino.h>
 #include <SD_MMC.h>
 
@@ -33,5 +35,11 @@ bool mount() {
 bool mounted() { return isMounted; }
 
 uint64_t sizeBytes() { return isMounted ? SD_MMC.cardSize() : 0; }
+
+uint64_t freeBytes() {
+  if (!isMounted) return 0;
+  uint64_t total = 0, free = 0;
+  return esp_vfs_fat_info(kMountPoint, &total, &free) == ESP_OK ? free : 0;
+}
 
 }  // namespace sdcard

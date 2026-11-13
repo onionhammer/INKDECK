@@ -10,6 +10,7 @@
 #include "board_pins.h"
 #include "input.h"
 #include "pmic.h"
+#include "podcast_library.h"
 #include "rtc.h"
 #include "sensor_hub.h"
 #include "timesync.h"
@@ -129,7 +130,7 @@ bool idle(bool reading) {
   const bool playing = audio::status().state == audio::State::Playing;
   const bool low = p.percent >= 0 && p.percent < kLowBatteryPercent;
   if ((reading || playing) && !low) return false;
-  if (weather::syncing()) return false;
+  if (weather::syncing() || podcasts::busy()) return false;
   const timesync::Phase t = timesync::status().phase;
   return t != timesync::Phase::Connecting && t != timesync::Phase::Asking;
 }

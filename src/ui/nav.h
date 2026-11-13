@@ -5,8 +5,9 @@
 //   ●        primary action on what's selected (open, play, pause, run)
 //   HOLD ●   secondary action, shown in the hint bar when a screen has one (skip, edit, sync)
 //   BOOT     back: the screen may use it first (parent folder), otherwise it pops the screen
-//   HOLD BOOT home: back to the root screen from anywhere, with a full refresh. Screens never
-//            see it.
+//   HOLD BOOT home: back to the root screen from anywhere, with a full refresh. While music
+//            or a podcast is playing or paused, it opens the player first (onHoldBack), and
+//            HOLD BOOT on the player goes home. Screens never see it.
 //
 // Screens draw only their body. For portrait screens with chrome() the navigator draws the
 // status bar (tag(), context(), battery, clock) and the key-hint bar (hints()) around it.
@@ -54,6 +55,8 @@ class Screen {
   // Called when the board starts light-sleeping under this screen: save anything that a power
   // loss shouldn't take (the Reader saves its place).
   virtual void onNap() {}
+  // true for the player (Music): HOLD BOOT goes home from it rather than opening it again.
+  virtual bool isPlayer() const { return false; }
 
   // Called when the screen becomes the top of the stack (pushed, or uncovered by a pop) and
   // when it stops being the top (popped, or covered by a push).
@@ -91,6 +94,9 @@ Screen *base();  // the top screen that isn't an overlay (the one under a menu)
 
 // What a PWR press does (input::Key::Power; screens never see it).
 void onPowerKey(void (*handler)());
+// Asked first on HOLD BOOT: returns true if it handled the key (opened the player), false to go
+// home as usual.
+void onHoldBack(bool (*handler)());
 
 }  // namespace nav
 }  // namespace ui

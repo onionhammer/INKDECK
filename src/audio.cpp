@@ -46,6 +46,7 @@ QueueHandle_t commands = nullptr;
 SemaphoreHandle_t lock = nullptr;  // guards `shared` and `playlist`
 Status shared;
 std::vector<std::string> playlist;
+uint32_t playStartMs = 0;  // where the next Play command starts its first track
 std::atomic<uint32_t> elapsedMs{0};
 std::atomic<uint32_t> generation{0};
 std::atomic<int> volume{kDefaultVolume};
@@ -165,7 +166,9 @@ struct Player {
   int bytesLeft = 0;
   bool eof = false;
   bool needRefill = false;
+  long audioStart = 0;  // after the ID3 tag
   long audioBytes = 0;
+  uint32_t seekMs = 0;  // start here once the first frame gives the bitrate
   uint64_t samplesPlayed = 0;
   uint32_t rate = 0;
   bool firstFrame = true;
@@ -223,6 +226,8 @@ bool openTrack(int index) {
   p.path = path;
   p.fileSize = ftell(p.file);
   p.filePos = start;
+  p.audioStart = start;
+  p.seekMs = 0;
   p.readFailures = 0;
   p.audioBytes = p.fileSize - start;
   fseek(p.file, start, SEEK_SET);
@@ -379,8 +384,17 @@ void handle(const Command &c) {
     state = shared.state;
   }
   switch (c.cmd) {
-    case Cmd::Play:
+    case Cmd::Play: {
+      uint32_t startMs;
+      {
+        Locked l;
+        startMs = playStartMs;
+        playStartMs = 0;
+      }
       playFrom(c.arg);
+      p.seekMs = startMs;
+      break;
+    }
       break;
     case Cmd::TogglePause:
       if (state == State::Playing) {
@@ -523,6 +537,22 @@ void step() {
       shared.channels = info.nChans;
     }
     generation++;  // the screen shows the format
+    if (p.seekMs && info.bitrate > 0) {
+      // Resume: jump to the byte the bitrate puts at seekMs (exact for constant bitrate, close
+      // for variable) and let the decoder find the next frame there. This frame isn't played.
+      const long offset = p.audioStart + static_cast<long>(uint64_t(p.seekMs) * info.bitrate / 8000);
+      if (offset < p.fileSize - kInputBufferBytes && fseek(p.file, offset, SEEK_SET) == 0) {
+        p.filePos = offset;
+        p.readPtr = p.in;
+        p.bytesLeft = 0;
+        p.eof = false;
+        p.samplesPlayed = uint64_t(p.seekMs) * info.samprate / 1000;
+        elapsedMs = p.seekMs;
+        log_i("audio: resuming at %lu s (byte %ld)", (unsigned long)(p.seekMs / 1000), offset);
+      }
+      p.seekMs = 0;
+      return;
+    }
     log_i("audio: %d Hz, %d ch, %d kbps", info.samprate, info.nChans, info.bitrate / 1000);
   }
   if (static_cast<uint32_t>(info.samprate) != txRate) outputSetRate(info.samprate);
@@ -583,10 +613,11 @@ void begin() {
   xTaskCreatePinnedToCore(task, "audio", 8192, nullptr, 5, nullptr, 0);
 }
 
-void play(std::vector<std::string> list, int index) {
+void play(std::vector<std::string> list, int index, uint32_t startMs) {
   {
     Locked l;
     playlist = std::move(list);
+    playStartMs = startMs;
   }
   send(Cmd::Play, index);
 }

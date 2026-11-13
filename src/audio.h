@@ -32,8 +32,9 @@ struct Status {
 
 void begin();  // the calls below do nothing (or report stopped) until it has run
 
-// Plays playlist[index], then the following entries, then stops.
-void play(std::vector<std::string> playlist, int index);
+// Plays playlist[index], then the following entries, then stops. startMs > 0 starts the first
+// track that far in (resuming a podcast); the position is estimated from the bitrate.
+void play(std::vector<std::string> playlist, int index, uint32_t startMs = 0);
 // Pause/resume; when stopped at the end of the queue, plays the last track again.
 void togglePause();
 void next();

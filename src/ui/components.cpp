@@ -36,9 +36,10 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   drawText(c, {band.x + 12, band.y, tagW - 24, band.h}, info.tag, style::kStatusTag, Align::Left,
            kPaper);
 
-  // Right block: [WIFI] [temp] [battery glyph + %] [clock], after a 3 px rule.
+  // Right block: [▶/‖] [WIFI] [temp] [battery glyph + %] [clock], after a 3 px rule.
   constexpr int kGap = 14;
   constexpr int kBatteryGlyphW = 28 + 6;
+  constexpr int kPlaybackW = 22, kPlaybackH = 20;
   std::string batteryText;
   if (info.battery >= 0) {
     batteryText = std::to_string(info.battery) + "%";
@@ -51,10 +52,24 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
     if (!t.empty()) blockW += textWidth(style::kStatus, t) + kGap;
   }
   if (info.battery >= 0) blockW += kBatteryGlyphW;
+  if (info.playback != Playback::None) blockW += kPlaybackW + kGap;
   const int blockX = band.right() - std::max(blockW, 0) - 12;
   vrule(c, blockX - 12 - kRule, band.y, band.h);
   const int baseline = baselineCentered(style::kStatus, band.y, band.h);
   int x = blockX;
+  if (info.playback != Playback::None) {
+    // Inverted, like a pill: a play triangle or two pause bars in paper.
+    const Rect box{x, band.centerY() - kPlaybackH / 2, kPlaybackW, kPlaybackH};
+    fill(c, box, kInk);
+    const int cy = box.centerY();
+    if (info.playback == Playback::Playing) {
+      c.fillTriangle(box.x + 7, cy - 6, box.x + 7, cy + 6, box.x + 16, cy, kPaper);
+    } else {
+      fill(c, {box.x + 6, cy - 6, 4, 12}, kPaper);
+      fill(c, {box.x + 12, cy - 6, 4, 12}, kPaper);
+    }
+    x += kPlaybackW + kGap;
+  }
   for (int i = 0; i < 4; ++i) {
     if (texts[i].empty()) continue;
     if (i == 2 && info.battery >= 0) x += drawBattery(c, x, band.centerY(), info.battery) + 6;

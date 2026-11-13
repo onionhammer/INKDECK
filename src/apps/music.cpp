@@ -62,6 +62,7 @@ std::string baseName(const std::string &path) {
 class MusicScreen : public ui::Screen {
  public:
   std::string tag() const override { return "02 MUSIC"; }
+  bool isPlayer() const override { return true; }
   std::string context() const override {
     const std::string path = audio::status().path;
     if (path.empty()) return "SD:/";
@@ -291,5 +292,15 @@ class MusicScreen : public ui::Screen {
 }  // namespace
 
 std::unique_ptr<ui::Screen> makeMusic() { return std::make_unique<MusicScreen>(); }
+
+bool openPlayer() {
+  if (!audio::active()) return false;
+  const ui::Screen *base = ui::nav::base();
+  if (base && base->isPlayer()) return false;  // already on it: HOLD BOOT means home
+  // Close menus and sheets first, so the player isn't drawn over one.
+  while (ui::nav::top() && ui::nav::top()->overlay()) ui::nav::pop();
+  ui::nav::push(makeMusic());
+  return true;
+}
 
 }  // namespace apps
