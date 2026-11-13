@@ -59,6 +59,7 @@ examples are for this board.
 | `02-Arduino.md` | Arduino IDE setup (board settings screenshot) and the 6 Arduino examples |
 | `03-ESP-IDF.md` | ESP-IDF/VS Code setup and the 8 IDF examples, incl. factory firmware walkthrough |
 | `04-Firmware-Flashing.md` | Flashing .bin images with Espressif Flash Download Tool |
-| `05-ESP32-AI-Tutorials.md` | XiaoZhi AI voice assistant firmware |
+| `05-ESP32-AI-Tutorials.md` | AI tutorials index: a link to the XiaoZhi page and a "supported products" table that came through empty |
+| `05a-XiaoZhi-AI.md` | XiaoZhi AI voice assistant: flashing prebuilt or source builds, Wi-Fi provisioning, binding on xiaozhi.me, FAQ (fetched 2026-11-13). Its example board is the ESP32-S3-Touch-AMOLED-1.8. This board's port is upstream in `78/xiaozhi-esp32`; see the skill's `references/ai-voice.md` |
 | `06-FAQ.md` | Vendor FAQ |
 | `07-Technical-Support.md` | Support contact |

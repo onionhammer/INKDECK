@@ -7,6 +7,9 @@ against `docs/datasheets/ES8311-audio-codec.pdf` (Rev 10.0). Some behaviour live
 component `espressif/esp_codec_dev` **1.3.6** (pinned in `dependencies.lock`). That code isn't in the
 upstream repo. I read it from the component registry archive and label it "esp_codec_dev 1.3.6".
 
+For voice (mic + speaker together, wake word, streaming to an AI server), see `ai-voice.md`. It covers XiaoZhi's
+port to this board: one full-duplex I2S pair at 24 kHz, the amp switched with a 15 s idle timeout, and Opus.
+
 ## Contents
 
 1. [Upstream file map](#1-upstream-file-map)

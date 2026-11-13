@@ -1,6 +1,6 @@
 ---
 name: waveshare-epaper-reference
-description: Reference for Waveshare's vendor sample code for the ESP32-S3-ePaper-3.97 board — SSD1677 e-paper driver and rendering, TG28/AXP2101 PMIC and RTC-alarm power cycling, SHTC3/QMI8658 sensors, ES8311 audio, SD card, buttons, Wi-Fi provisioning — with verbatim code snippets and porting notes. Use this whenever implementing, debugging or designing any hardware-facing feature of this project (display refresh, partial updates, fonts, battery/charging, deep sleep or shutdown/wake, RTC time or alarms, temperature/humidity, IMU, speaker/mic, SD files, rotary switch/buttons, Wi-Fi setup), or when asked "how does Waveshare do X" or to port something from their examples, even if the user doesn't mention Waveshare.
+description: Reference for Waveshare's vendor sample code for the ESP32-S3-ePaper-3.97 board — SSD1677 e-paper driver and rendering, TG28/AXP2101 PMIC and RTC-alarm power cycling, SHTC3/QMI8658 sensors, ES8311 audio, SD card, buttons, Wi-Fi provisioning, and the XiaoZhi AI voice assistant port (wake word, ESP-SR AFE/VAD, Opus streaming to a voice server) — with verbatim code snippets and porting notes. Use this whenever implementing, debugging or designing any hardware-facing feature of this project (display refresh, partial updates, fonts, battery/charging, deep sleep or shutdown/wake, RTC time or alarms, temperature/humidity, IMU, speaker/mic, SD files, rotary switch/buttons, Wi-Fi setup, voice assistant / talking to an AI by voice), or when asked "how does Waveshare do X" or to port something from their examples, even if the user doesn't mention Waveshare.
 ---
 
 # Waveshare ESP32-S3-ePaper-3.97: vendor sample reference
@@ -29,6 +29,7 @@ Read only the file(s) for the subsystem you're working on. Each has a TOC.
 | Shared I2C bus layer, microSD (SDMMC 4-bit), rotary switch and button click/double/long-press handling | `references/io.md` |
 | ES8311 codec, I2S, speaker amp, playback from flash/SD, recording | `references/audio.md` |
 | Wi-Fi provisioning, SNTP, HTTP services (weather/calendar), NVS keys, SPIFFS, managed components | `references/network.md` |
+| AI voice assistant: XiaoZhi's board port, full-duplex ES8311 at 24 kHz, wake word + VAD (ESP-SR), Opus over WebSocket, server protocol, a standalone push-to-talk sample for our stack | `references/ai-voice.md` (pinned to the upstream XiaoZhi repo, not the Waveshare commit) |
 
 ## Upstream layout
 
@@ -39,6 +40,10 @@ ESP-IDF/            01_E-Paper_Example  02_Mic_test  03_Music  04_SD_Test  05_QM
                     06_I2C_PCF85063  07_I2C_SHTC3  08_ESP32-S3_e-Paper-3.97  <- factory app, most complete
 Firmware/           Factory procedure/*.bin (16 MB full-flash images, write at 0x0), xiaozhi/*.bin
 ```
+
+The `xiaozhi/*.bin` images are prebuilt XiaoZhi AI-voice firmware with no source in this repo. The source
+is upstream at <https://github.com/78/xiaozhi-esp32> (board dir `main/boards/waveshare/esp32-s3-epaper-3.97/`),
+covered by `references/ai-voice.md`. The wiki tutorial is mirrored in `docs/wiki/05a-XiaoZhi-AI.md`.
 
 The factory app (`ESP-IDF/08_…`) has the most complete drivers, as reusable components in
 `components/*_bsp`, `epaper_port`, `epaper_lib`, `axpPower`. Its `main/page_*` files are the
