@@ -13,10 +13,10 @@ every opening and clearance comes from the real part geometry. Not printed yet. 
 
 | File | What |
 | --- | --- |
-| `ereader-enclosure.scanruler` | Parametric source: 46 features, 80 parameters (4 pinned), board STEP, battery dummy, 1 open note |
+| `ereader-enclosure.scanruler` | Parametric source: 50 features, 81 parameters (4 pinned), board STEP, battery dummy, 1 open note |
 | `ereader-enclosure.step` | The tray as a solid (read back and verified) |
 | `back-tray.stl` | Print mesh (0.02 mm chord) |
-| `renders/*.png` | Assembly, back and inside, section through a button |
+| `renders/*.png` | Assembly, back and inside, thumbwheel scoop, sections through a button and through the wheel |
 
 **Size:** 105.9 × 66.1 mm over the bumpers. **10.46 mm** from glass to the flat back,
 10.96 mm at the corner bumpers (v0.1 was 14.85).
@@ -42,6 +42,18 @@ its brass standoffs, clamping it onto the bosses. Nothing covers the front. The 
 with the panel glass, and the corner bumpers stand 0.5 mm proud so the glass never touches a
 table when it's face down. The thumbwheel notch is open at the top.
 
+**Thumbwheel scoop.** The wheel is clicked by pushing its rim straight in. The rim stands only
+0.16 mm past the outer wall, and the wall used to carry on 0.4 mm below it, so a thumb landed on
+the wall before the switch moved. Now a 45° scoop cuts the wall away under the notch. It starts
+at the PCB edge line (y 60) on the notch floor (z −4.6) and runs down and out to the outer face
+at z −6.85. Its sides slope in at 45° too, so on the outer face it is a trapezoid about 13.6 mm
+wide at the top and 8.3 at the bottom. A solid block under the wheel keeps the material behind
+the slope. It reaches 2.5 mm in from the inner wall (`scoop_back`), from the floor up to the
+notch floor, and still sits 0.4 mm under the wheel. The scoop follows the notch parameters
+(`wheel_*`).
+
+![thumbwheel scoop](renders/wheel_scoop.png)
+
 1. Plug the battery into `BAT`, and tape it into the pocket in the floor.
 2. Drop the board in face up, letting the wheel slide down its notch.
 3. Fit 4 × M2.5 × 6 countersunk screws (DIN 965 / ISO 10642 style, head ≤ 5.0 mm) from the back.
@@ -49,6 +61,7 @@ table when it's face down. The thumbwheel notch is open at the top.
 **Printing:** back face on the bed, no supports. Everything is laid out for that:
 - The back is flat. Its decoration is inward grooves with 45° walls (`groove_draft`), so each layer steps in by at most its own height and nothing bridges. That covers the hatch outline, the hazard stripes and the vent slots.
 - The end fins have flat floors and 45° ceilings.
+- Every face of the thumbwheel scoop slopes at 45° and faces up.
 - The countersinks are 45° cones opening onto the bed. The 0.6 mm back-edge chamfer also hides elephant's foot.
 - The PWR / BOOT flexures stand upright, rooted at the floor, so the tab never overhangs. Each tab is 4 × 6.9 × 0.8 mm (`tab_w`, `tab_top`, `tab_t`), and its nub has a 45° underside and sits 0.15 from the stem (`btn_gap`). An upright tab bends across the layer lines, so print it in **PETG**, or expect PLA to crack at the root.
 - The remaining bridges: USB-C opening top (~8 mm flat), microSD slot and recess tops (≤ 10 mm), and the slot over each tab (5.2 mm). All are ordinary bridges.
@@ -61,7 +74,7 @@ table when it's face down. The thumbwheel notch is open at the top.
 
 **Openings:** USB-C 12.4 × 6.6 (overmolds up to ~6.5 mm; the panel's flex cable wraps the board
 edge just above it, so the wall stays closed over the top). microSD slot with a 15 mm fingernail
-recess. Flared thumbwheel notch.
+recess. Flared thumbwheel notch with the thumb scoop under it.
 
 **Decoration** (each one is a feature of its own, so any can be suppressed):
 - Chamfered corner bumpers (`bump_l`, `bump_out`, `bump_up`, `bump_ch`).
