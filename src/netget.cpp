@@ -5,6 +5,7 @@
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
 #include <mbedtls/platform.h>
+#include <strings.h>
 
 namespace net {
 namespace {
@@ -34,9 +35,21 @@ void tlsFree(void *p) { heap_caps_free(p); }
 
 void begin() { mbedtls_platform_set_calloc_free(tlsCalloc, tlsFree); }
 
-bool Get::open(const std::string &url, std::string &error, int64_t from) {
+int Get::onEvent(void *event) {
+  auto *e = static_cast<esp_http_client_event_t *>(event);
+  if (e->event_id != HTTP_EVENT_ON_HEADER || !e->user_data) return ESP_OK;
+  auto *self = static_cast<Get *>(e->user_data);
+  if (strcasecmp(e->header_key, "ETag") == 0) self->etag_ = e->header_value;
+  if (strcasecmp(e->header_key, "Last-Modified") == 0) self->lastModified_ = e->header_value;
+  return ESP_OK;
+}
+
+bool Get::open(const std::string &url, std::string &error, int64_t from,
+               const std::string &ifRange) {
   close();
   esp_http_client_config_t cfg = {};
+  cfg.event_handler = reinterpret_cast<http_event_handle_cb>(&Get::onEvent);
+  cfg.user_data = this;
   cfg.url = url.c_str();
   cfg.crt_bundle_attach = esp_crt_bundle_attach;
   cfg.timeout_ms = kTimeoutMs;
@@ -54,8 +67,11 @@ bool Get::open(const std::string &url, std::string &error, int64_t from) {
     char range[40];
     snprintf(range, sizeof range, "bytes=%lld-", static_cast<long long>(from));
     esp_http_client_set_header(c, "Range", range);
+    if (!ifRange.empty()) esp_http_client_set_header(c, "If-Range", ifRange.c_str());
   }
   for (int hop = 0; hop <= kMaxRedirects; ++hop) {
+    etag_.clear();  // this hop's response only
+    lastModified_.clear();
     esp_err_t err = esp_http_client_open(c, 0);
     if (err != ESP_OK) {
       log_w("net: open failed (%s); internal heap %u free, largest block %u",

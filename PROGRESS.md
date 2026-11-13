@@ -361,7 +361,8 @@ screen shows that wake plan. In the end the weather sync runs only while the boa
   sync time after SYNC TIME.
 - [x] Setting the RTC: System → SYNC TIME (NTP). A manual set-time screen would still help
   without Wi-Fi.
-- [x] Time zone: `TIMEZONE` in `.env`, a POSIX TZ string with the DST rule (US Central here).
+- [x] Time zone: `TIMEZONE` in `.env`, a POSIX TZ string with the DST rule (US Central here),
+  or `timezone` in `SD:/inkdeck.ini` (below).
 
 **✅ 9b. Alarms that ring**
 - [x] `apps::pollAlarms()`, called from `loop()` about once a second, checks each window
@@ -505,11 +506,99 @@ screen shows that wake plan. In the end the weather sync runs only while the boa
   screen nor the standby face shows weather, so it would only pre-fetch for the next time
   Weather opens, at about 6 s of Wi-Fi (roughly 100 mA) a wake. Power-off stays radio-free;
   a stale forecast syncs at the next boot.
+- [x] The room (the user's request, 2026-11-13): the status bar shows the SHTC3's reading in
+  whole degrees (`IN 73°F`). With no forecast for the present hour (none yet, too old, no
+  Wi-Fi, clock unset) the NOW panel shows the room instead: `// INSIDE (NO FORECAST)`, the
+  temperature in 130 px, the reason in the condition's place, and the room's humidity under RH.
+  Checked with dev command `!wxforget` (drops the saved forecast): the room showed while the
+  re-sync ran, then the forecast.
+- [x] The NOW icon picks day or night from the sun times worked out on the board; the
+  forecast's own flag is for the start of its hour, so at 07:47 it still showed the moon.
+- [x] **Fixed: a stale Weather screen** (the user saw it on the morning of 2026-11-13). Two
+  causes. The navigator called `onTick()` only for the top screen, so Weather under its day
+  sheet never reloaded after a sync; the screen under an overlay now ticks too. And while the
+  player was loaded, internal RAM was too short for Wi-Fi to start, so the hourly syncs
+  failed (see "C++ allocations prefer PSRAM" under Decisions).
 
-**9e. Podcasts**
-- [ ] Feeds listed on the SD card, RSS fetched and parsed, episodes downloaded to SD and played
-  through the music player, with the artboard's states (`[NEW]`, `[DL 62%]`, `[▶ 23m]`,
-  `[✓]`) and the SD cache meter.
+**🔶 9e. Podcasts** (`podcast_library.*`, `rss.*`, `netget.*`, `apps/podcasts.cpp`)
+- [x] Shows come from two places: RSS feeds listed in `SD:/Podcasts/feeds.txt` (one URL per
+  line, `#` comments; the screen creates the file with an explanation if it's missing), and
+  any other folder of MP3s in `SD:/Podcasts/` (the user already keeps one there, 686 episodes
+  named `NN - Title.mp3`). A folder's episodes are its files in name order, with the number
+  and title taken from the name; the card shows the file's own title tag and length once
+  `trackinfo` has read them.
+- [x] Feeds: a refresh reads each feed only until it has its 30 newest items (`rss.*`, a
+  forgiving scanner: CDATA, entities, HTML descriptions to plain text, RFC 822 dates, iTunes
+  durations; tested on the PC against a 2 MB NPR feed: 30 items from its first 400 KB). On the
+  board: 30 episodes from 136 KB in 1.5 s. The parsed feed is cached on the card, so the screen
+  opens offline. Opening the screen refreshes feeds older than 3 hours; HOLD ● on the show
+  list refreshes now.
+- [x] Downloads (● GET) go to `SD:/Podcasts/<show title>/<date> <title>.mp3` through
+  `net::Get`: a streaming HTTPS GET that follows the tracking redirects podcast links use.
+  Progress shows in the row (`[DL 62%]`), the card and the status bar; several can queue
+  (`[QUEUED]`); HOLD ● cancels. About 275 KB/s (42 MB in 2.5 min). The `.part` file's size is
+  committed every megabyte, so a download cut off by a reset resumes: verified, a flash at
+  6,144 KB, then HTTP 206 for exactly the remaining 8,211 KB. Resumes send `If-Range` with the
+  file's ETag (kept in `.part.id`): hosts that stitch in ads can serve a different file each
+  time, and a plain range request would splice two (one test download before this fix got
+  7.5 MB where 5.9 MB were left). Downloads check free space; nothing is ever deleted
+  automatically (the artboard's 1 GB budget would mean deleting the user's own files).
+- [x] Playing (● PLAY / RESUME) goes through the music player from the saved position
+  (`audio::play()` takes a start time and jumps by bitrate: exact for constant-bitrate files).
+  A folder show plays on into the following files. `podcasts::poll()` saves the position
+  every 30 s and on pause, and marks an episode played in its last 45 s. State per show lives
+  on the card in `SD:/.inkdeck/podcasts/`. Verified: played 1:00, switched episodes, came back
+  to 1:00; after a reboot it resumed at 1:21.
+- [x] States as on the artboard: `[NEW]` (a feed episode from the last 7 days, untouched),
+  `[DL 62%]`, `[▶ 23m]`, `[✓]`, plus `[SD]` (downloaded), `[51%]` (partial), `[QUEUED]`.
+  HOLD ● on an episode marks it played or unplayed. The SD CACHE bar is the podcasts' share of
+  the space they could use (theirs plus free), labelled with their size.
+- [x] Two levels of focus, since the artboard has two lists: the show list first (● opens a
+  show, with the cursor on the episode last listened to), then its episodes (BOOT goes back
+  to the shows).
+- [x] Home: the PODCASTS row opens it; the preview shows shows, new episodes, network
+  activity and the space used.
+- Not checked yet: marking played at the end of an episode, cancel, a non-MP3 feed, a full
+  card, a feed that fails.
+- Test data left on the card: the NPR *Up First* feed in `feeds.txt` (dev command `!feed`)
+  and four of its episodes, about 80 MB, in `SD:/Podcasts/Up First from NPR/`. The *Colom*
+  episode there predates the `If-Range` fix and may have a splice.
+
+**Playback from anywhere (the user's request, 2026-11-13)**
+- [x] While music or a podcast is playing or paused, the status bar shows an inverted ▶ or
+  ‖ before the battery, on every screen.
+- [x] HOLD BOOT then opens the player instead of going home (`apps::openPlayer()`, through
+  `nav::onHoldBack()`); menus and sheets close first. HOLD BOOT on a player opened that way
+  goes back to where it came from, like switching back to the last app. On a player reached
+  the usual way (Home's MUSIC row, ● PLAY), HOLD BOOT still goes home. Verified on the board:
+  Podcasts → HOLD BOOT → player → HOLD BOOT → the same Podcasts list.
+- [x] `audio::play()` keeps at most 64 tracks from the chosen one (a folder of 686 made a
+  685-path queue).
+
+**Settings on the card (the user's idea, 2026-11-13)** (`settings.*`)
+- [x] `SD:/inkdeck.ini` overrides the time zone and the location built in from `.env`:
+  `timezone` (POSIX TZ), `latitude` and `longitude` (both or neither), in any `[section]`, `;`
+  or `#` comments. Values are checked the way `gen_secrets.py` checks `.env`; a bad one is
+  logged and the built-in value stays. Wi-Fi keys are refused with a log line: a card is easy to
+  lift, so the network stays in the firmware.
+- [x] Read at boot right after the card mounts (before the first frame). A missing file is
+  written with every line commented out and the common US and European zones listed. The
+  values last read from the card are kept in NVS, so standby wakes (which don't mount the card)
+  and boots without a card keep them; a card whose file doesn't set a value puts the built-in
+  one back.
+- [x] A saved forecast for another location isn't shown (`Forecast` now records where it's
+  for), so moving the location syncs a new one at once.
+- [x] System: a SETTINGS row says where they come from (`.env (built in)` or
+  `SD:/inkdeck.ini · TZ, LOCATION`); the state rows are 21 px now to fit a seventh.
+- [x] Checked on the board with dev commands `!append`, `!cat` and `!rm`: a Pacific zone and a
+  Greenwich location from the card (the clock showed Pacific time, the forecast re-synced for
+  Greenwich, the Wi-Fi line was refused), then the file removed: a clean template, back to
+  Central time.
+- [x] **Found on the way: an SD write straight from flash loses its sectors.** The first
+  template came back with its first 512 bytes zeroed. `!sdtest` showed why: 1 KB written from a
+  string constant in one call reached the card as zeros, while internal RAM and PSRAM were
+  exact. The SDMMC driver DMAs whole sectors from the caller's buffer. Both templates are now
+  written from RAM (AGENTS.md, Gotchas).
 
 **Network groundwork (done)**
 - [x] Credentials are compiled in from the gitignored `.env` (`scripts/gen_secrets.py`, after
@@ -537,8 +626,18 @@ Listed on Home but not designed yet.
 
 ## Decisions
 
-- **HOLD BOOT always means home**, so the prototype's HOLD BOOT actions moved: the reader's
-  text size is in its ● menu, and the player's stop was dropped (● pauses).
+- **HOLD BOOT means home**, so the prototype's HOLD BOOT actions moved: the reader's text
+  size is in its ● menu, and the player's stop was dropped (● pauses). The one exception
+  (2026-11-13): while audio is playing or paused, HOLD BOOT opens the player, and HOLD BOOT
+  there goes back.
+- **C++ allocations prefer PSRAM** (`src/psram_new.cpp`, 2026-11-13). ESP-IDF keeps every
+  `malloc()` under 4 KB in internal RAM, and our strings are small and many: playing from a
+  686-episode folder took internal RAM from 203 KB to 55 KB free, and Wi-Fi then failed to
+  start (`ESP_ERR_NO_MEM`). With `new` and `delete` going to PSRAM first, 209 KB stays free
+  while playing. Anything that must be internal (DMA buffers, task stacks, data an IRAM
+  interrupt touches) is allocated with `heap_caps_malloc()`. TLS buffers go to PSRAM too
+  (`net::begin()`): the core's mbedTLS otherwise allocates about 40 KB of internal RAM per
+  connection. Dev key `h` prints the heap.
 - **Lists page whole screens** instead of scrolling a row at a time. That's fewer, cleaner
   e-paper updates.
 - **Screen changes use a partial refresh.** Menus are overlays, so opening one only redraws
@@ -564,6 +663,9 @@ Listed on Home but not designed yet.
   build needs no Python.
 
 ## Known issues
+
+- Podcast downloads run at about 275 KB/s, so a 100 MB episode takes about 6 minutes. Not
+  profiled yet: candidates are Wi-Fi modem sleep, TLS, and SD writes from PSRAM buffers.
 
 - SD at 20 MHz: the long-run check of the CRC-error fix never reported a result, so it's
   still unconfirmed.

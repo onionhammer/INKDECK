@@ -129,6 +129,8 @@ void tick() {
   Screen &s = *stack.back();
   if (s.onTick()) request(Refresh::Partial);
   Screen &base = baseScreen();
+  // The screen under a menu or sheet keeps its live values (a forecast that arrives, the time).
+  if (&base != &s && base.onTick()) request(Refresh::Partial);
   if (base.chrome() && signature(statusFor(base)) != drawnStatus) request(Refresh::Partial);
 }
 

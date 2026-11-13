@@ -48,6 +48,8 @@ struct Day {
 
 struct Forecast {
   time_t fetched = 0;  // 0: none
+  float lat = 0;       // where it's for: a forecast for another place isn't shown
+  float lon = 0;
   Hour current;
   int hourCount = 0;
   Hour hours[kHours];
@@ -60,6 +62,8 @@ bool configured();
 
 // The last forecast (loaded from NVS the first time). False if there's none.
 bool get(Forecast &out);
+// Dev tool: drops the saved forecast (RAM and NVS), as on a new board.
+void forget();
 
 // Conditions at t: the current block if the forecast is under an hour old, otherwise the hour
 // that contains t. nullptr if the forecast doesn't reach t.

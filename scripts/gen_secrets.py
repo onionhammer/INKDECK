@@ -16,7 +16,8 @@ the firmware builds without a network. A value that is set but invalid produces 
 #errors, so the build stops with the reason instead of flashing credentials that can't work.
 
 Environment variables of the same name override .env, e.g. for a one-off build on another
-network.
+network. On the board, SD:/inkdeck.ini overrides TIMEZONE, LATITUDE and LONGITUDE (never Wi-Fi):
+see src/settings.h.
 
 Adapted from https://github.com/onionhammer/lollipop-smell (scripts/gen_secrets.py).
 """

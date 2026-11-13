@@ -6,8 +6,8 @@
 //   HOLD ●   secondary action, shown in the hint bar when a screen has one (skip, edit, sync)
 //   BOOT     back: the screen may use it first (parent folder), otherwise it pops the screen
 //   HOLD BOOT home: back to the root screen from anywhere, with a full refresh. While music
-//            or a podcast is playing or paused, it opens the player first (onHoldBack), and
-//            HOLD BOOT on the player goes home. Screens never see it.
+//            or a podcast is playing or paused, it opens the player instead (onHoldBack), and
+//            HOLD BOOT on that player goes back to where it was opened. Screens never see it.
 //
 // Screens draw only their body. For portrait screens with chrome() the navigator draws the
 // status bar (tag(), context(), battery, clock) and the key-hint bar (hints()) around it.
@@ -66,7 +66,8 @@ class Screen {
   // Returns true if the key was used (the screen then redraws). An unused Back pops.
   virtual bool onKey(Key key) = 0;
 
-  // Called once a second while on top. Return true to redraw (live values, playback).
+  // Called once a second while on top, or under an overlay. Return true to redraw (live values,
+  // playback).
   virtual bool onTick() { return false; }
 
   // Draws the body: the area between the chrome bands, or the whole screen without chrome.

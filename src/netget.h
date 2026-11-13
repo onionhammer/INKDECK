@@ -21,13 +21,19 @@ class Get {
   Get(const Get &) = delete;
   Get &operator=(const Get &) = delete;
 
-  // Sends the request and reads the headers. from > 0 asks for the body from that byte on
-  // (check status(): 206 if the server did, 200 if it sent the whole body). False on a network
-  // error or a status outside 200-299 and 416; error then says why in a few words.
-  bool open(const std::string &url, std::string &error, int64_t from = 0);
+  // Sends the request and reads the headers. from > 0 asks for the body from that byte on, but
+  // only if the file is still the one `ifRange` (a validator() from the first request) names:
+  // check status(), 206 if the server sent the rest, 200 if it sent the whole (changed) file.
+  // Podcast hosts that stitch in ads can serve a different file each time, so a resume without
+  // a validator would splice two of them. False on a network error or a status outside 200-299
+  // and 416; error then says why in a few words.
+  bool open(const std::string &url, std::string &error, int64_t from = 0,
+            const std::string &ifRange = "");
 
   int status() const { return status_; }
   int64_t length() const { return length_; }  // of this response's body; -1 if not given
+  // What identifies this version of the file: its ETag, else its Last-Modified; "" if neither.
+  std::string validator() const { return etag_.empty() ? lastModified_ : etag_; }
 
   // Up to len bytes of the body: > 0 read, 0 at the end, < 0 an error.
   int read(char *buf, int len);
@@ -35,9 +41,13 @@ class Get {
   void close();
 
  private:
+  static int onEvent(void *event);  // esp_http_client_event_t: collects the validators
+
   void *client_ = nullptr;  // esp_http_client_handle_t
   int status_ = 0;
   int64_t length_ = -1;
+  std::string etag_;
+  std::string lastModified_;
 };
 
 }  // namespace net

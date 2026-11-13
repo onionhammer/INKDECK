@@ -2,7 +2,7 @@
 
 #include <math.h>
 
-#include "inkdeck_secrets.h"  // LATITUDE, LONGITUDE (scripts/gen_secrets.py)
+#include "settings.h"  // the location: SD:/inkdeck.ini, else LATITUDE/LONGITUDE from .env
 #include "timeutil.h"
 
 namespace sun {
@@ -57,7 +57,7 @@ time_t onLocalDay(const tm &day, double utcHours) {
 
 }  // namespace
 
-bool configured() { return LOCATION_CONFIGURED; }
+bool configured() { return settings::hasLocation(); }
 
 Day on(time_t when) {
   Day d;
@@ -65,8 +65,9 @@ Day on(time_t when) {
   tm day;
   localtime_r(&when, &day);
   double cosRise = 0, cosSet = 0;
-  const double rise = eventUtcHours(day.tm_yday + 1, true, LATITUDE, LONGITUDE, cosRise);
-  const double set = eventUtcHours(day.tm_yday + 1, false, LATITUDE, LONGITUDE, cosSet);
+  const double lat = settings::latitude(), lon = settings::longitude();
+  const double rise = eventUtcHours(day.tm_yday + 1, true, lat, lon, cosRise);
+  const double set = eventUtcHours(day.tm_yday + 1, false, lat, lon, cosSet);
   if (isnan(rise) || isnan(set)) {
     d.alwaysUp = cosRise < -1;
     d.alwaysDown = cosRise > 1;

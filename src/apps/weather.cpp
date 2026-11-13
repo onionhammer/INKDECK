@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "rtc.h"
+#include "sensor_hub.h"
 #include "suntimes.h"
 #include "ui/icons.h"
 #include "units.h"
@@ -95,6 +96,14 @@ icons::Weather iconFor(uint8_t code, bool day) {
     case weather::Sky::Storm: return icons::Weather::Storm;
   }
   return icons::Weather::Cloud;
+}
+
+// Day or night now, from the sun times worked out on the board; the forecast's own flag is
+// for the start of its hour (or the fetch), so it lags at dawn and dusk.
+bool isDay(const Hour &h, time_t t) {
+  const sun::Day d = sun::on(t);
+  if (d.alwaysUp || d.alwaysDown) return d.alwaysUp;
+  return d.ok ? t >= d.rise && t < d.set : h.day;
 }
 
 // The next sunrise or sunset after t: "↓16:39".
@@ -249,6 +258,12 @@ class WeatherScreen : public Screen {
     }
     return "LOC:HOME";
   }
+  // The room, from the board's SHTC3, in whole degrees (so it doesn't redraw for every tenth).
+  std::string statusTemp() const override {
+    const shtc3::Reading in = sensors::env();
+    if (!in.ok) return {};
+    return "IN " + std::to_string(lroundf(units::temperature(in.tempC))) + units::temperatureUnit();
+  }
   int hints(Hint *out) const override {
     out[0] = {glyph::kDial, "DAY"};
     out[1] = {glyph::kPress, "DETAIL"};
@@ -297,6 +312,8 @@ class WeatherScreen : public Screen {
       shownHour_ = hour;
       redraw = true;
     }
+    // Showing the room instead of a forecast: follow it.
+    if (!forecastNow() && indoorText() != shownIndoor_) redraw = true;
     return redraw;
   }
 
@@ -311,6 +328,17 @@ class WeatherScreen : public Screen {
   }
 
  private:
+  const Hour *forecastNow() const {
+    return view_->has && rtc::timeValid() ? weather::at(view_->forecast, time(nullptr)) : nullptr;
+  }
+
+  // The room's temperature and humidity, "" without a reading.
+  static std::string indoorText() {
+    const shtc3::Reading in = sensors::env();
+    if (!in.ok) return {};
+    return temperatureText(in.tempC) + "|" + std::to_string(lroundf(in.rh)) + " %";
+  }
+
   // Why there's nothing to show, in the condition's place.
   std::string emptyReason() const {
     if (!sun::configured()) return "SET LAT/LON IN .ENV";
@@ -323,12 +351,16 @@ class WeatherScreen : public Screen {
 
   void drawNow(Canvas &c, const Rect &area, time_t now) {
     const weather::Forecast &f = view_->forecast;
-    const Hour *h = view_->has && rtc::timeValid() ? weather::at(f, now) : nullptr;
+    const Hour *h = forecastNow();
+    // No forecast for now (none yet, too old, no Wi-Fi): the room's reading stands in.
+    shownIndoor_ = h ? std::string() : indoorText();
+    const bool indoor = !shownIndoor_.empty();
+    const size_t bar = shownIndoor_.find('|');
     const int x = area.x + kNowPadX, w = area.w - 2 * kNowPadX;
     int y = area.y + 16;
 
-    std::string left = "// NOW";
-    if (view_->has) {
+    std::string left = indoor ? "// INSIDE (NO FORECAST)" : "// NOW";
+    if (view_->has && h) {
       left += std::string(" ") + glyph::kDot + " UPDATED " +
               format(sameDay(f.fetched, now) ? "%H:%M" : "%a %H:%M", f.fetched);
     }
@@ -344,8 +376,11 @@ class WeatherScreen : public Screen {
     y += 17 + 8;
 
     // The temperature (line-height 0.8 on the canvas: a 104 px row) and the icon, bottoms level.
-    drawText(c, x, y + 99, h ? temperatureText(h->tempC) : "--" + std::string(kDegree), kBigTemp);
-    if (h) icons::drawWeather(c, x + w - 100, y + 4, 100, iconFor(h->code, h->day), 3);
+    const std::string big = h        ? temperatureText(h->tempC)
+                            : indoor ? shownIndoor_.substr(0, bar)
+                                     : "--" + std::string(kDegree);
+    drawText(c, x, y + 99, big, kBigTemp);
+    if (h) icons::drawWeather(c, x + w - 100, y + 4, 100, iconFor(h->code, isDay(*h, now)), 3);
     y += 104 + 8;
 
     drawText(c, {x, y, w, 37}, h ? weather::condition(h->code) : emptyReason(), kCondition);
@@ -355,7 +390,7 @@ class WeatherScreen : public Screen {
     const std::string cells[4][2] = {
         {"FEELS", h ? temperatureText(h->feelsC) : "--"},
         {"WIND", h ? windText(h->windKmh, h->windDeg) : "--"},
-        {"RH", h ? std::to_string(h->rh) + " %" : "--"},
+        {"RH", h ? std::to_string(h->rh) + " %" : indoor ? shownIndoor_.substr(bar + 1) : "--"},
         {"SUN", sun::configured() && rtc::timeValid() ? nextSunEvent(now) : "--"},
     };
     for (int i = 0; i < 4; ++i) {
@@ -457,6 +492,7 @@ class WeatherScreen : public Screen {
   std::shared_ptr<View> view_;
   weather::Phase shownPhase_ = weather::Phase::Idle;
   time_t shownHour_ = 0;
+  std::string shownIndoor_;  // the room reading drawn in place of a forecast, "" if none
 };
 
 }  // namespace

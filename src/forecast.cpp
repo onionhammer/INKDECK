@@ -13,10 +13,10 @@
 #include <memory>
 #include <mutex>
 
-#include "inkdeck_secrets.h"  // LOCATION_CONFIGURED, LATITUDE, LONGITUDE (scripts/gen_secrets.py)
 #include "pmic.h"
 #include "power.h"
 #include "rtc.h"
+#include "settings.h"  // the location
 #include "wlan.h"
 
 namespace weather {
@@ -30,7 +30,7 @@ constexpr time_t kRetryAfter = 15 * 60;  // after a failed automatic sync
 
 constexpr const char *kNamespace = "weather";
 constexpr const char *kKey = "forecast";
-constexpr uint32_t kVersion = 1;  // bump when Forecast changes
+constexpr uint32_t kVersion = 2;  // bump when Forecast changes
 
 // The fields asked for. Times come back as Unix seconds; daily dates are midnight in the
 // location's own time zone (timezone=auto).
@@ -120,7 +120,7 @@ bool fetch(std::string &body, std::string &error) {
   // Two decimals is about a kilometre: plenty for a forecast, and all the service needs.
   snprintf(url, sizeof url,
            "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f%s",
-           static_cast<double>(LATITUDE), static_cast<double>(LONGITUDE), kQuery);
+           settings::latitude(), settings::longitude(), kQuery);
   esp_http_client_config_t cfg = {};
   cfg.url = url;
   cfg.event_handler = onEvent;
@@ -246,6 +246,8 @@ void run(void *) {
     return;
   }
   f->fetched = time(nullptr);
+  f->lat = static_cast<float>(settings::latitude());
+  f->lon = static_cast<float>(settings::longitude());
   store(*f);
   tm local;
   localtime_r(&f->fetched, &local);
@@ -259,14 +261,34 @@ void run(void *) {
 
 time_t floorHour(time_t t) { return t - t % kHour; }
 
+// The forecast is for the location set now (a card can move it): within about a kilometre.
+bool forHere(const Forecast &f) {
+  return fabsf(f.lat - static_cast<float>(settings::latitude())) < 0.01f &&
+         fabsf(f.lon - static_cast<float>(settings::longitude())) < 0.01f;
+}
+
 }  // namespace
 
-bool configured() { return LOCATION_CONFIGURED && wlan::configured(); }
+bool configured() { return settings::hasLocation() && wlan::configured(); }
+
+void forget() {
+  {
+    std::lock_guard<std::mutex> lock(forecastMutex);
+    cache = Forecast{};
+    loaded = true;
+  }
+  Preferences prefs;
+  if (prefs.begin(kNamespace, false)) {
+    prefs.remove(kKey);
+    prefs.end();
+  }
+  log_w("weather: forecast forgotten");
+}
 
 bool get(Forecast &out) {
   std::lock_guard<std::mutex> lock(forecastMutex);
   loadLocked();
-  if (!cache.fetched) return false;
+  if (!cache.fetched || !forHere(cache)) return false;
   out = cache;
   return true;
 }
@@ -388,7 +410,7 @@ time_t nextSync() {
   {
     std::lock_guard<std::mutex> lock(forecastMutex);
     loadLocked();
-    fetched = cache.fetched;
+    fetched = forHere(cache) ? cache.fetched : 0;
   }
   // On the hour after the last forecast; one fetched in the last quarter of an hour skips the
   // next top of the hour.

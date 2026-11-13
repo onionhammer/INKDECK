@@ -10,7 +10,7 @@
 #include <atomic>
 
 #include "board_pins.h"
-#include "inkdeck_secrets.h"  // TIMEZONE, generated from .env by scripts/gen_secrets.py
+#include "settings.h"  // the time zone: SD:/inkdeck.ini, else TIMEZONE from .env
 #include "timeutil.h"
 
 namespace rtc {
@@ -71,8 +71,7 @@ bool writeTime(const uint8_t (&r)[7]) {
 }  // namespace
 
 bool begin() {
-  setenv("TZ", TIMEZONE, 1);  // see rtc.h: the RTC and system clock are UTC
-  tzset();
+  settings::begin();  // the time zone, so local time is right from the first read
 
   uint8_t r[7];
   if (!read(kRegSeconds, r, sizeof r)) {

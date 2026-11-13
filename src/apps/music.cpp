@@ -59,8 +59,15 @@ std::string baseName(const std::string &path) {
   return dot == std::string::npos ? name : name.substr(0, dot);
 }
 
+// The player opened by HOLD BOOT (openPlayer), while it's on the stack: HOLD BOOT on it goes
+// back to where it was opened from.
+const ui::Screen *shortcutPlayer = nullptr;
+
 class MusicScreen : public ui::Screen {
  public:
+  ~MusicScreen() override {
+    if (shortcutPlayer == this) shortcutPlayer = nullptr;
+  }
   std::string tag() const override { return "02 MUSIC"; }
   bool isPlayer() const override { return true; }
   std::string context() const override {
@@ -294,12 +301,20 @@ class MusicScreen : public ui::Screen {
 std::unique_ptr<ui::Screen> makeMusic() { return std::make_unique<MusicScreen>(); }
 
 bool openPlayer() {
-  if (!audio::active()) return false;
   const ui::Screen *base = ui::nav::base();
-  if (base && base->isPlayer()) return false;  // already on it: HOLD BOOT means home
+  if (base && base->isPlayer()) {
+    if (base != shortcutPlayer) return false;  // reached the usual way: HOLD BOOT means home
+    // Opened by HOLD BOOT: back to where it came from, like switching back to the last app.
+    while (ui::nav::top() && ui::nav::top() != base) ui::nav::pop();
+    ui::nav::pop();
+    return true;
+  }
+  if (!audio::active()) return false;
   // Close menus and sheets first, so the player isn't drawn over one.
   while (ui::nav::top() && ui::nav::top()->overlay()) ui::nav::pop();
-  ui::nav::push(makeMusic());
+  auto player = std::make_unique<MusicScreen>();
+  shortcutPlayer = player.get();
+  ui::nav::push(std::move(player));
   return true;
 }
 

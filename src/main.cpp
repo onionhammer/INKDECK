@@ -30,6 +30,7 @@
 #include "screen.h"
 #include "sdcard.h"
 #include "sensor_hub.h"
+#include "settings.h"
 #include "timesync.h"
 #include "trackinfo.h"
 #include "ui/nav.h"
@@ -65,6 +66,7 @@ void setup() {
   audio::begin();
   trackinfo::begin();
   sdcard::mount();
+  settings::loadCard();  // SD:/inkdeck.ini: time zone and location
   ui::nav::begin(apps::makeHome());
   ui::nav::onPowerKey(apps::sleepNow);
   ui::nav::onHoldBack(apps::openPlayer);

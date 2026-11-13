@@ -7,6 +7,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -571,7 +572,10 @@ void runDownload(const std::string &key, const std::string &id) {
   mkdir(folderPath(folder).c_str(), 0777);
   const std::string path = folderPath(folder) + "/" + name;
   const std::string part = path + ".part";
+  const std::string partId = part + ".id";  // the version of the file the .part holds
   int64_t have = std::max<int64_t>(0, fileSize(part));
+  std::string version;
+  if (have > 0 && (!readFile(partId, version) || version.empty())) have = 0;  // can't resume safely
   dlDone = have;
   dlTotal = expected;
 
@@ -586,7 +590,7 @@ void runDownload(const std::string &key, const std::string &id) {
   std::string error;
   net::Get get;
   bool complete = false;
-  if (!get.open(url, error, have)) {
+  if (!get.open(url, error, have, version)) {
     std::lock_guard<std::mutex> lock(mu);
     setResult("DOWNLOAD FAILED: " + error);
     return;
@@ -594,7 +598,14 @@ void runDownload(const std::string &key, const std::string &id) {
   if (get.status() == 416) {
     complete = have > 0;  // nothing past what we have: it was all there
   } else {
-    if (get.status() != 206) have = 0;  // the server sent the whole file
+    if (get.status() != 206) have = 0;  // the whole file (it changed, or no range support)
+    log_i("podcasts: HTTP %d, %s at %lld KB, %lld KB to come", get.status(),
+          have ? "resuming" : "starting", static_cast<long long>(have >> 10),
+          static_cast<long long>(get.length() >> 10));
+    if (!have) {
+      const std::string id = get.validator();
+      if (id.empty() || !writeAtomically(partId, id)) remove(partId.c_str());
+    }
     FILE *f = fopen(part.c_str(), have ? "ab" : "wb");
     if (!f) {
       std::lock_guard<std::mutex> lock(mu);
@@ -622,6 +633,12 @@ void runDownload(const std::string &key, const std::string &id) {
       }
       got += n;
       dlDone = have + got;
+      // Commit the size on the card every megabyte: FAT records it only on a sync or close, and
+      // a power cut should leave a .part that GET can resume.
+      if ((got & ~((1 << 20) - 1)) != ((got - n) & ~((1 << 20) - 1))) {
+        fflush(f);
+        fsync(fileno(f));
+      }
     }
     fclose(f);
     const uint32_t ms = millis() - t0;
@@ -637,6 +654,7 @@ void runDownload(const std::string &key, const std::string &id) {
     return;
   }
   remove(path.c_str());
+  remove(partId.c_str());
   if (rename(part.c_str(), path.c_str()) != 0) {
     setResult("CAN'T RENAME THE DOWNLOAD");
     return;
@@ -669,6 +687,8 @@ void worker(void *) {
       currentTitle.clear();
       phaseText = connected ? "" : "JOINING WI-FI\xE2\x80\xA6";
     }
+    dlDone = 0;  // not the last download's numbers while this one gets going
+    dlTotal = 0;
     ++gen;
     if (!connected) {
       std::string error;
@@ -782,13 +802,13 @@ bool load(bool create) {
   if (create) {
     mkdir(kRoot, 0777);
     if (fileSize(kFeedsFile) < 0) {
-      if (FILE *f = fopen(kFeedsFile, "wb")) {
-        fputs("# INKDECK podcasts: one RSS feed URL per line. Lines starting with # are skipped.\n"
-              "# Downloads go to a folder per show next to this file. Folders of MP3s copied\n"
-              "# here by hand show up as shows too.\n",
-              f);
-        fclose(f);
-      }
+      // Written from RAM, not straight from flash (AGENTS.md, Gotchas).
+      writeAtomically(kFeedsFile,
+                      "# INKDECK podcasts: one RSS feed URL per line. Lines starting with # are "
+                      "skipped.\n"
+                      "# Downloads go to a folder per show next to this file. Folders of MP3s "
+                      "copied\n"
+                      "# here by hand show up as shows too.\n");
     }
   }
   std::vector<Show> fresh;

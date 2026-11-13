@@ -26,6 +26,7 @@ namespace {
 // Configuration
 
 constexpr int kDefaultVolume = 60;
+constexpr size_t kMaxQueue = 64;  // tracks kept by play()
 constexpr int kInputBufferBytes = 16 * 1024;           // compressed data, ~1 s at 128 kbps
 constexpr int kRefillBelow = 2 * MAINBUF_SIZE;
 constexpr int kPcmSamples = MAX_NCHAN * MAX_NGRAN * MAX_NSAMP;  // one frame, interleaved
@@ -614,6 +615,13 @@ void begin() {
 }
 
 void play(std::vector<std::string> list, int index, uint32_t startMs) {
+  // A queue of a few dozen tracks is hours of listening; a folder of hundreds would only cost
+  // memory. Keep the chosen track and the ones after it.
+  if (index > 0 && index < static_cast<int>(list.size())) {
+    list.erase(list.begin(), list.begin() + index);
+    index = 0;
+  }
+  if (list.size() > kMaxQueue) list.resize(kMaxQueue);
   {
     Locked l;
     playlist = std::move(list);

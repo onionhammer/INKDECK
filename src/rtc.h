@@ -1,8 +1,8 @@
 // PCF85063A real-time clock (I2C 0x51 on the shared Wire bus).
 //
-// The RTC holds UTC, and so does the system clock. Local time comes from the TIMEZONE in .env
-// (a POSIX TZ string, compiled in by scripts/gen_secrets.py), which begin() applies, so
-// localtime() follows daylight saving. The vendor firmware keeps local time in the RTC
+// The RTC holds UTC, and so does the system clock. Local time comes from the time zone (a POSIX
+// TZ string: `timezone` in SD:/inkdeck.ini, else TIMEZONE from .env; settings.h), which begin()
+// applies, so localtime() follows daylight saving. The vendor firmware keeps local time in the RTC
 // instead, with no DST. Alarm registers therefore compare UTC too.
 #pragma once
 #include <time.h>

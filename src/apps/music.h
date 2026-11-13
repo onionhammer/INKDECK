@@ -12,7 +12,9 @@ namespace apps {
 std::unique_ptr<ui::Screen> makeMusic();
 
 // HOLD BOOT (ui::nav::onHoldBack): while music or a podcast is playing or paused, closes any
-// menu and opens the player; false (go home) when nothing is playing or the player is showing.
+// menu and opens the player. HOLD BOOT on a player opened that way goes back to where it was
+// (like switching back to the last app). Returns false (go home) when nothing is playing, or on
+// a player reached the usual way.
 bool openPlayer();
 
 }  // namespace apps

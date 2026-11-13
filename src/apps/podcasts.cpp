@@ -74,6 +74,18 @@ std::string dateText(time_t t, bool year) {
   return upper(buf);
 }
 
+// "14:02" today, "12 NOV" before.
+std::string updatedText(time_t t) {
+  const time_t now = time(nullptr);
+  tm a, b;
+  localtime_r(&t, &a);
+  localtime_r(&now, &b);
+  if (a.tm_yday != b.tm_yday || a.tm_year != b.tm_year) return dateText(t, false);
+  char buf[8];
+  strftime(buf, sizeof buf, "%H:%M", &a);
+  return buf;
+}
+
 std::string stateText(const EpisodeInfo &e) {
   switch (e.mark) {
     case Mark::New: return "[NEW]";
@@ -362,7 +374,7 @@ class PodcastsScreen : public Screen {
       if (show.feed) {
         k.tag = "FEED";
         k.line = show.fetched ? std::to_string(episodes_.count()) + " EPISODES " + glyph::kDot +
-                                    " " + dateText(show.fetched, false)
+                                    " UPDATED " + updatedText(show.fetched)
                               : "NOT FETCHED YET";
         k.text = show.error.empty() ? show.description : "REFRESH FAILED: " + show.error;
         k.footer = "HOLD \xE2\x97\x8F REFRESHES THE FEEDS";
@@ -389,7 +401,7 @@ class PodcastsScreen : public Screen {
     if (show.feed) {
       k.text = e.description;
     } else if (e.mark == Mark::Started) {
-      k.text = "Stopped at " + clockText(e.positionS) + (seconds ? " of " + clockText(seconds) : "") + ".";
+      k.text = "At " + clockText(e.positionS) + (seconds ? " of " + clockText(seconds) : "") + ".";
     } else if (e.mark == Mark::Played) {
       k.text = "Played.";
     }

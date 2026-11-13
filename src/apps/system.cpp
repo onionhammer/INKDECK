@@ -11,6 +11,7 @@
 #include "board_pins.h"
 #include "pmic.h"
 #include "rtc.h"
+#include "settings.h"
 #include "sysinfo.h"
 #include "timesync.h"
 #include "ui/menu.h"
@@ -31,8 +32,8 @@ constexpr TextStyle kAction{&ui::fonts::kMono15Bold, 0};
 constexpr TextStyle kActionSelected{&ui::fonts::kMono15ExtraBold, 0};
 
 constexpr int kRailH = 34;
-constexpr int kStateH = 24;
-constexpr int kStateRows = 6;
+constexpr int kStateH = 21;  // 7 rows in the space 6 rows of 24 had
+constexpr int kStateRows = 7;
 constexpr int kStateKeyW = 104;
 constexpr int kActionH = 30;
 constexpr int kPillW = 52;
@@ -332,6 +333,7 @@ class SystemScreen : public ui::Screen {
         {"WIFI", sysinfo::wifi()},
         {"OTA", sysinfo::otaState()},
         {"MEMORY", sysinfo::memory()},
+        {"SETTINGS", settings::describe()},
     };
     for (const auto &row : rows) {
       const Rect line = r.takeTop(kStateH);

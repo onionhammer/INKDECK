@@ -1,4 +1,5 @@
-// Sunrise and sunset, computed on the board for LATITUDE/LONGITUDE from .env (no network).
+// Sunrise and sunset, computed on the board (no network) for the location in settings.h
+// (SD:/inkdeck.ini, else LATITUDE/LONGITUDE from .env).
 // Uses the Almanac for Computers (1990) method, good to about a minute away from the poles.
 #pragma once
 #include <time.h>
