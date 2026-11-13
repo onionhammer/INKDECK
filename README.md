@@ -37,8 +37,19 @@ Home.
 - On USB, PWR shows the clock face instead and the board stays on.
 
 **Settings:** Wi-Fi, time zone and location come from `.env` at build time (template:
-`.env.example`). `SD:/inkdeck.ini` on the card can override the time zone and location.
-`INKDECK_FAHRENHEIT` in `platformio.ini` switches between US and metric units.
+`.env.example`). `inkdeck.ini` in the card's root overrides the time zone and location
+without a rebuild (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it
+at startup, and if the card has none, it writes one with every line commented out. Wi-Fi is
+never read from the card. `INKDECK_FAHRENHEIT` in `platformio.ini` switches between US and
+metric units.
+
+```ini
+[clock]
+timezone = GMT0BST,M3.5.0/1,M10.5.0   ; a POSIX TZ string, daylight saving rule included
+[location]
+latitude = 51.48                      ; decimal degrees, north and east positive
+longitude = 0.00
+```
 
 ## Build and flash
 

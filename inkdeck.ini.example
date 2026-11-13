@@ -1,0 +1,26 @@
+; INKDECK settings. Copy to the root of the microSD card as inkdeck.ini.
+; A value here overrides the one built into the firmware from .env. The board reads this file
+; when it starts. If the card has no inkdeck.ini, the board writes one with every line
+; commented out.
+; Comments start with ; or #. Delete a line, or put ; in front of it, to use the built-in value.
+; Wi-Fi isn't read from this file: a card is easy to lift, so it stays in the firmware.
+; Parser and rules: src/settings.h.
+
+[clock]
+; The time zone as a POSIX TZ string, which includes the daylight saving rule. The ESP32 can't
+; read IANA names like Europe/London.
+;   EST5EDT,M3.2.0,M11.1.0      US Eastern
+;   CST6CDT,M3.2.0,M11.1.0      US Central
+;   MST7MDT,M3.2.0,M11.1.0      US Mountain
+;   MST7                        Arizona
+;   PST8PDT,M3.2.0,M11.1.0      US Pacific
+;   GMT0BST,M3.5.0/1,M10.5.0    UK
+;   CET-1CEST,M3.5.0,M10.5.0/3  Central Europe
+; Any zone: https://github.com/nayarsystems/posix_tz_db (zones.csv)
+timezone = GMT0BST,M3.5.0/1,M10.5.0
+
+[location]
+; Where sunrise, sunset and the weather forecast are for, in decimal degrees (north and east
+; positive; two decimals is about a kilometre). Set both or neither.
+latitude = 51.48
+longitude = 0.00

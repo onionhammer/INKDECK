@@ -7,6 +7,9 @@
 //   latitude = 51.48                     ; decimal degrees, north and east positive
 //   longitude = 0.00
 //
+// inkdeck.ini.example in the repo root is a filled-in copy; keep it in step with kTemplate in
+// settings.cpp.
+//
 // Wi-Fi is never read from the card: a card is easy to lift. The file is read at boot (a missing
 // one is created, every line commented out). The values last read from it are kept in NVS, so a
 // standby wake (which doesn't mount the card) and a boot without the card keep using them; a
