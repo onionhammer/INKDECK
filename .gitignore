@@ -6,3 +6,5 @@
 session_*.json
 .cache/
 .env
+# Claude Code worktrees (local checkouts, never part of the repo)
+.claude/worktrees/
