@@ -1,0 +1,121 @@
+// Shared UI components: the chrome every portrait screen wears (status bar, section header,
+// key-hint bar) and the reusable pieces inside screens (list rows, tags, meters, button,
+// stat cells). Geometry and type follow docs/ui-design.md and the design canvas it links.
+//
+// Components draw into a Rect they're given and never decide layout beyond it.
+#pragma once
+#include <string>
+
+#include "ui/draw.h"
+#include "ui/type.h"
+
+namespace ui {
+
+// --- Chrome geometry ("Shared chrome" in docs/ui-design.md). Heights include their 3 px rule.
+constexpr int kStatusBarH = 36;
+constexpr int kSectionH = 30;
+constexpr int kHintBarH = 34;
+constexpr int kPadX = 14;  // side padding of chrome bands and list rows
+constexpr int kRowH = 34;  // single-line list row
+constexpr int kRowTallH = 48;  // two-line list row
+
+// --- Status bar: inverted module tag, context text, then [▶/‖] [WIFI] [temp] battery % and
+// clock.
+enum class Playback : uint8_t { None, Playing, Paused };
+struct StatusInfo {
+  std::string tag;      // "01 READER"
+  std::string context;  // "~/home", a path, a book title
+  bool contextIsPath = false;  // too long: drop the start ("…/b/c") instead of the end
+  std::string temp;     // optional, e.g. "21.4°C"
+  int battery = -1;     // percent; -1 = no battery reading
+  bool usb = false;     // on USB power (shown when there's no battery reading)
+  std::string clock;    // "14:32", or "--:--" when the time isn't known; empty: none
+  bool wifi = false;    // the radio is on: "WIFI" before the rest
+  Playback playback = Playback::None;  // music or a podcast: an inverted ▶ or ‖ first
+};
+void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info);
+int drawBattery(Canvas &c, int x, int centerY, int percent);  // returns its width
+
+// --- Section header: "// LABEL" on the left, a count or address on the right, rule below.
+struct SectionOptions {
+  bool inverted = false;  // white on black: the focused panel of a screen with several
+  bool prefix = true;     // the "// " before the label (off for "$ i2cdetect -y 0")
+};
+void drawSectionHeader(Canvas &c, const Rect &r, const std::string &label,
+                       const std::string &right = "", SectionOptions options = {});
+
+// --- Notice: an inverted band the height of a section header, "! text". For a one-off
+// message (an error opening a file) in place of the header.
+void drawNotice(Canvas &c, const Rect &r, const std::string &text);
+
+// --- Key-hint bar: up to 4 key caps with verbs, spread across the bottom band.
+struct Hint {
+  const char *cap;   // "▲▼", "●", "HOLD ●", "BOOT"
+  const char *verb;  // "MOVE", "OPEN", ...
+};
+constexpr int kMaxHints = 4;
+void drawHintBar(Canvas &c, const Rect &r, const Hint *hints, int count);
+int drawKeycap(Canvas &c, int x, int centerY, const char *cap);  // returns its width
+int keycapWidth(const char *cap);
+
+// --- Tags and pills: a word in a box, inverted (ink fill) or outlined (2 px border).
+enum class TagKind : uint8_t { Inverted, Outlined };
+// Draws at x, vertically centred on centerY; returns the width. `color` is the ink colour
+// (pass kPaper to draw on an inverted background).
+int drawTag(Canvas &c, int x, int centerY, int h, const std::string &text, const TextStyle &s,
+            TagKind kind, int padX, uint16_t color = kInk);
+int tagWidth(const std::string &text, const TextStyle &s, int padX);
+
+// --- List rows. Selected rows are inverted with a ▶ marker; others get a dashed rule under.
+struct Row {
+  std::string index;     // "01", drawn after the marker column; optional
+  std::string title;
+  std::string subtitle;  // optional second line (use kRowTallH)
+  std::string tag;       // optional boxed tag, right-aligned ("SD", "DIR")
+  std::string trailing;  // optional plain text, right-aligned ("3:05")
+};
+void drawRow(Canvas &c, const Rect &r, const Row &row, bool selected);
+
+// Cursor + paging for a list. Pages flip whole (e-paper friendly) instead of scrolling a row
+// at a time.
+class ListCursor {
+ public:
+  void reset(int count, int cursor = 0);
+  // Clamps at the ends, or wraps round (a dial over a short list). True if it moved.
+  bool move(int delta, bool wrap = false);
+  void set(int cursor);
+  int cursor() const { return cursor_; }
+  int count() const { return count_; }
+  int pageStart(int rowsPerPage) const;
+  std::string label() const;  // "03/10"
+
+ private:
+  int count_ = 0;
+  int cursor_ = 0;
+};
+
+// Draws the page of rows containing the cursor. rowAt(i) builds row i.
+template <typename RowAt>
+void drawList(Canvas &c, const Rect &r, int rowH, const ListCursor &cursor, RowAt rowAt) {
+  const int perPage = r.h / rowH;
+  const int first = cursor.pageStart(perPage);
+  for (int i = first; i < cursor.count() && i < first + perPage; ++i) {
+    drawRow(c, {r.x, r.y + (i - first) * rowH, r.w, rowH}, rowAt(i), i == cursor.cursor());
+  }
+}
+
+// --- Meters.
+// Bordered bar: solid for the done part, 50 % dither for the rest (reader progress).
+void drawProgress(Canvas &c, const Rect &r, float fraction);
+// Row of outlined segments, the first `filled` solid (volume).
+void drawSegments(Canvas &c, const Rect &r, int segments, int filled, int gap = 3);
+
+// --- Button: inverted box with a dithered drop shadow offset 6 px ("● OPEN").
+// Draws with its right edge at `right` and top at `top`; returns the box (without shadow).
+Rect drawButton(Canvas &c, int right, int top, const std::string &glyph,
+                const std::string &label);
+
+// --- Stat cell: small key over a bold value, dashed rule under (Home preview, Music footer).
+void drawStat(Canvas &c, const Rect &r, const std::string &key, const std::string &value);
+
+}  // namespace ui

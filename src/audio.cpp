@@ -1,0 +1,676 @@
+#include "audio.h"
+
+#include <Arduino.h>
+#include <driver/i2s_std.h>
+#include <errno.h>
+#include <esp_heap_caps.h>
+#include <math.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/semphr.h>
+#include <mp3dec.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <atomic>
+
+#include "board_pins.h"
+#include "es8311.h"
+#include "mp3info.h"
+#include "text.h"
+
+namespace audio {
+namespace {
+
+// ---------------------------------------------------------------------------------------------
+// Configuration
+
+constexpr int kDefaultVolume = 60;
+constexpr size_t kMaxQueue = 64;  // tracks kept by play()
+constexpr int kInputBufferBytes = 16 * 1024;           // compressed data, ~1 s at 128 kbps
+constexpr int kRefillBelow = 2 * MAINBUF_SIZE;
+constexpr int kPcmSamples = MAX_NCHAN * MAX_NGRAN * MAX_NSAMP;  // one frame, interleaved
+// 8 x 511 frames ~= 93 ms at 44.1 kHz: rides out the FATFS lock while the UI reads a chapter.
+constexpr uint32_t kDmaDescriptors = 8;
+constexpr uint32_t kDmaFrames = 511;
+
+enum class Cmd : uint8_t { Play, TogglePause, Next, Stop, Volume, Ring };
+struct Command {
+  Cmd cmd;
+  int arg;
+};
+
+// ---------------------------------------------------------------------------------------------
+// Shared state (UI task <-> audio task)
+
+QueueHandle_t commands = nullptr;
+SemaphoreHandle_t lock = nullptr;  // guards `shared` and `playlist`
+Status shared;
+std::vector<std::string> playlist;
+uint32_t playStartMs = 0;  // where the next Play command starts its first track
+std::atomic<uint32_t> elapsedMs{0};
+std::atomic<uint32_t> generation{0};
+std::atomic<int> volume{kDefaultVolume};
+std::atomic<uint32_t> underruns{0};
+std::atomic<bool> countUnderruns{false};
+std::atomic<bool> ringOn{false};
+
+struct Locked {
+  Locked() { xSemaphoreTake(lock, portMAX_DELAY); }
+  ~Locked() { xSemaphoreGive(lock); }
+};
+
+void send(Cmd cmd, int arg = 0) {
+  if (!commands) return;  // begin() hasn't run (a standby wake powers off without audio)
+  const Command c{cmd, arg};
+  xQueueSend(commands, &c, portMAX_DELAY);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Output: I2S (TX only, master, MCLK = 256 fs) + codec + amp
+
+i2s_chan_handle_t tx = nullptr;
+uint32_t txRate = 0;
+
+bool IRAM_ATTR onSendQueueOverflow(i2s_chan_handle_t, i2s_event_data_t *, void *) {
+  if (countUnderruns.load(std::memory_order_relaxed)) underruns.fetch_add(1, std::memory_order_relaxed);
+  return false;
+}
+
+i2s_std_config_t stdConfig(uint32_t rate) {
+  i2s_std_config_t cfg = {
+      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(rate),
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+      .gpio_cfg =
+          {
+              .mclk = static_cast<gpio_num_t>(board::I2S_MCLK),
+              .bclk = static_cast<gpio_num_t>(board::I2S_BCLK),
+              .ws = static_cast<gpio_num_t>(board::I2S_WS),
+              .dout = static_cast<gpio_num_t>(board::I2S_DOUT),
+              .din = I2S_GPIO_UNUSED,
+              .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
+          },
+  };
+  cfg.clk_cfg.mclk_multiple = I2S_MCLK_MULTIPLE_256;
+  return cfg;
+}
+
+bool outputStart(uint32_t rate) {
+  i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  chan.dma_desc_num = kDmaDescriptors;
+  chan.dma_frame_num = kDmaFrames;
+  chan.auto_clear = true;  // silence, not a repeated buffer, when we fall behind
+  if (i2s_new_channel(&chan, &tx, nullptr) != ESP_OK) {
+    log_e("audio: i2s_new_channel failed");
+    tx = nullptr;
+    return false;
+  }
+  const i2s_std_config_t cfg = stdConfig(rate);
+  i2s_event_callbacks_t callbacks = {};
+  callbacks.on_send_q_ovf = onSendQueueOverflow;
+  if (i2s_channel_init_std_mode(tx, &cfg) != ESP_OK ||
+      i2s_channel_register_event_callback(tx, &callbacks, nullptr) != ESP_OK ||
+      i2s_channel_enable(tx) != ESP_OK) {
+    log_e("audio: I2S setup failed");
+    i2s_del_channel(tx);
+    tx = nullptr;
+    return false;
+  }
+  txRate = rate;
+  delay(5);  // MCLK running before the codec's state machine starts
+  es8311::begin();
+  es8311::setVolume(volume.load());
+  digitalWrite(board::AMP_EN, HIGH);
+  delay(20);
+  es8311::mute(false);
+  log_i("audio: output on at %lu Hz", (unsigned long)rate);
+  return true;
+}
+
+void outputStop() {
+  if (!tx) return;
+  es8311::mute(true);
+  delay(20);
+  digitalWrite(board::AMP_EN, LOW);
+  i2s_channel_disable(tx);
+  i2s_del_channel(tx);
+  tx = nullptr;
+  txRate = 0;
+  log_i("audio: output off");
+}
+
+void outputSetRate(uint32_t rate) {
+  if (!tx || rate == txRate) return;
+  es8311::mute(true);
+  const i2s_std_config_t cfg = stdConfig(rate);
+  i2s_channel_disable(tx);
+  i2s_channel_reconfig_std_clock(tx, &cfg.clk_cfg);
+  i2s_channel_enable(tx);
+  txRate = rate;
+  es8311::mute(false);
+  log_i("audio: rate %lu Hz", (unsigned long)rate);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Player (audio task only)
+
+struct Player {
+  HMP3Decoder decoder = nullptr;
+  FILE *file = nullptr;
+  std::string path;
+  long fileSize = 0;
+  long filePos = 0;  // offset of the next byte to read
+  int readFailures = 0;
+  uint8_t *in = nullptr;
+  int16_t *pcm = nullptr;
+  uint8_t *readPtr = nullptr;
+  int bytesLeft = 0;
+  bool eof = false;
+  bool needRefill = false;
+  long audioStart = 0;  // after the ID3 tag
+  long audioBytes = 0;
+  uint32_t seekMs = 0;  // start here once the first frame gives the bitrate
+  uint64_t samplesPlayed = 0;
+  uint32_t rate = 0;
+  bool firstFrame = true;
+  // stats
+  uint32_t frames = 0;
+  uint32_t decodeUs = 0;
+  uint32_t decodeErrors = 0;
+} p;
+
+void setState(State s) {
+  {
+    Locked l;
+    shared.state = s;
+  }
+  countUnderruns = s == State::Playing;
+  generation++;
+}
+
+void logStats(const char *why) {
+  if (!p.frames) return;
+  const uint32_t audioMs = p.rate ? p.samplesPlayed * 1000 / p.rate : 0;
+  log_i("audio: %s after %lu ms audio at byte %ld/%ld, %lu frames, decode %lu us/frame "
+        "(%lu%% CPU), %lu decode errors, %lu DMA underruns",
+        why, (unsigned long)audioMs, p.filePos, p.fileSize, (unsigned long)p.frames,
+        (unsigned long)(p.decodeUs / p.frames),
+        (unsigned long)(audioMs ? p.decodeUs / 10 / audioMs : 0), (unsigned long)p.decodeErrors,
+        (unsigned long)underruns.load());
+}
+
+void closeTrack() {
+  if (p.file) fclose(p.file);
+  p.file = nullptr;
+  if (p.decoder) MP3FreeDecoder(p.decoder);
+  p.decoder = nullptr;
+}
+
+bool openTrack(int index) {
+  closeTrack();
+  std::string path;
+  int count;
+  {
+    Locked l;
+    count = static_cast<int>(playlist.size());
+    if (index < 0 || index >= count) return false;
+    path = playlist[index];
+  }
+  p.file = fopen(path.c_str(), "rb");
+  if (!p.file) {
+    log_w("audio: can't open %s", path.c_str());
+    return false;
+  }
+  std::string title, artist;
+  const long start = mp3info::readTags(p.file, title, artist);
+  fseek(p.file, 0, SEEK_END);
+  p.path = path;
+  p.fileSize = ftell(p.file);
+  p.filePos = start;
+  p.audioStart = start;
+  p.seekMs = 0;
+  p.readFailures = 0;
+  p.audioBytes = p.fileSize - start;
+  fseek(p.file, start, SEEK_SET);
+  if (title.empty()) {
+    const size_t slash = path.rfind('/');
+    title = path.substr(slash + 1);
+    const size_t dot = title.rfind('.');
+    if (dot != std::string::npos) title.resize(dot);
+  }
+
+  p.decoder = MP3InitDecoder();
+  if (!p.decoder) {
+    log_e("audio: MP3InitDecoder out of memory");
+    closeTrack();
+    return false;
+  }
+  p.readPtr = p.in;
+  p.bytesLeft = 0;
+  p.eof = false;
+  p.needRefill = false;
+  p.samplesPlayed = 0;
+  p.firstFrame = true;
+  p.frames = p.decodeUs = p.decodeErrors = 0;
+  underruns = 0;
+  elapsedMs = 0;
+  {
+    Locked l;
+    shared.path = path;
+    shared.title = title;
+    shared.artist = artist;
+    shared.track = index;
+    shared.trackCount = count;
+    shared.durationMs = 0;
+    shared.sampleRate = 0;
+    shared.bitrateKbps = 0;
+    shared.channels = 0;
+  }
+  generation++;
+  log_i("audio: track %d/%d %s (\"%s\" / \"%s\")", index + 1, count, path.c_str(), title.c_str(),
+        artist.c_str());
+  return true;
+}
+
+// Opens the next playable track at or after `index`; stops at the end of the playlist.
+void playFrom(int index) {
+  int count;
+  {
+    Locked l;
+    count = static_cast<int>(playlist.size());
+  }
+  for (; index < count; ++index) {
+    if (openTrack(index)) {
+      if (tx) es8311::mute(false);  // a skip while paused: the DAC was muted for the pause
+      setState(State::Playing);
+      return;
+    }
+  }
+  closeTrack();
+  outputStop();
+  setState(State::Stopped);
+}
+
+void advance() {
+  int current;
+  {
+    Locked l;
+    current = shared.track;
+  }
+  playFrom(current + 1);
+}
+
+void trackFinished() {
+  logStats("track done");
+  advance();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Alarm tone (audio task only)
+
+constexpr uint32_t kRingRate = 16000;  // when the output isn't already on for music
+constexpr int kRingMinVolume = 50;
+constexpr float kRingHz = 2000;  // small speakers are loudest around 2 kHz
+// One cycle: four 120 ms beeps 80 ms apart, then 600 ms of quiet.
+constexpr uint32_t kBeepMs = 120, kGapMs = 80, kBeeps = 4, kQuietMs = 600;
+constexpr uint32_t kCycleMs = kBeeps * (kBeepMs + kGapMs) + kQuietMs;
+constexpr uint32_t kRampMs = 5;  // soft edges, so the beeps don't click
+
+struct Ring {
+  bool on = false;
+  bool ownsOutput = false;  // the output was off (no music) and goes off again afterwards
+  uint64_t sample = 0;
+} ring;
+
+void ringStart() {
+  if (ring.on) return;
+  State state;
+  {
+    Locked l;
+    state = shared.state;
+  }
+  if (state == State::Playing) setState(State::Paused);
+  ring.ownsOutput = !tx;
+  if (!tx && !outputStart(kRingRate)) return;
+  es8311::setVolume(std::max(volume.load(), kRingMinVolume));
+  es8311::mute(false);
+  ring.on = true;
+  ring.sample = 0;
+  ringOn = true;
+  log_i("audio: ringing");
+}
+
+void ringStop() {
+  if (!ring.on) return;
+  ring.on = false;
+  ringOn = false;
+  if (ring.ownsOutput) {
+    outputStop();
+  } else {
+    es8311::mute(true);  // the music it interrupted stays paused
+    es8311::setVolume(volume.load());
+  }
+  log_i("audio: ring stopped");
+}
+
+// Writes about 16 ms of the pattern (blocks while the DMA buffers are full).
+void ringStep() {
+  constexpr int kFrames = 256;
+  const uint32_t rate = txRate ? txRate : kRingRate;
+  const uint32_t cycle = kCycleMs * rate / 1000;
+  const uint32_t beep = kBeepMs * rate / 1000, period = (kBeepMs + kGapMs) * rate / 1000;
+  const uint32_t ramp = kRampMs * rate / 1000;
+  for (int i = 0; i < kFrames; ++i, ++ring.sample) {
+    const uint32_t inCycle = ring.sample % cycle;
+    const uint32_t inBeep = inCycle % period;
+    float amp = 0;
+    if (inCycle < kBeeps * period && inBeep < beep) {
+      amp = 0.6f;
+      if (inBeep < ramp) amp *= static_cast<float>(inBeep) / ramp;
+      if (beep - inBeep < ramp) amp *= static_cast<float>(beep - inBeep) / ramp;
+    }
+    const float phase = 2 * static_cast<float>(M_PI) * kRingHz * (ring.sample % rate) / rate;
+    const int16_t v = static_cast<int16_t>(amp * 32767 * sinf(phase));
+    p.pcm[2 * i] = p.pcm[2 * i + 1] = v;
+  }
+  size_t written = 0;
+  i2s_channel_write(tx, p.pcm, kFrames * 2 * sizeof(int16_t), &written, portMAX_DELAY);
+}
+
+void handle(const Command &c) {
+  if (ring.on && c.cmd != Cmd::Ring && c.cmd != Cmd::Volume) ringStop();
+  State state;
+  {
+    Locked l;
+    state = shared.state;
+  }
+  switch (c.cmd) {
+    case Cmd::Play: {
+      uint32_t startMs;
+      {
+        Locked l;
+        startMs = playStartMs;
+        playStartMs = 0;
+      }
+      playFrom(c.arg);
+      p.seekMs = startMs;
+      break;
+    }
+      break;
+    case Cmd::TogglePause:
+      if (state == State::Playing) {
+        es8311::mute(true);
+        setState(State::Paused);
+      } else if (state == State::Paused) {
+        es8311::mute(false);
+        setState(State::Playing);
+      } else {
+        int track;
+        {
+          Locked l;
+          track = shared.track;
+        }
+        playFrom(track);  // stopped (end of the queue): play the last track again
+      }
+      break;
+    case Cmd::Next:
+      if (state != State::Stopped) {
+        logStats("skipped");
+        advance();
+      }
+      break;
+    case Cmd::Stop:
+      logStats("stopped");
+      closeTrack();
+      outputStop();
+      setState(State::Stopped);
+      break;
+    case Cmd::Volume:
+      if (tx && !ring.on) es8311::setVolume(c.arg);
+      break;
+    case Cmd::Ring:
+      if (c.arg) {
+        ringStart();
+      } else {
+        ringStop();
+      }
+      break;
+  }
+}
+
+// Tops up the input buffer. A short read before the end of the file is an SD error; FatFs
+// fails every later read on that handle, so reopen the file and carry on from the same spot.
+void refill() {
+  memmove(p.in, p.readPtr, p.bytesLeft);
+  p.readPtr = p.in;
+  p.needRefill = false;
+  const size_t want = kInputBufferBytes - p.bytesLeft;
+  const size_t n = p.file ? fread(p.in + p.bytesLeft, 1, want, p.file) : 0;
+  p.bytesLeft += n;
+  p.filePos += n;
+  if (n == want) {
+    p.readFailures = 0;
+    return;
+  }
+  if (p.filePos >= p.fileSize) {
+    p.eof = true;
+    return;
+  }
+  log_w("audio: short read at byte %ld/%ld (errno %d), reopening", p.filePos, p.fileSize, errno);
+  if (p.file) fclose(p.file);
+  vTaskDelay(pdMS_TO_TICKS(20));
+  p.file = fopen(p.path.c_str(), "rb");
+  if (p.file && fseek(p.file, p.filePos, SEEK_SET) != 0) {
+    fclose(p.file);
+    p.file = nullptr;
+  }
+  if (!p.file && ++p.readFailures > 5) {
+    log_e("audio: giving up on %s", p.path.c_str());
+    p.eof = true;
+  }
+}
+
+// Decodes and plays one frame. Called only while playing.
+void step() {
+  if (!p.eof && (p.needRefill || p.bytesLeft < kRefillBelow)) refill();
+  if (p.bytesLeft <= 0) {
+    if (p.eof) trackFinished();  // otherwise a failed read: retry on the next step
+    return;
+  }
+
+  const int offset = MP3FindSyncWord(p.readPtr, p.bytesLeft);
+  if (offset < 0) {
+    if (p.eof) {
+      trackFinished();
+    } else {
+      p.bytesLeft = 0;  // no sync word anywhere: discard and read more
+    }
+    return;
+  }
+  p.readPtr += offset;
+  p.bytesLeft -= offset;
+
+  unsigned char *ptr = p.readPtr;
+  int left = p.bytesLeft;
+  const uint32_t t0 = micros();
+  const int err = MP3Decode(p.decoder, &ptr, &left, p.pcm, 0);
+  p.decodeUs += micros() - t0;
+  if (err == ERR_MP3_INDATA_UNDERFLOW) {
+    if (p.eof) {
+      trackFinished();
+    } else {
+      p.needRefill = true;
+    }
+    return;
+  }
+  p.readPtr = ptr;
+  p.bytesLeft = left;
+  if (err == ERR_MP3_MAINDATA_UNDERFLOW) return;  // bit reservoir not filled yet; keep going
+  if (err) {
+    ++p.decodeErrors;
+    if (p.bytesLeft > 0) {  // skip a byte and resync
+      ++p.readPtr;
+      --p.bytesLeft;
+    }
+    return;
+  }
+
+  MP3FrameInfo info;
+  MP3GetLastFrameInfo(p.decoder, &info);
+  if (info.nChans < 1 || info.samprate <= 0 || info.bitsPerSample != 16) return;
+  if (p.firstFrame) {
+    p.firstFrame = false;
+    p.rate = info.samprate;
+    if (!tx) {
+      if (!outputStart(info.samprate)) {
+        closeTrack();
+        setState(State::Stopped);
+        return;
+      }
+    }
+    const uint32_t duration =
+        info.bitrate > 0 ? static_cast<uint32_t>(uint64_t(p.audioBytes) * 8000 / info.bitrate) : 0;
+    {
+      Locked l;
+      shared.durationMs = duration;
+      shared.sampleRate = info.samprate;
+      shared.bitrateKbps = info.bitrate / 1000;
+      shared.channels = info.nChans;
+    }
+    generation++;  // the screen shows the format
+    if (p.seekMs && info.bitrate > 0) {
+      // Resume: jump to the byte the bitrate puts at seekMs (exact for constant bitrate, close
+      // for variable) and let the decoder find the next frame there. This frame isn't played.
+      const long offset = p.audioStart + static_cast<long>(uint64_t(p.seekMs) * info.bitrate / 8000);
+      if (offset < p.fileSize - kInputBufferBytes && fseek(p.file, offset, SEEK_SET) == 0) {
+        p.filePos = offset;
+        p.readPtr = p.in;
+        p.bytesLeft = 0;
+        p.eof = false;
+        p.samplesPlayed = uint64_t(p.seekMs) * info.samprate / 1000;
+        elapsedMs = p.seekMs;
+        log_i("audio: resuming at %lu s (byte %ld)", (unsigned long)(p.seekMs / 1000), offset);
+      }
+      p.seekMs = 0;
+      return;
+    }
+    log_i("audio: %d Hz, %d ch, %d kbps", info.samprate, info.nChans, info.bitrate / 1000);
+  }
+  if (static_cast<uint32_t>(info.samprate) != txRate) outputSetRate(info.samprate);
+  p.rate = info.samprate;
+
+  // The ES8311 DAC only plays the left slot: downmix stereo, duplicate mono.
+  const int frames = info.outputSamps / info.nChans;
+  if (info.nChans == 1) {
+    for (int i = frames - 1; i >= 0; --i) p.pcm[2 * i] = p.pcm[2 * i + 1] = p.pcm[i];
+  } else {
+    for (int i = 0; i < frames; ++i) {
+      const int16_t mono = (int32_t(p.pcm[2 * i]) + p.pcm[2 * i + 1]) / 2;
+      p.pcm[2 * i] = p.pcm[2 * i + 1] = mono;
+    }
+  }
+  size_t written = 0;
+  i2s_channel_write(tx, p.pcm, frames * 2 * sizeof(int16_t), &written, portMAX_DELAY);
+  ++p.frames;
+  p.samplesPlayed += frames;
+  elapsedMs = static_cast<uint32_t>(p.samplesPlayed * 1000 / p.rate);
+}
+
+void task(void *) {
+  for (;;) {
+    State state;
+    {
+      Locked l;
+      state = shared.state;
+    }
+    const bool playing = state == State::Playing && p.decoder;
+    Command c;
+    if (xQueueReceive(commands, &c, playing || ring.on ? 0 : portMAX_DELAY) == pdTRUE) {
+      handle(c);
+      continue;
+    }
+    if (ring.on) {
+      ringStep();
+    } else if (playing) {
+      step();
+    }
+  }
+}
+
+}  // namespace
+
+void begin() {
+  pinMode(board::AMP_EN, OUTPUT);
+  digitalWrite(board::AMP_EN, LOW);
+  commands = xQueueCreate(8, sizeof(Command));
+  lock = xSemaphoreCreateMutex();
+  p.in = static_cast<uint8_t *>(heap_caps_malloc(kInputBufferBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  p.pcm = static_cast<int16_t *>(
+      heap_caps_malloc(kPcmSamples * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (!p.in || !p.pcm) {
+    log_e("audio: buffer allocation failed");
+    return;
+  }
+  xTaskCreatePinnedToCore(task, "audio", 8192, nullptr, 5, nullptr, 0);
+}
+
+void play(std::vector<std::string> list, int index, uint32_t startMs) {
+  // A queue of a few dozen tracks is hours of listening; a folder of hundreds would only cost
+  // memory. Keep the chosen track and the ones after it.
+  if (index > 0 && index < static_cast<int>(list.size())) {
+    list.erase(list.begin(), list.begin() + index);
+    index = 0;
+  }
+  if (list.size() > kMaxQueue) list.resize(kMaxQueue);
+  {
+    Locked l;
+    playlist = std::move(list);
+    playStartMs = startMs;
+  }
+  send(Cmd::Play, index);
+}
+
+void togglePause() { send(Cmd::TogglePause); }
+void next() { send(Cmd::Next); }
+void stop() { send(Cmd::Stop); }
+
+void changeVolume(int delta) {
+  const int v = constrain(volume.load() + delta, 0, 100);
+  volume = v;
+  send(Cmd::Volume, v);
+}
+
+Status status() {
+  Status s;
+  if (!lock) return s;
+  {
+    Locked l;
+    s = shared;
+  }
+  s.elapsedMs = elapsedMs.load();
+  s.generation = generation.load();
+  s.volume = volume.load();
+  return s;
+}
+
+void ring(bool on) { send(Cmd::Ring, on ? 1 : 0); }
+
+bool ringing() { return ringOn.load(); }
+
+bool active() {
+  if (!lock) return false;
+  Locked l;
+  return shared.state != State::Stopped;
+}
+
+std::vector<std::string> queue(int from, int count) {
+  if (!lock) return {};
+  Locked l;
+  std::vector<std::string> out;
+  for (int i = std::max(0, from); i < from + count && i < static_cast<int>(playlist.size()); ++i) {
+    out.push_back(playlist[i]);
+  }
+  return out;
+}
+
+}  // namespace audio

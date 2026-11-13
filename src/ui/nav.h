@@ -1,0 +1,103 @@
+// Navigation: a stack of screens, one key language for all of them, and the render loop.
+//
+// Key language (docs/ui-design.md "Input mapping"); every screen follows it:
+//   ▲ / ▼    the dial: move the cursor, turn the page, change the value on screen
+//   ●        primary action on what's selected (open, play, pause, run)
+//   HOLD ●   secondary action, shown in the hint bar when a screen has one (skip, edit, sync)
+//   BOOT     back: the screen may use it first (parent folder), otherwise it pops the screen
+//   HOLD BOOT home: back to the root screen from anywhere, with a full refresh. While music
+//            or a podcast is playing or paused, it opens the player instead (onHoldBack), and
+//            HOLD BOOT on that player goes back to where it was opened. Screens never see it.
+//
+// Screens draw only their body. For portrait screens with chrome() the navigator draws the
+// status bar (tag(), context(), battery, clock) and the key-hint bar (hints()) around it.
+// Redraws happen after keys are handled: a consumed key redraws with a partial refresh; a
+// screen can ask for more with nav::invalidate(Refresh::Full). The status-bar clock and
+// battery redraw by themselves when they change.
+#pragma once
+#include <memory>
+#include <string>
+
+#include "input.h"
+#include "ui/components.h"
+
+namespace ui {
+
+using input::Key;
+
+enum class Refresh : uint8_t { None, Partial, Full };
+
+class Screen {
+ public:
+  virtual ~Screen() = default;
+
+  // Status bar: inverted module tag ("01 READER") and context text (path, title).
+  virtual std::string tag() const = 0;
+  virtual std::string context() const { return {}; }
+  virtual bool contextIsPath() const { return false; }  // ellipsize it from the front
+  // Optional reading before the battery ("21.4°C"). Home shows the room temperature.
+  virtual std::string statusTemp() const { return {}; }
+  // false: no clock in the status bar (the Clock is one).
+  virtual bool statusClock() const { return true; }
+  // Up to kMaxHints key hints for the bottom bar, left to right. Returns the count.
+  virtual int hints(Hint *out) const { return 0; }
+  // false: draw() gets the whole screen and the navigator draws no chrome.
+  virtual bool chrome() const { return true; }
+  virtual bool landscape() const { return false; }
+  // true: drawn on top of the screen below it (menus, sheets). The status bar and body come
+  // from the screen below; the hints come from this one.
+  virtual bool overlay() const { return false; }
+  // true for a screen that is read for long stretches without keys (the Reader): the idle
+  // power-off waits for a low battery, and the board light-sleeps between keys (apps/idle.h).
+  // Such a screen must not need onTick() while idle; its status-bar clock then updates with
+  // the next key.
+  virtual bool reading() const { return false; }
+  // Called when the board starts light-sleeping under this screen: save anything that a power
+  // loss shouldn't take (the Reader saves its place).
+  virtual void onNap() {}
+  // true for the player (Music): HOLD BOOT goes home from it rather than opening it again.
+  virtual bool isPlayer() const { return false; }
+
+  // Called when the screen becomes the top of the stack (pushed, or uncovered by a pop) and
+  // when it stops being the top (popped, or covered by a push).
+  virtual void onEnter() {}
+  virtual void onLeave() {}
+
+  // Returns true if the key was used (the screen then redraws). An unused Back pops.
+  virtual bool onKey(Key key) = 0;
+
+  // Called once a second while on top, or under an overlay. Return true to redraw (live values,
+  // playback).
+  virtual bool onTick() { return false; }
+
+  // Draws the body: the area between the chrome bands, or the whole screen without chrome.
+  virtual void draw(Canvas &c, const Rect &body) = 0;
+};
+
+namespace nav {
+
+// Installs the root screen and draws it with a full refresh.
+void begin(std::unique_ptr<Screen> root);
+// One pass of the UI loop: waits for keys or the next tick, dispatches, redraws. Call from
+// Arduino's loop().
+void loop();
+
+// Stack operations. Safe to call from inside a screen's onKey (a popped screen is destroyed
+// after its handler returns).
+void push(std::unique_ptr<Screen> screen);
+void pop();
+void home();
+void replace(std::unique_ptr<Screen> screen);
+
+void invalidate(Refresh refresh = Refresh::Partial);
+Screen *top();
+Screen *base();  // the top screen that isn't an overlay (the one under a menu)
+
+// What a PWR press does (input::Key::Power; screens never see it).
+void onPowerKey(void (*handler)());
+// Asked first on HOLD BOOT: returns true if it handled the key (opened the player), false to go
+// home as usual.
+void onHoldBack(bool (*handler)());
+
+}  // namespace nav
+}  // namespace ui

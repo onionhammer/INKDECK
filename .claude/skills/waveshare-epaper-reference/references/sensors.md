@@ -159,7 +159,7 @@ and subtracts **4 °C** inside the conversion (`SHTC3_PETP_NUM = 4`) instead of 
 
 ## 3. QMI8658A IMU
 
-**Address:** SA0 is tied to GND, so 0x6A (`QMI8658_SLAVE_ADDR_L`). `QMI8658_init()` probes `WHO_AM_I`
+**Address:** the vendor header says SA0 is tied to GND, so 0x6A (`QMI8658_SLAVE_ADDR_L`). **Verified on hardware: this board's IMU answers at 0x6B** (an i2c scan finds 0x6B, and reads at 0x6A NACK). SA0 has an internal 200 kΩ pull-up, so it isn't grounded here; the vendor code only works because it falls back to 0x6B. `QMI8658_init()` probes `WHO_AM_I`
 (reg 0x00, expect **0x05**) up to 5 times at 0x6A, then up to 5 times at 0x6B. After that it reads
 `REVISION_ID` (0x01; datasheet default 0x68), then configures:
 
@@ -332,12 +332,18 @@ int check_imu_status(const float acc[3], const float gyro[3]) {
 8. **Endianness:** the datasheet says CTRL1.BE=1 means big-endian reads, and the reset default has it
    set. Yet both upstream (`0x60`) and SensorLib (reset + set bit6, also leaving BE=1) parse the L
    register as the low byte, and upstream's settings page shows plausible values. So treat the
-   `_L`/`_H` registers as little-endian (inferred from two drivers; confirm on hardware: Z ≈ +1000 mg
-   lying flat).
+   `_L`/`_H` registers as little-endian. **Verified on hardware:** with CTRL1 = `0x60` and
+   little-endian parsing, the board lying flat reads about 1.03 g on one axis and under 0.1 g on the
+   others.
 9. **Reset value typo in the datasheet:** §5.9 says write **0xB0** to RESET (0x60); §7.4 says 0x0B.
    SensorLib uses 0xB0.
 10. Each failed probe at 0x6B creates and deletes a temporary I2C device handle (see `io.md`). Expect
     NACK error logs if the chip doesn't answer at 0x6A (inferred).
+11. **Axes vs the screen (verified on hardware, pose tests, `src/sensor_hub.cpp`).** In our portrait
+    orientation (panel rotation 3), screen right = chip **−Y**, screen up = chip **−X**, out of the
+    screen = chip **−Z**. Lying flat, screen up, chip Z reads −1.03 g. At rest the accelerometer's
+    magnitude is about 1.035 g, and the gyro read −4 °/s on X (the datasheet allows ±10 °/s
+    initial offset). Subtract a gyro bias learnt while the board is still.
 
 **SHTC3 pitfalls.**
 1. **Delays shorter than the datasheet:** 100 µs after wakeup and after soft reset, against a 240 µs
@@ -350,6 +356,11 @@ int check_imu_status(const float acc[3], const float gyro[3]) {
    return, so the clock shows "-1.5℃ 0％" (callers pass 0-initialised floats).
 4. **Offset disagreement:** IDF subtracts 1.5 °C, the Arduino example subtracts 4 °C. Self-heating from
    the board depends on what's powered; calibrate on our hardware rather than copying either value.
+   **Verified on hardware:** against a 22.7 °C room reading, the SHTC3 read 25.9 °C and 33 % RH. The
+   board was on USB, charging in the constant-voltage stage, with the UI idle. That's a 3.2 °C offset;
+   `src/sensor_hub.cpp` subtracts it and recomputes RH at the ambient temperature (Magnus formula),
+   which gives about 40 % against a household hygrometer's 37 %. Expect the offset to change with
+   charging current and load.
 5. ID never validated; check `(id & 0x083F) == 0x0807`.
 6. `SHTC3_Init()` and `SHTC3_GetTempAndHumi()` (the clock-stretching variant) are declared in
    `shtc3_bsp.h` but never defined, so calling them fails at link time. `i2c_shtc3_task()` is an unused

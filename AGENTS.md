@@ -9,10 +9,14 @@ and power decision on this file, `include/board_pins.h`, or the primary sources 
 
 | Path | Purpose |
 | --- | --- |
-| `platformio.ini` | Single env `epaper397`: official `espressif32 @ ~8.0.0` (Arduino core 3.3.x / IDF 5.5), partition table (2×3 MB OTA + 9.9 MB FAT), log level |
+| `platformio.ini` | Single env `epaper397`: official `espressif32 @ ~8.0.0` (Arduino core 3.3.x / IDF 5.5), partition table (2×3 MB OTA + 9.9 MB FAT), log level, display units (`INKDECK_FAHRENHEIT`, see `src/units.h`) |
 | `boards/waveshare_esp32_s3_epaper_397.json` | Custom board def: 16 MB QIO flash, **octal PSRAM (`qio_opi`)**, native USB CDC |
 | `include/board_pins.h` | **All GPIOs and I2C addresses**, from the schematic. Use these constants; don't hard-code pins |
-| `src/` | Firmware (currently a smoke test: chip/PSRAM report + I2C scan) |
+| `src/` | Firmware. `ui/` is the navigator (screen stack and key language, `ui/nav.h`), components, text styles and generated fonts. `apps/` holds the screens. Drivers sit flat in `src/` |
+| `PROGRESS.md` | **UI build plan and status**: phases, decisions, known issues, how to add a screen. Update it when a phase moves |
+| `tools/` | `gen_fonts.py` (JetBrains Mono → GFX bitmap fonts) and `screenshot.py` (drive the UI over USB, save the framebuffer as PNG). Run both with `uv run` |
+| `compat/` | Stand-in headers for library builds: `dsps_fft2r_platform.h` lets PNGdec's ESP32-S3 SIMD file assemble (on the include path via `platformio.ini`) |
+| `scripts/gen_secrets.py` | PlatformIO pre-build hook. Reads the gitignored `.env` (template: `.env.example`) and writes `inkdeck_secrets.h` (`WIFI_CONFIGURED`, `WIFI_SSID`, `WIFI_PASSWORD`, `TIMEZONE` as a POSIX TZ string, and `LOCATION_CONFIGURED`, `LATITUDE`, `LONGITUDE`) into the build directory. Include that header only where it's needed. Wi-Fi is optional, but an invalid value stops the build. The values are stored as plain text in the firmware image. Code reads the time zone and location through `src/settings.h`, never the macros: `SD:/inkdeck.ini` on the card overrides them (not Wi-Fi) |
 | `docs/` | Schematic, datasheets, mechanical files, Waveshare wiki as markdown |
 | `docs/ui-design.md` | **UI design spec** (INKDECK/OS): orientation, 1-bit visual rules, shared chrome, button mapping, one entry per screen. Links the [design canvas](https://claude.ai/artifact/CkQZ5d3cCFz6dFwQNNuwof). **Read before writing any screen or UI code** |
 | `.claude/skills/waveshare-epaper-reference/` | Distilled Waveshare sample code: driver snippets, init sequences, power lifecycle, porting notes, one `references/*.md` per subsystem. **Read the relevant one before writing hardware code** |
@@ -39,22 +43,24 @@ the commit and explains how to fetch full files when a snippet isn't enough.
 ## Power architecture (read before writing sleep/power code)
 
 - **Rails:** DC1 → 3V3 system rail. ALDO1 → `AudioCTR_VCC`. ALDO2 → mic supply. **ALDO3 → the e-paper panel's power switch; if ALDO3 is off, the panel is dead.** These rails are on by default at power-up.
-- **On/off:** the PWR key drives the PMIC's `PWRON` pin (Waveshare config: 1 s press = on, 4 s = forced off). `axp2101.shutdown()` cuts power to everything, including the ESP32.
-- **Wake from full power-off:** the RTC's INT output is diode-OR'd onto `PWRON`, so **an RTC alarm boots the board.** The intended low-power loop: update display → panel deep sleep → arm RTC alarm → PMIC shutdown. The e-paper holds its image with no power. The RTC runs from the PMIC's always-on LDO. On boot, `RTC_INT` and `PWR_KEY_SENSE` tell you why the board woke.
+- **On/off:** the PWR key drives the PMIC's `PWRON` pin (Waveshare config: 1 s press = on, 4 s = forced off). The chip's own defaults are 128 ms and 6 s (verified on hardware). Our `pmic::configure()` sets 1 s / 4 s at boot; `references/power.md` §2 has the full comparison. `axp2101.shutdown()` cuts power to everything, including the ESP32.
+- **Wake from full power-off:** the RTC's INT output is diode-OR'd onto `PWRON`, so **an RTC alarm boots the board.** The intended low-power loop: update display → panel deep sleep → arm RTC alarm → PMIC shutdown. The e-paper holds its image with no power. The RTC runs from the PMIC's always-on LDO. On boot, `RTC_INT` and `PWR_KEY_SENSE` tell you why the board woke. **Our RTC holds UTC** (unlike the vendor's local time), so alarm registers are UTC; `TIMEZONE` in `.env` gives local time (`src/rtc.h`). `src/power.h` implements the loop: Sleep (wakes for alarms) and standby (the Clock face, redrawn by an RTC wake every minute). The RTC alarm is armed only on the way to a power-off and disarmed first thing at boot: while it's fired, INT holds PWRON low, and 4 s of that forces a running board off.
 - ESP32 deep sleep also works, but the rails stay up, so it draws more power. Use it only when you need fast wake or wake on a GPIO.
-- **Battery** (Waveshare's settings): 200 mA charge to 4.2 V, 1500 mA VBUS limit, 2.6 V power-down. A 10 k NTC is fitted on TS, but XPowersLib disables TS measurement at init. The vendor also disables the CHGLED output, so GPIO2 (`PMIC_CHG`) shows nothing unless you re-enable it.
+- **Battery:** a 1500 mAh Li-ion cell. Our firmware charges at 500 mA to 4.2 V: 50 mA precharge, stop at 25 mA. Waveshare charges at 200 mA. The input limit is 1500 mA and the power-down threshold 2.6 V (chip defaults, same as Waveshare). A 10 k NTC is fitted on TS. The chip's default (`0x50`) keeps TS out of charge control, and XPowersLib also disables TS measurement. At its default, CHGLED drives charge status onto GPIO2 (`PMIC_CHG`). Waveshare turns it off; we leave it on.
 
 ## Driver notes
 
 - **E-paper:** the framebuffer is 48,000 bytes at 1 bpp (96,000 for 4-grey); put it in PSRAM. Wait on BUSY rather than using fixed delays. Always deep-sleep the panel after an update. Partial refreshes accumulate ghosting, so do a full refresh periodically. Waveshare's `EPD_Sleep()` also cuts ALDO3, which wipes panel RAM. After that, a partial refresh needs a re-init plus a re-send of the previous frame as the base.
 - **Audio:** the vendor lets `esp_codec_dev` own `AMP_EN`. It stays HIGH from codec open until close, and silence is a DAC mute. Switching the amp per clip would save power but may pop, so test before relying on it. The codec is configured over I2C; audio flows over I2S.
 - **I2C:** all 5 devices share one bus. Create one bus instance and pass it around; don't let each driver initialise its own.
+- **Memory:** C++ `new` (so `std::string`, `std::vector`, `std::map`) prefers PSRAM (`src/psram_new.cpp`), because IDF's `malloc()` keeps everything under 4 KB in the ~230 KB of internal RAM, and Wi-Fi needs internal RAM to start. Buffers for DMA, task stacks and anything an IRAM interrupt touches must come from `heap_caps_malloc(..., MALLOC_CAP_INTERNAL)` (or `MALLOC_CAP_DMA`). TLS buffers go to PSRAM through `net::begin()`. Dev key `h` prints the heap.
 
 ## Flashing & recovery
 
 - If the USB port disappears (crashed firmware, board powered off): **hold BOOT, power-cycle (replug USB, or PWR key on battery), release BOOT** to enter ROM download mode, then upload.
 - On battery, hung firmware keeps the board on. Hold PWR for 4 s or more to force it off.
 - Stock firmware: 16 MB full-flash images in the upstream repo under `Firmware/Factory procedure/*.bin`. Write them at `0x0` with esptool.
+- **Opening the serial port can reset the board.** Verified on hardware: a pyserial open with default settings reset it, while setting `dtr = rts = False` before `open()` did not (`tools/screenshot.py` does that). The likely cause is the USB-Serial-JTAG auto-reset (RTS high with DTR low, the same signal esptool uses to reset).
 
 ## Gotchas
 
@@ -64,3 +70,5 @@ the commit and explains how to fetch full files when a snippet isn't enough.
 4. An RTC alarm set in the past fires only when that date-time comes round next month. Always compute the next wake time from the current RTC time.
 5. If PSRAM reports 0 KB, the board's `memory_type` isn't `qio_opi`.
 6. On the S3, Arduino's `Serial1` defaults to GPIO15/16, which are SD D0/CLK. Always pass explicit pins.
+7. **Never `fwrite()` a sector or more straight from flash to the SD card.** The SDMMC driver DMAs whole 512-byte sectors directly from the caller's buffer, and from a flash address (string constants, `PROGMEM`) the card gets zeros. Verified with dev command `!sdtest`: 1 KB from flash in one call came back all wrong, while internal RAM and PSRAM were exact. Smaller writes go through stdio's buffer and are fine. Copy into a `std::string` first.
+8. A quoted `#include "x.h"` looks in the including file's folder first, so a `src/x.h` is shadowed by `src/apps/x.h` for files in `apps/`. Hence `forecast.h` (not `weather.h`) and `podcast_library.h` (not `podcasts.h`) next to `apps/weather.h` and `apps/podcasts.h`.
