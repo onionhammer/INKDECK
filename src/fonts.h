@@ -16,6 +16,9 @@ constexpr int kReaderSizeCount = 3;
 extern const FontFamily kReader[kReaderSizeCount];
 constexpr int kDefaultReaderSize = 1;
 
+// The text reader's monospace sizes (JetBrains Mono Medium), the counterparts of kReader's.
+extern const FontFamily kTextMono[kReaderSizeCount];
+
 extern const GFXfont *const kDropCap;  // JetBrains Mono 68 px ExtraBold, capitals
 
 }  // namespace fonts

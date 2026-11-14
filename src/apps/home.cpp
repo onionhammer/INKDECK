@@ -70,7 +70,7 @@ constexpr Module kModules[] = {
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},
     {"LEVEL", "IMU", "Bubble level for surfaces, a vial for edges, and a tone when it's level.",
      "QMI8658A @ 0x6B", Kind::Level},
-    {"FILES", "SD", "Browse the microSD card and the onboard flash. Opens books, plays music.",
+    {"FILES", "SD", "Browse the microSD card and the onboard flash. Books, music, pictures, text.",
      "SDMMC 4-bit \xC2\xB7 16 MB flash", Kind::Files},
     {"SYSTEM", "PMIC", "Battery, power rails, sleep schedule, Wi-Fi and firmware updates.",
      "TG28 (AXP2101) @ 0x34", Kind::System},
@@ -136,7 +136,7 @@ int statsFor(const Module &m, Stat out[4]) {
     case Kind::Files:
       out[0] = {"SD CARD", cardSize()};
       out[1] = {"FLASH FAT", flashSize()};
-      out[2] = {"OPENS", "EPUB \xC2\xB7 MP3"};
+      out[2] = {"OPENS", "EPUB MP3 JPG TXT"};
       return 3;
     case Kind::Sensors: {
       const shtc3::Reading e = sensors::env();

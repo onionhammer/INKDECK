@@ -24,7 +24,7 @@ Home.
 | **Recorder** | Voice memos from the onboard mic as 16 kHz WAV, with a live waveform, input meter and gain. Memos play back on the device with a volume meter (▲▼), and can be deleted |
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, a live I2C bus scan, and a CSV log to the card |
 | **Level** | Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
-| **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books or audio. A held dial pages through long folders |
+| **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. A held dial pages through long folders. **Pictures** (JPEG, PNG) show full screen, dithered, in landscape when they're wider than tall; phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short) |
 | **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots. Also NTP time sync, sleep and reboot |
 
 **Power**
@@ -35,7 +35,7 @@ Home.
   the saved forecast. `INKDECK_STANDBY_WEATHER_HOURS` in `platformio.ini` has it fetch a new
   forecast every so many hours (0: never). Each wake light-sleeps through the panel refresh
   and runs at 80 MHz once the face is drawn.
-- Reading and music don't time out until the battery is low.
+- Reading (a book, a text file or a picture) and music don't time out until the battery is low.
 - While you read on battery, the board light-sleeps between page turns.
 - On USB, PWR shows the clock face instead and the board stays on.
 

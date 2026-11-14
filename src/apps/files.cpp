@@ -6,10 +6,13 @@
 #include "apps/home.h"
 #include "apps/music.h"
 #include "apps/reader.h"
+#include "apps/textview.h"
+#include "apps/viewer.h"
 #include "audio.h"
 #include "dirlist.h"
 #include "flashfs.h"
 #include "sdcard.h"
+#include "textdoc.h"
 
 namespace apps {
 namespace {
@@ -50,9 +53,10 @@ std::string typeTag(const DirList::Entry &e) {
   return ext.empty() ? "FILE" : ui::upper(ext.substr(0, 4));
 }
 
-// EPUB and MP3 names lose their extension; the tag says what they are.
+// Names of files we open lose their extension; the tag says what they are.
 std::string displayName(const DirList::Entry &e) {
-  if (!e.isDir && (DirList::isEpub(e.name) || DirList::isAudio(e.name))) {
+  if (!e.isDir &&
+      (DirList::isEpub(e.name) || DirList::isAudio(e.name) || DirList::isPicture(e.name))) {
     return e.name.substr(0, e.name.rfind('.'));
   }
   return e.name;
@@ -63,6 +67,7 @@ const char *verbFor(const DirList::Entry *e) {
   if (e->isDir) return "OPEN";
   if (DirList::isEpub(e->name)) return "READ";
   if (DirList::isAudio(e->name)) return "PLAY";
+  if (DirList::isPicture(e->name)) return "VIEW";
   return nullptr;
 }
 
@@ -87,6 +92,13 @@ class FilesScreen : public ui::Screen {
   }
   bool contextIsPath() const override { return true; }
 
+  // Back from the picture viewer: the cursor on the last picture it showed.
+  void onEnter() override {
+    if (viewed_.empty()) return;
+    resetCursor(viewed_);
+    viewed_.clear();
+  }
+
   int hints(ui::Hint *out) const override {
     int n = 0;
     if (!list_.readable()) {
@@ -97,6 +109,8 @@ class FilesScreen : public ui::Screen {
         out[n++] = {ui::glyph::kPress, "OPEN"};
       } else if (const char *verb = verbFor(selected())) {
         out[n++] = {ui::glyph::kPress, verb};
+      } else if (isText(entryIndex())) {
+        out[n++] = {ui::glyph::kPress, "READ"};
       }
       if (audio::active()) out[n++] = {ui::glyph::kHoldPress, "PLAYER"};
     }
@@ -248,9 +262,19 @@ class FilesScreen : public ui::Screen {
       openDir(list_.pathOf(i), "");
     } else if (DirList::isAudio(e->name)) {
       play(i);
+    } else if (DirList::isPicture(e->name)) {
+      view(i);
     } else if (DirList::isEpub(e->name)) {
       std::string err;
       if (auto reader = makeReader(list_.pathOf(i), err)) {
+        ui::nav::push(std::move(reader));
+      } else {
+        log_w("open failed: %s", err.c_str());
+        notice_ = "CAN'T OPEN: " + ui::upper(err);
+      }
+    } else if (isText(i)) {
+      std::string err;
+      if (auto reader = makeTextReader(list_.pathOf(i), err)) {
         ui::nav::push(std::move(reader));
       } else {
         log_w("open failed: %s", err.c_str());
@@ -273,6 +297,27 @@ class FilesScreen : public ui::Screen {
     ui::nav::push(makeMusic());
   }
 
+  // Any other file opens in the text reader if it reads as text. The answer for the selected
+  // file is kept, so the hint bar doesn't read the card on every redraw.
+  bool isText(int i) const {
+    if (i < 0 || list_.entries()[i].isDir) return false;
+    const std::string path = list_.pathOf(i);
+    if (path != sniffedPath_) {
+      sniffedPath_ = path;
+      sniffedText_ = TextDoc::looksLikeText(path);
+    }
+    return sniffedText_;
+  }
+
+  // Shows picture i full screen; the dial steps through the folder's other pictures.
+  void view(int i) {
+    int index;
+    std::vector<std::string> pictures = list_.filePaths(DirList::isPicture, i, index);
+    ui::nav::push(makeViewer(std::move(pictures), index, [this](const std::string &path) {
+      viewed_ = path.substr(path.rfind('/') + 1);
+    }));
+  }
+
   static void drawEmpty(ui::Canvas &c, const Rect &r, const char *title,
                         const std::string &text) {
     const Rect p = r.inset(20, 24);
@@ -289,6 +334,9 @@ class FilesScreen : public ui::Screen {
   DirList list_;
   ui::ListCursor cursor_;
   std::string notice_;
+  std::string viewed_;  // name of the picture the viewer showed last, until we're back
+  mutable std::string sniffedPath_;  // isText()'s last answer
+  mutable bool sniffedText_ = false;
   uint32_t drawnGeneration_ = 0;
 };
 

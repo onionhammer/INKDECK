@@ -75,7 +75,20 @@ The device has no touch screen. All navigation uses the buttons in `include/boar
 Home also lists **Files**, which has no artboard and follows Home's list language: one row per
 entry (name, type tag, size), the path in the status bar. The card's root starts with an
 `ONBOARD FLASH` row that opens the 9.9 MB FAT partition in the same browser. A held dial moves a
-page at a time in any long list.
+page at a time in any long list. The ● verb follows the selection: OPEN, READ (EPUB, or any file
+that reads as text), PLAY, VIEW (JPEG, PNG). Neither of the screens Files opens below has an
+artboard or a row on Home:
+
+- **Picture viewer** (`src/apps/viewer.h`): the picture fitted to the whole panel (at most 2×)
+  and centred on paper, landscape when it's wider than tall. The chrome (status bar
+  `09 FILES · 03/12 name.jpg`, hints `[▲] PREV [▼] NEXT [●] HIDE [BOOT] BACK`) is drawn over the
+  picture's edges, and ● hides or shows it without redrawing the picture. Counts as reading.
+- **Text reader** (`src/apps/textview.h`): the Reader artboard's body with continuous scrolling
+  instead of pages. `§ NAME.TXT - - - 12 KB` in place of the chapter line, the text column, a
+  1 px dashed scrollbar track with a solid 5 px thumb in the right margin, and the progress strip
+  as `LN 120/2400 [=====:::::] 5%`. Status tag `09 FILES`; Home's READER stays with EPUBs.
+  Keys: ▲▼ scroll · ● menu (text size, font SERIF/MONO, scroll step, to start, folder) ·
+  BOOT back.
 
 All on-screen content is sample data: book text (H. G. Wells, public domain), track list, the
 fictional podcast feeds, weather and sensor values.

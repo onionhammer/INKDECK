@@ -60,7 +60,7 @@ the commit and explains how to fetch full files when a snippet isn't enough.
 - If the USB port disappears (crashed firmware, board powered off): **hold BOOT, power-cycle (replug USB, or PWR key on battery), release BOOT** to enter ROM download mode, then upload.
 - On battery, hung firmware keeps the board on. Hold PWR for 4 s or more to force it off.
 - Stock firmware: 16 MB full-flash images in the upstream repo under `Firmware/Factory procedure/*.bin`. Write them at `0x0` with esptool.
-- **Opening the serial port can reset the board.** Verified on hardware: a pyserial open with default settings reset it, while setting `dtr = rts = False` before `open()` did not (`tools/screenshot.py` does that). The likely cause is the USB-Serial-JTAG auto-reset (RTS high with DTR low, the same signal esptool uses to reset).
+- **Opening the serial port can reset the board.** Verified on hardware: a pyserial open with default settings reset it, while setting `dtr = rts = False` before `open()` did not (`tools/screenshot.py` does that). The likely cause is the USB-Serial-JTAG auto-reset (RTS high with DTR low, the same signal esptool uses to reset). **On macOS the open resets it anyway** (verified 2026-11-14, `rst:0x15 (USB_UART_CHIP_RESET)`): keep one session open and wait for the boot log to go quiet before sending keys, as `tools/screenshot.py` now does. There the port is `/dev/cu.usbmodem*` and PlatformIO is `~/.platformio/penv/bin/pio`; pass `--upload-port`, or it may pick the Bluetooth port.
 
 ## Gotchas
 

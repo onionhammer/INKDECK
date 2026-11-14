@@ -96,6 +96,12 @@ def main() -> None:
     port.rts = False
     port.open()
     with port:
+        # On macOS the open resets the board regardless of DTR/RTS: let it boot before sending
+        # keys (until the console has been quiet for 2.5 s, at most 15 s).
+        start = quiet = time.time()
+        while time.time() - start < 15 and time.time() - quiet < 2.5:
+            if port.readline():
+                quiet = time.time()
         port.reset_input_buffer()
         for key in args.keys:
             port.write(key.encode())

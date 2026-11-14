@@ -24,6 +24,10 @@ bool DirList::isMp3(const std::string &name) { return endsWithNoCase(name, ".mp3
 bool DirList::isAudio(const std::string &name) {
   return isMp3(name) || endsWithNoCase(name, ".wav");
 }
+bool DirList::isPicture(const std::string &name) {
+  return endsWithNoCase(name, ".jpg") || endsWithNoCase(name, ".jpeg") ||
+         endsWithNoCase(name, ".png");
+}
 
 bool DirList::open(const std::string &dir) {
   cwd_ = dir;
