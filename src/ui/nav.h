@@ -9,7 +9,8 @@
 //   BOOT     back: the screen may use it first (parent folder), otherwise it pops the screen
 //   HOLD BOOT home: back to the root screen from anywhere, with a full refresh. While music
 //            or a podcast is playing or paused, it opens the player instead (onHoldBack), and
-//            HOLD BOOT on that player goes back to where it was opened. Screens never see it.
+//            HOLD BOOT on that player goes back to where it was opened. While the lock screen
+//            is on the stack it only goes back down to the lock. Screens never see it.
 //
 // Screens draw only their body. For portrait screens with chrome() the navigator draws the
 // status bar (tag(), context(), battery, clock) and the key-hint bar (hints()) around it.
@@ -63,6 +64,9 @@ class Screen {
   virtual void onNap() {}
   // true for the player (Music): HOLD BOOT goes home from it rather than opening it again.
   virtual bool isPlayer() const { return false; }
+  // true for the lock screen (apps/lock.h): nothing under it can be reached until it pops
+  // itself. HOLD BOOT stops at it rather than going home, and never opens the player.
+  virtual bool locks() const { return false; }
 
   // Called when the screen becomes the top of the stack (pushed, or uncovered by a pop) and
   // when it stops being the top (popped, or covered by a push).
@@ -82,8 +86,12 @@ class Screen {
 
 namespace nav {
 
-// Installs the root screen and draws it with a full refresh.
+// Installs the root screen, to be drawn with a full refresh by the next flush() or loop(), so
+// screens pushed straight after it (the Clock on an alarm wake, the lock) come up in the same
+// refresh.
 void begin(std::unique_ptr<Screen> root);
+// Draws now if a redraw is pending.
+void flush();
 // One pass of the UI loop: waits for keys or the next tick, dispatches, redraws. Call from
 // Arduino's loop().
 void loop();
@@ -92,12 +100,13 @@ void loop();
 // after its handler returns).
 void push(std::unique_ptr<Screen> screen);
 void pop();
-void home();
+void home();  // back to the root, or to the lock screen if one is on the stack
 void replace(std::unique_ptr<Screen> screen);
 
 void invalidate(Refresh refresh = Refresh::Partial);
 Screen *top();
 Screen *base();  // the top screen that isn't an overlay (the one under a menu)
+bool locked();   // a screen that locks() is on the stack
 
 // What a PWR press does (input::Key::Power; screens never see it).
 void onPowerKey(void (*handler)());

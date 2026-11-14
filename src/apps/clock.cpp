@@ -11,6 +11,7 @@
 
 #include "alarms.h"
 #include "apps/home.h"
+#include "apps/lock.h"
 #include "apps/sleep.h"
 #include "apps/weather.h"
 #include "audio.h"
@@ -1005,6 +1006,7 @@ void pollAlarms() {
 void enterDesk() {
   if (desk || poweringOff()) return;
   if (audio::status().state == audio::State::Playing) audio::togglePause();  // "off" is quiet
+  lockNow();  // under the desk face: waking it asks for the PIN
   ui::nav::push(std::make_unique<DeskScreen>());
   ui::nav::invalidate(ui::Refresh::Full);
 }
@@ -1024,6 +1026,7 @@ void enterStandby(int cycles) {
     sleepNow();
     return;
   }
+  lockNow();  // under the face: a key that cancels the power-off lands on the lock
   ui::nav::push(std::make_unique<StandbyScreen>(cycles));
   ui::nav::invalidate(ui::Refresh::Full);
 }
