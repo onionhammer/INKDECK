@@ -6,8 +6,6 @@
 
 #include "apps/files.h"
 #include "apps/home.h"
-#include "apps/textview.h"
-#include "dirlist.h"
 #include "fonts.h"
 #include "book_reader.h"
 #include "readstate.h"
@@ -250,7 +248,6 @@ std::unique_ptr<ui::Screen> resumeLastBook() {
   readstate::Position pos;
   struct stat st;
   if (!readstate::last(path, title, pos) || stat(path.c_str(), &st) != 0) return nullptr;
-  if (!DirList::isEpub(path)) return makeTextReader(path, err, false);  // a text file
   return open(path, false, err);
 }
 

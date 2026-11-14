@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dirlist.h"
+
 namespace readstate {
 namespace {
 
@@ -58,7 +60,8 @@ bool load(const std::string &path, Position &out) {
   return ok;
 }
 
-void save(const std::string &path, const std::string &title, const Position &pos) {
+void save(const std::string &path, const std::string &title, const Position &pos,
+          bool asLast) {
   Preferences prefs;
   if (!prefs.begin(kNamespace, false)) return;
   Position old;
@@ -67,7 +70,7 @@ void save(const std::string &path, const std::string &title, const Position &pos
     const Record r{kVersion, pos.fontSize, pos.percent, 0, pos.chapter, 0, pos.offset};
     prefs.putBytes(keyFor(path).c_str(), &r, sizeof r);
   }
-  if (getString(prefs, "last") != path) {
+  if (asLast && getString(prefs, "last") != path) {
     prefs.putString("last", path.c_str());
     prefs.putString("lastTitle", title.c_str());
   }
@@ -79,7 +82,8 @@ bool last(std::string &path, std::string &title, Position &pos) {
   if (!prefs.begin(kNamespace, false)) return false;
   path = getString(prefs, "last");
   title = getString(prefs, "lastTitle");
-  const bool ok = !path.empty() && read(prefs, path, pos);
+  // Builds of the text reader before asLast recorded text files here too.
+  const bool ok = DirList::isEpub(path) && read(prefs, path, pos);
   prefs.end();
   return ok;
 }

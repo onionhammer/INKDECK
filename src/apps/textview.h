@@ -5,8 +5,8 @@
 // strip ("LN 120/2400 [=====:::::] 5%"), plus a scrollbar in the right margin. The menu has
 // text size, font (Literata, or JetBrains Mono for code and data), the scroll step (a line, a
 // quarter or half a screen), back to the start, and the folder.
-// The place, size and font are kept per file (readstate.h; the font in Position::chapter), and
-// the file counts as the last thing read, so READER on Home comes back to it.
+// The place, size and font are kept per file (readstate.h; the font in Position::chapter). A
+// text file doesn't become the Reader's last book: Home's READER stays with EPUBs.
 #pragma once
 #include <memory>
 #include <string>
@@ -16,9 +16,7 @@
 namespace apps {
 
 // Opens the text file at path at its saved place, or returns nullptr with err set (not text,
-// unreadable). fromFiles: the menu's folder item goes back to the Files screen below rather
-// than opening one.
-std::unique_ptr<ui::Screen> makeTextReader(const std::string &path, std::string &err,
-                                           bool fromFiles = true);
+// unreadable). Pushed over the Files screen it came from; the menu's FOLDER goes back to it.
+std::unique_ptr<ui::Screen> makeTextReader(const std::string &path, std::string &err);
 
 }  // namespace apps

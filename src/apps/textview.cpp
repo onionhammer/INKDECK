@@ -4,7 +4,6 @@
 
 #include <algorithm>
 
-#include "apps/files.h"
 #include "apps/home.h"
 #include "flashfs.h"
 #include "fonts.h"
@@ -81,8 +80,7 @@ std::string bytesText(uint64_t n) {
 
 class TextScreen : public ui::Screen {
  public:
-  TextScreen(std::string path, bool fromFiles)
-      : path_(std::move(path)), fromFiles_(fromFiles), step_(loadStep()) {}
+  explicit TextScreen(std::string path) : path_(std::move(path)), step_(loadStep()) {}
 
   bool open(std::string &err) {
     if (!doc_.open(path_, err)) return false;
@@ -98,7 +96,7 @@ class TextScreen : public ui::Screen {
     return true;
   }
 
-  std::string tag() const override { return moduleTag("READER"); }
+  std::string tag() const override { return moduleTag("FILES"); }
   std::string context() const override { return ui::upper(nameOf(path_)); }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kDial, "SCROLL"};
@@ -176,7 +174,7 @@ class TextScreen : public ui::Screen {
     pos.offset = offset();
     pos.fontSize = static_cast<uint8_t>(size_);
     pos.percent = static_cast<uint8_t>(progress() * 100);
-    readstate::save(path_, nameOf(path_), pos);
+    readstate::save(path_, nameOf(path_), pos, false);  // not the Reader's last book
   }
 
   // "§ NAME.TXT - - - - 12 KB", like the Reader's chapter line.
@@ -254,21 +252,15 @@ class TextScreen : public ui::Screen {
                        ui::nav::pop();
                      }});
     const std::string path = path_;
-    const bool fromFiles = fromFiles_;
     items.push_back({"FOLDER", [path] { return folderLabel(path); },
-                     [path, fromFiles] {
+                     [] {
                        ui::nav::pop();  // the menu
-                       if (fromFiles) {
-                         ui::nav::pop();  // back to the Files screen that opened the file
-                       } else {
-                         ui::nav::replace(makeFiles(folderOf(path), nameOf(path)));
-                       }
+                       ui::nav::pop();  // back to the Files screen that opened the file
                      }});
     ui::nav::push(std::make_unique<ui::MenuScreen>("TEXT", std::move(items)));
   }
 
   std::string path_;
-  bool fromFiles_;
   Step step_;
   TextDoc doc_;
   int size_ = fonts::kDefaultReaderSize;
@@ -278,9 +270,8 @@ class TextScreen : public ui::Screen {
 
 }  // namespace
 
-std::unique_ptr<ui::Screen> makeTextReader(const std::string &path, std::string &err,
-                                           bool fromFiles) {
-  auto screen = std::make_unique<TextScreen>(path, fromFiles);
+std::unique_ptr<ui::Screen> makeTextReader(const std::string &path, std::string &err) {
+  auto screen = std::make_unique<TextScreen>(path);
   if (!screen->open(err)) return nullptr;
   return screen;
 }

@@ -17,7 +17,6 @@
 #include "apps/weather.h"
 #include "audio.h"
 #include "covers.h"
-#include "dirlist.h"
 #include "fonts.h"
 #include "pmic.h"
 #include "podcast_library.h"
@@ -118,10 +117,7 @@ int statsFor(const Module &m, Stat out[4]) {
       }
       out[0] = {"LAST", title};
       out[1] = {"PLACE", std::to_string(pos.percent) + " %"};
-      // A text file (apps/textview.h) keeps its font choice in Position::chapter.
-      const bool mono = !DirList::isEpub(path) && (pos.chapter & 1);
-      const FontFamily *family = mono ? fonts::kTextMono : fonts::kReader;
-      out[2] = {"FONT", ui::upper(family[pos.fontSize % fonts::kReaderSizeCount].name)};
+      out[2] = {"FONT", ui::upper(fonts::kReader[pos.fontSize % fonts::kReaderSizeCount].name)};
       out[3] = {"SD CARD", cardSize()};
       return 4;
     }
@@ -435,8 +431,7 @@ class HomeScreen : public ui::Screen {
       std::string path, title;
       readstate::Position pos;
       picture::Bitmap cover;
-      if (readstate::last(path, title, pos) && DirList::isEpub(path) &&
-          covers::thumbnail(path, kMaxW, maxH, cover)) {
+      if (readstate::last(path, title, pos) && covers::thumbnail(path, kMaxW, maxH, cover)) {
         const Rect box{p.x, y, cover.w + 2 * kFrame, cover.h + 2 * kFrame};
         dither50(c, {box.x + kShadow, box.bottom(), box.w, kShadow});
         dither50(c, {box.right(), box.y + kShadow, kShadow, box.h - kShadow});

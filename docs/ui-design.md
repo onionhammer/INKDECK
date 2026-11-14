@@ -86,8 +86,9 @@ artboard or a row on Home:
 - **Text reader** (`src/apps/textview.h`): the Reader artboard's body with continuous scrolling
   instead of pages. `§ NAME.TXT - - - 12 KB` in place of the chapter line, the text column, a
   1 px dashed scrollbar track with a solid 5 px thumb in the right margin, and the progress strip
-  as `LN 120/2400 [=====:::::] 5%`. Status tag `01 READER`. Keys: ▲▼ scroll · ● menu (text size,
-  font SERIF/MONO, scroll step, to start, folder) · BOOT back.
+  as `LN 120/2400 [=====:::::] 5%`. Status tag `09 FILES`; Home's READER stays with EPUBs.
+  Keys: ▲▼ scroll · ● menu (text size, font SERIF/MONO, scroll step, to start, folder) ·
+  BOOT back.
 
 All on-screen content is sample data: book text (H. G. Wells, public domain), track list, the
 fictional podcast feeds, weather and sensor values.

@@ -1,5 +1,5 @@
-// Reading positions, kept in NVS so they survive power-off: one per book (keyed by a hash of
-// its path), plus which book was read last.
+// Reading positions, kept in NVS so they survive power-off: one per book or text file (keyed by
+// a hash of its path), plus which book (EPUB) was read last.
 #pragma once
 #include <stdint.h>
 
@@ -15,9 +15,11 @@ struct Position {
 };
 
 bool load(const std::string &path, Position &out);
-// Also records path as the last book read. Skips the flash write if nothing changed.
-void save(const std::string &path, const std::string &title, const Position &pos);
-// The book read last. False if there isn't one.
+// Also records path as the last book read, unless asLast is false (a text file: Home's READER
+// and the sleep screen are about books). Skips the flash write if nothing changed.
+void save(const std::string &path, const std::string &title, const Position &pos,
+          bool asLast = true);
+// The book read last. False if there isn't one (or what's recorded isn't an EPUB).
 bool last(std::string &path, std::string &title, Position &pos);
 
 }  // namespace readstate
