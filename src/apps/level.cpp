@@ -35,7 +35,10 @@ constexpr float kLevelWithin = 0.3f;  // degrees: "LEVEL", and the tone
 constexpr float kRedrawDeadband = 0.15f;
 constexpr int kSamples = 8;  // IMU reads averaged per update (the accelerometer runs at 56 Hz)
 constexpr char kNamespace[] = "level";
-constexpr char kKey[] = "zero";
+constexpr char kKey[] = "zero2";
+// The zero from when landscape had the wheel underneath: the screen turned 180 degrees from
+// now, so its pitch and roll have the other sign. The edge angle reads the same either way.
+constexpr char kOldKey[] = "zero";
 
 constexpr float kDeg = 180.0f / static_cast<float>(M_PI);
 
@@ -56,6 +59,14 @@ Zero loadZero() {
   if (prefs.begin(kNamespace, false)) {  // read-write: read-only logs an error until it exists
     if (prefs.isKey(kKey) && prefs.getBytesLength(kKey) == sizeof z) {
       prefs.getBytes(kKey, &z, sizeof z);
+    } else if (prefs.isKey(kOldKey)) {
+      if (prefs.getBytesLength(kOldKey) == sizeof z) {
+        prefs.getBytes(kOldKey, &z, sizeof z);
+        z.pitch = -z.pitch;
+        z.roll = -z.roll;
+        prefs.putBytes(kKey, &z, sizeof z);
+      }
+      prefs.remove(kOldKey);
     }
     prefs.end();
   }
@@ -212,12 +223,12 @@ class LevelScreen : public ui::Screen {
       r_ = out;
       return;
     }
-    // Portrait screen axes -> landscape: the panel's native X runs down a portrait screen, so
-    // landscape right = portrait down (-Y) and landscape up = portrait right (+X).
+    // Portrait screen axes -> landscape (the board turned a quarter clockwise from portrait,
+    // wheel on top): landscape right = portrait up (+Y), landscape up = portrait left (-X).
     qmi8658::Reading l;
     l.ok = true;
-    l.acc[0] = -a[1] / n;
-    l.acc[1] = a[0] / n;
+    l.acc[0] = a[1] / n;
+    l.acc[1] = -a[0] / n;
     l.acc[2] = a[2] / n;
     out.ok = true;
     const float g = sqrtf(l.acc[0] * l.acc[0] + l.acc[1] * l.acc[1] + l.acc[2] * l.acc[2]);

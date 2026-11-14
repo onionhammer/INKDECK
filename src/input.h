@@ -30,8 +30,12 @@ bool wait(Key &key, uint32_t timeoutMs);
 // then step a page at a time (ui::ListCursor). False after a wait() that timed out.
 bool lastKeyFast();
 
+// True if the key wait() last returned is an auto-repeat of a held ▲ or ▼ rather than its press
+// (fast repeats included). False after a wait() that timed out.
+bool lastKeyRepeat();
+
 // Queues a key as if it had been pressed (dev tools drive the UI over serial with this).
-// fast: as a repeat from a dial held long enough to page.
+// fast: as a repeat from a dial held long enough to page (lastKeyRepeat() is true too).
 void inject(Key key, bool fast = false);
 
 // Milliseconds since the last key (injected ones count).

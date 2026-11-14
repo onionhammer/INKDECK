@@ -16,6 +16,10 @@ namespace {
 // Rotation 3 = the vendor's ROTATE_270 portrait mapping (memX = y, memY = 479 - x).
 // Change to 1 if the enclosure ends up holding the board the other way up.
 constexpr uint8_t kRotation = 3;
+// Landscape is the panel's native orientation turned 180 degrees (memX = 799 - x,
+// memY = 479 - y), so the rotary wheel is on the top edge rather than the bottom. The navigator
+// swaps the dial's keys to match (ui/nav.cpp).
+constexpr uint8_t kLandscapeRotation = 2;
 // Ghosting builds up with the pixels that partial refreshes flip, so the full refresh comes
 // when the flips since the last one add up to fullScreens whole screens, or after
 // kPartialsPerScreen partial updates per screen however small, whichever is first. Small live
@@ -108,9 +112,9 @@ void assumeShown() { epd.assumeShown(fb->getBuffer()); }
 
 void sleepWhileBusy(bool on) { epd.setSleepWhileBusy(on); }
 
-void setLandscape(bool landscape) { fb->setRotation(landscape ? 0 : kRotation); }
+void setLandscape(bool landscape) { fb->setRotation(landscape ? kLandscapeRotation : kRotation); }
 
-bool landscape() { return fb->getRotation() == 0; }
+bool landscape() { return fb->getRotation() == kLandscapeRotation; }
 
 void lock() { xSemaphoreTakeRecursive(mutex, portMAX_DELAY); }
 

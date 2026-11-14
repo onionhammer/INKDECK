@@ -1,7 +1,9 @@
 // Navigation: a stack of screens, one key language for all of them, and the render loop.
 //
 // Key language (docs/ui-design.md "Input mapping"); every screen follows it:
-//   ▲ / ▼    the dial: move the cursor, turn the page, change the value on screen
+//   ▲ / ▼    the dial: move the cursor, turn the page, change the value on screen. On a
+//            landscape screen the wheel is on top and the navigator swaps the two, so rolling
+//            left is ▲ and right is ▼ there
 //   ●        primary action on what's selected (open, play, pause, run)
 //   HOLD ●   secondary action, shown in the hint bar when a screen has one (skip, edit, sync)
 //   BOOT     back: the screen may use it first (parent folder), otherwise it pops the screen
