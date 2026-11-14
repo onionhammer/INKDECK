@@ -77,8 +77,12 @@ Home also lists **Files**, which has no artboard and follows Home's list languag
 entry (name, type tag, size), the path in the status bar. The card's root starts with an
 `ONBOARD FLASH` row that opens the 9.9 MB FAT partition in the same browser. A held dial moves a
 page at a time in any long list. The ● verb follows the selection: OPEN, READ (EPUB, or any file
-that reads as text), PLAY, VIEW (JPEG, PNG). Neither of the screens Files opens below has an
-artboard or a row on Home:
+that reads as text), PLAY, VIEW (JPEG, PNG). HOLD ● deletes the selection (any entry but
+`ONBOARD FLASH`) after a menu sheet asks: `// DELETE NAME.EXT?` or `// DELETE FOLDER NAME?`,
+then CANCEL (selected) and DELETE, with the file's size or what the folder holds
+(`47 ITEMS INSIDE`, `EMPTY`) right-aligned on the DELETE row. A folder with anything in it shows
+an inverted `// DELETING NAME…` header, with the count on the right, while it goes. Neither of
+the screens Files opens below has an artboard or a row on Home:
 
 - **Picture viewer** (`src/apps/viewer.h`): the picture fitted to the whole panel (at most 2×)
   and centred on paper, landscape when it's wider than tall. The chrome (status bar

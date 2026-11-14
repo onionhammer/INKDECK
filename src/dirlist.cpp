@@ -5,6 +5,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <algorithm>
 
@@ -104,4 +105,66 @@ std::string DirList::findSubdir(const std::string &dir, const char *name) {
   }
   closedir(d);
   return found;
+}
+
+// Both walk the tree breadth first with a list of folders rather than recursing, so a deep tree
+// doesn't run the loop task out of stack.
+
+int DirList::countInside(const std::string &dir) {
+  std::vector<std::string> dirs{dir};
+  int count = 0;
+  for (size_t i = 0; i < dirs.size(); ++i) {
+    DIR *d = opendir(dirs[i].c_str());
+    if (!d) {
+      if (i == 0) return -1;
+      continue;
+    }
+    while (dirent *e = readdir(d)) {
+      if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+      ++count;
+      if (e->d_type == DT_DIR) dirs.push_back(dirs[i] + "/" + e->d_name);
+    }
+    closedir(d);
+  }
+  return count;
+}
+
+bool DirList::removeTree(const std::string &path) {
+  struct stat st;
+  if (stat(path.c_str(), &st) != 0) return false;
+  if (!S_ISDIR(st.st_mode)) return unlink(path.c_str()) == 0;
+
+  // Every folder comes after its parent in dirs, so removing them last to first empties each
+  // one before its parent.
+  std::vector<std::string> dirs{path};
+  bool ok = true;
+  for (size_t i = 0; i < dirs.size(); ++i) {
+    // Names first, deletes after: FatFs isn't asked to read a directory it's changing.
+    std::vector<std::string> files;
+    DIR *d = opendir(dirs[i].c_str());
+    if (!d) continue;  // its rmdir() below fails
+    while (dirent *e = readdir(d)) {
+      if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+      std::string child = dirs[i] + "/" + e->d_name;
+      if (e->d_type == DT_DIR) {
+        dirs.push_back(std::move(child));
+      } else {
+        files.push_back(std::move(child));
+      }
+    }
+    closedir(d);
+    for (const std::string &f : files) {
+      if (unlink(f.c_str()) != 0) {
+        log_w("dirlist: can't delete %s", f.c_str());
+        ok = false;
+      }
+    }
+  }
+  for (size_t i = dirs.size(); i-- > 0;) {
+    if (rmdir(dirs[i].c_str()) != 0) {
+      log_w("dirlist: can't remove %s", dirs[i].c_str());
+      ok = false;
+    }
+  }
+  return ok;
 }
