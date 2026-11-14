@@ -25,7 +25,7 @@ Home.
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, a live I2C bus scan, and a CSV log to the card |
 | **Level** | Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
 | **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. A held dial pages through long folders. **Pictures** (JPEG, PNG) show full screen, dithered, in landscape when they're wider than tall; phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short) |
-| **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots. Also NTP time sync, sleep and reboot |
+| **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots. Also NTP time sync, sleep, reboot, and how often the screen does a full refresh (below) |
 
 **Power**
 - PWR shows a sleep screen and powers the board off completely. The e-paper keeps its image,
@@ -38,6 +38,12 @@ Home.
 - Reading (a book, a text file or a picture) and music don't time out until the battery is low.
 - While you read on battery, the board light-sleeps between page turns.
 - On USB, PWR shows the clock face instead and the board stays on.
+
+**Display:** screen changes use the fast partial refresh. A full refresh (the black-white flash)
+clears the ghosting that partials leave, once they have flipped two screens' worth of pixels
+or after 30 of them. System's AUTO FULL REFRESH sets that to 2, 5, 10 or 20 screens, or OFF,
+and the setting is kept. The serial log reports each refresh and how much change has built
+up since the last full one. HOLD BOOT always does a full refresh.
 
 **Settings:** Wi-Fi, time zone and location come from `.env` at build time (template:
 `.env.example`). `inkdeck.ini` in the card's root overrides the time zone and location
