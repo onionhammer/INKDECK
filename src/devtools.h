@@ -22,6 +22,8 @@
 //               named, e.g. "!wxmodels best_match,gfs_hrrr,ecmwf_ifs025"
 //   !append PATH TEXT   add a line to a file on the card (PATH starts with /sdcard/), e.g.
 //               "!append /sdcard/inkdeck.ini timezone = PST8PDT,M3.2.0,M11.1.0"
+//   !b64 PATH DATA   append DATA, base64 (a multiple of 4 characters), to a file: binary test
+//               files such as pictures, a line at a time
 //   !cat PATH   print a file on the card
 //   !rm PATH    delete a file on the card
 //   !ls PATH    list a folder on the card, with file sizes
@@ -34,6 +36,9 @@
 //               ("!unzip /sdcard/Books/Some Book.epub|OEBPS/style.css")
 //   !sdtest     write test patterns to the card from internal RAM, PSRAM and flash, read them
 //               back and report wrong bytes (flash in one large write is known to fail)
+//   !wom [N [MG]]   arm the IMU's wake on motion for N seconds (10) at a threshold of MG
+//               (100 mg, as the picture viewer's nap does) and print each event; then the IMU
+//               goes back to normal
 #pragma once
 
 namespace devtools {

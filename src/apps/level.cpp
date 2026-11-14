@@ -35,10 +35,12 @@ constexpr float kLevelWithin = 0.3f;  // degrees: "LEVEL", and the tone
 constexpr float kRedrawDeadband = 0.15f;
 constexpr int kSamples = 8;  // IMU reads averaged per update (the accelerometer runs at 56 Hz)
 constexpr char kNamespace[] = "level";
-constexpr char kKey[] = "zero2";
-// The zero from when landscape had the wheel underneath: the screen turned 180 degrees from
-// now, so its pitch and roll have the other sign. The edge angle reads the same either way.
-constexpr char kOldKey[] = "zero";
+constexpr char kKey[] = "zero3";
+// Older zeros, newest first, each a half turn in the screen's plane from the one before it, so
+// pitch and roll change sign at each step (the edge angle reads the same either way): "zero2"
+// was taken with the IMU's screen axes a half turn out (sensor_hub.cpp, fixed 2026-11-14),
+// "zero" before that, with landscape the wheel underneath.
+constexpr const char *kOldKeys[] = {"zero2", "zero"};
 
 constexpr float kDeg = 180.0f / static_cast<float>(M_PI);
 
@@ -59,14 +61,21 @@ Zero loadZero() {
   if (prefs.begin(kNamespace, false)) {  // read-write: read-only logs an error until it exists
     if (prefs.isKey(kKey) && prefs.getBytesLength(kKey) == sizeof z) {
       prefs.getBytes(kKey, &z, sizeof z);
-    } else if (prefs.isKey(kOldKey)) {
-      if (prefs.getBytesLength(kOldKey) == sizeof z) {
-        prefs.getBytes(kOldKey, &z, sizeof z);
-        z.pitch = -z.pitch;
-        z.roll = -z.roll;
-        prefs.putBytes(kKey, &z, sizeof z);
+    } else {
+      bool found = false;
+      for (size_t i = 0; i < sizeof kOldKeys / sizeof kOldKeys[0]; ++i) {
+        const char *key = kOldKeys[i];
+        if (!found && prefs.isKey(key) && prefs.getBytesLength(key) == sizeof z) {
+          prefs.getBytes(key, &z, sizeof z);
+          if (i % 2 == 0) {  // an odd number of half turns from now
+            z.pitch = -z.pitch;
+            z.roll = -z.roll;
+          }
+          prefs.putBytes(kKey, &z, sizeof z);
+          found = true;
+        }
+        if (prefs.isKey(key)) prefs.remove(key);
       }
-      prefs.remove(kOldKey);
     }
     prefs.end();
   }

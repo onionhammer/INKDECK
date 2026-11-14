@@ -140,7 +140,7 @@ bool idle(bool reading) {
   return t != timesync::Phase::Connecting && t != timesync::Phase::Asking;
 }
 
-bool nap(uint32_t maxMs) {
+NapEnd nap(uint32_t maxMs, bool motion) {
   // The buttons are active low, PWR_KEY_SENSE active high; all have pull-ups on the board.
   // Keep their normal (awake) configuration through the sleep, rather than a sleep
   // configuration that may switch the input off.
@@ -151,6 +151,13 @@ bool nap(uint32_t maxMs) {
   }
   gpio_sleep_sel_dis(static_cast<gpio_num_t>(board::PWR_KEY_SENSE));
   gpio_wakeup_enable(static_cast<gpio_num_t>(board::PWR_KEY_SENSE), GPIO_INTR_HIGH_LEVEL);
+  // The IMU toggles its pin at each wake-on-motion event, so wake on the level it isn't at.
+  const gpio_num_t imu = static_cast<gpio_num_t>(board::IMU_INT2);
+  const int imuBefore = gpio_get_level(imu);
+  if (motion) {
+    gpio_sleep_sel_dis(imu);
+    gpio_wakeup_enable(imu, imuBefore ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
+  }
   esp_sleep_enable_gpio_wakeup();
   esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(maxMs) * 1000);
   esp_light_sleep_start();  // no Serial.flush(): it can block on a half-connected USB host
@@ -158,7 +165,13 @@ bool nap(uint32_t maxMs) {
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   for (const int pin : activeLow) gpio_wakeup_disable(static_cast<gpio_num_t>(pin));
   gpio_wakeup_disable(static_cast<gpio_num_t>(board::PWR_KEY_SENSE));
-  return cause == ESP_SLEEP_WAKEUP_GPIO;
+  if (motion) gpio_wakeup_disable(imu);
+  if (cause != ESP_SLEEP_WAKEUP_GPIO) return NapEnd::Timer;
+  // A button that woke the board is still down (a press lasts far longer than the wake).
+  bool button = gpio_get_level(static_cast<gpio_num_t>(board::PWR_KEY_SENSE));
+  for (const int pin : activeLow) button = button || !gpio_get_level(static_cast<gpio_num_t>(pin));
+  if (motion && !button && gpio_get_level(imu) != imuBefore) return NapEnd::Motion;
+  return NapEnd::Button;
 }
 
 }  // namespace power

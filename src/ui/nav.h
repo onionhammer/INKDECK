@@ -54,6 +54,10 @@ class Screen {
   // Such a screen must not need onTick() while idle; its status-bar clock then updates with
   // the next key.
   virtual bool reading() const { return false; }
+  // true for a reading() screen that turns with the board (the picture viewer): its naps keep
+  // the IMU's wake on motion armed, and a movement keeps the board awake a few seconds, long
+  // enough for onTick() to see how it's held now.
+  virtual bool wakeOnMotion() const { return false; }
   // Called when the board starts light-sleeping under this screen: save anything that a power
   // loss shouldn't take (the Reader saves its place).
   virtual void onNap() {}

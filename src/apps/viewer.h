@@ -1,7 +1,10 @@
 // Picture viewer: a JPEG or PNG from Files, full screen. Not a module (no Home row, it wears
 // Files' tag); Files opens it on a picture, and the dial steps through the folder's others.
-//   - fitted to the whole panel and centred on paper, never grown more than 2x; landscape when
-//     the picture is wider than tall (turn the board, as for the Clock), portrait otherwise;
+//   - fitted to the whole panel and centred on paper, never grown more than 2x;
+//   - portrait or landscape (the wheel on top, as for the Clock) as the board is held, read from
+//     the IMU, and turning the board turns the picture within a couple of seconds, on battery
+//     too (the IMU's wake on motion wakes the nap). Lying flat, by the picture's shape:
+//     landscape when it's wider than tall;
 //   - the chrome (status bar with "03/12 name.jpg", key hints) sits over the picture, and ●
 //     hides or shows it;
 //   - ▲ previous   ▼ next   ● hide / show the chrome   BOOT back to Files, on the last picture.

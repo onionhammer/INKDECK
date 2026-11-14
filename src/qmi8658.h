@@ -3,7 +3,7 @@
 // 2x off, gyro X/Y swapped, low-pass filters never enabled).
 //
 // Configuration: accelerometer ±4 g, gyroscope ±256 °/s, both at 56 Hz (6-axis mode) with the
-// low-pass filters on. Interrupts are unused; INT2 (GPIO40) is the usable pin if they're needed.
+// low-pass filters on. The only interrupt is wake on motion, on INT2 (GPIO40; INT1 isn't wired).
 #pragma once
 
 namespace qmi8658 {
@@ -21,8 +21,17 @@ struct Reading {
 
 Reading read();
 
-// Both sensors off (standby, a few µA) or back on with the configuration above. The Reader's
-// light sleep turns them off; the first readings after turning them on may still be settling.
+// Both sensors off (standby, a few µA) or back on with the configuration above, leaving wake
+// on motion if it was armed. The Reader's light sleep turns them off; the first readings after
+// turning them on may still be settling (or still hold the last ones from before).
 bool setEnabled(bool on);
+
+// Wake on motion (datasheet §12): the gyroscope off, the accelerometer in its 11 Hz low-power
+// mode, and INT2 (board::IMU_INT2) toggling each time the acceleration on an axis moves by more
+// than thresholdMg from one sample to the next: by default a turn of the board, not a hand
+// holding it still. read() gets no new data in this mode. The picture viewer's light sleep
+// arms it, so turning the board wakes it (power::nap()); setEnabled() ends it.
+constexpr int kWakeThresholdMg = 100;
+bool wakeOnMotion(int thresholdMg = kWakeThresholdMg);  // 1-255
 
 }  // namespace qmi8658
