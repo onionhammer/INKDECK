@@ -17,6 +17,7 @@
 #include "apps/weather.h"
 #include "audio.h"
 #include "covers.h"
+#include "dirlist.h"
 #include "fonts.h"
 #include "pmic.h"
 #include "podcast_library.h"
@@ -70,7 +71,7 @@ constexpr Module kModules[] = {
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},
     {"LEVEL", "IMU", "Bubble level for surfaces, a vial for edges, and a tone when it's level.",
      "QMI8658A @ 0x6B", Kind::Level},
-    {"FILES", "SD", "Browse the microSD card and the onboard flash. Opens books, plays music.",
+    {"FILES", "SD", "Browse the microSD card and the onboard flash. Books, music, pictures, text.",
      "SDMMC 4-bit \xC2\xB7 16 MB flash", Kind::Files},
     {"SYSTEM", "PMIC", "Battery, power rails, sleep schedule, Wi-Fi and firmware updates.",
      "TG28 (AXP2101) @ 0x34", Kind::System},
@@ -117,7 +118,10 @@ int statsFor(const Module &m, Stat out[4]) {
       }
       out[0] = {"LAST", title};
       out[1] = {"PLACE", std::to_string(pos.percent) + " %"};
-      out[2] = {"FONT", ui::upper(fonts::kReader[pos.fontSize % fonts::kReaderSizeCount].name)};
+      // A text file (apps/textview.h) keeps its font choice in Position::chapter.
+      const bool mono = !DirList::isEpub(path) && (pos.chapter & 1);
+      const FontFamily *family = mono ? fonts::kTextMono : fonts::kReader;
+      out[2] = {"FONT", ui::upper(family[pos.fontSize % fonts::kReaderSizeCount].name)};
       out[3] = {"SD CARD", cardSize()};
       return 4;
     }
@@ -136,7 +140,7 @@ int statsFor(const Module &m, Stat out[4]) {
     case Kind::Files:
       out[0] = {"SD CARD", cardSize()};
       out[1] = {"FLASH FAT", flashSize()};
-      out[2] = {"OPENS", "EPUB \xC2\xB7 MP3"};
+      out[2] = {"OPENS", "EPUB MP3 JPG TXT"};
       return 3;
     case Kind::Sensors: {
       const shtc3::Reading e = sensors::env();
@@ -431,7 +435,8 @@ class HomeScreen : public ui::Screen {
       std::string path, title;
       readstate::Position pos;
       picture::Bitmap cover;
-      if (readstate::last(path, title, pos) && covers::thumbnail(path, kMaxW, maxH, cover)) {
+      if (readstate::last(path, title, pos) && DirList::isEpub(path) &&
+          covers::thumbnail(path, kMaxW, maxH, cover)) {
         const Rect box{p.x, y, cover.w + 2 * kFrame, cover.h + 2 * kFrame};
         dither50(c, {box.x + kShadow, box.bottom(), box.w, kShadow});
         dither50(c, {box.right(), box.y + kShadow, kShadow, box.h - kShadow});

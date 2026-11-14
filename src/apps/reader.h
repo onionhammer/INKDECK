@@ -15,7 +15,7 @@ namespace apps {
 std::unique_ptr<ui::Screen> makeReader(const std::string &path, std::string &err);
 
 // The last book read, at its saved position, or nullptr if there isn't one (or it's gone).
-// LIBRARY then opens Files in the book's folder.
+// LIBRARY then opens Files in the book's folder. A text file read last opens in the text reader.
 std::unique_ptr<ui::Screen> resumeLastBook();
 
 }  // namespace apps

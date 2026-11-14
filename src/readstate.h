@@ -8,8 +8,8 @@
 namespace readstate {
 
 struct Position {
-  uint16_t chapter = 0;  // spine index
-  uint32_t offset = 0;   // flow offset of the page's first byte
+  uint16_t chapter = 0;  // spine index; for a text file (apps/textview.h), bit 0 = monospace
+  uint32_t offset = 0;   // flow offset of the page's (text file: top line's) first byte
   uint8_t fontSize = 1;  // index into fonts::kReader
   uint8_t percent = 0;   // whole-book progress, for Home's preview
 };

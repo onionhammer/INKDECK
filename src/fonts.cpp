@@ -16,6 +16,12 @@ const FontFamily kReader[kReaderSizeCount] = {
      36},
 };
 
+const FontFamily kTextMono[kReaderSizeCount] = {
+    {"Mono 14", {&kMono14Medium, &kMono14Bold, &kMono14Medium, &kMono14Bold}, 22},
+    {"Mono 18", {&kMono18Medium, &kMono18Bold, &kMono18Medium, &kMono18Bold}, 28},
+    {"Mono 20", {&kMono20Medium, &kMono20Medium, &kMono20Medium, &kMono20Medium}, 32},
+};
+
 const GFXfont *const kDropCap = &kMono68ExtraBold;
 
 }  // namespace fonts

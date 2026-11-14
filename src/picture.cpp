@@ -8,6 +8,7 @@
 #include <PNGdec.h>
 #include <esp_heap_caps.h>
 #include <math.h>
+#include <stdio.h>
 
 #include <algorithm>
 #include <memory>
@@ -74,31 +75,108 @@ struct Grey {
   }
 };
 
+// --- Sources --------------------------------------------------------------------------------
+
+// Where the compressed picture comes from: bytes in memory, or a file streamed from the card.
+struct Source {
+  const std::string *data = nullptr;
+  const char *path = nullptr;
+};
+
+// The decoders' file callbacks. JPEGFILE and PNGFILE have the same fields (handle, position,
+// size); the callbacks keep the position.
+void *fileOpen(const char *path, int32_t *size) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return nullptr;
+  fseek(f, 0, SEEK_END);
+  *size = static_cast<int32_t>(ftell(f));
+  fseek(f, 0, SEEK_SET);
+  return f;
+}
+
+void fileClose(void *handle) {
+  if (handle) fclose(static_cast<FILE *>(handle));
+}
+
+template <typename File>
+int32_t fileRead(File *file, uint8_t *buf, int32_t len) {
+  const auto n = static_cast<int32_t>(fread(buf, 1, len, static_cast<FILE *>(file->fHandle)));
+  file->iPos += n;
+  return n;
+}
+
+template <typename File>
+int32_t fileSeek(File *file, int32_t pos) {
+  pos = std::max<int32_t>(0, std::min(pos, file->iSize));
+  if (fseek(static_cast<FILE *>(file->fHandle), pos, SEEK_SET) != 0) return -1;
+  file->iPos = pos;
+  return pos;
+}
+
+// The first few bytes of a file, enough for sniff() and pngSize().
+bool readHead(const char *path, std::string &out) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return false;
+  out.resize(24);
+  out.resize(fread(&out[0], 1, out.size(), f));
+  fclose(f);
+  return !out.empty();
+}
+
+// EXIF orientations 5-8 store the picture a quarter turn from how it's shown.
+bool quarterTurn(int orientation) { return orientation >= 5 && orientation <= 8; }
+
 // --- JPEG ---------------------------------------------------------------------------------
 
+// RGB565 to grey, the same weights as pngDraw.
+uint8_t greyOf(uint16_t v) {
+  const int r = (v >> 11) * 255 / 31, g = (v >> 5 & 63) * 255 / 63, b = (v & 31) * 255 / 31;
+  return static_cast<uint8_t>((r * 77 + g * 150 + b * 29) >> 8);
+}
+
+// Pixels arrive as 8-bit grey, or RGB565 for progressive files (see decodeJpeg); stride iWidth.
 int jpegDraw(JPEGDRAW *d) {
   Grey &g = *static_cast<Grey *>(d->pUser);
-  const auto *src = reinterpret_cast<const uint8_t *>(d->pPixels);  // 8-bit grey, stride iWidth
   const int cols = std::min(d->iWidthUsed, g.w - d->x);
-  for (int y = 0; y < d->iHeight && d->y + y < g.h; ++y) {
-    if (cols > 0) memcpy(g.px.get() + (d->y + y) * g.w + d->x, src + y * d->iWidth, cols);
+  for (int y = 0; y < d->iHeight && d->y + y < g.h && cols > 0; ++y) {
+    uint8_t *dst = g.px.get() + (d->y + y) * g.w + d->x;
+    if (d->iBpp == 8) {
+      memcpy(dst, reinterpret_cast<const uint8_t *>(d->pPixels) + y * d->iWidth, cols);
+    } else {
+      const uint16_t *src = d->pPixels + y * d->iWidth;
+      for (int x = 0; x < cols; ++x) dst[x] = greyOf(src[x]);
+    }
   }
   return 1;
 }
 
-bool decodeJpeg(const std::string &data, int targetW, int targetH, Grey &out) {
+using JpegPtr = std::unique_ptr<JPEGDEC, void (*)(JPEGDEC *)>;
+
+// A decoder with the picture's header read, or null.
+JpegPtr openJpeg(const Source &src) {
   // JPEGDEC holds ~20 KB of tables and buffers; internal RAM keeps its SIMD paths happy.
   void *mem = heap_caps_malloc(sizeof(JPEGDEC), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  if (!mem) return false;
-  std::unique_ptr<JPEGDEC, void (*)(JPEGDEC *)> jpeg(new (mem) JPEGDEC, [](JPEGDEC *j) {
-    j->close();
+  JpegPtr jpeg(mem ? new (mem) JPEGDEC : nullptr, [](JPEGDEC *j) {
+    j->close();  // closes the file, if there is one
     j->~JPEGDEC();
     heap_caps_free(j);
   });
-  if (!jpeg->openRAM(const_cast<uint8_t *>(bytes(data)), static_cast<int>(data.size()),
-                     jpegDraw)) {
-    return false;
-  }
+  if (!jpeg) return jpeg;
+  const bool ok =
+      src.path ? jpeg->open(src.path, fileOpen, fileClose, fileRead<JPEGFILE>,
+                            fileSeek<JPEGFILE>, jpegDraw)
+               : jpeg->openRAM(const_cast<uint8_t *>(bytes(*src.data)),
+                               static_cast<int>(src.data->size()), jpegDraw);
+  if (!ok || jpeg->getWidth() <= 0 || jpeg->getHeight() <= 0) jpeg.reset();
+  return jpeg;
+}
+
+// orientation: the EXIF orientation to apply afterwards (files only; 1 = none).
+bool decodeJpeg(const Source &src, int targetW, int targetH, Grey &out, int &orientation) {
+  JpegPtr jpeg = openJpeg(src);
+  if (!jpeg) return false;
+  orientation = src.path ? jpeg->getOrientation() : 1;
+  if (quarterTurn(orientation)) std::swap(targetW, targetH);  // the target as stored
   const int w = jpeg->getWidth(), h = jpeg->getHeight();
   // The decoder can shrink by 2, 4 or 8 for free: take the most that stays at or above the
   // target. Progressive files decode only their DC scan, which is 1/8 scale.
@@ -117,7 +195,10 @@ bool decodeJpeg(const std::string &data, int targetW, int targetH, Grey &out) {
     }
   }
   if (!out.allocate((w + scale - 1) / scale, (h + scale - 1) / scale)) return false;
-  jpeg->setPixelType(EIGHT_BIT_GRAYSCALE);
+  // Not grey for progressive files: JPEGDEC 1.8.5 skips their colour blocks for grey output
+  // with an index (MCU_SKIP & 0xffffff) that writes ~32 MB past its buffer.
+  const bool progressive = jpeg->getJPEGType() == JPEG_MODE_PROGRESSIVE;
+  jpeg->setPixelType(progressive ? RGB565_LITTLE_ENDIAN : EIGHT_BIT_GRAYSCALE);
   jpeg->setUserPointer(&out);
   return jpeg->decode(0, 0, option) == 1;
 }
@@ -135,28 +216,45 @@ int pngDraw(PNGDRAW *d) {
   if (d->y >= job.grey->h) return 1;
   job.png->getLineAsRGB565(d, job.line, PNG_RGB565_LITTLE_ENDIAN, 0xFFFFFFFF);  // alpha on white
   uint8_t *row = job.grey->px.get() + d->y * job.grey->w;
-  for (int x = 0; x < d->iWidth && x < job.grey->w; ++x) {
-    const uint16_t v = job.line[x];
-    const int r = (v >> 11) * 255 / 31, g = (v >> 5 & 63) * 255 / 63, b = (v & 31) * 255 / 31;
-    row[x] = static_cast<uint8_t>((r * 77 + g * 150 + b * 29) >> 8);
-  }
+  for (int x = 0; x < d->iWidth && x < job.grey->w; ++x) row[x] = greyOf(job.line[x]);
   return 1;
 }
 
-bool decodePng(const std::string &data, Grey &out) {
+// PNGdec keeps the current and previous rows, each 16-byte aligned, in a buffer of
+// PNG_MAX_BUFFERED_PIXELS bytes, but only checks that one row fits: a wide RGBA picture would
+// overrun it. True if both do.
+bool pngRowsFit(PNG &png) {
+  int channels = 0;
+  switch (png.getPixelType()) {
+    case PNG_PIXEL_GRAYSCALE:
+    case PNG_PIXEL_INDEXED: channels = 1; break;
+    case PNG_PIXEL_GRAY_ALPHA: channels = 2; break;
+    case PNG_PIXEL_TRUECOLOR: channels = 3; break;
+    case PNG_PIXEL_TRUECOLOR_ALPHA: channels = 4; break;
+    default: return false;
+  }
+  const int64_t pitch = (static_cast<int64_t>(channels) * png.getBpp() * png.getWidth() + 7) / 8;
+  return 2 * (pitch + 1) + 30 <= PNG_MAX_BUFFERED_PIXELS;  // 2 rows + filter bytes + alignment
+}
+
+bool decodePng(const Source &src, Grey &out) {
   void *mem = heap_caps_malloc(sizeof(PNG), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);  // ~60 KB
   if (!mem) return false;
   std::unique_ptr<PNG, void (*)(PNG *)> png(new (mem) PNG, [](PNG *p) {
-    p->close();
+    p->close();  // closes the file, if there is one
     p->~PNG();
     heap_caps_free(p);
   });
-  if (png->openRAM(const_cast<uint8_t *>(bytes(data)), static_cast<int>(data.size()), pngDraw) !=
-      PNG_SUCCESS) {
+  const int rc = src.path ? png->open(src.path, fileOpen, fileClose, fileRead<PNGFILE>,
+                                      fileSeek<PNGFILE>, pngDraw)
+                          : png->openRAM(const_cast<uint8_t *>(bytes(*src.data)),
+                                         static_cast<int>(src.data->size()), pngDraw);
+  if (rc != PNG_SUCCESS) return false;
+  const int w = png->getWidth(), h = png->getHeight();  // 0 if the file didn't open
+  if (w <= 0 || h <= 0 || static_cast<int64_t>(w) * h > kMaxPngPixels || !pngRowsFit(*png) ||
+      !out.allocate(w, h)) {
     return false;
   }
-  const int w = png->getWidth(), h = png->getHeight();
-  if (static_cast<int64_t>(w) * h > kMaxPngPixels || !out.allocate(w, h)) return false;
   std::unique_ptr<uint16_t, void (*)(void *)> line(
       static_cast<uint16_t *>(heap_caps_malloc(w * sizeof(uint16_t), MALLOC_CAP_8BIT)), free);
   if (!line) return false;
@@ -164,7 +262,36 @@ bool decodePng(const std::string &data, Grey &out) {
   return png->decode(&job, 0) == PNG_SUCCESS;
 }
 
-// --- Scale, tone, dither ------------------------------------------------------------------
+// --- Orient, scale, tone, dither ----------------------------------------------------------
+
+// Turns or flips a decoded picture upright for its EXIF orientation (2-8). For each pixel of
+// the upright picture, the stored pixel it shows.
+bool orient(Grey &g, int orientation) {
+  const bool quarter = quarterTurn(orientation);
+  Grey out;
+  if (!out.allocate(quarter ? g.h : g.w, quarter ? g.w : g.h)) return false;
+  const int w = g.w, h = g.h;
+  const uint8_t *src = g.px.get();
+  for (int y = 0; y < out.h; ++y) {
+    uint8_t *dst = out.px.get() + y * out.w;
+    for (int x = 0; x < out.w; ++x) {
+      int sx, sy;
+      switch (orientation) {
+        case 2: sx = w - 1 - x; sy = y; break;          // mirrored
+        case 3: sx = w - 1 - x; sy = h - 1 - y; break;  // half turn
+        case 4: sx = x; sy = h - 1 - y; break;          // flipped
+        case 5: sx = y; sy = x; break;                  // transposed
+        case 6: sx = y; sy = h - 1 - x; break;          // stored a quarter turn anticlockwise
+        case 7: sx = w - 1 - y; sy = h - 1 - x; break;  // transversed
+        default: sx = w - 1 - y; sy = x; break;         // 8: a quarter turn clockwise
+      }
+      dst[x] = src[sy * w + sx];
+    }
+  }
+  g = std::move(out);
+  return true;
+}
+
 
 // Area average when shrinking, nearest pixel when growing (the layout grows at most 2x).
 // Source spans for each target column (or row): [edge[i], max(edge[i] + 1, edge[i + 1])).
@@ -247,6 +374,31 @@ void atkinson(const Grey &g, const uint8_t (&lut)[256], Bitmap &out) {
   }
 }
 
+// Decodes (turning a file's JPEG upright), then scales, tones and dithers to exactly w x h.
+bool renderFrom(const Source &src, Format f, int w, int h, Bitmap &out) {
+  if (w <= 0 || h <= 0) return false;
+  const uint32_t t0 = millis();
+  Grey decoded;
+  int orientation = 1;
+  const bool ok = f == Format::Jpeg ? decodeJpeg(src, w, h, decoded, orientation)
+                  : f == Format::Png ? decodePng(src, decoded)
+                                     : false;
+  if (!ok) return false;
+  if (orientation >= 2 && orientation <= 8 && !orient(decoded, orientation)) return false;
+  const uint32_t t1 = millis();
+  Grey scaled;
+  uint32_t hist[256] = {};
+  if (!resample(decoded, w, h, scaled, hist)) return false;
+  decoded.px.reset();
+  uint8_t lut[256];
+  toneCurve(hist, static_cast<size_t>(w) * h, lut);
+  atkinson(scaled, lut, out);
+  log_i("picture: %s %dx%d -> %dx%d, decode %lu ms, scale+dither %lu ms",
+        f == Format::Jpeg ? "JPEG" : "PNG", decoded.w, decoded.h, w, h,
+        static_cast<unsigned long>(t1 - t0), static_cast<unsigned long>(millis() - t1));
+  return true;
+}
+
 }  // namespace
 
 Format sniff(const std::string &d) {
@@ -276,7 +428,7 @@ void fit(int w, int h, int boxW, int boxH, int &outW, int &outH) {
   outH = std::max(1, static_cast<int>(lroundf(h * scale)));
 }
 
-void draw(GFXcanvas1 &canvas, int x0, int y0, const Bitmap &b) {
+void draw(GFXcanvas1 &canvas, int x0, int y0, const Bitmap &b, int top, int bottom) {
   uint8_t *buf = canvas.getBuffer();
   const int rot = canvas.getRotation();
   const int cw = canvas.width(), ch = canvas.height();
@@ -284,7 +436,7 @@ void draw(GFXcanvas1 &canvas, int x0, int y0, const Bitmap &b) {
   const int stride = (b.w + 7) / 8;
   for (int y = 0; y < b.h; ++y) {
     const int py = y0 + y;
-    if (py < 0 || py >= ch) continue;
+    if (py < 0 || py >= ch || py < top || py >= bottom) continue;
     const uint8_t *row = b.bits.data() + y * stride;
     for (int x = 0; x < b.w; ++x) {
       const int px = x0 + x;
@@ -308,26 +460,31 @@ void draw(GFXcanvas1 &canvas, int x0, int y0, const Bitmap &b) {
 }
 
 bool render(const std::string &data, int w, int h, Bitmap &out) {
-  if (w <= 0 || h <= 0) return false;
-  const uint32_t t0 = millis();
-  Grey decoded;
-  const Format f = sniff(data);
-  const bool ok = f == Format::Jpeg ? decodeJpeg(data, w, h, decoded)
-                  : f == Format::Png ? decodePng(data, decoded)
-                                     : false;
-  if (!ok) return false;
-  const uint32_t t1 = millis();
-  Grey scaled;
-  uint32_t hist[256] = {};
-  if (!resample(decoded, w, h, scaled, hist)) return false;
-  decoded.px.reset();
-  uint8_t lut[256];
-  toneCurve(hist, static_cast<size_t>(w) * h, lut);
-  atkinson(scaled, lut, out);
-  log_i("picture: %s %dx%d -> %dx%d, decode %lu ms, scale+dither %lu ms",
-        f == Format::Jpeg ? "JPEG" : "PNG", decoded.w, decoded.h, w, h,
-        static_cast<unsigned long>(t1 - t0), static_cast<unsigned long>(millis() - t1));
-  return true;
+  return renderFrom(Source{&data, nullptr}, sniff(data), w, h, out);
+}
+
+bool probeFile(const std::string &path, int &w, int &h) {
+  std::string head;
+  if (!readHead(path.c_str(), head)) return false;
+  switch (sniff(head)) {
+    case Format::Png: return pngSize(bytes(head), head.size(), w, h);
+    case Format::Jpeg: {
+      // The decoder reads the header, EXIF orientation included.
+      const JpegPtr jpeg = openJpeg(Source{nullptr, path.c_str()});
+      if (!jpeg) return false;
+      w = jpeg->getWidth();
+      h = jpeg->getHeight();
+      if (quarterTurn(jpeg->getOrientation())) std::swap(w, h);
+      return true;
+    }
+    default: return false;
+  }
+}
+
+bool renderFile(const std::string &path, int w, int h, Bitmap &out) {
+  std::string head;
+  if (!readHead(path.c_str(), head)) return false;
+  return renderFrom(Source{nullptr, path.c_str()}, sniff(head), w, h, out);
 }
 
 }  // namespace picture
