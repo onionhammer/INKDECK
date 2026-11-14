@@ -78,12 +78,10 @@ constexpr Module kModules[] = {
 constexpr int kModuleCount = sizeof kModules / sizeof kModules[0];
 
 std::string twoDigits(int n) {
-  char buf[8];
+  char buf[12];  // room for any int, so the compiler can see nothing is cut off
   snprintf(buf, sizeof buf, "%02d", n);
   return buf;
 }
-
-std::string moduleTag(int i) { return twoDigits(i + 1) + " " + kModules[i].label; }
 
 std::string cardSize() {
   if (!sdcard::mounted()) return "NO CARD";

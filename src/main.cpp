@@ -22,6 +22,7 @@
 #include "devtools.h"
 #include "input.h"
 #include "netget.h"
+#include "ota.h"
 #include "pmic.h"
 #include "podcast_library.h"
 #include "power.h"
@@ -78,6 +79,9 @@ void setup() {
     log_i("RTC unset: syncing the time from NTP");
     timesync::start();
   }
+  // Made it through setup() with a frame on the panel: if this is the first boot after an
+  // update over Wi-Fi, keep the new image (until now a reset would have rolled it back).
+  ota::confirmBoot();
 }
 
 void loop() {

@@ -11,6 +11,7 @@
 #include "apps/sleep.h"
 #include "audio.h"
 #include "input.h"
+#include "ota.h"
 #include "pmic.h"
 #include "podcast_library.h"
 #include "power.h"
@@ -46,7 +47,7 @@ bool readingNow() {
 
 bool mayNap() {
   if (!readingNow() || audio::active() || audio::ringing() || wlan::radioOn()) return false;
-  if (weather::syncing() || podcasts::busy()) return false;
+  if (weather::syncing() || podcasts::busy() || ota::active()) return false;
   const timesync::Phase t = timesync::status().phase;
   if (t == timesync::Phase::Connecting || t == timesync::Phase::Asking) return false;
   if (millis() - keyWakeMs < kKeyWakeGuardMs) return false;
