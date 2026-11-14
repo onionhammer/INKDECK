@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "inkdeck_secrets.h"  // TIMEZONE, LOCATION_CONFIGURED, LATITUDE, LONGITUDE
+#include "nfs.h"
 #include "sdcard.h"
 
 namespace settings {
@@ -23,10 +24,11 @@ struct Values {
   bool location = false;
   double lat = 0;
   double lon = 0;
+  std::vector<std::string> nfs;  // `nfs =` values, as written
   int lockMinutes = 0;
 
   bool operator==(const Values &o) const {
-    return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
+    return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon && nfs == o.nfs &&
            lockMinutes == o.lockMinutes;
   }
 };
@@ -70,6 +72,14 @@ constexpr const char *kTemplate =
     "; latitude = 51.48\n"
     "; longitude = 0.00\n"
     "\n"
+    "[network]\n"
+    "; NFS shares (NFS version 3) to browse in Files, over the Wi-Fi network built in from .env.\n"
+    "; One nfs = line each, up to 4: nfs://server/export, or server:/export. Options go after\n"
+    "; a ?, joined by &: name (shown in Files), uid and gid (who the server takes the board for;\n"
+    "; default 0), nfsport and mountport (else the server's portmapper says). Read-only.\n"
+    "; nfs = nfs://nas.local/volume1/books\n"
+    "; nfs = nfs://192.168.1.20/srv/media?name=Media&uid=1000&gid=1000\n"
+    "\n"
     "[lock]\n"
     "; A PIN of 4 to 8 digits locks the board when it powers on, and when it wakes from the desk\n"
     "; face. Turn the wheel to pick each digit, then press to move to the next, like a padlock.\n"
@@ -81,6 +91,25 @@ constexpr const char *kTemplate =
     "; Also lock after this many minutes without a key (0: only at power-on).\n"
     "; lock_minutes = 5\n";
 
+// The NFS shares go in NVS as one string, a line each.
+std::vector<std::string> splitLines(const std::string &text) {
+  std::vector<std::string> out;
+  size_t pos = 0;
+  while (pos < text.size()) {
+    size_t nl = text.find('\n', pos);
+    if (nl == std::string::npos) nl = text.size();
+    if (nl > pos) out.push_back(text.substr(pos, nl - pos));
+    pos = nl + 1;
+  }
+  return out;
+}
+
+std::string joinLines(const std::vector<std::string> &lines) {
+  std::string out;
+  for (const std::string &l : lines) out += l + "\n";
+  return out;
+}
+
 void loadNvs() {
   if (loaded) return;
   loaded = true;
@@ -90,6 +119,8 @@ void loadNvs() {
   card.location = prefs.getBool("loc", false);
   card.lat = prefs.getDouble("lat", 0);
   card.lon = prefs.getDouble("lon", 0);
+  // isKey() first: getString() logs an error for a key that was never written (no shares yet).
+  if (prefs.isKey("nfs")) card.nfs = splitLines(prefs.getString("nfs", "").c_str());
   card.lockMinutes = prefs.getInt("lockmin", 0);
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
@@ -103,6 +134,7 @@ void saveNvs() {
   prefs.putBool("loc", card.location);
   prefs.putDouble("lat", card.lat);
   prefs.putDouble("lon", card.lon);
+  prefs.putString("nfs", joinLines(card.nfs).c_str());
   prefs.putInt("lockmin", card.lockMinutes);
   prefs.end();
 }
@@ -278,6 +310,17 @@ Values parse(const std::string &text, CardPin &cardPin) {
     } else if (key == "longitude") {
       hasLon = parseDegrees(value, 180, lon);
       if (!hasLon) log_w("settings: %s: longitude must be -180 to 180", kFile);
+    } else if (key == "nfs") {
+      nfs::Share share;
+      std::string error;
+      if (!nfs::parse(value, share, error)) {
+        log_w("settings: %s: nfs \"%s\": %s", kFile, value.c_str(), error.c_str());
+      } else if (static_cast<int>(v.nfs.size()) >= nfs::kMaxShares) {
+        log_w("settings: %s: only %d nfs shares; \"%s\" left out", kFile, nfs::kMaxShares,
+              value.c_str());
+      } else {
+        v.nfs.push_back(value);
+      }
     } else if (key == "pin") {
       if (isOff(value)) {
         cardPin = {CardPin::Off, {}};
@@ -409,8 +452,10 @@ void loadCard() {
     log_w("settings: %s: lock_minutes does nothing without a pin", kFile);
   }
   applyTimezone();
-  log_i("settings: time zone %s, location %s", card.tz.empty() ? "built in" : "from the card",
-        card.location ? "from the card" : hasLocation() ? "built in" : "not set");
+  log_i("settings: time zone %s, location %s, %u NFS shares",
+        card.tz.empty() ? "built in" : "from the card",
+        card.location ? "from the card" : hasLocation() ? "built in" : "not set",
+        static_cast<unsigned>(card.nfs.size()));
 }
 
 const char *timezone() {
@@ -441,6 +486,11 @@ double longitude() {
 Source locationSource() {
   loadNvs();
   return card.location ? Source::Card : Source::Built;
+}
+
+std::vector<std::string> nfsShares() {
+  loadNvs();
+  return card.nfs;
 }
 
 bool hasPin() {

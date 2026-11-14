@@ -1,7 +1,8 @@
-// Files: browse the microSD card and the onboard FAT partition (an ONBOARD FLASH row first on
-// the card's root). Opens EPUBs in the reader, plays MP3s, queueing the rest of the folder's
-// MP3s after the chosen one, shows JPEG and PNG pictures full screen (apps/viewer.h), and opens
-// any other file that reads as text in the text reader (apps/textview.h).
+// Files: browse the microSD card, the onboard FAT partition (an ONBOARD FLASH row first on the
+// card's root) and NFS shares on the network (a row each after it, from SD:/inkdeck.ini; nfs.h).
+// Opens EPUBs in the reader, plays MP3s, queueing the rest of the folder's MP3s after the
+// chosen one, shows JPEG and PNG pictures full screen (apps/viewer.h), and opens any other file
+// that reads as text in the text reader (apps/textview.h).
 //
 // The design canvas has no Files artboard, so this follows Home's list language:
 //   - one row per entry: name, a type tag (DIR, EPUB, MP3, ...), and the size;
@@ -11,6 +12,9 @@
 //     size or how many items a folder holds. A folder goes with everything in it, under an
 //     inverted DELETING header. The player stops first if it has a file in there open; inside
 //     SD:/Podcasts it waits until no download is running. (The player itself is HOLD BOOT.)
+// A share's screen shows a CONNECTING header while it joins Wi-Fi and mounts the share, then
+// lists it like the card; if that fails it says why, and ● tries again. Shares are read-only:
+// no HOLD ● DELETE there.
 #pragma once
 #include <memory>
 #include <string>
@@ -19,12 +23,16 @@
 
 namespace apps {
 
-// Starts in dir, an absolute path under sdcard::kMountPoint (or flashfs::kMountPoint), with the
-// cursor on the entry named select if given.
+// Starts in dir, an absolute path under sdcard::kMountPoint (or flashfs::kMountPoint, or a
+// share's nfs::Share::path()), with the cursor on the entry named select if given.
 std::unique_ptr<ui::Screen> makeFiles(const std::string &dir, const std::string &select = "");
 
 // The card's top-level folder called `name` in any case ("books" -> "/sdcard/Books"), or the
 // card root if there isn't one.
 std::string sdFolder(const char *name);
+
+// A path as the status bar shows it: "/sdcard/Books" -> "SD:/Books", "/ffat" -> "FLASH:/",
+// "/nfs/Media/x" -> "NFS:/Media/x".
+std::string displayPath(const std::string &path);
 
 }  // namespace apps

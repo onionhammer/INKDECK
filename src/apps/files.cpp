@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "dirlist.h"
 #include "flashfs.h"
+#include "nfs.h"
 #include "podcast_library.h"
 #include "sdcard.h"
 #include "textdoc.h"
@@ -86,24 +87,43 @@ bool isInside(const std::string &path, const std::string &dir) {
 
 std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
 
-// Which file system a Files screen browses. The card's root lists the onboard flash as an extra
-// first row, which opens a Files screen of its own (BOOT at its root comes back).
-enum class Volume : uint8_t { Sd, Flash };
+// Which file system a Files screen browses. The card's root lists the onboard flash and then
+// each NFS share as extra first rows; each opens a Files screen of its own (BOOT at its root
+// comes back).
+enum class Volume : uint8_t { Sd, Flash, Nfs };
 
-const char *rootOf(Volume v) { return v == Volume::Sd ? sdcard::kMountPoint : flashfs::kMountPoint; }
+std::string rootOf(Volume v, int share) {
+  switch (v) {
+    case Volume::Sd: return sdcard::kMountPoint;
+    case Volume::Flash: return flashfs::kMountPoint;
+    case Volume::Nfs: break;
+  }
+  return nfs::shares()[share].path();
+}
 
 class FilesScreen : public ui::Screen {
  public:
-  FilesScreen(Volume volume, const std::string &dir, const std::string &select)
-      : volume_(volume), list_(rootOf(volume)) {
-    openDir(dir, select);
+  // share: which of nfs::shares() a Volume::Nfs screen browses.
+  FilesScreen(Volume volume, int share, const std::string &dir, const std::string &select)
+      : volume_(volume), list_(rootOf(volume, share)) {
+    if (volume_ != Volume::Nfs) {
+      openDir(dir, select);
+      return;
+    }
+    // A share is listed once it's mounted: at once if it is already, else after a CONNECTING
+    // header while a task joins Wi-Fi and mounts it (onTick() watches).
+    lease_ = std::make_unique<nfs::Lease>(share);
+    pendingDir_ = dir;
+    pendingSelect_ = select;
+    connect();
   }
 
   std::string tag() const override { return moduleTag("FILES"); }
   std::string context() const override {
-    const std::string prefix = volume_ == Volume::Sd ? "SD:/" : "FLASH:/";
-    const std::string rel = list_.relativePath();
-    return rel.empty() ? prefix : prefix + rel + "/";
+    // "SD:/", "SD:/Books/", "NFS:/Media/Music/"
+    const std::string dir = list_.cwd().empty() ? rootOf(volume_, shareIndex()) : list_.cwd();
+    const std::string shown = displayPath(dir);
+    return shown.back() == '/' ? shown : shown + "/";
   }
   bool contextIsPath() const override { return true; }
 
@@ -117,18 +137,20 @@ class FilesScreen : public ui::Screen {
   int hints(ui::Hint *out) const override {
     int n = 0;
     if (!pending_.path.empty()) return 0;  // deleting: no keys until it's done
-    if (!list_.readable()) {
+    if (connecting()) {
+      // nothing to do but wait, or go back
+    } else if (!list_.readable()) {
       out[n++] = {ui::glyph::kPress, "RETRY"};
     } else {
       if (rowCount() > 0) out[n++] = {ui::glyph::kDial, "MOVE"};
-      if (onFlashRow()) {
+      if (extraRow() >= 0) {
         out[n++] = {ui::glyph::kPress, "OPEN"};
       } else if (const char *verb = verbFor(selected())) {
         out[n++] = {ui::glyph::kPress, verb};
       } else if (isText(entryIndex())) {
         out[n++] = {ui::glyph::kPress, "READ"};
       }
-      if (selected()) out[n++] = {ui::glyph::kHoldPress, "DELETE"};
+      if (canDelete()) out[n++] = {ui::glyph::kHoldPress, "DELETE"};
     }
     out[n++] = {"BOOT", list_.atRoot() ? "BACK" : "UP"};
     return n;
@@ -136,6 +158,7 @@ class FilesScreen : public ui::Screen {
 
   bool onKey(Key key) override {
     if (!pending_.path.empty()) return key == Key::Back;  // BOOT mustn't pop it mid-delete
+    if (connecting()) return false;  // BOOT goes back; the mount carries on and is let go
     const bool hadNotice = !notice_.empty();
     notice_.clear();
     switch (key) {
@@ -143,7 +166,7 @@ class FilesScreen : public ui::Screen {
       case Key::Down: return cursor_.move(+1) || hadNotice;
       case Key::Select: activate(); return true;
       case Key::SelectLong:
-        if (!selected()) return hadNotice;
+        if (!canDelete()) return hadNotice;
         confirmDelete(entryIndex());
         return true;
       case Key::Back: return goUp();  // unused at the root: the navigator pops
@@ -151,14 +174,22 @@ class FilesScreen : public ui::Screen {
     }
   }
 
-  // A folder delete runs on the tick after its DELETING header is on the panel. Otherwise the
-  // playing-track marker follows the audio state.
+  // A folder delete runs on the tick after its DELETING header is on the panel; a share's
+  // screen lists it once the mount finishes. Otherwise the playing-track marker follows the
+  // audio state.
   bool onTick() override {
     if (!pending_.path.empty()) {
       if (!pending_.shown) return false;
       const Pending p = pending_;
       pending_ = {};
       deleteNow(p.path, true, p.row);
+      return true;
+    }
+    if (lease_ && waitingForMount_) {
+      const nfs::Lease::State s = lease_->state();
+      if (s == nfs::Lease::State::Connecting) return false;
+      waitingForMount_ = false;
+      if (s == nfs::Lease::State::Ready) openDir(pendingDir_, pendingSelect_);
       return true;
     }
     return audio::status().generation != drawnGeneration_;
@@ -168,6 +199,14 @@ class FilesScreen : public ui::Screen {
     drawnGeneration_ = audio::status().generation;
     Rect r = body;
     const Rect head = r.takeTop(ui::kSectionH);
+    if (connecting()) {
+      const nfs::Share &share = nfs::shares()[shareIndex()];
+      ui::drawSectionHeader(c, head, "CONNECTING" + std::string(ui::glyph::kEllipsis), "");
+      drawEmpty(c, r, ui::upper(share.name).c_str(),
+                "Joining the Wi-Fi network and mounting " + share.host + ":" + share.exportPath +
+                    ". This can take a few seconds.");
+      return;
+    }
     if (!pending_.path.empty()) {
       ui::drawSectionHeader(c, head,
                             "DELETING " + ui::upper(nameOf(pending_.path)) + ui::glyph::kEllipsis,
@@ -181,7 +220,14 @@ class FilesScreen : public ui::Screen {
 
     if (!list_.readable()) {
       const std::string retry = std::string(" Press ") + ui::glyph::kPress + " to retry.";
-      if (volume_ == Volume::Flash) {
+      if (volume_ == Volume::Nfs && lease_->state() == nfs::Lease::State::Failed) {
+        const nfs::Share &share = nfs::shares()[shareIndex()];
+        drawEmpty(c, r, "CAN'T CONNECT",
+                  ui::upper(lease_->error()) + ". " + share.host + ":" + share.exportPath + "." +
+                      retry);
+      } else if (volume_ == Volume::Nfs) {
+        drawEmpty(c, r, "CAN'T READ", "This folder couldn't be read from the server." + retry);
+      } else if (volume_ == Volume::Flash) {
         drawEmpty(c, r, "CAN'T MOUNT", "The onboard FAT partition couldn't be mounted." + retry);
       } else if (sdcard::mounted()) {
         drawEmpty(c, r, "CAN'T READ", "This folder couldn't be opened." + retry);
@@ -201,7 +247,7 @@ class FilesScreen : public ui::Screen {
     // Sizes cost a stat() each, so only the visible page looks them up.
     const int perPage = r.h / ui::kRowH;
     const int first = cursor_.pageStart(perPage);
-    const int extra = flashRows();
+    const int extra = extraRows();
     for (int i = first; i < rowCount() && i < first + perPage; ++i) {
       if (i >= extra) list_.sizeOf(i - extra);
     }
@@ -209,10 +255,16 @@ class FilesScreen : public ui::Screen {
     const std::string playing = audio::active() ? audio::status().path : std::string();
     ui::drawList(c, r, ui::kRowH, cursor_, [&](int i) {
       ui::Row row;
-      if (i < extra) {
+      if (i < flashRows()) {
         row.title = "ONBOARD FLASH";
         row.tag = "FAT";
         row.trailing = sizeText(static_cast<int64_t>(flashfs::partitionBytes()));
+        return row;
+      }
+      if (i < extra) {
+        row.title = nfs::shares()[i - flashRows()].name;
+        row.tag = "NFS";
+        row.trailing = sizeText(-1);  // blank, as wide as a size
         return row;
       }
       const DirList::Entry &e = list_.entries()[i - extra];
@@ -225,19 +277,25 @@ class FilesScreen : public ui::Screen {
   }
 
  private:
+  bool onCardRoot() const { return volume_ == Volume::Sd && list_.atRoot() && list_.readable(); }
   // The ONBOARD FLASH row: first on the card's root, when the partition exists.
-  int flashRows() const {
-    return volume_ == Volume::Sd && list_.atRoot() && list_.readable() && flashfs::available()
-               ? 1
-               : 0;
-  }
-  int rowCount() const { return static_cast<int>(list_.entries().size()) + flashRows(); }
-  bool onFlashRow() const { return flashRows() > 0 && cursor_.cursor() == 0; }
-  // Index into list_.entries() of the cursor's row; -1 on the flash row or an empty list.
+  int flashRows() const { return onCardRoot() && flashfs::available() ? 1 : 0; }
+  // A row per NFS share (SD:/inkdeck.ini), after it.
+  int shareRows() const { return onCardRoot() ? static_cast<int>(nfs::shares().size()) : 0; }
+  int extraRows() const { return flashRows() + shareRows(); }
+  int rowCount() const { return static_cast<int>(list_.entries().size()) + extraRows(); }
+  // Which extra row the cursor is on (0 = the first), or -1.
+  int extraRow() const { return cursor_.cursor() < extraRows() ? cursor_.cursor() : -1; }
+  // Index into list_.entries() of the cursor's row; -1 on an extra row or an empty list.
   int entryIndex() const {
-    const int i = cursor_.cursor() - flashRows();
+    const int i = cursor_.cursor() - extraRows();
     return i >= 0 && i < static_cast<int>(list_.entries().size()) ? i : -1;
   }
+  int shareIndex() const { return lease_ ? lease_->share() : -1; }
+  // HOLD ● deletes the selection: an entry of the card's or the flash's, not a share's (read-only).
+  bool canDelete() const { return selected() && volume_ != Volume::Nfs; }
+  // A share's screen before its mount has finished: nothing listed yet.
+  bool connecting() const { return lease_ && lease_->state() == nfs::Lease::State::Connecting; }
   const DirList::Entry *selected() const {
     const int i = entryIndex();
     return i < 0 ? nullptr : &list_.entries()[i];
@@ -245,6 +303,7 @@ class FilesScreen : public ui::Screen {
 
   std::string folderLabel() const {
     const std::string rel = list_.relativePath();
+    if (rel.empty() && volume_ == Volume::Nfs) return ui::upper(nfs::shares()[shareIndex()].name);
     if (rel.empty()) return volume_ == Volume::Sd ? "SD CARD" : "ONBOARD FLASH";
     return ui::upper(rel.substr(rel.rfind('/') + 1));  // npos + 1 = 0: the whole name
   }
@@ -252,7 +311,7 @@ class FilesScreen : public ui::Screen {
   // Puts the cursor on the entry called `name`, or the first row.
   void resetCursor(const std::string &name) {
     const int i = list_.indexOf(name);
-    cursor_.reset(rowCount(), i >= 0 ? i + flashRows() : 0);
+    cursor_.reset(rowCount(), i >= 0 ? i + extraRows() : 0);
   }
 
   void openDir(const std::string &dir, const std::string &select) {
@@ -269,19 +328,37 @@ class FilesScreen : public ui::Screen {
     return true;
   }
 
+  // Starts mounting the share (again, after a failure); lists it at once if it's mounted.
+  void connect() {
+    lease_->start();
+    const nfs::Lease::State s = lease_->state();
+    waitingForMount_ = s == nfs::Lease::State::Connecting;
+    if (s == nfs::Lease::State::Ready) openDir(pendingDir_, pendingSelect_);
+  }
+
   void activate() {
     if (!list_.readable()) {
+      if (volume_ == Volume::Nfs && lease_->state() != nfs::Lease::State::Ready) {
+        connect();
+        return;
+      }
       if (volume_ == Volume::Flash) {
         flashfs::mount();
-      } else if (!sdcard::mounted()) {
+      } else if (volume_ == Volume::Sd && !sdcard::mounted()) {
         sdcard::mount();
       }
-      if (!list_.reload()) openDir(rootOf(volume_), "");
+      if (!list_.reload()) openDir(rootOf(volume_, shareIndex()), "");
       resetCursor("");
       return;
     }
-    if (onFlashRow()) {
-      ui::nav::push(std::make_unique<FilesScreen>(Volume::Flash, flashfs::kMountPoint, ""));
+    if (const int extra = extraRow(); extra >= 0) {
+      if (extra < flashRows()) {
+        ui::nav::push(std::make_unique<FilesScreen>(Volume::Flash, -1, flashfs::kMountPoint, ""));
+      } else {
+        const int share = extra - flashRows();
+        ui::nav::push(
+            std::make_unique<FilesScreen>(Volume::Nfs, share, nfs::shares()[share].path(), ""));
+      }
       return;
     }
     const DirList::Entry *e = selected();
@@ -434,6 +511,11 @@ class FilesScreen : public ui::Screen {
   }
 
   Volume volume_;
+  // A share's screen: its hold on the mount, and where to start once it's mounted.
+  std::unique_ptr<nfs::Lease> lease_;
+  std::string pendingDir_;
+  std::string pendingSelect_;
+  bool waitingForMount_ = false;
   DirList list_;
   ui::ListCursor cursor_;
   std::string notice_;
@@ -455,8 +537,29 @@ class FilesScreen : public ui::Screen {
 
 std::unique_ptr<ui::Screen> makeFiles(const std::string &dir, const std::string &select) {
   const std::string flash = flashfs::kMountPoint;
-  const bool onFlash = dir.compare(0, flash.size(), flash) == 0;
-  return std::make_unique<FilesScreen>(onFlash ? Volume::Flash : Volume::Sd, dir, select);
+  if (dir.compare(0, flash.size(), flash) == 0) {
+    return std::make_unique<FilesScreen>(Volume::Flash, -1, dir, select);
+  }
+  if (const int share = nfs::shareOf(dir); share >= 0) {
+    return std::make_unique<FilesScreen>(Volume::Nfs, share, dir, select);
+  }
+  return std::make_unique<FilesScreen>(Volume::Sd, -1, dir, select);
+}
+
+std::string displayPath(const std::string &path) {
+  static const struct {
+    const char *root;
+    const char *shown;
+  } kRoots[] = {{sdcard::kMountPoint, "SD:"},
+                {flashfs::kMountPoint, "FLASH:"},
+                {nfs::kMountPoint, "NFS:"}};
+  for (const auto &r : kRoots) {
+    const size_t n = strlen(r.root);
+    if (path.compare(0, n, r.root) == 0 && (path.size() == n || path[n] == '/')) {
+      return r.shown + (path.size() == n ? std::string("/") : path.substr(n));
+    }
+  }
+  return path;
 }
 
 std::string sdFolder(const char *name) {

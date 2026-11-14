@@ -29,7 +29,9 @@
 //   !ls PATH    list a folder on the card, with file sizes
 //   !cp SRC|DST copy a file, e.g. "!cp /sdcard/Books/A.epub|/ffat/A.epub"
 //   !mkdir PATH make a folder
-//               PATH may start with /ffat/ (the onboard FAT partition) as well as /sdcard/
+//               PATH may start with /ffat/ (the onboard FAT partition) as well as /sdcard/,
+//               or /nfs/NAME/ for an NFS share while it's mounted (open it in Files first;
+//               read-only), e.g. "!cp /nfs/Media/Books/A.epub|/sdcard/Books/A.epub"
 //   !flow PATH|N   print the start of an EPUB's chapter N (spine item) as the Reader gets it,
 //               without opening it in the Reader (its saved place stays put)
 //   !unzip PATH[|ENTRY]   list the files in a zip on the card (an EPUB), or print one of them

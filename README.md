@@ -26,6 +26,7 @@ there, rolling it left is ▲ and right is ▼.
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, a live I2C bus scan, and a CSV log to the card |
 | **Level** | Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
 | **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, in landscape when they're wider than tall. Phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short) |
+| **Network shares** | Files also browses NFS shares on the local network (a NAS or home server), listed in `inkdeck.ini` (below). Each share is a row on the card's root, after ONBOARD FLASH. Opening one joins Wi-Fi and mounts it (NFS v3 over TCP; read-only, so HOLD ● doesn't delete there), and its books, music, pictures and text open as they do from the card. Wi-Fi stays on while the share is open in Files or a file on it is (music playing, a book open), and goes off 30 s after |
 | **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, how often the screen does a full refresh, and the PIN lock (all below) |
 
 **Power**
@@ -72,10 +73,19 @@ timezone = GMT0BST,M3.5.0/1,M10.5.0   ; a POSIX TZ string, daylight saving rule 
 [location]
 latitude = 51.48                      ; decimal degrees, north and east positive
 longitude = 0.00
+[network]
+nfs = nfs://nas.local/volume1/books   ; an NFS share for Files: one line each, up to 4
+nfs = nas.local:/srv/media?name=Media&uid=1000&gid=1000
 [lock]
 pin = 2468                            ; 4 to 8 digits; pin = off removes it
 lock_minutes = 5                      ; also lock after 5 minutes without a key
 ```
+
+Each `nfs =` line is a share Files lists: `nfs://server/export` or `server:/export`, with options
+after a `?`: `name` (what Files calls it), `uid` and `gid` (who the server takes the board for,
+default 0), `nfsport` and `mountport` (else the server's portmapper says). The server must
+export the folder to the board's address over NFS v3 and TCP. Options and limits:
+[`src/nfs.h`](src/nfs.h).
 
 ## Build and flash
 

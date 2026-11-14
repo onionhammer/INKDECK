@@ -11,6 +11,11 @@
 //   pin = 2468                           ; 4 to 8 digits; pin = off removes it
 //   lock_minutes = 5                     ; also lock after this long without a key (0: only at boot)
 //
+// and lists the NFS shares Files browses (nfs.h has the syntax), one line each:
+//
+//   [network]
+//   nfs = nfs://nas.local/volume1/books
+//
 // inkdeck.ini.example in the repo root is a filled-in copy; keep it in step with kTemplate in
 // settings.cpp.
 //
@@ -27,6 +32,7 @@
 // lose it.
 #pragma once
 #include <string>
+#include <vector>
 
 namespace settings {
 
@@ -47,6 +53,9 @@ bool hasLocation();  // a location is set (either way)
 double latitude();
 double longitude();
 Source locationSource();
+
+// The `nfs =` values, as written in the file (nfs::parse() reads them); empty if none.
+std::vector<std::string> nfsShares();
 
 // The lock. hasPin(): the board locks at boot, on waking the desk face and after lockMinutes()
 // without a key (0: never for that).

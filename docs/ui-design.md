@@ -102,5 +102,14 @@ the screens Files opens below has an artboard or a row on Home:
   Keys: ▲▼ scroll · ● menu (text size, font SERIF/MONO, scroll step, to start, folder) ·
   BOOT back.
 
+**NFS shares** (`src/nfs.h`, from `nfs =` lines in `SD:/inkdeck.ini`) follow the card root's
+`ONBOARD FLASH` row, a row each: the share's name, an `NFS` tag, no size. Opening one pushes a
+Files screen for it with a `// CONNECTING…` header and the share's name and
+`host:/export` in the body while it joins Wi-Fi and mounts the share (hints: `BOOT BACK` only).
+Then it lists the share like the card: the folder name in the header (the share's name at its
+root), `NFS:/NAME/path/` in the status bar, and the same ● verbs. If the mount fails, the body
+says `CAN'T CONNECT` with the reason (`WI-FI: NETWORK NOT FOUND`, `NO SUCH EXPORT`, `ACCESS
+DENIED`, `NO ANSWER FROM THE SERVER`) and ● RETRY. Shares are read-only: no HOLD ● DELETE.
+
 All on-screen content is sample data: book text (H. G. Wells, public domain), track list, the
 fictional podcast feeds, weather and sensor values.

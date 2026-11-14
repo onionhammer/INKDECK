@@ -25,6 +25,20 @@ timezone = GMT0BST,M3.5.0/1,M10.5.0
 latitude = 51.48
 longitude = 0.00
 
+[network]
+; NFS shares (NFS version 3) to browse in Files, over the Wi-Fi network built in from .env.
+; One nfs = line each, up to 4: nfs://server/export, or server:/export. Options go after a ?,
+; joined by &:
+;   name       what Files calls the share (else the export's last folder)
+;   uid, gid   who the server takes the board for (default 0, which many servers map to
+;              nobody: give your own user's numbers if the files aren't readable by everyone)
+;   nfsport    the server's NFS port, also written nfs://server:2049/export
+;   mountport  its MOUNT port
+; Without the ports the server's portmapper says (port 111), as it does on most NAS boxes.
+; The server must export the folder to the board's address, over NFS v3 and TCP. Read-only.
+nfs = nfs://nas.local/volume1/books
+nfs = nfs://192.168.1.20/srv/media?name=Media&uid=1000&gid=1000
+
 [lock]
 ; A PIN of 4 to 8 digits locks the board when it powers on, and when it wakes from the desk
 ; face. Turn the wheel to pick each digit, then press to move to the next, like a padlock.
