@@ -14,11 +14,11 @@ history.
 
 | File | What |
 | --- | --- |
-| `ereader-enclosure.scanruler` | Parametric source: 84 features, 101 parameters (4 pinned), board STEP, battery dummy, 1 open note |
+| `ereader-enclosure.scanruler` | Parametric source: 91 features, 101 parameters (4 pinned), board STEP, battery dummy, 1 open note |
 | `ereader-enclosure.step` | Both parts as solids, `Back tray` and `Bezel` (read back and verified) |
 | `back-tray.stl` | Tray print mesh (0.02 mm chord), the right way up to print |
 | `front-bezel.stl` | Bezel print mesh (0.02 mm chord), as fitted: turn it face-down to print |
-| `renders/*.png` | Assembly, the back with the frog, the tray and the bezel apart, a corner cap, the thumbwheel slot, sections through a cap hook, a button and the wheel |
+| `renders/*.png` | Assembly, the back with the frog, the tray and the bezel apart, a corner cap, the USB-C / microSD end, the thumbwheel slot, sections through a cap hook, a button and the wheel |
 
 **Size:** 105.9 × 66.1 mm over the corner caps (the tray alone is 104.3 × 64.5). **11.86 mm**
 from the flat back to the bezel's flat front: 10.46 for the tray, 1.4 for the bezel (v0.1 was
@@ -42,7 +42,8 @@ them slide down past the wall as the board drops in.
 
 **How it goes together.** The board drops in face up and four screws come through the back into
 its brass standoffs, clamping it onto the bosses. The tray's walls stop level with the panel
-glass. The bezel then snaps on over the glass and the walls. Its four corner caps run down over
+glass, except the USB-C end, which stops lower. The bezel then snaps on over the glass and the
+walls, and its skirt fills in the top of the USB-C end. Its four corner caps run down over
 the tray's corners to the back face, and a hook inside each one clicks into a groove in the tray.
 
 ![tray and bezel apart](renders/tray_inside.png)
@@ -57,7 +58,8 @@ R0.5 corners and a 0.8 mm 45° chamfer on its front edge (`win_ch`). It hides th
 glass edge and the panel's inactive border, so the frame is 11.6 mm wide at the USB-C end, where
 that border is, and 5.3–5.9 elsewhere. The frame keeps the glass 1.4 mm off a table face-down.
 Over the thumbwheel the bezel has the tray's flared notch cut through it too, so the slot is open
-from the front face to the back.
+from the front face to the back. At the USB-C end it carries the top of the end wall, between
+the corner caps, as a skirt that forms the top halves of the USB-C and microSD openings (below).
 
 **Corner caps.** The corners belong to the bezel. Each cap is the chamfered bumper shape
 (`bump_l`, `bump_out`, `bump_ch`), one L-shaped wall from the bezel's front down to the back face,
@@ -103,6 +105,29 @@ height there, so only the back plate and the block hold it together.
 
 ![thumbwheel slot](renders/wheel_slot.png)
 
+**USB-C and microSD openings.** Both are in the end wall, and each is formed half by the tray and
+half by the bezel, so neither part has a hole with a roof to print. Between the corner caps the
+tray's end wall stops at z −2.6, the microSD slot's centre line (`sd_cz`). Above that, the bezel
+carries the wall as a skirt the full 2 mm thick, joined to both cap legs and 0.15 clear of the
+tray (`cap_gap`). The parting line runs through both openings where their sides are vertical, so
+each part has an open U. The tray holds the bottom halves with their bottom curves, and the skirt
+holds the top halves with their top curves. Each curve then faces up on its part's print bed. The
+openings are the same full rounded shapes as before, apart from the 0.15 parting gap.
+
+The USB-C opening is 11.25 × 5.5 with R2 corners: a measured Apple USB-C plug body (10.25 × 4.5)
+plus 0.5 a side (`usb_w`, `usb_h`, with the measurement in their expressions). That is smaller than
+the USB-C spec's largest plug body (12.35 × 6.5), so a cable with a fatter plug may not seat; to
+take any cable, set them back to 12.4 × 6.6. It's centred on the socket (y 30, z −3.27, measured
+from the board STEP) with 1.16 mm to the socket shell all round. The microSD slot is 13 × 2.4 in a
+15 × 5 fingernail recess 1 mm deep (`sd_*`). Over the USB-C, the skirt still closes the wall above
+the socket, where the panel's flex cable wraps the board edge (0.72 mm away). The features are
+`End wall seam` (tray) and `End skirt` with the `Skirt *` cuts (bezel). The cuts reuse the tray's
+`USB plan` and `SD plan` sketches, so both halves follow the same parameters.
+
+![USB-C and microSD end, fitted](renders/usb_sd_end.png)
+
+![tray and bezel halves of the openings](renders/usb_sd_apart.png)
+
 1. Plug the battery into `BAT`, and tape it into the pocket in the floor.
 2. Drop the board in face up, letting the wheel slide down its notch.
 3. Fit 4 × M2.5 × 6 countersunk screws (DIN 965 / ISO 10642 style, head ≤ 5.0 mm) from the back.
@@ -113,32 +138,34 @@ height there, so only the back plate and the block hold it together.
 - The end fins have flat floors and 45° ceilings.
 - The thumbwheel slot runs straight down to the bed, so its walls are vertical and nothing overhangs.
 - The corner recesses are vertical, and the hook grooves in them have 45° roofs.
+- The end wall stops at the middle of the USB-C and microSD openings, so they're open Us with their curves facing up. The bezel's skirt makes their tops.
 - The frog is one layer of holes in the first layer. The second layer bridges each one (1.5 mm at most).
 - The countersinks are 45° cones opening onto the bed. The 0.6 mm back-edge chamfer also hides elephant's foot.
 - The PWR / BOOT flexures stand upright, rooted at the floor, so the tab never overhangs. Each tab is 4 × 6.9 × 0.8 mm (`tab_w`, `tab_top`, `tab_t`), and its nub has a 45° underside and sits 0.15 from the stem (`btn_gap`). An upright tab bends across the layer lines, so print it in **PETG**, or expect PLA to crack at the root.
-- The remaining bridges: USB-C opening top (~8 mm flat), microSD slot and recess tops (≤ 10 mm), and the slot over each tab (5.2 mm). All are ordinary bridges.
+- The only bridges left are the slots over the two tabs (5.2 mm each), both ordinary.
 
 **Printing the bezel:** front face on the bed, no supports. The front is flat. The window
 chamfer and the 0.5 mm outer chamfer are 45°. The corner caps stand straight up 11.86 mm, their
-hooks' retaining faces are 45°, and the chamfers on their feet face up. The glass relief and the
+hooks' retaining faces are 45°, and the chamfers on their feet face up. The end skirt stands
+straight up off the underside, with the top halves of the openings as upward-facing curves. The glass relief and the
 pry notch are open pockets on top. Print it in **PETG**, so the caps flex rather than crack.
 
 **Checked in ScanRuler** (model only):
-- **Clearances:** button stems to nubs and relief 0.15, PCB to walls 0.24, wheel 0.37, panel to tray 0.72 and to bezel 0.25, USB-C 1.80. The MX1.25 headers and ESP32 module are ~3 mm above the floor.
+- **Clearances:** button stems to nubs and relief 0.15, PCB to walls 0.24, wheel 0.37, panel to tray 0.72 and to bezel 0.25, USB-C socket shell to its opening 1.16. The MX1.25 headers and ESP32 module are ~3 mm above the floor.
 - **Battery:** sits on the pocket floor, 0.30 under the display FPC connector, 0.96 from the wheel, 0.92 from USB-C. A swelling pouch has only that 0.3 mm above it.
-- **Contact:** the tray touches the board only at the four standoff ends. The bezel touches nothing on the board, and touches the tray only on the wall tops and the hook retaining faces. The caps stand 0.15 off the tray everywhere else.
+- **Contact:** the tray touches the board only at the four standoff ends. The bezel touches nothing on the board (0.40 from the PCB at the end skirt), and touches the tray only on the wall tops and the hook retaining faces. The caps and the skirt stand 0.15 off the tray everywhere else.
 - **Solids:** both valid and closed, with no slivers or voids, and the STEP round trip is exact. The steps between features the check flags are intended: the bezel's 0.2 mm glass relief, and the frog's 0.2 mm depth on the tray.
 
-**Openings:** USB-C 12.4 × 6.6 (overmolds up to ~6.5 mm; the panel's flex cable wraps the board
-edge just above it, so the wall stays closed over the top). microSD slot with a 15 mm fingernail
-recess. Flared thumbwheel slot, open from the bezel's front to the back. Pry notch under the bezel.
+**Openings:** USB-C 11.25 × 5.5, for Apple-size plugs (the panel's flex cable wraps the board edge
+just above it, so the skirt keeps the wall closed over the top). microSD slot with a 15 mm
+fingernail recess. Both are split between the tray and the bezel. Flared thumbwheel slot, open from the bezel's front to the back. Pry notch under the bezel.
 
 **Decoration** (each one is a feature of its own, so any can be suppressed):
 - Chamfered corner caps on the bezel (`bump_l`, `bump_out`, `bump_ch`, `cap_t`).
 - Three fins on the antenna end (`fin_*`).
 - On the back: a chamfered hatch outline round the battery (`hatch_*`, `line_*`), five vent slots spanning the hatch's height beside it (`vent_*`), and a band of 45° hazard stripes below it (`haz_*`). All 0.4 mm deep, and they follow the battery parameters.
 - The pixel-art frog inside the hatch outline (`frog_d`).
-- Chamfers: 0.5 mm on the bezel's front outer edges, 0.5 on the tray's top outer edges (a groove at the seam between the caps), 0.6 round the back (cap feet and thumbwheel slot included).
+- Chamfers: 0.5 mm on the bezel's front outer edges, 0.5 on the tray's top outer edges (a groove at the seam between the caps; the USB-C end has the 0.15 parting gap instead), 0.6 round the back (cap feet and thumbwheel slot included).
 
 **Pinned parameters:** `batt_t` 4.61, `bump_up` 0, `bump_l` 7.5, `wall_t` 2.0.
 
