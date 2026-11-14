@@ -44,8 +44,10 @@ bool idle(bool reading);
 
 // Light sleep: the CPUs stop, RAM, PSRAM and peripherals keep their state, and the board draws
 // a fraction of a milliamp plus whatever the rails feed. A button (dial, press, BOOT, PWR)
-// wakes it within a few milliseconds, and the press still reaches `input` as a key. Otherwise
-// it sleeps maxMs. Returns true if a button woke it. Call with no button down.
-bool nap(uint32_t maxMs);
+// wakes it within a few milliseconds, and the press still reaches `input` as a key. With
+// motion, so does the IMU's wake-on-motion pin (arm it first: qmi8658::wakeOnMotion()).
+// Otherwise it sleeps maxMs. Call with no button down.
+enum class NapEnd : uint8_t { Timer, Button, Motion };
+NapEnd nap(uint32_t maxMs, bool motion = false);
 
 }  // namespace power

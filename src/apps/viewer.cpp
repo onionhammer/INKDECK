@@ -1,11 +1,13 @@
 #include "apps/viewer.h"
 
 #include <Arduino.h>
+#include <math.h>
 
 #include <algorithm>
 
 #include "apps/home.h"
 #include "picture.h"
+#include "sensor_hub.h"
 
 namespace apps {
 namespace {
@@ -14,14 +16,52 @@ using ui::Key;
 using ui::Rect;
 
 constexpr int kMaxGrow = 2;  // small pictures stay small rather than turning to blocks
+constexpr int kSettleTicks = 2;  // a new pose seen on this many ticks in a row (1 s apart) counts
 
 std::string baseName(const std::string &path) { return path.substr(path.rfind('/') + 1); }
+
+// How the board is held.
+enum class Pose : uint8_t {
+  Unclear,    // being moved, part way between the two, upside down, or no IMU
+  Flat,       // lying within 30° of flat: the picture's shape decides
+  Portrait,   // upright
+  Landscape,  // turned a quarter clockwise, the wheel on top (screen.h's landscape)
+};
+
+const char *poseName(Pose p) {
+  switch (p) {
+    case Pose::Flat: return "flat";
+    case Pose::Portrait: return "portrait";
+    case Pose::Landscape: return "landscape";
+    default: return "unclear";
+  }
+}
+
+// From gravity in screen axes (sensors::motion(); portrait X right, Y up, Z out of the
+// screen). At rest the accelerometer reads 1 g straight up, so the raised edge reads positive:
+// +Y with the portrait top up, -X with the portrait left edge up, which is landscape's top.
+Pose sensePose() {
+  const qmi8658::Reading m = sensors::motion();
+  if (!m.ok) return Pose::Unclear;
+  const float x = m.acc[0], y = m.acc[1], z = m.acc[2];
+  const float g = sqrtf(x * x + y * y + z * z);
+  // Far from 1 g: moving, or nothing new yet from an IMU just woken from wake on motion.
+  if (g < 0.8f || g > 1.2f) return Pose::Unclear;
+  if (sqrtf(x * x + y * y) < 0.5f * g) return Pose::Flat;  // sin 30°
+  // 0° portrait, 90° landscape. 30° to 60° between them is neither, so a board held near 45°
+  // doesn't flip back and forth; so are the two ways upside down, which the panel can't show.
+  const float angle = atan2f(-x, y) * (180.0f / static_cast<float>(M_PI));
+  if (fabsf(angle) <= 30.0f) return Pose::Portrait;
+  if (fabsf(angle - 90.0f) <= 30.0f) return Pose::Landscape;
+  return Pose::Unclear;
+}
 
 class ViewerScreen : public ui::Screen {
  public:
   ViewerScreen(std::vector<std::string> paths, int index,
                std::function<void(const std::string &)> shown)
-      : paths_(std::move(paths)), shown_(std::move(shown)) {
+      : paths_(std::move(paths)), shown_(std::move(shown)), held_(sensePose()) {
+    if (held_ == Pose::Unclear) held_ = Pose::Flat;  // till the ticks know better: by its shape
     show(std::max(0, std::min(index, static_cast<int>(paths_.size()) - 1)));
   }
 
@@ -36,6 +76,7 @@ class ViewerScreen : public ui::Screen {
   bool chrome() const override { return chrome_; }
   bool landscape() const override { return landscape_; }
   bool reading() const override { return true; }
+  bool wakeOnMotion() const override { return true; }
 
   int hints(ui::Hint *out) const override {
     int n = 0;
@@ -55,6 +96,28 @@ class ViewerScreen : public ui::Screen {
       case Key::Select: chrome_ = !chrome_; return true;
       default: return false;  // BOOT: the navigator goes back to Files
     }
+  }
+
+  // Follows the board as it's turned: a new pose seen on kSettleTicks ticks in a row is how it's
+  // held now. Upright, the screen turns with it (a full refresh, the picture decoded again at
+  // the new size). Laid down, it stays as it is, and the next picture goes by its shape.
+  bool onTick() override {
+    const Pose p = sensePose();
+    if (p == Pose::Unclear || p == held_) {
+      seenTicks_ = 0;
+      return false;
+    }
+    if (p != seen_) {
+      seen_ = p;
+      seenTicks_ = 0;
+    }
+    if (++seenTicks_ < kSettleTicks) return false;
+    seenTicks_ = 0;
+    held_ = p;
+    log_i("viewer: held %s", poseName(p));
+    if (p == Pose::Flat || (p == Pose::Landscape) == landscape_) return false;
+    landscape_ = p == Pose::Landscape;
+    return true;
   }
 
   void draw(ui::Canvas &c, const Rect &body) override {
@@ -85,10 +148,12 @@ class ViewerScreen : public ui::Screen {
     bitmap_ = {};
     failed_ = false;
     probed_ = picture::probeFile(paths_[index_], w_, h_);
-    if (probed_) {
+    if (!probed_) log_w("viewer: %s: not a JPEG or PNG we can read", paths_[index_].c_str());
+    // As the board is held; lying flat, landscape when the picture is wider than tall.
+    if (held_ == Pose::Portrait || held_ == Pose::Landscape) {
+      landscape_ = held_ == Pose::Landscape;
+    } else if (probed_) {
       landscape_ = w_ > h_;
-    } else {
-      log_w("viewer: %s: not a JPEG or PNG we can read", paths_[index_].c_str());
     }
     if (shown_) shown_(paths_[index_]);
   }
@@ -123,6 +188,9 @@ class ViewerScreen : public ui::Screen {
   int h_ = 0;
   bool landscape_ = false;
   bool chrome_ = true;
+  Pose held_ = Pose::Flat;     // how the board is held, as last settled
+  Pose seen_ = Pose::Unclear;  // a different pose on the latest ticks, and how many in a row
+  int seenTicks_ = 0;
   picture::Bitmap bitmap_;
 };
 

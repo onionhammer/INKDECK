@@ -15,7 +15,7 @@ paper.
 | Screens | Size | How |
 | --- | --- | --- |
 | Home and all app screens | **480×800 portrait** | Panel rotated 90° in software. Same 48,000-byte 1 bpp framebuffer |
-| Clock, Level, wide pictures, power-off screen | **800×480 landscape** | Native panel orientation turned 180° (firmware), so the rotary wheel is on the top edge. The navigator swaps ▲ and ▼ there: rolling left is ▲, right is ▼ |
+| Clock, Level, pictures held in landscape, power-off screen | **800×480 landscape** | Native panel orientation turned 180° (firmware), so the rotary wheel is on the top edge. The navigator swaps ▲ and ▼ there: rolling left is ▲, right is ▼ |
 
 Artboards are drawn at 1 CSS px = 1 panel pixel, so sizes in the mockups map directly to device
 pixels.
@@ -85,7 +85,10 @@ an inverted `// DELETING NAME…` header, with the count on the right, while it 
 the screens Files opens below has an artboard or a row on Home:
 
 - **Picture viewer** (`src/apps/viewer.h`): the picture fitted to the whole panel (at most 2×)
-  and centred on paper, landscape when it's wider than tall. The chrome (status bar
+  and centred on paper, portrait or landscape as the board is held (the IMU). Turning the board
+  turns the picture once the new pose has held for two readings a second apart (a full
+  refresh); 30–60° is neither, so it doesn't flicker near 45°, and upside down keeps the
+  current orientation. Lying flat, landscape when the picture is wider than tall. The chrome (status bar
   `09 FILES · 03/12 name.jpg`, hints `[▲] PREV [▼] NEXT [●] HIDE [BOOT] BACK`) is drawn over the
   picture's edges, and ● hides or shows it without redrawing the picture. Counts as reading.
 - **Text reader** (`src/apps/textview.h`): the Reader artboard's body with continuous scrolling

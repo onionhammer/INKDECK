@@ -28,16 +28,23 @@ namespace {
 // a button that's down keeps the board awake, and a released press waits in the key queue.
 // The guard only covers the first debounce samples after a button wakes the board.
 constexpr uint32_t kKeyWakeGuardMs = 30;
+// Awake after the IMU's wake on motion, for a screen that turns with the board: the navigator
+// ticks at once (the IMU may still be settling), then each second; three more readings let a
+// turn that's still going on at the wake finish and hold for two of them.
+constexpr uint32_t kMotionAwakeMs = 3500;
 constexpr uint32_t kUsbGraceMs = 3000;  // USB power without a host talking, after naps
 
 std::atomic<int> standbyRequest{-1};
 
 bool napping = false;
+bool napMotion = false;  // this nap's IMU is on wake on motion (else it's off)
 bool nappedSinceBoot = false;
 uint32_t usbSinceMs = 0;  // when USB power appeared after naps; 0 = not present
 uint32_t keyWakeMs = 0;
+uint32_t motionWakeMs = 0;  // 0: none yet
 std::atomic<uint32_t> naps{0};
 std::atomic<uint32_t> buttonWakes{0};
+std::atomic<uint32_t> motionWakes{0};
 std::atomic<uint32_t> asleepMs{0};
 
 bool readingNow() {
@@ -51,6 +58,7 @@ bool mayNap() {
   const timesync::Phase t = timesync::status().phase;
   if (t == timesync::Phase::Connecting || t == timesync::Phase::Asking) return false;
   if (millis() - keyWakeMs < kKeyWakeGuardMs) return false;
+  if (motionWakeMs && millis() - motionWakeMs < kMotionAwakeMs) return false;
   if (input::anyDown() || input::pending()) return false;
   // On USB the power doesn't matter, and light sleep would drop the console. Plugging USB into
   // a napping board ends the naps at the next wake (a key, or the minute).
@@ -61,9 +69,10 @@ bool mayNap() {
 void stopNapping() {
   if (!napping) return;
   napping = false;
-  qmi8658::setEnabled(true);
-  log_i("nap: awake (%lu naps, %lu woken by a button, %lu s asleep since boot)",
+  qmi8658::setEnabled(true);  // and out of wake on motion
+  log_i("nap: awake (%lu naps, woken by %lu buttons and %lu motions, %lu s asleep since boot)",
         static_cast<unsigned long>(naps.load()), static_cast<unsigned long>(buttonWakes.load()),
+        static_cast<unsigned long>(motionWakes.load()),
         static_cast<unsigned long>(asleepMs.load() / 1000));
 }
 
@@ -125,8 +134,10 @@ bool napIfIdle() {
   if (!napping) {
     napping = true;
     nappedSinceBoot = true;
-    qmi8658::setEnabled(false);
-    if (ui::Screen *b = ui::nav::base()) b->onNap();
+    ui::Screen *b = ui::nav::base();
+    napMotion = b && b->wakeOnMotion() && qmi8658::wakeOnMotion();
+    if (!napMotion) qmi8658::setEnabled(false);
+    if (b) b->onNap();
   }
   // Until the next minute boundary (an alarm rings on the minute), a little after it.
   timeval tv;
@@ -134,12 +145,15 @@ bool napIfIdle() {
   const uint32_t ms = 60000 - static_cast<uint32_t>(tv.tv_sec % 60) * 1000 -
                       static_cast<uint32_t>(tv.tv_usec / 1000) + 20;
   const uint32_t before = millis();
-  const bool byKey = power::nap(ms);
+  const power::NapEnd end = power::nap(ms, napMotion);
   asleepMs += millis() - before;
   ++naps;
-  if (byKey) {
+  if (end == power::NapEnd::Button) {
     keyWakeMs = millis();
     ++buttonWakes;
+  } else if (end == power::NapEnd::Motion) {
+    motionWakeMs = millis() | 1;
+    ++motionWakes;
   }
   return true;
 }

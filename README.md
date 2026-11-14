@@ -12,7 +12,7 @@ Screens as the panel draws them, saved over USB with `tools/screenshot.py`.
 
 Home lists ten modules, each with a live preview. Every screen uses one key language: ▲▼ to
 move or adjust, ● for the main action, HOLD ● for the second one, BOOT for back, HOLD BOOT for
-Home. Landscape screens (Clock, Level, wide pictures) turn the board so the wheel is on top;
+Home. Landscape screens (Clock, Level, pictures held that way) turn the board so the wheel is on top;
 there, rolling it left is ▲ and right is ▼.
 
 | Module | What it does |
@@ -25,7 +25,7 @@ there, rolling it left is ▲ and right is ▼.
 | **Recorder** | Voice memos from the onboard mic as 16 kHz WAV, with a live waveform, input meter and gain. Memos play back on the device with a volume meter (▲▼), and can be deleted |
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, a live I2C bus scan, and a CSV log to the card |
 | **Level** | Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
-| **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in landscape when they're wider than tall; phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short) |
+| **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, in landscape when they're wider than tall. Phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short) |
 | **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, and how often the screen does a full refresh (both below) |
 
 **Power**
@@ -37,7 +37,7 @@ there, rolling it left is ▲ and right is ▼.
   forecast every so many hours (0: never). Each wake light-sleeps through the panel refresh
   and runs at 80 MHz once the face is drawn.
 - Reading (a book, a text file or a picture) and music don't time out until the battery is low.
-- While you read on battery, the board light-sleeps between page turns.
+- While you read on battery, the board light-sleeps between page turns. Under a picture, the IMU's wake on motion wakes it when you turn the board.
 - On USB, PWR shows the clock face instead and the board stays on.
 
 **Display:** screen changes use the fast partial refresh. A full refresh (the black-white flash)

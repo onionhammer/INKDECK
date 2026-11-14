@@ -7,8 +7,10 @@
 //   - Reading on battery: once the page is drawn the board light-sleeps until the next key or
 //     the next minute (alarms ring on the minute), with the IMU in standby. A page turn wakes
 //     it in milliseconds. Nothing redraws while it naps, so the status-bar clock updates with
-//     the next page. Never on USB: light sleep drops the USB console, and it stays dead until
-//     a reset, so USB power after naps with no host talking restarts the board cleanly.
+//     the next page. Under the picture viewer the IMU watches for motion instead, and turning
+//     the board wakes it for a few seconds to see which way up it ended. Never on USB: light
+//     sleep drops the USB console, and it stays dead until a reset, so USB power after naps
+//     with no host talking restarts the board cleanly.
 #pragma once
 #include <stdint.h>
 

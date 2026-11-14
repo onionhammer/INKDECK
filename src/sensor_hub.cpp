@@ -26,15 +26,17 @@ constexpr const char *kLogDir = "/sdcard/logs";
 constexpr const char *kLogFile = "/sdcard/logs/sensors.csv";
 
 // The screen's axes in chip terms, portrait: for screen X (right), Y (up) and Z (out of the
-// screen), which chip axis and sign. Verified on hardware (2026-11-12 pose tests): lying flat,
-// screen up, chip Z reads -1 g, so out = -Z. Upright in portrait moves chip X and leaning
-// right moves chip Y, both with the signs the opposite of a first guess. So right = -Y,
-// up = -X, out = -Z: a right-handed frame, as it must be (flipping only one of X/Y couldn't be).
+// screen), which chip axis and sign. Lying flat, screen up, chip Z reads -1 g, so out = -Z
+// (2026-11-12). Upright in portrait the reading is along chip X, and leaning right along chip
+// Y: up = +X and right = +Y, checked against what the screen shows (2026-11-14): with the
+// wheel on top, so landscape upright and portrait's left edge up, chip Y reads -1 g. (A pose
+// test on 11-12 had both the other way round, a half turn out; the Level inherited it.) A
+// right-handed frame, as it must be: flipping only one of X/Y couldn't be.
 struct AxisMap {
   int chip;
   float sign;
 };
-constexpr AxisMap kScreenAxes[3] = {{1, -1}, {0, -1}, {2, -1}};
+constexpr AxisMap kScreenAxes[3] = {{1, +1}, {0, +1}, {2, -1}};
 
 // The board warms the SHTC3. Calibrated 2026-11-12 against a 22.7 °C room reading: the sensor
 // read 25.9 °C (33 % RH) with the board on USB, charging (constant-voltage stage), the UI

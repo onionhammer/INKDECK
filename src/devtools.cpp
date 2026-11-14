@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <dirent.h>
 #include <esp_heap_caps.h>
+#include <mbedtls/base64.h>
 #include <stdio.h>
 #include <sys/stat.h>
 
@@ -11,6 +12,7 @@
 
 #include "apps/idle.h"
 #include "audio.h"
+#include "board_pins.h"
 #include "epub.h"
 #include "flashfs.h"
 #include "forecast.h"
@@ -77,6 +79,34 @@ void copyFile(const String &src, const String &dst) {
 
 // "!feed https://...", "!append /sdcard/x text", "!rm /sdcard/x", "!wxforget".
 void lineCommand(const String &line) {
+  if (line == "wom" || line.startsWith("wom ")) {
+    // The picture viewer's nap wake (qmi8658::wakeOnMotion): each event toggles INT2.
+    int seconds = 10, threshold = qmi8658::kWakeThresholdMg;
+    siscanf(line.c_str() + 3, "%d %d", &seconds, &threshold);
+    seconds = std::max(1, seconds);
+    if (!qmi8658::wakeOnMotion(threshold)) {
+      Serial.println("wom: arming failed");
+      qmi8658::setEnabled(true);
+      return;
+    }
+    int level = digitalRead(board::IMU_INT2);
+    int events = 0;
+    Serial.printf("wom: armed at %d mg, INT2 %d; move the board (%d s)\n", threshold, level,
+                  seconds);
+    const uint32_t start = millis();
+    while (millis() - start < static_cast<uint32_t>(seconds) * 1000) {
+      const int now = digitalRead(board::IMU_INT2);
+      if (now != level) {
+        level = now;
+        Serial.printf("wom: event %d at %lu ms\n", ++events,
+                      static_cast<unsigned long>(millis() - start));
+      }
+      vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    qmi8658::setEnabled(true);
+    Serial.printf("wom: %d events; IMU back to normal\n", events);
+    return;
+  }
   if (line == "wxforget") {
     weather::forget();
     return;
@@ -97,6 +127,29 @@ void lineCommand(const String &line) {
     fprintf(f, "%s\n", line.substring(space + 1).c_str());
     fclose(f);
     Serial.println("devtools: appended");
+    return;
+  }
+  if (line.startsWith("b64 ")) {
+    const int space = line.indexOf(' ', 4);
+    const String path = cardPath(space > 0 ? line.substring(4, space) : "");
+    if (path.isEmpty()) return;
+    const String data = line.substring(space + 1);
+    std::string bytes(data.length() / 4 * 3 + 3, '\0');  // RAM, not flash (AGENTS.md, Gotchas)
+    size_t n = 0;
+    if (mbedtls_base64_decode(reinterpret_cast<unsigned char *>(&bytes[0]), bytes.size(), &n,
+                              reinterpret_cast<const unsigned char *>(data.c_str()),
+                              data.length()) != 0) {
+      Serial.println("devtools: that isn't base64");
+      return;
+    }
+    FILE *f = fopen(path.c_str(), "ab");
+    if (!f) {
+      Serial.println("devtools: can't open that file (does its folder exist?)");
+      return;
+    }
+    const size_t wrote = fwrite(bytes.data(), 1, n, f);
+    fclose(f);
+    Serial.printf("devtools: appended %u bytes\n", static_cast<unsigned>(wrote));
     return;
   }
   if (line == "sdtest") {
