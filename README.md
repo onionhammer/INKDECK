@@ -12,7 +12,8 @@ Screens as the panel draws them, saved over USB with `tools/screenshot.py`.
 
 Home lists ten modules, each with a live preview. Every screen uses one key language: ▲▼ to
 move or adjust, ● for the main action, HOLD ● for the second one, BOOT for back, HOLD BOOT for
-Home.
+Home. Landscape screens (Clock, Level, wide pictures) turn the board so the wheel is on top;
+there, rolling it left is ▲ and right is ▼.
 
 | Module | What it does |
 | --- | --- |

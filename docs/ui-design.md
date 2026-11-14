@@ -15,7 +15,7 @@ paper.
 | Screens | Size | How |
 | --- | --- | --- |
 | Home and all app screens | **480×800 portrait** | Panel rotated 90° in software. Same 48,000-byte 1 bpp framebuffer |
-| Clock, power-off screen | **800×480 landscape** | Native panel orientation |
+| Clock, Level, wide pictures, power-off screen | **800×480 landscape** | Native panel orientation turned 180° (firmware), so the rotary wheel is on the top edge. The navigator swaps ▲ and ▼ there: rolling left is ▲, right is ▼ |
 
 Artboards are drawn at 1 CSS px = 1 panel pixel, so sizes in the mockups map directly to device
 pixels.
@@ -51,7 +51,7 @@ The device has no touch screen. All navigation uses the buttons in `include/boar
 
 | Hint | Button | GPIO |
 | --- | --- | --- |
-| `▲` / `▼` | Rotary switch up / down (`BTN_UP`, `BTN_DOWN`) | 4 / 6 |
+| `▲` / `▼` | Rotary switch up / down (`BTN_UP`, `BTN_DOWN`); swapped on landscape screens, where the wheel is on top | 4 / 6 |
 | `●` | Rotary push (`BTN_PRESS`); `HOLD ●` = long press (≈1 s) | 5 |
 | `BOOT` | Back (`BTN_BOOT`); `HOLD BOOT` = home. While audio is playing or paused, `HOLD BOOT` opens the player instead, and `HOLD BOOT` on that player goes back to where you were | 0 |
 | `PWR` | PMIC `PWRON` key: 1 s = on, 4 s = forced off | — |

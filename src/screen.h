@@ -34,8 +34,9 @@ void assumeShown();
 // standby wake on battery; it drops a USB serial connection.
 void sleepWhileBusy(bool on);
 
-// Portrait (480x800, the default) or the panel's native landscape (800x480). Only changes how
-// drawing maps onto the framebuffer; present() with a full refresh after switching.
+// Portrait (480x800, the default) or landscape (800x480: the panel's native orientation turned
+// 180 degrees, so the wheel is on top). Only changes how drawing maps onto the framebuffer;
+// present() with a full refresh after switching.
 void setLandscape(bool landscape);
 bool landscape();
 

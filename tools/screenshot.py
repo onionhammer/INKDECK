@@ -9,6 +9,7 @@
 
 --keys are src/devtools.h commands, sent one at a time with --delay seconds between them so
 each redraw finishes first: u/d dial up/down, p/P press/hold the wheel, b/B BOOT/hold BOOT.
+u/d are the physical wheel, so a landscape screen sees them swapped, as it does the real dial.
 The image is the framebuffer as drawn (portrait screens come out 480x800), 1 = paper.
 --log prints the firmware's log lines that arrive meanwhile (render timings, errors).
 --after sends more keys once the frame is in, e.g. --keys o.... --delay 0.4 --after b grabs

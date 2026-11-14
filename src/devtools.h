@@ -2,6 +2,7 @@
 // Single-character commands on the USB console:
 //   u / d    dial up / down          p / P   press / hold the wheel
 //   U / D    dial up / down as a fast repeat (the dial held past 1.7 s: lists move a page)
+//            All four are the physical wheel, so landscape screens get them swapped (ui/nav.h)
 //   b / B    BOOT / hold BOOT        s       dump the framebuffer (tools/screenshot.py)
 //   - / +    volume down / up 5 (no redraw; handy to silence the speaker before a test)
 //   r        print the PMIC's configuration and status registers (read-only)

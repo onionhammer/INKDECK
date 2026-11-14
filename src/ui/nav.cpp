@@ -23,6 +23,7 @@ uint32_t lastTick = 0;
 std::string drawnStatus;  // clock + battery as last drawn, to spot when they change
 void (*powerKeyHandler)() = nullptr;
 bool (*holdBackHandler)() = nullptr;
+bool dialSwapped = false;  // the swap orientDial() chose at the dial's press, kept for its repeats
 
 void request(Refresh r) {
   if (r > pending) pending = r;
@@ -108,7 +109,20 @@ void render(Refresh refresh) {
         (unsigned long)(millis() - t1));
 }
 
+// Landscape turns the board so its wheel is on the top edge, where ▲ (rolled towards the
+// portrait top) now rolls to the right. Swapping ▲ and ▼ there keeps left as ▲ and right as ▼,
+// as they were when landscape had the wheel underneath. Decided when the dial is pressed, not
+// per repeat: a held dial in the picture viewer can step from a portrait picture to a landscape
+// one, and would turn back on itself if the swap changed under it.
+Key orientDial(Key key) {
+  if (key != Key::Up && key != Key::Down) return key;
+  if (!input::lastKeyRepeat()) dialSwapped = baseScreen().landscape();
+  if (!dialSwapped) return key;
+  return key == Key::Up ? Key::Down : Key::Up;
+}
+
 void dispatch(Key key) {
+  key = orientDial(key);
   log_d("key %s", input::name(key));
   if (key == Key::BackLong) {
     if (!holdBackHandler || !holdBackHandler()) home();
