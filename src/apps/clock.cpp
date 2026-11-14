@@ -15,6 +15,7 @@
 #include "apps/weather.h"
 #include "audio.h"
 #include "forecast.h"
+#include "netget.h"
 #include "pmic.h"
 #include "power.h"
 #include "rtc.h"
@@ -142,12 +143,13 @@ struct Face {
   time_t lastSync = 0;
   int cursor = -1;  // selected alarm row; -1 in standby
 
-  // The weather strip (addStrip()): on the Clock and the desk face. Not in battery standby,
-  // whose minute wakes have no fresh forecast or room reading, so it isn't in the NVS record.
+  // The weather strip: on the Clock and the desk face (addStrip()), and in standby
+  // (addStandbyStrip(): the saved forecast and the room read straight from the SHTC3).
   bool strip = false;
   bool outOk = false;  // the forecast has the present hour
   float outC = 0;
   ui::icons::Weather outIcon = ui::icons::Weather::Cloud;
+  uint8_t outCode = 0;  // WMO code, for outCondition
   const char *outCondition = "";
   bool dayOk = false;  // today's high and low
   float hiC = 0, loC = 0;
@@ -178,13 +180,8 @@ Face liveFace(int cursor) {
   return f;
 }
 
-// Fills in the weather strip: the forecast for now and today, and the room.
-void addStrip(Face &f) {
-  f.strip = true;
-  const shtc3::Reading in = sensors::steadyEnv();
-  f.inOk = in.ok;
-  f.inC = in.tempC;
-  f.inRh = static_cast<int>(lroundf(in.rh));
+// The strip's outside half: the saved forecast for now and today.
+void addOutside(Face &f) {
   if (!f.valid) return;
   std::unique_ptr<weather::Forecast> fc(new weather::Forecast);  // about 2 KB
   if (!weather::get(*fc)) return;
@@ -194,6 +191,7 @@ void addStrip(Face &f) {
     f.outOk = true;
     f.outC = h->tempC;
     f.outIcon = weatherIcon(*h, now);
+    f.outCode = h->code;
     f.outCondition = weather::condition(h->code);
   }
   const weather::Day *today[1];
@@ -203,6 +201,34 @@ void addStrip(Face &f) {
     f.hiC = today[0]->hiC;
     f.loC = today[0]->loC;
   }
+}
+
+// Fills in the weather strip: the forecast for now and today, and the room.
+void addStrip(Face &f) {
+  f.strip = true;
+  const shtc3::Reading in = sensors::steadyEnv();
+  f.inOk = in.ok;
+  f.inC = in.tempC;
+  f.inRh = static_cast<int>(lroundf(in.rh));
+  addOutside(f);
+}
+
+// The strip on a standby wake, before the sensor hub runs: the room straight from the SHTC3.
+// The board has been off since the last minute, so the reading needs none of the hub's
+// self-heating correction (just after the board goes to standby it reads high for a while, as
+// the board cools). As in sensors::steadyEnv(), a value moves only when it changes by more
+// than the sensor's wander (0.3 °C, 2 %RH), here against what the last face showed.
+void addStandbyStrip(Face &f, const Face *last) {
+  f.strip = true;
+  const shtc3::Reading in = shtc3::begin() ? shtc3::read() : shtc3::Reading{};
+  f.inOk = in.ok;
+  f.inC = in.tempC;
+  f.inRh = static_cast<int>(lroundf(in.rh));
+  if (in.ok && last && last->inOk) {
+    if (fabsf(f.inC - last->inC) < 0.3f) f.inC = last->inC;
+    if (abs(f.inRh - last->inRh) < 2) f.inRh = last->inRh;
+  }
+  addOutside(f);
 }
 
 // Fills in what's playing or paused, if anything.
@@ -226,12 +252,15 @@ void addPlaying(Face &f) {
 }
 
 // NVS record of the last standby face; bump kFaceVersion when Face or the drawing changes.
-constexpr uint8_t kFaceVersion = 1;
+constexpr uint8_t kFaceVersion = 2;
 struct FaceRecord {
   uint8_t version, valid, usb;
   int8_t battery, cursor;
   uint8_t alarm[alarms::kCount][4];
   uint32_t now, snoozeAt, lastSync;
+  uint8_t strip, outOk, outIcon, outCode, dayOk, inOk;
+  int16_t inRh;
+  float outC, hiC, loC, inC;
 };
 
 void saveFace(const Face &f) {
@@ -251,6 +280,17 @@ void saveFace(const Face &f) {
   r.now = static_cast<uint32_t>(f.now);
   r.snoozeAt = static_cast<uint32_t>(f.snoozeAt);
   r.lastSync = static_cast<uint32_t>(f.lastSync);
+  r.strip = f.strip;
+  r.outOk = f.outOk;
+  r.outIcon = static_cast<uint8_t>(f.outIcon);
+  r.outCode = f.outCode;
+  r.dayOk = f.dayOk;
+  r.inOk = f.inOk;
+  r.inRh = static_cast<int16_t>(f.inRh);
+  r.outC = f.outC;
+  r.hiC = f.hiC;
+  r.loC = f.loC;
+  r.inC = f.inC;
   Preferences prefs;
   if (!prefs.begin("clockface", false)) return;
   prefs.putBytes("face", &r, sizeof r);
@@ -275,6 +315,18 @@ bool loadFace(Face &f) {
   f.now = r.now;
   f.snoozeAt = r.snoozeAt;
   f.lastSync = r.lastSync;
+  f.strip = r.strip;
+  f.outOk = r.outOk;
+  f.outIcon = static_cast<ui::icons::Weather>(r.outIcon);
+  f.outCode = r.outCode;
+  f.outCondition = f.outOk ? weather::condition(r.outCode) : "";
+  f.dayOk = r.dayOk;
+  f.inOk = r.inOk;
+  f.inRh = r.inRh;
+  f.outC = r.outC;
+  f.hiC = r.hiC;
+  f.loC = r.loC;
+  f.inC = r.inC;
   return true;
 }
 
@@ -879,7 +931,7 @@ class DeskScreen : public ui::Screen {
 // says how to wake it. Drawn on the next tick after it's on the panel, then off.
 class StandbyScreen : public ui::Screen {
  public:
-  explicit StandbyScreen(int cycles) : cycles_(cycles), face_(liveFace(-1)) {}
+  explicit StandbyScreen(int cycles) : cycles_(cycles), face_(liveFace(-1)) { addStrip(face_); }
 
   std::string tag() const override { return moduleTag("CLOCK"); }
   bool chrome() const override { return false; }  // drawStandbyFace() draws its own
@@ -993,7 +1045,13 @@ bool standbyWake() {
   ui::Canvas &c = screen::canvas();
   Face old;
   const bool haveOld = loadFace(old);
-  const Face face = liveFace(-1);
+  // The forecast every INKDECK_STANDBY_WEATHER_HOURS (forecast.h), before the face uses it.
+  if (INKDECK_STANDBY_WEATHER_HOURS > 0) {
+    net::begin();
+    weather::syncInStandby(INKDECK_STANDBY_WEATHER_HOURS);
+  }
+  Face face = liveFace(-1);
+  addStandbyStrip(face, haveOld ? &old : nullptr);
   screen::lock();
   screen::setLandscape(true);
   if (haveOld) {
@@ -1003,13 +1061,21 @@ bool standbyWake() {
   }
   screen::clear();
   drawStandbyFace(c, face);
+  // The drawing is done at full speed (at 80 MHz it would take three times as long, for more
+  // charge). What's left waits on SPI, the panel and NVS, which costs less at 80 MHz, and the
+  // refresh itself in light sleep. Not on USB, where light sleep would drop the serial port.
+  const uint32_t mhz = getCpuFrequencyMhz();
+  setCpuFrequencyMhz(80);
+  screen::sleepWhileBusy(!face.usb);
   tm t;
   localtime_r(&face.now, &t);
   screen::present(!haveOld || t.tm_min % 30 == 0);
+  screen::sleepWhileBusy(false);
   screen::unlock();
   saveFace(face);
   power::off(power::Mode::Standby, face.now + 60, cycles > 0 ? cycles - 1 : 0);
-  return false;  // the PMIC didn't power off: boot normally
+  setCpuFrequencyMhz(mhz);  // the PMIC didn't power off: boot normally
+  return false;
 }
 
 }  // namespace apps

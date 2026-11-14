@@ -72,6 +72,8 @@ bool present(bool forceFull) {
 
 void assumeShown() { epd.assumeShown(fb->getBuffer()); }
 
+void sleepWhileBusy(bool on) { epd.setSleepWhileBusy(on); }
+
 void setLandscape(bool landscape) { fb->setRotation(landscape ? 0 : kRotation); }
 
 bool landscape() { return fb->getRotation() == 0; }

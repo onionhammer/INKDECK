@@ -29,9 +29,15 @@ class Epd {
   // still holds its image, and redrawing it here lets the next show() be partial.
   void assumeShown(const uint8_t *frame);
 
+  // Light-sleeps the chip while the panel is busy, instead of polling BUSY at full clock;
+  // BUSY going low wakes it. Through a refresh that's well under a milliamp instead of tens.
+  // Light sleep drops a USB serial connection, so the standby wake turns it on only on battery.
+  void setSleepWhileBusy(bool on) { sleepWhileBusy_ = on; }
+
  private:
   void reset();
   bool waitIdle(uint32_t timeoutMs);
+  void sleepUntilIdle(uint32_t maxMs);
   void command(uint8_t cmd);
   void data(const uint8_t *buf, size_t len);
   void data8(uint8_t value) { data(&value, 1); }
@@ -40,4 +46,5 @@ class Epd {
 
   uint8_t *prev_ = nullptr;  // last frame shown, PSRAM
   bool hasPrev_ = false;
+  bool sleepWhileBusy_ = false;
 };

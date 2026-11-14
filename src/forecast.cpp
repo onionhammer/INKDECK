@@ -28,6 +28,12 @@ constexpr size_t kMaxBody = 32 * 1024;  // a reply is about 6 KB
 constexpr time_t kHour = 3600;
 constexpr time_t kOnUsbEvery = 30 * 60;  // automatic syncs on USB (the user's choice, 2026-11-13)
 constexpr time_t kRetryAfter = 15 * 60;  // after a failed automatic sync
+// A standby sync runs on battery with the board otherwise off: it gives up sooner, and after a
+// failure (out of the network's range, say) waits its interval again, doubling with each
+// further failure, up to a day.
+constexpr uint32_t kStandbyConnectTimeoutMs = 8000;
+constexpr int kStandbyHttpTimeoutMs = 8000;
+constexpr time_t kStandbyMaxWait = 24 * kHour;
 
 constexpr const char *kNamespace = "weather";
 constexpr const char *kKey = "forecast";
@@ -126,7 +132,8 @@ esp_err_t onEvent(esp_http_client_event_t *e) {
 }
 
 // query: the fields, then "&models=..."
-bool fetch(std::string &body, std::string &error, const std::string &query) {
+bool fetch(std::string &body, std::string &error, const std::string &query,
+           int timeoutMs = kHttpTimeoutMs) {
   char url[1024];
   // Two decimals is about a kilometre: plenty for a forecast, and all the service needs.
   const int n = snprintf(url, sizeof url,
@@ -141,7 +148,7 @@ bool fetch(std::string &body, std::string &error, const std::string &query) {
   cfg.event_handler = onEvent;
   cfg.user_data = &body;
   cfg.crt_bundle_attach = esp_crt_bundle_attach;
-  cfg.timeout_ms = kHttpTimeoutMs;
+  cfg.timeout_ms = timeoutMs;
   cfg.buffer_size_tx = 1024;  // the request line is about 600 bytes; the default is 512
   esp_http_client_handle_t client = esp_http_client_init(&cfg);
   if (!client) {
@@ -243,37 +250,46 @@ bool parse(const std::string &body, Forecast &f, std::string &error) {
 
 // --- The sync task.
 
-void run(void *) {
+// Joins Wi-Fi, fetches, parses and saves the forecast, then Wi-Fi off. Returns when it was
+// fetched, or 0 with error set. showPhase: move phase on to Fetching once connected (the sync
+// task, which the screens watch).
+time_t download(uint32_t connectTimeoutMs, int httpTimeoutMs, bool showPhase,
+                std::string &error) {
   const uint32_t t0 = millis();
-  std::string error;
-  if (!wlan::connect(kConnectTimeoutMs, error)) {
-    finish(Phase::Failed, "WI-FI: " + error);
-    vTaskDelete(nullptr);
-    return;
+  if (!wlan::connect(connectTimeoutMs, error)) {
+    error = "WI-FI: " + error;
+    return 0;
   }
-  phase = Phase::Fetching;
+  if (showPhase) phase = Phase::Fetching;
   std::string body;
   body.reserve(8 * 1024);
   const char *model = modelFor(settings::latitude(), settings::longitude());
-  bool ok = fetch(body, error, std::string(kQuery) + "&models=" + model);
+  bool ok = fetch(body, error, std::string(kQuery) + "&models=" + model, httpTimeoutMs);
   wlan::disconnect();
   auto f = std::make_unique<Forecast>();
   if (ok) ok = parse(body, *f, error);
-  if (!ok) {
-    finish(Phase::Failed, error);
-    vTaskDelete(nullptr);
-    return;
-  }
+  if (!ok) return 0;
   f->fetched = time(nullptr);
   f->lat = static_cast<float>(settings::latitude());
   f->lon = static_cast<float>(settings::longitude());
   store(*f);
-  tm local;
-  localtime_r(&f->fetched, &local);
-  char text[32];
-  strftime(text, sizeof text, "UPDATED %H:%M", &local);
   log_i("weather: %s, %d hours, %d days, %u bytes in %lu ms", model, f->hourCount, f->dayCount,
         static_cast<unsigned>(body.size()), static_cast<unsigned long>(millis() - t0));
+  return f->fetched;
+}
+
+void run(void *) {
+  std::string error;
+  const time_t fetched = download(kConnectTimeoutMs, kHttpTimeoutMs, true, error);
+  if (!fetched) {
+    finish(Phase::Failed, error);
+    vTaskDelete(nullptr);
+    return;
+  }
+  tm local;
+  localtime_r(&fetched, &local);
+  char text[32];
+  strftime(text, sizeof text, "UPDATED %H:%M", &local);
   finish(Phase::Done, text);
   vTaskDelete(nullptr);
 }
@@ -471,6 +487,49 @@ time_t nextSync() {
   const time_t attempt = lastAttempt.load();
   if (attempt > fetched && phase.load() == Phase::Failed) return std::max(due, attempt + kRetryAfter);
   return due ? due : time(nullptr);
+}
+
+bool syncInStandby(int hours) {
+  if (hours <= 0 || !configured() || !rtc::timeValid()) return false;
+  const time_t every = static_cast<time_t>(hours) * kHour;
+  const time_t now = time(nullptr);
+  time_t fetched;
+  {
+    std::lock_guard<std::mutex> lock(forecastMutex);
+    loadLocked();
+    fetched = forHere(cache) ? cache.fetched : 0;
+  }
+  // On the boundary after the last forecast, as nextSync() does it.
+  time_t due = fetched ? floorTo(fetched + every / 4, every) + every : now;
+  // Failed tries since that forecast push it back (older ones don't count).
+  time_t lastTry = 0;
+  int fails = 0;
+  Preferences prefs;
+  if (prefs.begin(kNamespace, true)) {
+    lastTry = static_cast<time_t>(prefs.getULong64("sbTry", 0));
+    fails = prefs.getUChar("sbFails", 0);
+    prefs.end();
+  }
+  if (lastTry <= fetched) fails = 0;
+  if (fails > 0) {
+    const time_t wait = std::min(every << std::min(fails - 1, 5), kStandbyMaxWait);
+    due = std::max(due, lastTry + wait);
+  }
+  if (now < due) return false;
+  const pmic::Status p = pmic::status();
+  if (p.ok && p.battery && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent) {
+    return false;
+  }
+  log_i("weather: standby sync (every %d h)", hours);
+  std::string error;
+  if (download(kStandbyConnectTimeoutMs, kStandbyHttpTimeoutMs, false, error)) return true;
+  log_w("weather: standby sync failed (%d before): %s", fails, error.c_str());
+  if (prefs.begin(kNamespace, false)) {
+    prefs.putULong64("sbTry", static_cast<uint64_t>(now));
+    prefs.putUChar("sbFails", static_cast<uint8_t>(std::min(fails + 1, 255)));
+    prefs.end();
+  }
+  return false;
 }
 
 void poll() {

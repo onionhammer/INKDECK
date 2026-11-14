@@ -22,6 +22,10 @@ bool present(bool forceFull = false);
 // power-off), so the next present() can be a partial refresh against it.
 void assumeShown();
 
+// Light sleep instead of polling while the panel refreshes (Epd::setSleepWhileBusy). For the
+// standby wake on battery; it drops a USB serial connection.
+void sleepWhileBusy(bool on);
+
 // Portrait (480x800, the default) or the panel's native landscape (800x480). Only changes how
 // drawing maps onto the framebuffer; present() with a full refresh after switching.
 void setLandscape(bool landscape);

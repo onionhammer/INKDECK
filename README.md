@@ -31,7 +31,10 @@ Home.
 - PWR shows a sleep screen and powers the board off completely. The e-paper keeps its image,
   and the RTC wakes the board for the next alarm.
 - After 10 idle minutes on battery, the board goes to standby: a clock face that the RTC
-  redraws every minute.
+  redraws every minute, with the room temperature and humidity and the outside weather from
+  the saved forecast. `INKDECK_STANDBY_WEATHER_HOURS` in `platformio.ini` has it fetch a new
+  forecast every so many hours (0: never). Each wake light-sleeps through the panel refresh
+  and runs at 80 MHz once the face is drawn.
 - Reading and music don't time out until the battery is low.
 - While you read on battery, the board light-sleeps between page turns.
 - On USB, PWR shows the clock face instead and the board stays on.

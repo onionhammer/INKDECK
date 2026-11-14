@@ -2,7 +2,9 @@
 
 #include <Arduino.h>
 #include <SPI.h>
+#include <driver/gpio.h>
 #include <esp_heap_caps.h>
+#include <esp_sleep.h>
 #include <string.h>
 
 #include "board_pins.h"
@@ -61,13 +63,32 @@ bool Epd::waitIdle(uint32_t timeoutMs) {
   const uint32_t start = millis();
   delay(1);
   while (digitalRead(board::EPD_BUSY) == HIGH) {
-    if (millis() - start > timeoutMs) {
+    const uint32_t waited = millis() - start;
+    if (waited > timeoutMs) {
       log_e("EPD: BUSY timeout after %lu ms", (unsigned long)timeoutMs);
       return false;
     }
-    delay(2);
+    if (sleepWhileBusy_) {
+      sleepUntilIdle(timeoutMs - waited + 1);
+    } else {
+      delay(2);
+    }
   }
   return true;
+}
+
+void Epd::sleepUntilIdle(uint32_t maxMs) {
+  // The panel's pins keep their awake configuration through the sleep, as power::nap() does
+  // for the buttons: RST let go low mid-refresh would reset the controller.
+  const int pins[] = {board::EPD_CS, board::EPD_DC, board::EPD_RST, board::EPD_BUSY};
+  for (const int pin : pins) gpio_sleep_sel_dis(static_cast<gpio_num_t>(pin));
+  const gpio_num_t busy = static_cast<gpio_num_t>(board::EPD_BUSY);
+  gpio_wakeup_enable(busy, GPIO_INTR_LOW_LEVEL);  // already low: wakes at once
+  esp_sleep_enable_gpio_wakeup();
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(maxMs) * 1000);
+  esp_light_sleep_start();
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  gpio_wakeup_disable(busy);
 }
 
 void Epd::command(uint8_t cmd) {

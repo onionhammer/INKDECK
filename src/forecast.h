@@ -6,12 +6,21 @@
 // The last forecast is kept in NVS, so the Weather screen opens at once and works offline;
 // when the "current" block is more than an hour old, the hour of the forecast stands in for
 // it. While the board is on, poll() syncs once an hour, or every half hour on USB (join Wi-Fi,
-// one HTTPS request, Wi-Fi off) on its own task.
+// one HTTPS request, Wi-Fi off) on its own task. In standby, syncInStandby() can do the same
+// every few hours (INKDECK_STANDBY_WEATHER_HOURS below).
 #pragma once
 #include <stdint.h>
 #include <time.h>
 
 #include <string>
+
+// -DINKDECK_STANDBY_WEATHER_HOURS=N: in standby, fetch the forecast every N hours, so the
+// standby face's outside weather stays current. Each fetch costs about as much as 10 minute
+// wakes. 0 (the default): never; the face uses the forecast saved while the board was on, which
+// runs out 48 hours after that. Set in platformio.ini.
+#ifndef INKDECK_STANDBY_WEATHER_HOURS
+#define INKDECK_STANDBY_WEATHER_HOURS 0
+#endif
 
 namespace weather {
 
@@ -99,5 +108,12 @@ time_t nextSync();
 // From loop(): starts the scheduled sync while the board is on (hourly, half-hourly on USB).
 // Skipped on battery below power::kLowBatteryPercent.
 void poll();
+
+// From a standby wake (no task, nothing else running): syncs now, blocking, if one is due every
+// `hours`, on the boundary after the last forecast as poll() does it. A shorter Wi-Fi timeout
+// than poll()'s, and after a failure it waits `hours` again, doubling with each further one up
+// to a day, so a board away from its network doesn't spend a timeout every time. Skipped on
+// battery below power::kLowBatteryPercent. Call net::begin() first. True if it fetched one.
+bool syncInStandby(int hours);
 
 }  // namespace weather

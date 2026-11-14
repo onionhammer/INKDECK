@@ -4,7 +4,8 @@
 //
 // Two ways to be off:
 //   Sleep    the Sleep screen (the frog); wakes only for an alarm.
-//   Standby  the Clock face; wakes every minute to redraw it (no radio), and for alarms.
+//   Standby  the Clock face; wakes every minute to redraw it, and for alarms. No radio, unless
+//            INKDECK_STANDBY_WEATHER_HOURS (forecast.h) has it fetch the forecast.
 #pragma once
 #include <stdint.h>
 #include <time.h>
