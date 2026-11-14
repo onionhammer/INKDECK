@@ -26,7 +26,7 @@ there, rolling it left is ▲ and right is ▼.
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, a live I2C bus scan, and a CSV log to the card |
 | **Level** | Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
 | **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, in landscape when they're wider than tall. Phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short) |
-| **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, and how often the screen does a full refresh (both below) |
+| **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, how often the screen does a full refresh, and the PIN lock (all below) |
 
 **Power**
 - PWR shows a sleep screen and powers the board off completely. The e-paper keeps its image,
@@ -40,6 +40,18 @@ there, rolling it left is ▲ and right is ▼.
 - While you read on battery, the board light-sleeps between page turns. Under a picture, the IMU's wake on motion wakes it when you turn the board.
 - On USB, PWR shows the clock face instead and the board stays on.
 
+**Lock:** with a PIN set (System → PIN LOCK, or `inkdeck.ini` below), the board asks for it
+whenever it starts and whenever it wakes from the USB clock face. If `lock_minutes` is set, it
+also asks after that many minutes without a key, and unlocking takes you back to the screen you
+were on. You enter the PIN like a combination padlock: turn the wheel to pick each digit, then
+press to move to the next. BOOT goes back a digit. Alarms still ring over the lock, and
+stopping or snoozing one needs no PIN. In System, PIN LOCK sets a PIN of 4 to 8 digits (HOLD ●
+after the last one, then the same again to confirm). Once one is set, it offers CHANGE PIN and
+CLEAR PIN, and both ask for the current PIN first. The board keeps the PIN in its own flash and
+replaces a `pin =` line on the card with a note. A new `pin =` line, or `pin = off`, takes
+effect once you unlock with the current PIN. This is a casual lock: anyone with a USB cable can
+reflash the board.
+
 **Display:** screen changes use the fast partial refresh. A full refresh (the black-white flash)
 clears the ghosting that partials leave, once they have flipped two screens' worth of pixels
 or after 30 of them. System's AUTO FULL REFRESH sets that to 2, 5, 10 or 20 screens, or OFF,
@@ -49,7 +61,7 @@ up since the last full one. HOLD BOOT always does a full refresh.
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template:
 `.env.example`). `inkdeck.ini` in the card's root overrides the time zone and location
-without a rebuild (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it
+without a rebuild, and sets the lock (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it
 at startup, and if the card has none, it writes one with every line commented out. Wi-Fi is
 never read from the card. `INKDECK_FAHRENHEIT` in `platformio.ini` switches between US and
 metric units.
@@ -60,6 +72,9 @@ timezone = GMT0BST,M3.5.0/1,M10.5.0   ; a POSIX TZ string, daylight saving rule 
 [location]
 latitude = 51.48                      ; decimal degrees, north and east positive
 longitude = 0.00
+[lock]
+pin = 2468                            ; 4 to 8 digits; pin = off removes it
+lock_minutes = 5                      ; also lock after 5 minutes without a key
 ```
 
 ## Build and flash

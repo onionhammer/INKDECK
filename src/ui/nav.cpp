@@ -70,6 +70,14 @@ std::string signature(const StatusInfo &info) {
          info.temp;
 }
 
+// How many screens home() keeps: the root, or everything up to the topmost lock screen.
+size_t homeDepth() {
+  for (size_t i = stack.size(); i-- > 0;) {
+    if (stack[i]->locks()) return i + 1;
+  }
+  return 1;
+}
+
 // The screen that owns the chrome and body: the top one, or the one under an overlay.
 Screen &baseScreen() {
   for (size_t i = stack.size(); i-- > 0;) {
@@ -125,7 +133,8 @@ void dispatch(Key key) {
   key = orientDial(key);
   log_d("key %s", input::name(key));
   if (key == Key::BackLong) {
-    if (!holdBackHandler || !holdBackHandler()) home();
+    // Locked: never the player, which would open over the lock.
+    if (locked() || !holdBackHandler || !holdBackHandler()) home();
     return;
   }
   if (key == Key::Power) {
@@ -155,7 +164,14 @@ void begin(std::unique_ptr<Screen> root) {
   stack.push_back(std::move(root));
   stack.back()->onEnter();
   lastTick = millis();
-  render(Refresh::Full);
+  request(Refresh::Full);
+}
+
+void flush() {
+  if (pending == Refresh::None) return;
+  const Refresh r = pending;
+  pending = Refresh::None;
+  render(r);
 }
 
 void loop() {
@@ -172,11 +188,7 @@ void loop() {
     tick();
   }
   retired.clear();
-  if (pending != Refresh::None) {
-    const Refresh r = pending;
-    pending = Refresh::None;
-    render(r);
-  }
+  flush();
 }
 
 void push(std::unique_ptr<Screen> screen) {
@@ -195,12 +207,13 @@ void pop() {
 }
 
 void home() {
-  if (stack.size() > 1) {
+  const size_t depth = homeDepth();
+  if (stack.size() > depth) {
     stack.back()->onLeave();
-    while (stack.size() > 1) retireTop();
+    while (stack.size() > depth) retireTop();
     stack.back()->onEnter();
   }
-  request(Refresh::Full);  // also the "clean the screen" gesture on the root itself
+  request(Refresh::Full);  // also the "clean the screen" gesture on the root (or the lock)
 }
 
 void replace(std::unique_ptr<Screen> screen) {
@@ -216,6 +229,13 @@ void invalidate(Refresh refresh) { request(refresh); }
 Screen *top() { return stack.empty() ? nullptr : stack.back().get(); }
 
 Screen *base() { return stack.empty() ? nullptr : &baseScreen(); }
+
+bool locked() {
+  for (const auto &s : stack) {
+    if (s->locks()) return true;
+  }
+  return false;
+}
 
 void onPowerKey(void (*handler)()) { powerKeyHandler = handler; }
 

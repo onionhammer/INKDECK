@@ -7,6 +7,7 @@
 #include "alarms.h"
 #include "apps/home.h"
 #include "apps/idle.h"
+#include "apps/lock.h"
 #include "apps/sleep.h"
 #include "apps/updater.h"
 #include "audio.h"
@@ -40,13 +41,13 @@ constexpr int kRailH = 34;
 constexpr int kStateH = 21;  // 7 rows in the space 6 rows of 24 had
 constexpr int kStateRows = 7;
 constexpr int kStateKeyW = 104;
-constexpr int kActionH = 26;  // 5 rows in about the space 4 rows of 30 had
+constexpr int kActionH = 22;  // 6 rows in about the space 5 rows of 26 had
 constexpr int kPillW = 52;
 constexpr int kCells = 10;
 
-enum class Action : uint8_t { Sleep, SyncTime, FullRefresh, Update, Reboot };
+enum class Action : uint8_t { Sleep, SyncTime, FullRefresh, PinLock, Update, Reboot };
 constexpr const char *kActionLabels[] = {"SLEEP NOW", "SYNC TIME (NTP)", "AUTO FULL REFRESH",
-                                         "UPDATE OVER WI-FI", "REBOOT"};
+                                         "PIN LOCK",  "UPDATE OVER WI-FI", "REBOOT"};
 constexpr int kActionCount = sizeof kActionLabels / sizeof kActionLabels[0];
 
 // AUTO FULL REFRESH's steps, in screens' worth of pixels flipped (screen.h); 0 = off.
@@ -64,6 +65,13 @@ int nextFullRefresh() {
     if (n && (step == 0 || step > n)) return step;
   }
   return kFullRefreshSteps[0];
+}
+
+// PIN LOCK's value: OFF, ON, or ON · 5 MIN with an idle lock (lock_minutes on the card).
+std::string pinLockValue() {
+  if (!settings::hasPin()) return "OFF";
+  const int minutes = settings::lockMinutes();
+  return minutes > 0 ? "ON \xC2\xB7 " + std::to_string(minutes) + " MIN" : "ON";
 }
 
 std::string volts(int mv, int decimals) {
@@ -224,6 +232,23 @@ class SystemScreen : public ui::Screen {
         message_ = screen::fullRefreshScreens() ? "AFTER " + fullRefreshValue() + " OF CHANGE"
                                                 : "OFF: HOLD BOOT CLEANS THE SCREEN";
         break;
+      case Action::PinLock: {
+        // Each task asks for the current PIN first, if there is one (apps/lock.h).
+        const auto done = [this](const std::string &m) { message_ = m; };
+        if (!settings::hasPin()) {
+          ui::nav::push(apps::makePinTask(apps::PinTask::Set, done));
+          break;
+        }
+        ui::nav::push(std::make_unique<ui::MenuScreen>(
+            "PIN LOCK",
+            std::vector<ui::MenuItem>{
+                {"CHANGE PIN", nullptr,
+                 [done] { ui::nav::replace(apps::makePinTask(apps::PinTask::Set, done)); }},
+                {"CLEAR PIN", nullptr,
+                 [done] { ui::nav::replace(apps::makePinTask(apps::PinTask::Clear, done)); }},
+            }));
+        break;
+      }
       case Action::Update: {
         if (!wlan::configured()) {
           message_ = "NO WI-FI: SET WIFI_SSID IN .ENV, REBUILD";
@@ -407,8 +432,10 @@ class SystemScreen : public ui::Screen {
       const bool selected = i == cursor_.cursor();
       const int x = line.x + kPadX;
       const Rect text{x + 24, line.y, line.w - x - 24 - kPadX, line.h};
-      const std::string value =
-          static_cast<Action>(i) == Action::FullRefresh ? fullRefreshValue() : "";
+      const Action a = static_cast<Action>(i);
+      const std::string value = a == Action::FullRefresh ? fullRefreshValue()
+                                : a == Action::PinLock   ? pinLockValue()
+                                                         : "";
       if (selected) {
         fill(c, line, kInk);
         drawText(c, {x, line.y, 14, line.h}, glyph::kPlay, style::kCap, Align::Left, kPaper);

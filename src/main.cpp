@@ -7,7 +7,8 @@
 //   PWR   the Sleep screen, then power-off (power.h)
 //
 // Screens live in apps/, one per module on Home (README.md lists them): Reader, Podcasts,
-// Music, Weather, Clock, Recorder, Sensors, Level, Files and System.
+// Music, Weather, Clock, Recorder, Sensors, Level, Files and System. With a PIN set in
+// SD:/inkdeck.ini, the lock (apps/lock.h) comes up over them at every start.
 #include <Arduino.h>
 #include <Wire.h>
 
@@ -15,6 +16,7 @@
 #include "apps/clock.h"
 #include "apps/home.h"
 #include "apps/idle.h"
+#include "apps/lock.h"
 #include "apps/music.h"
 #include "apps/sleep.h"
 #include "audio.h"
@@ -72,6 +74,8 @@ void setup() {
   ui::nav::onHoldBack(apps::openPlayer);
   // Woken for an alarm: show the Clock, and pollAlarms() rings over it.
   if (power::wake() == power::Wake::Alarm) ui::nav::push(apps::makeClock());
+  apps::lockNow();  // a PIN is set: every start asks for it (alarms still ring over it)
+  ui::nav::flush();  // the first frame: Home, the Clock or the lock, whichever is on top
   devtools::begin();  // after the first frame, so a screenshot never catches a blank buffer
   // The clock came up unset (first boot, or the battery was out): fetch it from NTP once, in
   // the background, after the first frame. If that fails, System → SYNC TIME tries by hand.
@@ -87,6 +91,7 @@ void setup() {
 void loop() {
   apps::pollAlarms();
   apps::pollPower();
+  apps::pollLock();  // before the nap: a lock over the Reader ends the naps and gets drawn
   weather::poll();  // the hourly forecast sync, in the background
   podcasts::poll();  // saves the playing episode's position
   if (apps::napIfIdle()) return;  // reading on battery: light sleep until a key or the minute
