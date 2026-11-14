@@ -2,6 +2,9 @@
 
 #include <Arduino.h>
 #include <stdio.h>
+#include <strings.h>
+
+#include <algorithm>
 
 #include "apps/home.h"
 #include "apps/music.h"
@@ -11,8 +14,10 @@
 #include "audio.h"
 #include "dirlist.h"
 #include "flashfs.h"
+#include "podcast_library.h"
 #include "sdcard.h"
 #include "textdoc.h"
+#include "ui/menu.h"
 
 namespace apps {
 namespace {
@@ -71,6 +76,16 @@ const char *verbFor(const DirList::Entry *e) {
   return nullptr;
 }
 
+// path is dir or somewhere inside it. FAT ignores case, so this does too.
+bool isInside(const std::string &path, const std::string &dir) {
+  if (path.size() < dir.size() || strncasecmp(path.c_str(), dir.c_str(), dir.size()) != 0) {
+    return false;
+  }
+  return path.size() == dir.size() || path[dir.size()] == '/';
+}
+
+std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
+
 // Which file system a Files screen browses. The card's root lists the onboard flash as an extra
 // first row, which opens a Files screen of its own (BOOT at its root comes back).
 enum class Volume : uint8_t { Sd, Flash };
@@ -101,6 +116,7 @@ class FilesScreen : public ui::Screen {
 
   int hints(ui::Hint *out) const override {
     int n = 0;
+    if (!pending_.path.empty()) return 0;  // deleting: no keys until it's done
     if (!list_.readable()) {
       out[n++] = {ui::glyph::kPress, "RETRY"};
     } else {
@@ -112,13 +128,14 @@ class FilesScreen : public ui::Screen {
       } else if (isText(entryIndex())) {
         out[n++] = {ui::glyph::kPress, "READ"};
       }
-      if (audio::active()) out[n++] = {ui::glyph::kHoldPress, "PLAYER"};
+      if (selected()) out[n++] = {ui::glyph::kHoldPress, "DELETE"};
     }
     out[n++] = {"BOOT", list_.atRoot() ? "BACK" : "UP"};
     return n;
   }
 
   bool onKey(Key key) override {
+    if (!pending_.path.empty()) return key == Key::Back;  // BOOT mustn't pop it mid-delete
     const bool hadNotice = !notice_.empty();
     notice_.clear();
     switch (key) {
@@ -126,22 +143,37 @@ class FilesScreen : public ui::Screen {
       case Key::Down: return cursor_.move(+1) || hadNotice;
       case Key::Select: activate(); return true;
       case Key::SelectLong:
-        if (!audio::active()) return hadNotice;
-        ui::nav::push(makeMusic());
+        if (!selected()) return hadNotice;
+        confirmDelete(entryIndex());
         return true;
       case Key::Back: return goUp();  // unused at the root: the navigator pops
       default: return hadNotice;
     }
   }
 
-  // The playing-track marker and the PLAYER hint follow the audio state.
-  bool onTick() override { return audio::status().generation != drawnGeneration_; }
+  // A folder delete runs on the tick after its DELETING header is on the panel. Otherwise the
+  // playing-track marker follows the audio state.
+  bool onTick() override {
+    if (!pending_.path.empty()) {
+      if (!pending_.shown) return false;
+      const Pending p = pending_;
+      pending_ = {};
+      deleteNow(p.path, true, p.row);
+      return true;
+    }
+    return audio::status().generation != drawnGeneration_;
+  }
 
   void draw(ui::Canvas &c, const Rect &body) override {
     drawnGeneration_ = audio::status().generation;
     Rect r = body;
     const Rect head = r.takeTop(ui::kSectionH);
-    if (!notice_.empty()) {
+    if (!pending_.path.empty()) {
+      ui::drawSectionHeader(c, head,
+                            "DELETING " + ui::upper(nameOf(pending_.path)) + ui::glyph::kEllipsis,
+                            itemsText(pending_.items), {true});
+      pending_.shown = true;
+    } else if (!notice_.empty()) {
       ui::drawNotice(c, head, notice_);
     } else {
       ui::drawSectionHeader(c, head, folderLabel(), list_.readable() ? cursor_.label() : "");
@@ -285,6 +317,77 @@ class FilesScreen : public ui::Screen {
     }
   }
 
+  // HOLD ●: a sheet that asks before entry i goes, CANCEL first. Next to DELETE it shows a
+  // file's size, or how much a folder holds (it all goes with it).
+  void confirmDelete(int i) {
+    const DirList::Entry &e = list_.entries()[i];
+    const std::string path = list_.pathOf(i);
+    const bool isDir = e.isDir;
+    const int items = isDir ? DirList::countInside(path) : 0;
+    std::string detail;
+    if (isDir) {
+      detail = itemsText(items);
+    } else {
+      detail = sizeText(list_.sizeOf(i));
+      detail.erase(0, detail.find_first_not_of(' '));
+    }
+    const std::string title = (isDir ? "DELETE FOLDER " : "DELETE ") + ui::upper(e.name) + "?";
+    const int row = cursor_.cursor();
+    ui::nav::push(std::make_unique<ui::MenuScreen>(
+        title, std::vector<ui::MenuItem>{
+                   {"CANCEL", nullptr, [] { ui::nav::pop(); }},
+                   {"DELETE", [detail] { return detail; },
+                    [this, path, isDir, items, row] {
+                      ui::nav::pop();
+                      startDelete(path, isDir, items, row);
+                    }},
+               }));
+  }
+
+  // "47 ITEMS INSIDE", "EMPTY", or "CAN'T READ IT" (-1): what a folder holds.
+  static std::string itemsText(int n) {
+    if (n < 0) return "CAN'T READ IT";
+    if (n == 0) return "EMPTY";
+    return std::to_string(n) + (n == 1 ? " ITEM INSIDE" : " ITEMS INSIDE");
+  }
+
+  // A file goes now. A folder can hold hundreds of files at a few ms each, so one with anything
+  // in it goes on the next tick, once the DELETING header is on the panel.
+  void startDelete(const std::string &path, bool isDir, int items, int row) {
+    // The podcast worker writes downloads into the Podcasts folder while it runs.
+    if (::podcasts::busy() && isInside(path, ::podcasts::kRoot)) {
+      notice_ = "PODCASTS ARE DOWNLOADING; TRY LATER";
+      return;
+    }
+    if (isDir && items > 0) {
+      pending_ = {path, items, row, false};
+    } else {
+      deleteNow(path, isDir, row);
+    }
+  }
+
+  // Deletes path (all of it, for a folder), then lists the folder again with the cursor on the
+  // row that took its place.
+  void deleteNow(const std::string &path, bool isDir, int row) {
+    // FAT here has no open-file lock: deleting a file the player has open can corrupt the card.
+    if (audio::active() && isInside(audio::status().path, path)) {
+      audio::stop();
+      const uint32_t t0 = millis();
+      while (audio::active() && millis() - t0 < 2000) delay(10);
+      if (audio::active()) {
+        notice_ = "CAN'T STOP THE PLAYER";
+        return;
+      }
+    }
+    log_i("files: deleting %s", path.c_str());
+    if (!DirList::removeTree(path)) {
+      notice_ = (isDir ? "COULDN'T DELETE ALL OF " : "CAN'T DELETE ") + ui::upper(nameOf(path));
+    }
+    sniffedPath_.clear();
+    list_.reload();
+    cursor_.reset(rowCount(), std::max(0, std::min(row, rowCount() - 1)));
+  }
+
   // Plays entry i with the folder's other MP3s queued after it; opens the player.
   void play(int i) {
     const std::string path = list_.pathOf(i);
@@ -338,6 +441,14 @@ class FilesScreen : public ui::Screen {
   mutable std::string sniffedPath_;  // isText()'s last answer
   mutable bool sniffedText_ = false;
   uint32_t drawnGeneration_ = 0;
+  // A folder waiting to be deleted on the next tick.
+  struct Pending {
+    std::string path;   // "" = none
+    int items = 0;      // what it holds, for the header
+    int row = 0;        // the cursor's row when it was chosen
+    bool shown = false;  // the DELETING header has been drawn
+  };
+  Pending pending_;
 };
 
 }  // namespace

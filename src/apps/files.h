@@ -6,7 +6,11 @@
 // The design canvas has no Files artboard, so this follows Home's list language:
 //   - one row per entry: name, a type tag (DIR, EPUB, MP3, ...), and the size;
 //   - the path in the status bar and the folder name in the section header;
-//   - the ● verb in the hint bar follows the selection (OPEN / READ / PLAY / VIEW).
+//   - the ● verb in the hint bar follows the selection (OPEN / READ / PLAY / VIEW);
+//   - HOLD ● deletes the selection, after a sheet that asks (CANCEL first) and shows the file's
+//     size or how many items a folder holds. A folder goes with everything in it, under an
+//     inverted DELETING header. The player stops first if it has a file in there open; inside
+//     SD:/Podcasts it waits until no download is running. (The player itself is HOLD BOOT.)
 #pragma once
 #include <memory>
 #include <string>

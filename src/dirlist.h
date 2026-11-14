@@ -43,6 +43,15 @@ class DirList {
   // but the name we show should be the one on the card).
   static std::string findSubdir(const std::string &dir, const char *name);
 
+  // Everything below dir, at any depth (files and folders, hidden ones too, not dir itself);
+  // -1 if dir can't be read.
+  static int countInside(const std::string &dir);
+  // Deletes a file, or a folder with everything in it. True if it's all gone; otherwise as much
+  // as could be removed is (a read-only file stays, and so do the folders above it). FAT has no
+  // open-file lock here (CONFIG_FATFS_FS_LOCK 0): close anything inside path first, or the card
+  // can be corrupted.
+  static bool removeTree(const std::string &path);
+
   static bool isEpub(const std::string &name);
   static bool isMp3(const std::string &name);
   static bool isAudio(const std::string &name);  // what the player takes: MP3 or WAV
