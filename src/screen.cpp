@@ -1,8 +1,11 @@
 #include "screen.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+
+#include <algorithm>
 
 #include "epd.h"
 #include "typeset.h"
@@ -14,16 +17,20 @@ namespace {
 // Change to 1 if the enclosure ends up holding the board the other way up.
 constexpr uint8_t kRotation = 3;
 // Ghosting builds up with the pixels that partial refreshes flip, so the full refresh comes
-// when the flips since the last one add up to about two whole screens (roughly ten screen
-// changes), or after kMaxPartials updates however small, whichever is first. Small live
+// when the flips since the last one add up to fullScreens whole screens, or after
+// kPartialsPerScreen partial updates per screen however small, whichever is first. Small live
 // updates (a reading, a playhead) flip a few thousand pixels, so they rarely force a flash.
-constexpr uint32_t kFlipBudget = 2u * Epd::kWidth * Epd::kHeight;
-constexpr int kMaxPartials = 30;
+constexpr uint32_t kScreenPixels = uint32_t{Epd::kWidth} * Epd::kHeight;
+constexpr int kPartialsPerScreen = 15;
+constexpr int kDefaultFullScreens = 2;
+constexpr int kMaxFullScreens = 100;
+constexpr const char *kPrefs = "screen";
 
 Epd epd;
 GFXcanvas1 *fb = nullptr;
 int partials = 0;
-uint32_t flips = 0;  // pixels flipped by partial refreshes since the last full one
+uint64_t flips = 0;  // pixels flipped by partial refreshes since the last full one
+int fullScreens = kDefaultFullScreens;  // 0: no automatic full refresh
 SemaphoreHandle_t mutex = nullptr;
 
 uint32_t crc32(const uint8_t *data, size_t n) {
@@ -50,6 +57,11 @@ bool begin() {
   fb->setRotation(kRotation);
   fb->setTextWrap(false);
   clear();
+  Preferences prefs;
+  if (prefs.begin(kPrefs, true)) {  // read-only fails until the setting is first saved
+    fullScreens = std::min<int>(prefs.getUChar("full", kDefaultFullScreens), kMaxFullScreens);
+    prefs.end();
+  }
   return epd.begin();
 }
 
@@ -60,14 +72,36 @@ void clear() { fb->fillScreen(gfx::kWhite); }
 bool present(bool forceFull) {
   const uint32_t changed = epd.changedPixels(fb->getBuffer());
   if (!forceFull && changed == 0) return false;  // nothing visible changed: skip the refresh
-  const bool full = forceFull || partials >= kMaxPartials || flips + changed > kFlipBudget;
+  const bool budgetSpent =
+      fullScreens > 0 && (partials >= fullScreens * kPartialsPerScreen ||
+                          flips + changed > uint64_t(fullScreens) * kScreenPixels);
+  const bool full = forceFull || budgetSpent;
+  // What had built up before this refresh: what a full one cleared, or a partial adds to.
+  const int partialsBefore = partials;
+  const uint64_t flipsBefore = flips;
   if (epd.show(fb->getBuffer(), full)) {
     partials = full ? 0 : partials + 1;
     flips = full ? 0 : flips + changed;
   }
-  log_i("screen: %lu px changed, flip budget %lu%% used", (unsigned long)changed,
-        (unsigned long)(flips * 100ull / kFlipBudget));
+  if (full) {
+    log_i("screen: FULL refresh (%s) after %d partials, %.2f screens flipped",
+          forceFull ? "asked" : "budget", partialsBefore, flipsBefore / float(kScreenPixels));
+  } else {
+    log_i("screen: partial, %lu px (%.2f screens); since full: %d partials, %.2f screens of %d",
+          (unsigned long)changed, changed / float(kScreenPixels), partials,
+          flips / float(kScreenPixels), fullScreens);
+  }
   return true;
+}
+
+int fullRefreshScreens() { return fullScreens; }
+
+void setFullRefreshScreens(int screens) {
+  fullScreens = std::max(0, std::min(screens, kMaxFullScreens));
+  Preferences prefs;
+  if (!prefs.begin(kPrefs, false)) return;
+  prefs.putUChar("full", static_cast<uint8_t>(fullScreens));
+  prefs.end();
 }
 
 void assumeShown() { epd.assumeShown(fb->getBuffer()); }

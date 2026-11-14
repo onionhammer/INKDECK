@@ -12,6 +12,7 @@
 #include "board_pins.h"
 #include "pmic.h"
 #include "rtc.h"
+#include "screen.h"
 #include "settings.h"
 #include "sysinfo.h"
 #include "timesync.h"
@@ -36,14 +37,31 @@ constexpr int kRailH = 34;
 constexpr int kStateH = 21;  // 7 rows in the space 6 rows of 24 had
 constexpr int kStateRows = 7;
 constexpr int kStateKeyW = 104;
-constexpr int kActionH = 30;
+constexpr int kActionH = 26;  // 5 rows in about the space 4 rows of 30 had
 constexpr int kPillW = 52;
 constexpr int kCells = 10;
 
-enum class Action : uint8_t { Sleep, SyncTime, Update, Reboot };
-constexpr const char *kActionLabels[] = {"SLEEP NOW", "SYNC TIME (NTP)", "CHECK FOR UPDATE",
-                                         "REBOOT"};
+enum class Action : uint8_t { Sleep, SyncTime, FullRefresh, Update, Reboot };
+constexpr const char *kActionLabels[] = {"SLEEP NOW", "SYNC TIME (NTP)", "AUTO FULL REFRESH",
+                                         "CHECK FOR UPDATE", "REBOOT"};
 constexpr int kActionCount = sizeof kActionLabels / sizeof kActionLabels[0];
+
+// AUTO FULL REFRESH's steps, in screens' worth of pixels flipped (screen.h); 0 = off.
+constexpr int kFullRefreshSteps[] = {2, 5, 10, 20, 0};
+
+std::string fullRefreshValue() {
+  const int n = screen::fullRefreshScreens();
+  return n ? std::to_string(n) + " SCREENS" : "OFF";
+}
+
+// The step after the current setting (the first larger one, if it was set to something else).
+int nextFullRefresh() {
+  const int n = screen::fullRefreshScreens();
+  for (int step : kFullRefreshSteps) {
+    if (n && (step == 0 || step > n)) return step;
+  }
+  return kFullRefreshSteps[0];
+}
 
 std::string volts(int mv, int decimals) {
   char buf[16];
@@ -197,6 +215,11 @@ class SystemScreen : public ui::Screen {
         syncing_ = true;
         break;
       }
+      case Action::FullRefresh:
+        screen::setFullRefreshScreens(nextFullRefresh());
+        message_ = screen::fullRefreshScreens() ? "AFTER " + fullRefreshValue() + " OF CHANGE"
+                                                : "OFF: HOLD BOOT CLEANS THE SCREEN";
+        break;
       case Action::Update: message_ = "UPDATES AREN'T BUILT YET"; break;
       case Action::Reboot:
         ui::nav::push(std::make_unique<ui::MenuScreen>(
@@ -233,7 +256,7 @@ class SystemScreen : public ui::Screen {
 
   static void drawBattery(ui::Canvas &c, const Rect &area, const pmic::Detail &d) {
     using namespace ui;
-    const Rect p{area.x + 20, area.y + 16, area.w - 40, area.h - 16 - 14};
+    const Rect p{area.x + 20, area.y + 12, area.w - 40, area.h - 12 - 14};
     constexpr int kHeadH = 19;
     drawText(c, {p.x, p.y, p.w, kHeadH}, "// BATTERY", style::kSection);
     const std::string pill = powerSource(d);
@@ -360,14 +383,17 @@ class SystemScreen : public ui::Screen {
       const Rect line = r.takeTop(kActionH);
       const bool selected = i == cursor_.cursor();
       const int x = line.x + kPadX;
+      const Rect text{x + 24, line.y, line.w - x - 24 - kPadX, line.h};
+      const std::string value =
+          static_cast<Action>(i) == Action::FullRefresh ? fullRefreshValue() : "";
       if (selected) {
         fill(c, line, kInk);
         drawText(c, {x, line.y, 14, line.h}, glyph::kPlay, style::kCap, Align::Left, kPaper);
-        drawText(c, {x + 24, line.y, line.w - x - 24 - kPadX, line.h}, kActionLabels[i],
-                 kActionSelected, Align::Left, kPaper);
+        drawText(c, text, kActionLabels[i], kActionSelected, Align::Left, kPaper);
+        drawText(c, text, value, kActionSelected, Align::Right, kPaper);
       } else {
-        drawText(c, {x + 24, line.y, line.w - x - 24 - kPadX, line.h}, kActionLabels[i],
-                 kAction);
+        drawText(c, text, kActionLabels[i], kAction);
+        drawText(c, text, value, kAction, Align::Right);
         if (i + 1 < kActionCount) dashedH(c, line.x, line.bottom() - 1, line.w);
       }
     }
