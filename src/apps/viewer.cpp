@@ -29,7 +29,7 @@ class ViewerScreen : public ui::Screen {
   std::string context() const override {
     const std::string name = baseName(paths_[index_]);
     if (paths_.size() < 2) return name;
-    char count[16];
+    char count[32];  // room for any two ints, so the compiler can see nothing is cut off
     snprintf(count, sizeof count, "%02d/%02d ", index_ + 1, static_cast<int>(paths_.size()));
     return count + name;
   }

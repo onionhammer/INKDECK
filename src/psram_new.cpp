@@ -20,7 +20,9 @@ void *allocate(size_t size) {
   if (size == 0) size = 1;
   void *p = heap_caps_malloc_prefer(size, 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
                                     MALLOC_CAP_DEFAULT);
-  if (!p) throw std::bad_alloc();
+  // The firmware builds without exceptions (-fno-exceptions, platformio.ini), and nothing could
+  // catch a std::bad_alloc anyway, so out of memory ends the same way: abort, with a backtrace.
+  if (!p) abort();
   return p;
 }
 

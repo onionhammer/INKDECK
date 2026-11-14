@@ -8,9 +8,12 @@
 #include "apps/home.h"
 #include "apps/idle.h"
 #include "apps/sleep.h"
+#include "apps/updater.h"
 #include "audio.h"
 #include "board_pins.h"
+#include "ota.h"
 #include "pmic.h"
+#include "power.h"
 #include "rtc.h"
 #include "screen.h"
 #include "settings.h"
@@ -43,7 +46,7 @@ constexpr int kCells = 10;
 
 enum class Action : uint8_t { Sleep, SyncTime, FullRefresh, Update, Reboot };
 constexpr const char *kActionLabels[] = {"SLEEP NOW", "SYNC TIME (NTP)", "AUTO FULL REFRESH",
-                                         "CHECK FOR UPDATE", "REBOOT"};
+                                         "UPDATE OVER WI-FI", "REBOOT"};
 constexpr int kActionCount = sizeof kActionLabels / sizeof kActionLabels[0];
 
 // AUTO FULL REFRESH's steps, in screens' worth of pixels flipped (screen.h); 0 = off.
@@ -137,9 +140,10 @@ class SystemScreen : public ui::Screen {
   }
 
   std::string tag() const override { return moduleTag("SYSTEM"); }
+  // The build's commit, so an update over Wi-Fi shows it took. The IDF version, which used to
+  // be here, is on the Updater: the status bar has room for about 20 characters.
   std::string context() const override {
-    return std::string("FW ") + sysinfo::kFirmwareVersion + " \xC2\xB7 IDF " +
-           sysinfo::idfVersion();
+    return std::string("FW ") + sysinfo::kFirmwareVersion + " \xC2\xB7 " + sysinfo::buildId();
   }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kDial, "MOVE"};
@@ -220,7 +224,26 @@ class SystemScreen : public ui::Screen {
         message_ = screen::fullRefreshScreens() ? "AFTER " + fullRefreshValue() + " OF CHANGE"
                                                 : "OFF: HOLD BOOT CLEANS THE SCREEN";
         break;
-      case Action::Update: message_ = "UPDATES AREN'T BUILT YET"; break;
+      case Action::Update: {
+        if (!wlan::configured()) {
+          message_ = "NO WI-FI: SET WIFI_SSID IN .ENV, REBUILD";
+          break;
+        }
+        if (!ota::configured()) {
+          message_ = "NO OTA_PASSWORD: SET IT IN .ENV, REBUILD";
+          break;
+        }
+        // An interrupted update is harmless (the running firmware stays), but a flat battery
+        // halfway through wastes the try.
+        const pmic::Status p = pmic::status();
+        if (p.ok && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent) {
+          message_ = "CHARGE FIRST: BATTERY BELOW " + std::to_string(power::kLowBatteryPercent) +
+                     " %";
+          break;
+        }
+        ui::nav::push(apps::makeUpdater());
+        break;
+      }
       case Action::Reboot:
         ui::nav::push(std::make_unique<ui::MenuScreen>(
             "REBOOT?", std::vector<ui::MenuItem>{

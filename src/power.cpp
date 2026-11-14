@@ -9,6 +9,7 @@
 #include "audio.h"
 #include "board_pins.h"
 #include "input.h"
+#include "ota.h"
 #include "pmic.h"
 #include "podcast_library.h"
 #include "rtc.h"
@@ -134,7 +135,7 @@ bool idle(bool reading) {
       audio::status().state == audio::State::Playing || audio::recording();  // a memo too
   const bool low = p.percent >= 0 && p.percent < kLowBatteryPercent;
   if ((reading || playing) && !low) return false;
-  if (weather::syncing() || podcasts::busy()) return false;
+  if (weather::syncing() || podcasts::busy() || ota::active()) return false;
   const timesync::Phase t = timesync::status().phase;
   return t != timesync::Phase::Connecting && t != timesync::Phase::Asking;
 }

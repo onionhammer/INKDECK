@@ -67,7 +67,8 @@ std::string megabytes(int64_t bytes) {
 // "2026-11-13 091502.wav" -> its local time; false for other names.
 bool memoTime(const std::string &name, tm &t) {
   int y, mo, d, h, mi, s;
-  if (sscanf(name.c_str(), "%4d-%2d-%2d %2d%2d%2d", &y, &mo, &d, &h, &mi, &s) != 6) return false;
+  // siscanf: newlib's integer-only sscanf (the full one pulls in float parsing).
+  if (siscanf(name.c_str(), "%4d-%2d-%2d %2d%2d%2d", &y, &mo, &d, &h, &mi, &s) != 6) return false;
   t = tm{};
   t.tm_year = y - 1900;
   t.tm_mon = mo - 1;
@@ -337,7 +338,7 @@ class RecorderScreen : public ui::Screen {
     const int first = perPage > 0 ? m / perPage * perPage : 0;
     for (int i = first; i < static_cast<int>(memos_.size()) && i < first + perPage; ++i) {
       Row row;
-      char index[8];
+      char index[12];  // room for any int, so the compiler can see nothing is cut off
       snprintf(index, sizeof index, "%02d", i + 1);
       row.index = index;
       row.title = memoTitle(memos_[i]);

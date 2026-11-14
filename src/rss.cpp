@@ -258,11 +258,12 @@ time_t parseDate(const std::string &s) {
   if (const char *comma = strchr(p, ',')) p = comma + 1;
   int day = 0, year = 0, hour = 0, minute = 0, second = 0, used = 0;
   char mon[4] = {};
-  if (sscanf(p, "%d %3s %d %d:%d%n", &day, mon, &year, &hour, &minute, &used) < 5) return 0;
+  // siscanf: newlib's integer-only sscanf. The full one drags in float parsing (about 10 KB).
+  if (siscanf(p, "%d %3s %d %d:%d%n", &day, mon, &year, &hour, &minute, &used) < 5) return 0;
   p += used;
   if (*p == ':') {
     int more = 0;
-    sscanf(p + 1, "%d%n", &second, &more);
+    siscanf(p + 1, "%d%n", &second, &more);
     p += 1 + more;
   }
   const int month = monthIndex(mon);
