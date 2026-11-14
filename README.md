@@ -157,4 +157,5 @@ still works as before and always boots the slot it writes (`app0`).
 - [`docs/ui-design.md`](docs/ui-design.md): the UI spec, one entry per screen, and a link to the
   design canvas.
 - [`docs/`](docs/README.md): schematic, datasheets, mechanical files and the vendor wiki.
-- [`enclosure/`](enclosure/README.md): a 3D-printable back tray.
+- [`enclosure/`](enclosure/README.md): a 3D-printable back tray and a snap-on front bezel whose
+  caps wrap the corners, with the Sleep-screen frog engraved on the back.
