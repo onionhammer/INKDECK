@@ -11,6 +11,12 @@ upstream's ESP32 configuration as `include/esp/config.h`. Nothing in them is cha
 `library.json` builds them as a PlatformIO library, with warnings off (`-w`), since they're
 upstream's to fix.
 
+One file is built differently: `library.json` leaves out `src/errors.c` and builds
+`port/errors_min.c` instead. That file includes `errors.c` unchanged but swaps its 25 KB table of
+NT status names (`nterror_to_str()`) for the status code in hex. The names only appeared in
+libsmb2's own error messages. Files works from the errno and the NT code, so its screens are
+the same.
+
 Authentication is NTLMSSP (user name and password; libsmb2's own MD4/MD5/HMAC), with SMB2/3
 signing and optional SMB3 encryption. Kerberos is left out.
 

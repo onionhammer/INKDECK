@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "text.h"
+#include "ui/packed_fonts.h"
 
 namespace ui {
 namespace {
@@ -82,7 +83,7 @@ int baselineCentered(const TextStyle &s, int top, int h) {
 
 int drawText(Canvas &c, int x, int baseline, const std::string &text, const TextStyle &s,
              uint16_t color) {
-  c.setFont(s.font);
+  c.setFont(fonts::drawable(s.font));
   int n = 0;
   forEachGlyph(s.font, text, [&](uint8_t slot, const GFXglyph *g) {
     c.drawChar(x, baseline, slot, color, color, 1);

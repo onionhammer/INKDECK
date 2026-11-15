@@ -90,9 +90,11 @@ class Field {
   char cells_[kRows][kCols] = {};
 };
 
+// Built at boot, not on first use: a function-local static would need a thread-safe guard.
+const Field field;
+
 void drawField(ui::Canvas &c, const Rect &area) {
   using namespace ui;
-  static const Field field;
   const int x0 = area.x + (area.w - kCols * kCell) / 2;
   const int y0 = area.y + (area.h - kRows * kCell) / 2;
   for (int y = 0; y < kRows; ++y) {

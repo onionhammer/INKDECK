@@ -19,6 +19,10 @@ Glyph slots: each font covers bytes 0x20..0xFF (or a subset, see CHARSETS).
   0xA0-0xFF  Latin-1 Supplement, same as the code point
 Firmware text is either UTF-8 (UI strings, mapped with ui::fonts::slotFor) or already in slots
 (EPUB flow text, see text.h).
+
+Fonts of PACK_FROM_PX and up keep their bitmaps deflated (a PackedFont, see glyphs.h): they
+shrink to about a quarter, and ui::fonts::drawable() (src/ui/packed_fonts.h) inflates them into
+PSRAM the first time they're drawn. The small ones are drawn all the time and stay as they are.
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ import pathlib
 import sys
 import urllib.request
 import zipfile
+import zlib
 
 import freetype
 
@@ -162,6 +167,14 @@ for _px in (16, 19, 23):
         (f"kLiterata{_px}BoldItalic", "literata", _px, "latin", {"italic": True, "wght": 600}),
     ]
 
+PACK_FROM_PX = 38  # fonts this size and up are stored deflated (see the docstring)
+
+
+def deflate(data: bytes) -> bytes:
+    """Raw deflate (no zlib header), as the ROM's tinfl_decompress reads it without flags."""
+    z = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
+    return z.compress(data) + z.flush()
+
 
 def slot_codepoint(slot: int) -> int | None:
     if 0x80 <= slot <= 0x9F:
@@ -268,11 +281,24 @@ def banner(what: str) -> list[str]:
 
 
 def write_glyphs_header() -> None:
-    lines = banner("glyph slot scheme") + [
+    lines = banner("glyph slot scheme, packed fonts") + [
         "#pragma once",
         "#include <stdint.h>",
         "",
+        "#include <gfxfont.h>",
+        "",
         "namespace ui::fonts {",
+        "",
+        f"// A font of {PACK_FROM_PX} px and up keeps its bitmaps deflated in flash. Its GFXfont has no",
+        "// bitmap, so it can't be drawn as it is: ui::fonts::drawable() (ui/packed_fonts.h) inflates",
+        "// the bitmaps into PSRAM the first time and returns a GFXfont that points at them. The glyph",
+        "// table, and so every measurement, works on either.",
+        "struct PackedFont {",
+        "  GFXfont font;  // first: a pointer to it is a pointer to the PackedFont",
+        "  const uint8_t *deflated;  // raw deflate, no zlib header",
+        "  uint16_t deflatedSize;",
+        "  uint16_t size;  // of the inflated bitmaps",
+        "};",
         "",
         "// Every generated font indexes glyphs by slot: ASCII 0x20-0x7E, kExtraCodepoints[i] at",
         "// 0x80 + i, Latin-1 0xA0-0xFF.",
@@ -285,7 +311,7 @@ def write_glyphs_header() -> None:
         "};",
         "",
         "// The slot for a code point, or 0 if the fonts have none (transliterate it instead).",
-        "inline uint8_t slotFor(uint32_t cp) {",
+        "constexpr uint8_t slotFor(uint32_t cp) {",
         "  if ((cp >= 0x20 && cp < 0x7F) || (cp >= 0xA0 && cp <= 0xFF)) {",
         "    return static_cast<uint8_t>(cp);",
         "  }",
@@ -324,25 +350,41 @@ def write_family(family: str, built: list) -> int:
     total = 0
     for name, px, desc, (first, last, line, bitmap, glyphs) in built:
         ident = name[1:]
+        packed = px >= PACK_FROM_PX
+        data = deflate(bytes(bitmap)) if packed else bitmap
         source.append(f"// {desc} at {px} px, slots 0x{first:02X}-0x{last:02X}")
-        source.append(f"const uint8_t {ident}Bitmaps[] PROGMEM = {{")
-        for i in range(0, len(bitmap), 16):
-            source.append("    " + ", ".join(f"0x{b:02X}" for b in bitmap[i : i + 16]) + ",")
+        if packed:
+            source.append(f"// {len(bitmap)} bytes of bitmaps, deflated")
+        source.append(f"const uint8_t {ident}{'Deflated' if packed else 'Bitmaps'}[] PROGMEM = {{")
+        for i in range(0, len(data), 16):
+            source.append("    " + ", ".join(f"0x{b:02X}" for b in data[i : i + 16]) + ",")
         source.append("};")
         source.append(f"const GFXglyph {ident}Glyphs[] PROGMEM = {{")
         for off, w, h, adv, xo, yo, slot in glyphs:
             source.append(f"    {{{off}, {w}, {h}, {adv}, {xo}, {yo}}},  // 0x{slot:02X} {c_char_comment(slot)}")
         source += ["};", ""]
-        header.append(f"extern const GFXfont {name};  // {desc}, {px} px, line {line} px")
-        total += len(bitmap) + 7 * len(glyphs)
-        print(f"{name:24s} {len(bitmap):6d} B bitmap, {len(glyphs):3d} glyphs, line {line}")
+        comment = f"// {desc}, {px} px, line {line} px"
+        if packed:
+            header.append(f"extern const PackedFont {name}Packed;  {comment}, deflated")
+            header.append(f"inline constexpr const GFXfont &{name} = {name}Packed.font;")
+        else:
+            header.append(f"extern const GFXfont {name};  {comment}")
+        total += len(data) + 7 * len(glyphs)
+        size = f"{len(bitmap):6d} B bitmap" + (f" ({len(data)} B deflated)" if packed else "")
+        print(f"{name:24s} {size}, {len(glyphs):3d} glyphs, line {line}")
     source += ["}  // namespace", ""]
     for name, px, desc, (first, last, line, bitmap, glyphs) in built:
         ident = name[1:]
-        source.append(
-            f"const GFXfont {name} PROGMEM = {{const_cast<uint8_t *>({ident}Bitmaps), "
-            f"const_cast<GFXglyph *>({ident}Glyphs), 0x{first:02X}, 0x{last:02X}, {line}}};"
-        )
+        glyph_ptr = f"const_cast<GFXglyph *>({ident}Glyphs), 0x{first:02X}, 0x{last:02X}, {line}"
+        if px >= PACK_FROM_PX:
+            source.append(
+                f"const PackedFont {name}Packed PROGMEM = {{{{nullptr, {glyph_ptr}}}, {ident}Deflated, "
+                f"sizeof({ident}Deflated), {len(bitmap)}}};"
+            )
+        else:
+            source.append(
+                f"const GFXfont {name} PROGMEM = {{const_cast<uint8_t *>({ident}Bitmaps), {glyph_ptr}}};"
+            )
     source += ["", "}  // namespace ui::fonts"]
     header += ["", "}  // namespace ui::fonts"]
     write(OUT / f"{family}.h", header)
