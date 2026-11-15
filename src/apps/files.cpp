@@ -104,9 +104,11 @@ std::string rootOf(Volume v, int share) {
 
 class FilesScreen : public ui::Screen {
  public:
-  // share: which of shares::all() a Volume::Net screen browses.
-  FilesScreen(Volume volume, int share, const std::string &dir, const std::string &select)
-      : volume_(volume), list_(rootOf(volume, share)) {
+  // share: which of shares::all() a Volume::Net screen browses. floor: a folder on the card
+  // this screen stays in (openLibrary()); "" for Files proper, behind the PIN.
+  FilesScreen(Volume volume, int share, const std::string &dir, const std::string &select,
+              const std::string &floor = "")
+      : volume_(volume), list_(rootOf(volume, share)), floor_(floor) {
     if (volume_ != Volume::Net) {
       openDir(dir, select);
       return;
@@ -128,9 +130,10 @@ class FilesScreen : public ui::Screen {
   }
   bool contextIsPath() const override { return true; }
 
-  // Back from the picture viewer: the cursor on the last picture it showed.
+  // Back from the picture viewer: the cursor on the last picture it showed. Files proper may
+  // get the PIN's wheels in front of it here, if it hasn't been in use for a minute.
   void onEnter() override {
-    guardedInUse(Guarded::Files);  // the PIN's minute (apps/lock.h openGuarded())
+    if (!confined()) guardedOnTop(Guarded::Files);
     if (viewed_.empty()) return;
     resetCursor(viewed_);
     viewed_.clear();
@@ -154,15 +157,17 @@ class FilesScreen : public ui::Screen {
       }
       if (canDelete()) out[n++] = {ui::glyph::kHoldPress, "DELETE"};
     }
-    out[n++] = {"BOOT", list_.atRoot() ? "BACK" : "UP"};
+    out[n++] = {"BOOT", atTop() ? "BACK" : "UP"};
     return n;
   }
 
   // Covered (a file opened, a sheet), popped, or gone home: Files was in use until now.
-  void onLeave() override { guardedInUse(Guarded::Files); }
+  void onLeave() override {
+    if (!confined()) guardedLeft(Guarded::Files);
+  }
 
   bool onKey(Key key) override {
-    guardedInUse(Guarded::Files);
+    if (!confined()) guardedInUse(Guarded::Files);
     if (!pending_.path.empty()) return key == Key::Back;  // BOOT mustn't pop it mid-delete
     if (connecting()) return false;  // BOOT goes back; the mount carries on and is let go
     const bool hadNotice = !notice_.empty();
@@ -175,7 +180,7 @@ class FilesScreen : public ui::Screen {
         if (!canDelete()) return hadNotice;
         confirmDelete(entryIndex());
         return true;
-      case Key::Back: return goUp();  // unused at the root: the navigator pops
+      case Key::Back: return goUp();  // unused at the top: the navigator pops
       default: return hadNotice;
     }
   }
@@ -282,7 +287,13 @@ class FilesScreen : public ui::Screen {
   }
 
  private:
-  bool onCardRoot() const { return volume_ == Volume::Sd && list_.atRoot() && list_.readable(); }
+  // A library browser (openLibrary()): stays in floor_, deletes nothing, needs no PIN.
+  bool confined() const { return !floor_.empty(); }
+  // As far up as this screen goes: its volume's root, or the floor.
+  bool atTop() const { return confined() ? list_.cwd().size() <= floor_.size() : list_.atRoot(); }
+  bool onCardRoot() const {
+    return !confined() && volume_ == Volume::Sd && list_.atRoot() && list_.readable();
+  }
   // The ONBOARD FLASH row: first on the card's root, when the partition exists.
   int flashRows() const { return onCardRoot() && flashfs::available() ? 1 : 0; }
   // A row per network share (SD:/inkdeck.ini), after it.
@@ -298,7 +309,7 @@ class FilesScreen : public ui::Screen {
   }
   int shareIndex() const { return lease_ ? lease_->share() : -1; }
   // HOLD ● deletes the selection: an entry of the card's or the flash's, not a share's (read-only).
-  bool canDelete() const { return selected() && volume_ != Volume::Net; }
+  bool canDelete() const { return selected() && volume_ != Volume::Net && !confined(); }
   // A share's screen before its mount has finished: nothing listed yet.
   bool connecting() const { return lease_ && lease_->state() == shares::Lease::State::Connecting; }
   const DirList::Entry *selected() const {
@@ -326,7 +337,7 @@ class FilesScreen : public ui::Screen {
   }
 
   bool goUp() {
-    if (list_.atRoot()) return false;
+    if (atTop()) return false;
     const std::string child = list_.cwd().substr(list_.cwd().rfind('/') + 1);
     list_.goUp();
     resetCursor(child);
@@ -352,7 +363,7 @@ class FilesScreen : public ui::Screen {
       } else if (volume_ == Volume::Sd && !sdcard::mounted()) {
         sdcard::mount();
       }
-      if (!list_.reload()) openDir(rootOf(volume_, shareIndex()), "");
+      if (!list_.reload()) openDir(confined() ? floor_ : rootOf(volume_, shareIndex()), "");
       resetCursor("");
       return;
     }
@@ -522,6 +533,7 @@ class FilesScreen : public ui::Screen {
   std::string pendingSelect_;
   bool waitingForMount_ = false;
   DirList list_;
+  std::string floor_;  // confined(): the folder it stays in
   ui::ListCursor cursor_;
   std::string notice_;
   std::string viewed_;  // name of the picture the viewer showed last, until we're back
@@ -549,6 +561,22 @@ std::unique_ptr<ui::Screen> makeFiles(const std::string &dir, const std::string 
     return std::make_unique<FilesScreen>(Volume::Net, share, dir, select);
   }
   return std::make_unique<FilesScreen>(Volume::Sd, -1, dir, select);
+}
+
+void openLibrary(const char *name, const std::string &dir, const std::string &select,
+                 bool replace) {
+  const std::string folder = sdFolder(name);  // the card's root if there's no such folder
+  const std::string at = dir.empty() ? folder : dir;
+  if (folder != sdcard::kMountPoint && isInside(at, folder)) {
+    auto screen = std::make_unique<FilesScreen>(Volume::Sd, -1, at, select, folder);
+    if (replace) {
+      ui::nav::replace(std::move(screen));
+    } else {
+      ui::nav::push(std::move(screen));
+    }
+    return;
+  }
+  openGuarded(Guarded::Files, [at, select] { return makeFiles(at, select); }, replace);
 }
 
 std::string displayPath(const std::string &path) {

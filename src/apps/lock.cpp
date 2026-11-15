@@ -95,18 +95,95 @@ std::string digitText(int d) { return std::string(1, static_cast<char>('0' + (d 
 // PinTask.
 enum class Step : uint8_t { Unlock, Gate, Current, New, Confirm };
 
+// --- Wrong PINs: a growing wait after a few in a row --------------------------------------
+
+constexpr int kFreeMisses = 3;                     // tries before the first wait
+constexpr uint32_t kFirstWaitMs = 30 * 1000;       // then doubled with each miss
+constexpr uint32_t kMaxWaitMs = 30 * 60 * 1000;
+int misses = -1;          // in a row, settings::pinMisses(); -1 until read from NVS
+uint32_t lastMissMs = 0;  // since boot, so a restart starts the wait again
+
+int missCount() {
+  if (misses < 0) misses = std::max(0, settings::pinMisses());
+  return misses;
+}
+
+// How long the next try still has to wait, in ms (0: now).
+uint32_t waitLeftMs() {
+  const int n = missCount();
+  if (n < kFreeMisses) return 0;
+  const int doublings = n - kFreeMisses;
+  const uint32_t wait = doublings >= 6 ? kMaxWaitMs : std::min(kMaxWaitMs, kFirstWaitMs << doublings);
+  const uint32_t since = millis() - lastMissMs;
+  return since >= wait ? 0 : wait - since;
+}
+
+// "WAIT 25 S", "WAIT 4 MIN", or "" when the next try can go. Rounded up to 5 s, then to whole
+// minutes, so the countdown redraws every 5 s at most.
+std::string waitText() {
+  const uint32_t ms = waitLeftMs();
+  if (ms == 0) return {};
+  const uint32_t s = (ms + 999) / 1000;
+  if (s <= 60) return "WAIT " + std::to_string((s + 4) / 5 * 5) + " S";
+  return "WAIT " + std::to_string((s + 59) / 60) + " MIN";
+}
+
+void missed() {
+  misses = missCount() + 1;
+  lastMissMs = millis();
+  settings::setPinMisses(misses);
+  log_w("lock: wrong PIN (%d in a row)", misses);
+}
+
+void matched() {
+  if (missCount() == 0) return;
+  misses = 0;
+  settings::setPinMisses(0);
+}
+
+// --- Guarded modules: when each was last in use ---------------------------------------------
+
+constexpr uint32_t kGuardGraceMs = 60 * 1000;  // no PIN again within a minute of use
+
+// open: its PIN passed (or none was needed) since it was last closed; ms: last in use.
+struct Guard {
+  bool open = false;
+  uint32_t ms = 0;
+};
+Guard guards[2];  // by Guarded
+int onTop = -1;   // the Guarded module whose screen is on top, or -1
+
+Guard &guardOf(Guarded m) { return guards[static_cast<int>(m)]; }
+const char *labelOf(Guarded m) { return m == Guarded::Settings ? "SYSTEM" : "FILES"; }
+
+// The build asks for the PIN at this module, and one is set.
+bool applies(Guarded m) {
+  return settings::hasPin() &&
+         pinplaces::asks(m == Guarded::Settings ? pinplaces::kSettings : pinplaces::kFiles);
+}
+bool fresh(Guarded m) {
+  const Guard &g = guardOf(m);
+  return g.open && millis() - g.ms < kGuardGraceMs;
+}
+void openUp(Guarded m) {
+  guardOf(m).open = true;
+  guardOf(m).ms = millis();
+}
+
 class PinScreen : public ui::Screen {
  public:
   PinScreen() = default;  // the lock
   PinScreen(PinTask task, std::function<void(const std::string &)> done)
       : step_(settings::hasPin() ? Step::Current : Step::New), task_(task), done_(std::move(done)) {}
-  PinScreen(const char *module, std::function<std::unique_ptr<ui::Screen>()> open)
+  // A module's wheels: open() makes its screen; without it they're in front of one already
+  // (guardedOnTop()), and the right PIN goes back to it.
+  PinScreen(Guarded module, std::function<std::unique_ptr<ui::Screen>()> open)
       : step_(Step::Gate), module_(module), open_(std::move(open)) {}
 
   std::string tag() const override {
     switch (step_) {
       case Step::Unlock: return "LOCKED";
-      case Step::Gate: return moduleTag(module_);
+      case Step::Gate: return moduleTag(labelOf(module_));
       default: return moduleTag("SYSTEM");
     }
   }
@@ -129,6 +206,10 @@ class PinScreen : public ui::Screen {
   bool locks() const override { return step_ == Step::Unlock; }
   int hints(ui::Hint *out) const override {
     int n = 0;
+    if (checksPin() && waitLeftMs() > 0) {  // only BOOT until the wait is over
+      if (step_ != Step::Unlock) out[n++] = {"BOOT", cancelVerb()};
+      return n;
+    }
     out[n++] = {ui::glyph::kDial, "DIGIT"};
     if (step_ == Step::New) {
       const bool lastWheel = cursor_ == kMaxDigits - 1;
@@ -140,7 +221,7 @@ class PinScreen : public ui::Screen {
     if (cursor_ > 0) {
       out[n++] = {"BOOT", "BACK"};
     } else if (step_ != Step::Unlock) {
-      out[n++] = {"BOOT", "CANCEL"};
+      out[n++] = {"BOOT", cancelVerb()};
     }
     return n;
   }
@@ -149,6 +230,7 @@ class PinScreen : public ui::Screen {
   void onEnter() override { reset(); }
 
   bool onKey(Key key) override {
+    if (checksPin() && waitLeftMs() > 0 && key != Key::Back) return false;  // after misses
     if (key == Key::SelectLong) {  // a new PIN of fewer than eight digits
       if (step_ != Step::New || cursor_ < kMinDigits - 1) return false;
       notice_.clear();
@@ -176,6 +258,8 @@ class PinScreen : public ui::Screen {
       case Key::Back:  // always consumed: BOOT never pops the lock
         if (cursor_ > 0) {
           --cursor_;
+        } else if (step_ == Step::Gate && !open_) {
+          ui::nav::home();  // not back to the module's screen these are in front of
         } else if (step_ != Step::Unlock) {
           ui::nav::pop();  // cancel the task
         }
@@ -183,6 +267,9 @@ class PinScreen : public ui::Screen {
       default: return false;
     }
   }
+
+  // The wait after wrong PINs counts down.
+  bool onTick() override { return checksPin() && waitText() != drawnWait_; }
 
   void draw(ui::Canvas &c, const Rect &body) override {
     using namespace ui;
@@ -202,7 +289,12 @@ class PinScreen : public ui::Screen {
                                 std::to_string(kMaxDigits)
                           : digit + "/" + std::to_string(n));
     const Rect foot = r.takeBottom(kSectionH);
-    if (!notice_.empty()) drawNotice(c, foot, notice_);
+    drawnWait_ = checksPin() ? waitText() : std::string();
+    if (!drawnWait_.empty()) {
+      drawNotice(c, foot, "WRONG PIN: " + drawnWait_);
+    } else if (!notice_.empty()) {
+      drawNotice(c, foot, notice_);
+    }
 
     // The wheels, centred in what's left.
     const int w = std::min(kWheelMaxW, (r.w - 2 * kPadX - (n - 1) * kWheelGap) / n);
@@ -244,6 +336,11 @@ class PinScreen : public ui::Screen {
     }
   }
   int required() const { return step_ == Step::New ? kMinDigits : count(); }
+  // These wheels are checked against the PIN (so misses count and waits apply).
+  bool checksPin() const {
+    return step_ == Step::Unlock || step_ == Step::Gate || step_ == Step::Current;
+  }
+  const char *cancelVerb() const { return step_ == Step::Gate && !open_ ? "HOME" : "CANCEL"; }
   bool last() const { return cursor_ == count() - 1; }
   const char *lastVerb() const {
     switch (step_) {
@@ -292,21 +389,31 @@ class PinScreen : public ui::Screen {
       case Step::Unlock:
         if (settings::pinMatches(pin)) {
           log_i("lock: opened");
+          matched();
           settings::unlocked();
+          openUp(Guarded::Settings);  // the lock is the PIN for the guarded modules too
+          openUp(Guarded::Files);
           ui::nav::pop();
           return;
         }
         break;
       case Step::Gate:
         if (settings::pinMatches(pin)) {
-          log_i("lock: %s opened", module_);
+          log_i("lock: %s opened", labelOf(module_));
+          matched();
           settings::unlocked();
-          ui::nav::replace(open_());
+          openUp(module_);
+          if (open_) {
+            ui::nav::replace(open_());
+          } else {
+            ui::nav::pop();  // back to the module's screen
+          }
           return;
         }
         break;
       case Step::Current:
         if (settings::pinMatches(pin)) {
+          matched();
           if (task_ == PinTask::Clear) {
             settings::clearPin();
             finish("PIN CLEARED: NO LOCK");
@@ -331,8 +438,7 @@ class PinScreen : public ui::Screen {
         return;
       case Step::New: return;  // chooseNew()
     }
-    ++misses_;
-    log_w("lock: wrong PIN (%d on this screen)", misses_);
+    missed();
     reset();
     notice_ = "WRONG PIN";
   }
@@ -340,23 +446,21 @@ class PinScreen : public ui::Screen {
   Step step_ = Step::Unlock;
   PinTask task_ = PinTask::Set;
   std::function<void(const std::string &)> done_;
-  const char *module_ = nullptr;                      // Gate: whose tag, and what it opens
-  std::function<std::unique_ptr<ui::Screen>()> open_;
+  Guarded module_ = Guarded::Files;                    // Gate: whose tag
+  std::function<std::unique_ptr<ui::Screen>()> open_;  // Gate: its screen; empty: in front of it
   std::string newPin_;  // NEW PIN's digits, waiting for NEW PIN AGAIN
   int digits_[kMaxDigits] = {};
   int cursor_ = 0;
-  int misses_ = 0;
-  std::string notice_;  // after a miss; cleared by the next key
+  std::string notice_;     // after a miss; cleared by the next key
+  std::string drawnWait_;  // waitText() as last drawn
 };
 
-// When each Guarded module's screens were last on top.
-struct LastUse {
-  bool ever = false;
-  uint32_t ms = 0;
-};
-LastUse lastUse[2];  // by Guarded
-
-constexpr uint32_t kGuardGraceMs = 60 * 1000;  // openGuarded(): no PIN within a minute of use
+// The wheels in front of the module's screen on top: it hasn't been in use for a minute.
+void regate(Guarded m) {
+  log_i("lock: %s not in use for a minute, asking again", labelOf(m));
+  guardOf(m).open = false;  // before the push: guardedLeft() mustn't count it as use
+  ui::nav::push(std::make_unique<PinScreen>(m, nullptr));
+}
 
 }  // namespace
 
@@ -366,13 +470,19 @@ void lockNow() {
 }
 
 void pollLock() {
-  if (!pinplaces::asks(pinplaces::kPowerOn)) return;
-  const int minutes = settings::lockMinutes();
-  if (minutes <= 0 || !settings::hasPin() || ui::nav::locked()) return;
-  if (input::idleMs() < static_cast<uint32_t>(minutes) * 60000u) return;
-  if (audio::ringing() || audio::recording()) return;
-  log_i("lock: %d min without a key", minutes);
-  lockNow();
+  const int minutes = pinplaces::asks(pinplaces::kPowerOn) ? settings::lockMinutes() : 0;
+  if (minutes > 0 && settings::hasPin() && !ui::nav::locked() &&
+      input::idleMs() >= static_cast<uint32_t>(minutes) * 60000u && !audio::ringing() &&
+      !audio::recording()) {
+    log_i("lock: %d min without a key", minutes);
+    lockNow();
+    return;
+  }
+  // A guarded module's screen on top a minute without a key (its keys stamp it).
+  if (onTop >= 0) {
+    const Guarded m = static_cast<Guarded>(onTop);
+    if (applies(m) && !fresh(m)) regate(m);
+  }
 }
 
 std::unique_ptr<ui::Screen> makePinTask(PinTask task,
@@ -380,22 +490,38 @@ std::unique_ptr<ui::Screen> makePinTask(PinTask task,
   return std::make_unique<PinScreen>(task, std::move(done));
 }
 
-void guardedInUse(Guarded module) {
-  LastUse &use = lastUse[static_cast<int>(module)];
-  use.ever = true;
-  use.ms = millis();
+void openGuarded(Guarded module, std::function<std::unique_ptr<ui::Screen>()> open,
+                 bool replace) {
+  std::unique_ptr<ui::Screen> screen;
+  if (!applies(module) || fresh(module)) {
+    openUp(module);
+    screen = open();
+  } else {
+    screen = std::make_unique<PinScreen>(module, std::move(open));
+  }
+  if (replace) {
+    ui::nav::replace(std::move(screen));
+  } else {
+    ui::nav::push(std::move(screen));
+  }
 }
 
-void openGuarded(Guarded module, std::function<std::unique_ptr<ui::Screen>()> open) {
-  const bool settingsGate = module == Guarded::Settings;
-  const LastUse &use = lastUse[static_cast<int>(module)];
-  const bool fresh = use.ever && millis() - use.ms < kGuardGraceMs;
-  if (fresh || !settings::hasPin() ||
-      !pinplaces::asks(settingsGate ? pinplaces::kSettings : pinplaces::kFiles)) {
-    ui::nav::push(open());
-    return;
+void guardedOnTop(Guarded module) {
+  onTop = static_cast<int>(module);
+  if (!applies(module) || fresh(module)) {
+    openUp(module);
+  } else {
+    regate(module);
   }
-  ui::nav::push(std::make_unique<PinScreen>(settingsGate ? "SYSTEM" : "FILES", std::move(open)));
+}
+
+void guardedInUse(Guarded module) {
+  if (guardOf(module).open) guardOf(module).ms = millis();
+}
+
+void guardedLeft(Guarded module) {
+  guardedInUse(module);
+  if (onTop == static_cast<int>(module)) onTop = -1;
 }
 
 }  // namespace apps

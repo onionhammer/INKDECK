@@ -97,6 +97,11 @@ PinChange pendingPin();
 // The lock was opened with the right PIN: applies the pending change, if any.
 void unlocked();
 
+// Wrong PINs in a row on any PIN screen (apps/lock.h), kept in NVS so a restart doesn't clear
+// them.
+int pinMisses();
+void setPinMisses(int n);
+
 // System's PIN LOCK, once it has the current PIN: a new PIN (4 to 8 digits), or none.
 void setPin(const std::string &digits);
 void clearPin();

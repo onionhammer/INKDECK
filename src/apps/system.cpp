@@ -163,9 +163,10 @@ class SystemScreen : public ui::Screen {
     return 4;
   }
 
-  // The PIN's minute in front of System (apps/lock.h openGuarded()) counts from the last of these.
-  void onEnter() override { guardedInUse(Guarded::Settings); }
-  void onLeave() override { guardedInUse(Guarded::Settings); }
+  // The PIN's minute for System (apps/lock.h openGuarded()): onEnter() may put the wheels in
+  // front of it, if it hasn't been in use for a minute.
+  void onEnter() override { guardedOnTop(Guarded::Settings); }
+  void onLeave() override { guardedLeft(Guarded::Settings); }
 
   bool onKey(Key key) override {
     guardedInUse(Guarded::Settings);
