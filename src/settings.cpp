@@ -105,13 +105,14 @@ constexpr const char *kTemplate =
     "\n"
     "[lock]\n"
     "; A PIN of 4 to 8 digits locks the board when it powers on, and when it wakes from the desk\n"
-    "; face. Turn the wheel to pick each digit, then press to move to the next, like a padlock.\n"
+    "; face. The firmware can be built to ask for it on opening System or Files instead, or as well\n"
+    "; (INKDECK_PIN_ON). Turn the wheel to pick each digit, then press for the next, like a padlock.\n"
     "; System > PIN LOCK sets, changes and clears it on the board as well. The board keeps the\n"
     "; PIN and replaces this line with a note, so the PIN doesn't stay on the card. To change it\n"
     "; here, write a new pin = line. To remove it, write pin = off. Either change takes effect\n"
     "; once you unlock with the current PIN.\n"
     "; pin = 2468\n"
-    "; Also lock after this many minutes without a key (0: only at power-on).\n"
+    "; Also lock after this many minutes without a key (0: only at power-on). Power-on builds only.\n"
     "; lock_minutes = 5\n";
 
 // The share lines and SMB passwords go in NVS as one string each, a line apiece.

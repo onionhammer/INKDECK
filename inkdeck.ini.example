@@ -56,11 +56,12 @@ nfs = nfs://nas.local/volume1/books
 
 [lock]
 ; A PIN of 4 to 8 digits locks the board when it powers on, and when it wakes from the desk
-; face. Turn the wheel to pick each digit, then press to move to the next, like a padlock.
+; face. The firmware can be built to ask for it on opening System or Files instead, or as well
+; (INKDECK_PIN_ON). Turn the wheel to pick each digit, then press for the next, like a padlock.
 ; System > PIN LOCK sets, changes and clears it on the board as well. The board keeps the
 ; PIN and replaces this line with a note, so the PIN doesn't stay on the card. To change it
 ; here, write a new pin = line. To remove it, write pin = off. Either change takes effect
 ; once you unlock with the current PIN.
 ; pin = 2468
-; Also lock after this many minutes without a key (0: only at power-on).
+; Also lock after this many minutes without a key (0: only at power-on). Power-on builds only.
 ; lock_minutes = 5

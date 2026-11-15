@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "apps/home.h"
+#include "apps/lock.h"
 #include "apps/music.h"
 #include "apps/reader.h"
 #include "apps/textview.h"
@@ -129,6 +130,7 @@ class FilesScreen : public ui::Screen {
 
   // Back from the picture viewer: the cursor on the last picture it showed.
   void onEnter() override {
+    guardedInUse(Guarded::Files);  // the PIN's minute (apps/lock.h openGuarded())
     if (viewed_.empty()) return;
     resetCursor(viewed_);
     viewed_.clear();
@@ -156,7 +158,11 @@ class FilesScreen : public ui::Screen {
     return n;
   }
 
+  // Covered (a file opened, a sheet), popped, or gone home: Files was in use until now.
+  void onLeave() override { guardedInUse(Guarded::Files); }
+
   bool onKey(Key key) override {
+    guardedInUse(Guarded::Files);
     if (!pending_.path.empty()) return key == Key::Back;  // BOOT mustn't pop it mid-delete
     if (connecting()) return false;  // BOOT goes back; the mount carries on and is let go
     const bool hadNotice = !notice_.empty();
