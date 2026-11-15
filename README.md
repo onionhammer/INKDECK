@@ -48,13 +48,20 @@ if it's unset):
 - `power_on`: whenever the board starts and whenever it wakes from the USB clock face. If
   `lock_minutes` is set, it also asks after that many minutes without a key, and unlocking takes
   you back to the screen you were on.
-- `settings`: on opening **System** from Home, unless you used it in the last minute.
-- `files`: on opening **Files** from Home, the same way. Reader and Music open their folders
-  without it.
+- `settings`: on opening **System** from Home, unless you used it in the last minute. It asks
+  again if you come back to System (from the updater, the desk face, a sheet) more than a minute
+  after you last used it, or leave it on screen a minute without a key.
+- `files`: the same for **Files**: coming back to it from a book, a picture or the desk face
+  after a minute, or leaving it a minute without a key, brings the PIN up again. The Reader and
+  Music still open `SD:/Books` and `SD:/Music` without it, but only those folders: BOOT stops at
+  the folder, and there's no delete, onboard flash or network shares there. Without such a
+  folder, or for a book kept elsewhere, they open Files with the PIN.
 
 Leave `power_on` out to ask only for System and/or Files. Before System or Files, the wheels show
 under that module's tag with ● OPEN on the last one, and BOOT on the first wheel goes back to
-Home. You enter the PIN like a combination padlock: turn the wheel to pick each digit, then
+Home. Unlocking the lock counts as opening both. After three wrong PINs in a row, each try
+waits: 30 s, then twice as long each time, up to 30 minutes. The count survives a restart (the
+wait starts again), and the right PIN clears it. You enter the PIN like a combination padlock: turn the wheel to pick each digit, then
 press to move to the next. BOOT goes back a digit. Alarms still ring over the lock, and
 stopping or snoozing one needs no PIN. In System, PIN LOCK sets a PIN of 4 to 8 digits (HOLD ●
 after the last one, then the same again to confirm). Once one is set, it offers CHANGE PIN and

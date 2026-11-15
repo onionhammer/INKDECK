@@ -753,6 +753,21 @@ void setPin(const std::string &digits) {
   log_i("settings: PIN set in System");
 }
 
+int pinMisses() {
+  Preferences prefs;
+  if (!prefs.begin(kNamespace, true)) return 0;  // read-only; fails until the namespace exists
+  const int n = prefs.getInt("pinmiss", 0);
+  prefs.end();
+  return n;
+}
+
+void setPinMisses(int n) {
+  Preferences prefs;
+  if (!prefs.begin(kNamespace, false)) return;
+  prefs.putInt("pinmiss", n);
+  prefs.end();
+}
+
 void clearPin() {
   loadNvs();
   pin.clear();

@@ -18,7 +18,9 @@
 // no HOLD ● DELETE there.
 //
 // Home opens it behind the PIN when the build asks for one there (INKDECK_PIN_ON's files) and
-// Files wasn't on screen in the last minute (apps/lock.h openGuarded()).
+// Files wasn't in use in the last minute, and the PIN comes back in front of it after a minute
+// away or without a key (apps/lock.h openGuarded()). The Reader and Music get a confined
+// browser instead (openLibrary()).
 #pragma once
 #include <memory>
 #include <string>
@@ -30,6 +32,15 @@ namespace apps {
 // Starts in dir, an absolute path under sdcard::kMountPoint (or flashfs::kMountPoint, or a
 // share's shares::Share::mountPath()), with the cursor on the entry named select if given.
 std::unique_ptr<ui::Screen> makeFiles(const std::string &dir, const std::string &select = "");
+
+// The Reader's and Music's way onto the card: its top-level folder `name` ("books", "music"),
+// at dir inside it (default: the folder itself) with the cursor on select. That browser stays in
+// the folder (BOOT at its top goes back), deletes nothing, has no ONBOARD FLASH or share rows,
+// and needs no PIN. If the card has no such folder, or dir isn't inside it, this opens Files
+// proper at dir (the card's root by default), behind the PIN as Home's FILES. replace: in place
+// of the top screen (the Reader's LIBRARY), else pushed.
+void openLibrary(const char *name, const std::string &dir = "", const std::string &select = "",
+                 bool replace = false);
 
 // The card's top-level folder called `name` in any case ("books" -> "/sdcard/Books"), or the
 // card root if there isn't one.

@@ -221,7 +221,7 @@ class ReaderScreen : public ui::Screen {
                        if (fromFiles) {
                          ui::nav::pop();  // back to the Files screen that opened the book
                        } else {
-                         ui::nav::replace(makeFiles(folderOf(r->path()), nameOf(r->path())));
+                         openLibrary("books", folderOf(r->path()), nameOf(r->path()), true);
                        }
                      }});
     ui::nav::push(std::make_unique<ui::MenuScreen>("READER", std::move(items)));

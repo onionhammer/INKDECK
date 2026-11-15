@@ -377,14 +377,14 @@ class HomeScreen : public ui::Screen {
         if (auto reader = resumeLastBook()) {
           ui::nav::push(std::move(reader));
         } else {
-          ui::nav::push(makeFiles(sdFolder("books")));
+          openLibrary("books");
         }
         break;
       case Kind::Music:
         if (audio::active()) {
           ui::nav::push(makeMusic());
         } else {
-          ui::nav::push(makeFiles(sdFolder("music")));
+          openLibrary("music");
         }
         break;
       case Kind::Files:
