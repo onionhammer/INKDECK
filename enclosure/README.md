@@ -108,9 +108,10 @@ there let go first, then the other two. The knobs for a test print are `hook_d` 
 in the hatch panel on the back, as a dot matrix of 2 mm cells centred on the battery. Ink cells
 are 1.5 mm squares and the 50 % dither cells 0.8 mm dots. Paper cells are left flat. It's 52 × 32
 mm and 0.2 deep (`frog_d`): one first layer, over the battery, where the skin is 0.6. It reads
-upright with the device turned over top-to-bottom (the button side up, as in the render above).
-The cells are fixed in the sketch, so they don't follow the battery parameters. That sketch also
-takes a few minutes to solve after any edit.
+upright with the device turned over side to side, so the thumbwheel side is up (the render above
+upside down). The cells are fixed in the sketch, so they don't follow the battery parameters. That
+sketch also takes a few minutes to solve after any edit; to turn the frog, rewrite the cells'
+coordinates in a script and send the whole sketch in one `reverse_feature_update`.
 
 **Thumbwheel slot.** The wheel is clicked by pushing its rim straight in, and the rim stands
 only 0.16 mm past the outer wall. So the notch runs the full height of the wall, from the glass
