@@ -1,6 +1,6 @@
 // Firmware updates over Wi-Fi, pushed from the computer that builds them. System → UPDATE OVER
 // WI-FI opens the Updater screen, which calls start(): the board joins the network from .env and
-// listens for espota (ArduinoOTA) on inkdeck.local:3232 for up to 10 minutes. Then, on the Mac:
+// listens for espota (ArduinoOTA) on inkdeck.local:3232 for up to 10 minutes. Then, on the computer:
 //
 //   pio run -t upload --upload-port inkdeck.local
 //

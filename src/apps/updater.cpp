@@ -67,7 +67,7 @@ std::string detail(const ota::Status &s) {
   switch (s.phase) {
     case ota::Phase::Joining: return std::string("joining ") + wlan::network();
     case ota::Phase::Listening:
-      return s.result.empty() ? "waiting for an upload from the Mac" : "last try: " + s.result;
+      return s.result.empty() ? "waiting for an upload from the computer" : "last try: " + s.result;
     case ota::Phase::Receiving:
       return megabytes(s.bytes) + " / " + megabytes(s.total) + " MB into the idle slot";
     case ota::Phase::Done: return "restarting into the new build\xE2\x80\xA6";
@@ -130,11 +130,11 @@ class UpdaterScreen : public ui::Screen {
 
     Rect r = body;
     const Rect firmware = r.takeBottom(ui::kRule + ui::kSectionH + 4 + 2 * kRowH + 6);
-    const Rect mac = r.takeBottom(ui::kRule + ui::kSectionH + 8 + 3 * kNoteH + 8);
+    const Rect upload = r.takeBottom(ui::kRule + ui::kSectionH + 8 + 3 * kNoteH + 8);
     const Rect address = r.takeBottom(ui::kRule + ui::kSectionH + 4 + 3 * kRowH + 6);
     drawState(c, r, s);
     drawAddress(c, address, s);
-    drawMac(c, mac);
+    drawUpload(c, upload);
     drawFirmware(c, firmware);
   }
 
@@ -213,12 +213,12 @@ class UpdaterScreen : public ui::Screen {
     drawRows(c, r, rows, 3);
   }
 
-  static void drawMac(ui::Canvas &c, const Rect &area) {
+  static void drawUpload(ui::Canvas &c, const Rect &area) {
     using namespace ui;
     Rect r = area;
     hrule(c, r.x, r.y, r.w);
     r.takeTop(kRule);
-    drawSectionHeader(c, r.takeTop(kSectionH), "ON THE MAC", "ESPOTA");
+    drawSectionHeader(c, r.takeTop(kSectionH), "ON THE COMPUTER", "ESPOTA");
     r.takeTop(8);
     const int x = r.x + kPadX;
     const int w = r.w - 2 * kPadX;
