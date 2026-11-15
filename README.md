@@ -129,9 +129,11 @@ pio run -t upload             # build and flash over the board's USB-C
 pio device monitor            # serial console, 115200
 ```
 
-If the USB port disappears, hold BOOT while power-cycling the board, then upload again.
-`tools/screenshot.py` drives the UI over USB and saves the screen as a PNG. `src/devtools.h`
-lists the serial dev commands.
+If the USB port disappears, hold BOOT while power-cycling the board, then upload again. If the
+port is there but the board doesn't answer (esptool: "No serial data received"),
+`uv run tools/board_usb.py reset` makes the computer re-enumerate it, which brings it back.
+`tools/screenshot.py` drives the UI over USB and saves the screen as a PNG (`--no-reset` to
+leave the board as it is). `src/devtools.h` lists the serial dev commands.
 
 ### Updating over Wi-Fi
 

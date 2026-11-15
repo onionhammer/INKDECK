@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["pyserial>=3.5", "pillow>=10"]
+# dependencies = ["pyserial>=3.5", "pillow>=10", "pyusb>=1.2", "libusb-package>=1.0.26"]
 # ///
 """Drives the UI over the USB console and saves what the e-paper shows as a PNG.
 
@@ -14,6 +14,10 @@ The image is the framebuffer as drawn (portrait screens come out 480x800), 1 = p
 --log prints the firmware's log lines that arrive meanwhile (render timings, errors).
 --after sends more keys once the frame is in, e.g. --keys o.... --delay 0.4 --after b grabs
 the Sleep screen in its last second, then cancels the power-off.
+
+The board is reset first, so --keys start from a fresh boot on Home; --no-reset drives whatever
+is on screen instead (and keeps state, such as the Reader's place). Either way, if the firmware
+doesn't answer, the USB device is re-enumerated (tools/board_usb.py) and the run goes on.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ import zlib
 
 import serial
 from PIL import Image
+
+import board_usb
 
 ROTATIONS = {  # GFXcanvas1 rotation -> transpose from the native 800x480 buffer
     0: None,
@@ -85,24 +91,27 @@ def main() -> None:
     ap.add_argument("--timeout", type=float, default=15)
     ap.add_argument("--log", action="store_true", help="print firmware log lines")
     ap.add_argument("--after", default="", help="devtools keys to send after the frame")
+    ap.add_argument("--no-reset", action="store_true", help="don't reset the board first")
     args = ap.parse_args()
 
-    # Open with DTR and RTS held low: a default pyserial open resets the board (verified),
-    # most likely through the USB-Serial-JTAG auto-reset that esptool uses.
-    port = serial.Serial()
-    port.port = args.port
-    port.baudrate = 115200
-    port.timeout = 0.2
-    port.dtr = False
-    port.rts = False
-    port.open()
-    with port:
-        # On macOS the open resets the board regardless of DTR/RTS: let it boot before sending
-        # keys (until the console has been quiet for 2.5 s, at most 15 s).
+    port = board_usb.open_console(args.port, reset=not args.no_reset)
+    if not args.no_reset:
+        # Let it boot before sending keys: until the console has been quiet for 2.5 s, at most 15 s.
         start = quiet = time.time()
         while time.time() - start < 15 and time.time() - quiet < 2.5:
             if port.readline():
                 quiet = time.time()
+    if not board_usb.alive(port):
+        # A reset sometimes leaves the USB controller deaf while the firmware runs on: a
+        # re-enumeration brings it back without another reset.
+        port.close()
+        print("console dead: re-enumerating the USB device", file=sys.stderr)
+        if not board_usb.reenumerate(args.port):
+            sys.exit("re-enumerating failed")
+        port = board_usb.open_console(args.port)
+        if not board_usb.alive(port):
+            sys.exit("the firmware doesn't answer on the console")
+    with port:
         port.reset_input_buffer()
         for key in args.keys:
             port.write(key.encode())

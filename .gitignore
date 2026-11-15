@@ -8,3 +8,4 @@ session_*.json
 .env
 # Claude Code worktrees (local checkouts, never part of the repo)
 .claude/worktrees/
+__pycache__/
