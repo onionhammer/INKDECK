@@ -8,6 +8,7 @@
   "build": {
     "srcDir": "src",
     "includeDir": "include",
+    "srcFilter": ["+<*>", "-<errors.c>", "+<../port/errors_min.c>"],
     "flags": [
       "-DHAVE_CONFIG_H",
       "-DNEED_READV",
