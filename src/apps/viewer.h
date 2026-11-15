@@ -3,8 +3,9 @@
 //   - fitted to the whole panel and centred on paper, never grown more than 2x;
 //   - portrait or landscape (the wheel on top, as for the Clock) as the board is held, read from
 //     the IMU, and turning the board turns the picture within a couple of seconds, on battery
-//     too (the IMU's wake on motion wakes the nap). Lying flat, by the picture's shape:
-//     landscape when it's wider than tall;
+//     too (the IMU's wake on motion wakes the nap). Only the tilt decides, never the picture's
+//     shape: lying flat, it stays as it was (portrait if it opened flat). The wheel keeps its
+//     sense either way (Screen::swapsDial()): the roll that steps forward upright still does;
 //   - the chrome (status bar with "03/12 name.jpg", key hints) sits over the picture, and ●
 //     hides or shows it;
 //   - ▲ previous   ▼ next   ● hide / show the chrome   BOOT back to Files, on the last picture.

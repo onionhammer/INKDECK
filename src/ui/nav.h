@@ -3,7 +3,9 @@
 // Key language (docs/ui-design.md "Input mapping"); every screen follows it:
 //   ▲ / ▼    the dial: move the cursor, turn the page, change the value on screen. On a
 //            landscape screen the wheel is on top and the navigator swaps the two, so rolling
-//            left is ▲ and right is ▼ there
+//            left is ▲ and right is ▼ there. Not in the picture viewer, which turns between
+//            portrait and landscape with the board: there a roll does the same either way
+//            (swapsDial())
 //   ●        primary action on what's selected (open, play, pause, run)
 //   HOLD ●   secondary action, shown in the hint bar when a screen has one (skip, edit, sync)
 //   BOOT     back: the screen may use it first (parent folder), otherwise it pops the screen
@@ -47,6 +49,10 @@ class Screen {
   // false: draw() gets the whole screen and the navigator draws no chrome.
   virtual bool chrome() const { return true; }
   virtual bool landscape() const { return false; }
+  // false: the navigator doesn't swap ▲ and ▼ while this screen is landscape. For a screen that
+  // turns with the board (the picture viewer), so the same roll of the wheel does the same thing
+  // in either orientation.
+  virtual bool swapsDial() const { return true; }
   // true: drawn on top of the screen below it (menus, sheets). The status bar and body come
   // from the screen below; the hints come from this one.
   virtual bool overlay() const { return false; }
