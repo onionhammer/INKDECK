@@ -5,6 +5,7 @@
 
 #include <vector>
 
+#include "apps/files.h"
 #include "apps/home.h"
 #include "audio.h"
 #include "pmic.h"
@@ -74,8 +75,7 @@ class MusicScreen : public ui::Screen {
   std::string context() const override {
     const std::string path = audio::status().path;
     if (path.empty()) return "SD:/";
-    const std::string dir = path.substr(0, path.rfind('/') + 1);  // "/sdcard/x/"
-    return "SD:" + dir.substr(dir.find('/', 1));
+    return displayPath(path.substr(0, path.rfind('/') + 1));  // "SD:/x/", "NFS:/Media/x/"
   }
   bool contextIsPath() const override { return true; }
 

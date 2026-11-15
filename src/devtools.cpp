@@ -28,18 +28,18 @@
 namespace devtools {
 namespace {
 
-// A path on the card or the onboard flash (mounted on demand), or "" (with a message) for
-// anything else.
+// A path on the card, the onboard flash (mounted on demand) or a mounted network share (read-only;
+// open it in Files first), or "" (with a message) for anything else.
 String cardPath(const String &path) {
   if (path.indexOf("..") < 0) {
-    if (path.startsWith("/sdcard/")) return path;
+    if (path.startsWith("/sdcard/") || path.startsWith("/net/")) return path;
     if (path.startsWith("/ffat/") || path == "/ffat") {
       if (flashfs::mount()) return path;
       Serial.println("devtools: the onboard FAT partition won't mount");
       return "";
     }
   }
-  Serial.println("devtools: paths must start with /sdcard/ or /ffat/");
+  Serial.println("devtools: paths must start with /sdcard/, /ffat/ or /net/");
   return "";
 }
 

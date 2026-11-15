@@ -1,0 +1,24 @@
+{
+  "name": "libsmb2",
+  "version": "4.0.0+177a9de",
+  "description": "SMB2/3 client library by Ronnie Sahlberg, vendored for SMB shares in Files (src/smb_backend.cpp). See README.md.",
+  "license": "LGPL-2.1-or-later",
+  "frameworks": "*",
+  "platforms": "espressif32",
+  "build": {
+    "srcDir": "src",
+    "includeDir": "include",
+    "flags": [
+      "-DHAVE_CONFIG_H",
+      "-DNEED_READV",
+      "-DNEED_WRITEV",
+      "-DNEED_GETLOGIN_R",
+      "-Iport",
+      "-Iinclude/esp",
+      "-Iinclude/smb2",
+      "-Isrc",
+      "-w"
+    ],
+    "libArchive": true
+  }
+}
