@@ -148,9 +148,8 @@ first time), later builds can go over the network:
 
 PlatformIO sends a network upload with espota, and `scripts/gen_secrets.py` passes it the
 `OTA_PASSWORD` from `.env` (the firmware keeps only its SHA-256). espota has the board connect
-back to the computer for the image, so the firewall must let Python accept incoming connections
-(macOS asks the first time). espota's debug output prints the password, so don't paste upload
-logs anywhere public.
+back to the computer for the image, so the firewall must let Python accept incoming connections.
+espota's debug output prints the password, so don't paste upload logs anywhere public.
 
 The image goes into the idle OTA slot. Only a complete image that passes its checks switches
 the boot slot, so cutting the power or Wi-Fi midway leaves the running firmware in place. The
