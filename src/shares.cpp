@@ -1,4 +1,4 @@
-#include "nfs.h"
+#include "shares.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -16,41 +16,39 @@
 #include <mutex>
 #include <new>
 
-#include "nfsclient.h"
 #include "settings.h"
+#include "share_backend.h"
 #include "wlan.h"
 
-namespace nfs {
+namespace shares {
 namespace {
 
 constexpr uint32_t kConnectTimeoutMs = 20000;
-constexpr uint32_t kCacheMs = 60000;  // how long a looked-up name is trusted
+constexpr uint32_t kCacheMs = 60000;  // how long a listing's sizes are trusted
 constexpr size_t kCacheMax = 3000;
 constexpr size_t kMaxListing = 2000;  // entries read from one folder (DirList shows 1000)
 constexpr int kMaxFiles = 8;
 
-// What a path below a share's root names: its handle and attributes, and when we asked.
-struct Node {
-  NfsClient::Fh fh;
-  NfsClient::Attr attr;
-  uint32_t at = 0;
+struct Cached {
+  Attr attr;
+  uint32_t at = 0;  // millis() when it was read
 };
 
 struct Mount {
   Share share;
-  std::unique_ptr<NfsClient> client;  // set while mounted
+  std::unique_ptr<Backend> backend;  // set while mounted
   bool mounted = false;
   int users = 0;  // acquire()s not yet released, and open files
   uint32_t idleSince = 0;
-  std::map<std::string, Node> cache;  // by path below the share's root ("" = the root)
+  std::map<std::string, Cached> cache;  // attributes by path below the root ("" = the root)
 };
 
 struct File {
   Mount *mount = nullptr;  // nullptr: the slot is free
-  NfsClient::Fh fh;
-  NfsClient::Attr attr;
+  void *handle = nullptr;  // the backend's
+  Attr attr;
   uint64_t pos = 0;
-  std::unique_ptr<uint8_t[]> buf;  // read-ahead: one READ's worth, in PSRAM (psram_new.cpp)
+  std::unique_ptr<uint8_t[]> buf;  // read-ahead: one read's worth, in PSRAM (psram_new.cpp)
   uint64_t bufOff = 0;
   uint32_t bufLen = 0;
   bool eofKnown = false;
@@ -59,61 +57,31 @@ struct File {
 
 struct Dir {
   DIR base;  // first: the VFS layer keeps its index here
-  std::vector<NfsClient::Entry> entries;
+  std::vector<DirEntry> entries;
   size_t next = 0;
   dirent ent;
 };
 
-std::mutex lock;       // the mounts' state, caches, open files and connections
+std::mutex lock;       // the mounts' state, caches, open files and backends
 std::mutex mountLock;  // one acquire() mounting at a time
 std::mutex loadLock;
 bool loaded = false;
 std::vector<Share> shareList;
 std::vector<std::unique_ptr<Mount>> mounts;  // one per share, made with shareList
-File files[kMaxFiles];
+// The open-file table, in PSRAM rather than internal RAM (it's 1 KB+).
+std::unique_ptr<File[]> files;
 bool reaperRunning = false;
-
-// --- The shares ------------------------------------------------------------------------------
-
-bool parseNumber(const std::string &s, uint32_t max, uint32_t &out) {
-  if (s.empty() || s.size() > 10) return false;
-  uint64_t v = 0;
-  for (const char c : s) {
-    if (c < '0' || c > '9') return false;
-    v = v * 10 + static_cast<uint64_t>(c - '0');
-  }
-  if (v > max) return false;
-  out = static_cast<uint32_t>(v);
-  return true;
-}
-
-// "%20" -> " ", as URLs write spaces.
-std::string percentDecode(const std::string &s) {
-  std::string out;
-  for (size_t i = 0; i < s.size(); ++i) {
-    if (s[i] == '%' && i + 2 < s.size() && isxdigit(static_cast<unsigned char>(s[i + 1])) &&
-        isxdigit(static_cast<unsigned char>(s[i + 2]))) {
-      out += static_cast<char>(strtol(s.substr(i + 1, 2).c_str(), nullptr, 16));
-      i += 2;
-    } else {
-      out += s[i];
-    }
-  }
-  return out;
-}
 
 void load() {
   std::lock_guard<std::mutex> g(loadLock);
   if (loaded) return;
   loaded = true;
-  for (const std::string &spec : settings::nfsShares()) {
+  files.reset(new File[kMaxFiles]);
+  for (const settings::ShareLine &line : settings::shareLines()) {
     Share s;
-    std::string error;
-    if (!parse(spec, s, error)) continue;  // settings.cpp logged it
-    if (static_cast<int>(shareList.size()) >= kMaxShares) {
-      log_w("nfs: only %d shares; \"%s\" left out", kMaxShares, spec.c_str());
-      break;
-    }
+    std::string password, error;
+    if (!parse(line.kind, line.url, s, password, error)) continue;  // settings.cpp logged it
+    if (static_cast<int>(shareList.size()) >= kMaxShares) break;
     const std::string base = s.name;
     for (int n = 2;; ++n) {
       const bool taken = std::any_of(shareList.begin(), shareList.end(), [&](const Share &o) {
@@ -131,7 +99,7 @@ void load() {
 
 // --- Paths -----------------------------------------------------------------------------------
 
-// "/Books/Wells/a.txt" (below /nfs) -> Books's mount, rel "Wells/a.txt". Caller holds lock.
+// "/Books/Wells/a.txt" (below /net) -> Books's mount, rel "Wells/a.txt". Caller holds lock.
 Mount *split(const char *path, std::string &rel) {
   while (*path == '/') ++path;
   const char *slash = strchr(path, '/');
@@ -144,62 +112,25 @@ Mount *split(const char *path, std::string &rel) {
   return nullptr;
 }
 
-// What rel names on m, from the cache or by LOOKUPs from the deepest folder known. 0 or an
-// errno value. Caller holds lock.
-int resolve(Mount &m, const std::string &rel, Node &out) {
+// rel's attributes: from the last listing of its folder if that's recent, else from the
+// server. Caller holds lock.
+int statPath(Mount &m, const std::string &rel, Attr &out) {
   if (!m.mounted) return ENOTCONN;
-  const uint32_t now = millis();
-  auto cached = [&](const std::string &key, Node &n) {
-    const auto it = m.cache.find(key);
-    if (it == m.cache.end() || now - it->second.at > kCacheMs) return false;
-    n = it->second;
-    return true;
-  };
-  Node cur;
-  if (!cached("", cur)) {
-    cur.fh = m.client->root();
-    const int rc = m.client->getattr(cur.fh, cur.attr);
-    if (rc != 0) return rc;
-    cur.at = now;
-    m.cache[""] = cur;
+  const auto it = m.cache.find(rel);
+  if (it != m.cache.end() && millis() - it->second.at <= kCacheMs) {
+    out = it->second.attr;
+    return 0;
   }
-  size_t pos = 0;
-  while (pos < rel.size()) {
-    size_t slash = rel.find('/', pos);
-    if (slash == std::string::npos) slash = rel.size();
-    const std::string key = rel.substr(0, slash);
-    Node next;
-    if (!cached(key, next)) {
-      if (cur.attr.type != NfsClient::Type::Dir) return ENOTDIR;
-      const int rc = m.client->lookup(cur.fh, rel.substr(pos, slash - pos), next.fh, next.attr);
-      if (rc != 0) return rc;
-      next.at = now;
-      m.cache[key] = next;
-    }
-    cur = next;
-    pos = slash + 1;
-  }
-  out = cur;
-  return 0;
-}
-
-// resolve(), starting over from the root once if a cached handle went stale (the file was
-// replaced on the server).
-int resolveFresh(Mount &m, const std::string &rel, Node &out) {
-  int rc = resolve(m, rel, out);
-  if (rc == ESTALE) {
-    m.cache.clear();
-    rc = resolve(m, rel, out);
-  }
+  const int rc = m.backend->stat(rel, out);
+  if (rc == 0) m.cache[rel] = Cached{out, millis()};
   return rc;
 }
 
-void fillStat(const NfsClient::Attr &a, struct stat *st) {
+void fillStat(const Attr &a, struct stat *st) {
   memset(st, 0, sizeof *st);
-  const mode_t type = a.type == NfsClient::Type::Dir    ? S_IFDIR
-                      : a.type == NfsClient::Type::Link ? S_IFLNK
-                                                        : S_IFREG;
-  st->st_mode = type | (a.mode & 0777);
+  const mode_t type = a.type == Type::Dir ? S_IFDIR : a.type == Type::Link ? S_IFLNK : S_IFREG;
+  const uint32_t perms = a.mode ? a.mode & 0777 : (a.type == Type::Dir ? 0755 : 0644);
+  st->st_mode = type | perms;
   st->st_size = static_cast<off_t>(std::min<uint64_t>(a.size, 0x7fffffff));  // off_t is 32-bit
   st->st_mtime = static_cast<time_t>(a.mtime);
   st->st_ino = static_cast<ino_t>(a.fileid);
@@ -209,7 +140,7 @@ void fillStat(const NfsClient::Attr &a, struct stat *st) {
 // --- The VFS ---------------------------------------------------------------------------------
 
 File *fileAt(int fd) {
-  return fd >= 0 && fd < kMaxFiles && files[fd].mount ? &files[fd] : nullptr;
+  return files && fd >= 0 && fd < kMaxFiles && files[fd].mount ? &files[fd] : nullptr;
 }
 
 int vfsOpen(const char *path, int flags, int /*mode*/) {
@@ -220,46 +151,45 @@ int vfsOpen(const char *path, int flags, int /*mode*/) {
   std::lock_guard<std::mutex> g(lock);
   std::string rel;
   Mount *m = split(path, rel);
-  if (!m) {
-    errno = ENOENT;
+  if (!m || !m->mounted) {
+    errno = m ? ENOTCONN : ENOENT;
     return -1;
   }
-  // Fresh attributes: the size from a listing can be a minute old, and SEEK_END goes by it.
-  Node n;
-  int rc = resolveFresh(*m, rel, n);
-  if (rc == 0) rc = m->client->getattr(n.fh, n.attr);
-  if (rc == ESTALE) {
-    m->cache.clear();
-    rc = resolve(*m, rel, n);
+  int fd = 0;
+  while (fd < kMaxFiles && files[fd].mount) ++fd;
+  if (fd == kMaxFiles) {
+    errno = ENFILE;
+    return -1;
+  }
+  File &f = files[fd];
+  f.buf.reset(new (std::nothrow) uint8_t[m->backend->readSize()]);
+  if (!f.buf) {
+    errno = ENOMEM;
+    return -1;
+  }
+  void *handle = nullptr;
+  Attr attr;
+  const int rc = m->backend->open(rel, handle, attr);
+  if (rc == 0 && attr.type != Type::File) {  // a folder, or a link we don't follow
+    m->backend->close(handle);
+    errno = attr.type == Type::Dir ? EISDIR : EINVAL;
+    f.buf.reset();
+    return -1;
   }
   if (rc != 0) {
     errno = rc;
+    f.buf.reset();
     return -1;
   }
-  if (n.attr.type != NfsClient::Type::File) {  // a folder, or a link we don't follow
-    errno = n.attr.type == NfsClient::Type::Dir ? EISDIR : EINVAL;
-    return -1;
-  }
-  for (int fd = 0; fd < kMaxFiles; ++fd) {
-    File &f = files[fd];
-    if (f.mount) continue;
-    f.buf.reset(new (std::nothrow) uint8_t[m->client->readSize()]);
-    if (!f.buf) {
-      errno = ENOMEM;
-      return -1;
-    }
-    f.mount = m;
-    f.fh = n.fh;
-    f.attr = n.attr;
-    f.pos = 0;
-    f.bufOff = 0;
-    f.bufLen = 0;
-    f.eofKnown = false;
-    ++m->users;
-    return fd;
-  }
-  errno = ENFILE;
-  return -1;
+  f.mount = m;
+  f.handle = handle;
+  f.attr = attr;
+  f.pos = 0;
+  f.bufOff = 0;
+  f.bufLen = 0;
+  f.eofKnown = false;
+  ++m->users;
+  return fd;
 }
 
 int vfsClose(int fd) {
@@ -270,21 +200,23 @@ int vfsClose(int fd) {
     return -1;
   }
   Mount &m = *f->mount;
+  if (m.mounted) m.backend->close(f->handle);
   if (m.users > 0 && --m.users == 0) m.idleSince = millis();
   f->buf.reset();
+  f->handle = nullptr;
   f->mount = nullptr;
   return 0;
 }
 
-// Reads from pos through the read-ahead buffer: small reads (stdio's) come out of one READ.
-// Caller holds lock.
+// Reads from pos through the read-ahead buffer: small reads (stdio's) come out of one network
+// read. Caller holds lock.
 ssize_t readAt(File &f, uint8_t *dst, size_t n, uint64_t &pos) {
   Mount &m = *f.mount;
   if (!m.mounted) {
     errno = EIO;
     return -1;
   }
-  const uint32_t chunk = m.client->readSize();
+  const uint32_t chunk = m.backend->readSize();
   size_t done = 0;
   while (done < n) {
     if (pos >= f.bufOff && pos < f.bufOff + f.bufLen) {
@@ -299,7 +231,7 @@ ssize_t readAt(File &f, uint8_t *dst, size_t n, uint64_t &pos) {
     bool eof = false;
     int rc;
     if (n - done >= chunk) {  // a big read goes straight to the caller
-      rc = m.client->read(f.fh, pos, chunk, dst + done, got, eof);
+      rc = m.backend->read(f.handle, pos, chunk, dst + done, got, eof);
       if (rc == 0 && eof) {
         f.eofKnown = true;
         f.eofAt = pos + got;
@@ -309,7 +241,7 @@ ssize_t readAt(File &f, uint8_t *dst, size_t n, uint64_t &pos) {
         pos += got;
       }
     } else {
-      rc = m.client->read(f.fh, pos, chunk, f.buf.get(), got, eof);
+      rc = m.backend->read(f.handle, pos, chunk, f.buf.get(), got, eof);
       if (rc == 0) {
         f.bufOff = pos;
         f.bufLen = got;
@@ -320,7 +252,7 @@ ssize_t readAt(File &f, uint8_t *dst, size_t n, uint64_t &pos) {
       }
     }
     if (rc != 0) {
-      log_w("nfs: read failed (errno %d)", rc);
+      log_w("shares: read failed (errno %d)", rc);
       if (done > 0) break;
       errno = rc;
       return -1;
@@ -393,13 +325,13 @@ int vfsStat(const char *path, struct stat *st) {
     errno = ENOENT;
     return -1;
   }
-  Node n;
-  const int rc = resolveFresh(*m, rel, n);
+  Attr a;
+  const int rc = statPath(*m, rel, a);
   if (rc != 0) {
     errno = rc;
     return -1;
   }
-  fillStat(n.attr, st);
+  fillStat(a, st);
   return 0;
 }
 
@@ -407,44 +339,29 @@ DIR *vfsOpendir(const char *path) {
   std::lock_guard<std::mutex> g(lock);
   std::string rel;
   Mount *m = split(path, rel);
-  if (!m) {
-    errno = ENOENT;
+  if (!m || !m->mounted) {
+    errno = m ? ENOTCONN : ENOENT;
     return nullptr;
   }
-  Node n;
-  int rc = resolveFresh(*m, rel, n);
-  if (rc == 0 && n.attr.type != NfsClient::Type::Dir) rc = ENOTDIR;
   std::unique_ptr<Dir> d(new Dir());
-  if (rc == 0) rc = m->client->readdir(n.fh, d->entries, kMaxListing);
-  if (rc == ESTALE) {
-    m->cache.clear();
-    rc = resolve(*m, rel, n);
-    if (rc == 0) rc = m->client->readdir(n.fh, d->entries, kMaxListing);
-  }
+  const int rc = m->backend->list(rel, d->entries, kMaxListing);
   if (rc != 0) {
-    log_w("nfs: can't list %s (errno %d)", path, rc);
+    log_w("shares: can't list %s (errno %d)", path, rc);
     errno = rc;
     return nullptr;
   }
 
-  // Keep what READDIRPLUS brought, so the stat() of each row and the open() of one needn't
-  // ask again. Entries it left bare get a LOOKUP; devices, sockets and pipes are left out.
+  // Keep the listing's attributes, so the stat() of each row and the open() of one needn't
+  // ask again. Devices, sockets and pipes are left out.
   const uint32_t now = millis();
   for (auto it = m->cache.begin(); it != m->cache.end();) {
     it = now - it->second.at > kCacheMs ? m->cache.erase(it) : std::next(it);
   }
   if (m->cache.size() + d->entries.size() > kCacheMax) m->cache.clear();
   const std::string prefix = rel.empty() ? std::string() : rel + "/";
-  for (NfsClient::Entry &e : d->entries) {
-    if (!e.hasFh || !e.hasAttr) {
-      e.hasFh = e.hasAttr = m->client->lookup(n.fh, e.name, e.fh, e.attr) == 0;
-    }
-    if (e.hasFh && e.hasAttr) m->cache[prefix + e.name] = Node{e.fh, e.attr, now};
-  }
+  for (const DirEntry &e : d->entries) m->cache[prefix + e.name] = Cached{e.attr, now};
   d->entries.erase(std::remove_if(d->entries.begin(), d->entries.end(),
-                                  [](const NfsClient::Entry &e) {
-                                    return e.hasAttr && e.attr.type == NfsClient::Type::Other;
-                                  }),
+                                  [](const DirEntry &e) { return e.attr.type == Type::Other; }),
                    d->entries.end());
   return &d.release()->base;
 }
@@ -452,12 +369,9 @@ DIR *vfsOpendir(const char *path) {
 struct dirent *vfsReaddir(DIR *pdir) {
   Dir *d = reinterpret_cast<Dir *>(pdir);
   if (d->next >= d->entries.size()) return nullptr;
-  const NfsClient::Entry &e = d->entries[d->next++];
+  const DirEntry &e = d->entries[d->next++];
   d->ent.d_ino = static_cast<ino_t>(e.attr.fileid);
-  d->ent.d_type = !e.hasAttr                                ? DT_UNKNOWN
-                  : e.attr.type == NfsClient::Type::Dir  ? DT_DIR
-                  : e.attr.type == NfsClient::Type::Link ? DT_LNK
-                                                         : DT_REG;
+  d->ent.d_type = e.attr.type == Type::Dir ? DT_DIR : e.attr.type == Type::Link ? DT_LNK : DT_REG;
   strlcpy(d->ent.d_name, e.name.c_str(), sizeof d->ent.d_name);
   return &d->ent;
 }
@@ -496,7 +410,7 @@ bool registerVfs() {
   vfs.closedir = vfsClosedir;
   const esp_err_t err = esp_vfs_register(kMountPoint, &vfs, nullptr);
   if (err != ESP_OK) {
-    log_e("nfs: can't register %s (%s)", kMountPoint, esp_err_to_name(err));
+    log_e("shares: can't register %s (%s)", kMountPoint, esp_err_to_name(err));
     return false;
   }
   registered = true;
@@ -510,7 +424,7 @@ bool registerVfs() {
 void reaper(void *) {
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(1000));
-    std::vector<std::unique_ptr<NfsClient>> idle;
+    std::vector<std::unique_ptr<Backend>> idle;
     bool anyMounted = false;
     {
       std::lock_guard<std::mutex> g(lock);
@@ -518,20 +432,20 @@ void reaper(void *) {
         Mount &m = *mp;
         if (!m.mounted) continue;
         if (m.users == 0 && millis() - m.idleSince >= kIdleMs) {
-          log_i("nfs: %s unused for %lu s; unmounting", m.share.name.c_str(),
+          log_i("shares: %s unused for %lu s; unmounting", m.share.name.c_str(),
                 static_cast<unsigned long>(kIdleMs / 1000));
           m.mounted = false;
           m.cache.clear();
-          idle.push_back(std::move(m.client));
+          idle.push_back(std::move(m.backend));
         } else {
           anyMounted = true;
         }
       }
       if (!anyMounted) reaperRunning = false;
     }
-    for (auto &client : idle) {
-      client.reset();  // UMNT, then the connection closes
-      if (!anyMounted && &client == &idle.back()) WiFi.setSleep(true);  // as acquire() found it
+    for (auto &backend : idle) {
+      backend.reset();  // unmounts, then the connection closes
+      if (!anyMounted && &backend == &idle.back()) WiFi.setSleep(true);  // as acquire() found it
       wlan::disconnect();
     }
     if (!anyMounted) break;
@@ -542,105 +456,78 @@ void reaper(void *) {
 // Caller holds lock.
 void startReaper() {
   if (reaperRunning) return;
-  if (xTaskCreate(reaper, "nfs-idle", 6144, nullptr, 1, nullptr) == pdPASS) {
+  if (xTaskCreate(reaper, "share-idle", 6144, nullptr, 1, nullptr) == pdPASS) {
     reaperRunning = true;
   } else {
-    log_e("nfs: no memory for the idle task; shares stay mounted");
+    log_e("shares: no memory for the idle task; shares stay mounted");
   }
 }
 
 }  // namespace
 
+// --- Shared by the backends ------------------------------------------------------------------
+
+bool parseNumber(const std::string &s, uint32_t max, uint32_t &out) {
+  if (s.empty() || s.size() > 10) return false;
+  uint64_t v = 0;
+  for (const char c : s) {
+    if (c < '0' || c > '9') return false;
+    v = v * 10 + static_cast<uint64_t>(c - '0');
+  }
+  if (v > max) return false;
+  out = static_cast<uint32_t>(v);
+  return true;
+}
+
+std::string percentDecode(const std::string &s) {
+  std::string out;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == '%' && i + 2 < s.size() && isxdigit(static_cast<unsigned char>(s[i + 1])) &&
+        isxdigit(static_cast<unsigned char>(s[i + 2]))) {
+      out += static_cast<char>(strtol(s.substr(i + 1, 2).c_str(), nullptr, 16));
+      i += 2;
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
 // --- Public ----------------------------------------------------------------------------------
 
-bool parse(const std::string &specIn, Share &out, std::string &error) {
+std::string Share::url() const {
+  const std::string authority = host + (port ? ":" + std::to_string(port) : std::string());
+  if (kind == Kind::Nfs) return "nfs://" + authority + path;
+  std::string who;
+  if (!domain.empty()) who += domain + ";";
+  if (!user.empty()) who += user + "@";
+  return "smb://" + who + authority + "/" + path;
+}
+
+std::string Share::credentialId() const {
+  std::string id = domain + ";" + user + "@" + host + "/" + path.substr(0, path.find('/'));
+  for (char &c : id) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  return id;
+}
+
+bool parse(Kind kind, const std::string &spec, Share &out, std::string &password,
+           std::string &error) {
   out = Share();
-  std::string spec = specIn;
-  std::string query;
-  const size_t q = spec.find('?');
-  if (q != std::string::npos) {
-    query = spec.substr(q + 1);
-    spec.erase(q);
-  }
-  std::string host, path;
-  if (strncasecmp(spec.c_str(), "nfs://", 6) == 0) {
-    const std::string rest = spec.substr(6);
-    const size_t slash = rest.find('/');
-    host = rest.substr(0, slash);
-    path = slash == std::string::npos ? "/" : rest.substr(slash);
-  } else {
-    const size_t colon = spec.find(":/");
-    if (colon == std::string::npos) {
-      error = "write nfs://server/export or server:/export";
-      return false;
-    }
-    host = spec.substr(0, colon);
-    path = spec.substr(colon + 1);
-  }
-  const size_t colon = host.find(':');
-  if (colon != std::string::npos) {
-    uint32_t port;
-    if (!parseNumber(host.substr(colon + 1), 65535, port) || port == 0) {
-      error = "the port after the server isn't a number from 1 to 65535";
-      return false;
-    }
-    out.nfsPort = static_cast<uint16_t>(port);
-    host.erase(colon);
-  }
-  if (host.empty()) {
-    error = "no server";
-    return false;
-  }
-  path = percentDecode(path);
-  while (path.size() > 1 && path.back() == '/') path.pop_back();
-  out.host = host;
-  out.exportPath = path;
-
-  size_t pos = 0;
-  while (pos < query.size()) {
-    size_t amp = query.find('&', pos);
-    if (amp == std::string::npos) amp = query.size();
-    const std::string item = query.substr(pos, amp - pos);
-    pos = amp + 1;
-    if (item.empty()) continue;
-    const size_t eq = item.find('=');
-    const std::string key = item.substr(0, eq);
-    const std::string value = eq == std::string::npos ? "" : percentDecode(item.substr(eq + 1));
-    uint32_t n = 0;
-    if (key == "name") {
-      out.name = value;
-    } else if (key == "uid" || key == "gid") {
-      if (!parseNumber(value, 0xFFFFFFFFu, n)) {
-        error = key + " must be a number";
-        return false;
-      }
-      (key == "uid" ? out.uid : out.gid) = n;
-    } else if (key == "nfsport" || key == "mountport") {
-      if (!parseNumber(value, 65535, n) || n == 0) {
-        error = key + " must be a number from 1 to 65535";
-        return false;
-      }
-      (key == "nfsport" ? out.nfsPort : out.mountPort) = static_cast<uint16_t>(n);
-    } else if (key == "version") {
-      if (value != "3") {
-        error = "only NFS version 3 is supported";
-        return false;
-      }
-    } else {
-      log_w("nfs: ignoring option \"%s\" in %s", key.c_str(), specIn.c_str());
-    }
-  }
-
+  out.kind = kind;
+  password.clear();
+  const bool ok = kind == Kind::Smb ? parseSmb(spec, out, password, error)
+                                    : parseNfs(spec, out, error);
+  if (!ok) return false;
   if (out.name.empty()) {
-    const size_t slash = out.exportPath.rfind('/');
-    out.name = out.exportPath.substr(slash == std::string::npos ? 0 : slash + 1);
-    if (out.name.empty()) out.name = host;
+    const size_t slash = out.path.rfind('/');
+    out.name = out.path.substr(slash == std::string::npos ? 0 : slash + 1);
+    if (out.name.empty()) out.name = out.host;
   }
   std::replace(out.name.begin(), out.name.end(), '/', '-');
   return true;
 }
 
-const std::vector<Share> &shares() {
+const std::vector<Share> &all() {
   load();
   return shareList;
 }
@@ -648,7 +535,7 @@ const std::vector<Share> &shares() {
 int shareOf(const std::string &path) {
   load();
   for (size_t i = 0; i < shareList.size(); ++i) {
-    const std::string root = shareList[i].path();
+    const std::string root = shareList[i].mountPath();
     if (path.compare(0, root.size(), root) == 0 &&
         (path.size() == root.size() || path[root.size()] == '/')) {
       return static_cast<int>(i);
@@ -685,29 +572,25 @@ bool acquire(int i, std::string &error) {
   }
 
   Mount &m = *mounts[i];
-  NfsClient::Options o;
-  o.host = m.share.host;
-  o.exportPath = m.share.exportPath;
-  o.uid = m.share.uid;
-  o.gid = m.share.gid;
-  o.nfsPort = m.share.nfsPort;
-  o.mountPort = m.share.mountPort;
   const uint32_t t0 = millis();
-  auto client = std::make_unique<NfsClient>();
-  if (!client->mount(o, error)) {  // outside the lock: other shares' files keep going
-    log_w("nfs: %s: %s", m.share.url().c_str(), error.c_str());
-    client.reset();
+  std::unique_ptr<Backend> backend =
+      m.share.kind == Kind::Smb ? makeSmbBackend() : makeNfsBackend();
+  const std::string password =
+      m.share.kind == Kind::Smb ? settings::sharePassword(m.share.credentialId()) : "";
+  if (!backend->mount(m.share, password, error)) {  // outside the lock: others keep going
+    log_w("shares: %s: %s", m.share.url().c_str(), error.c_str());
+    backend.reset();
     wlan::disconnect();
     return false;
   }
-  log_i("nfs: %s mounted at %s in %lu ms", m.share.url().c_str(), m.share.path().c_str(),
+  log_i("shares: %s mounted at %s in %lu ms", m.share.url().c_str(), m.share.mountPath().c_str(),
         static_cast<unsigned long>(millis() - t0));
   // Modem sleep wakes the radio only at the access point's beacons, every 100 ms or more:
-  // each READ waits for one, which makes a waveform scan or a big picture several times
-  // slower (ota.cpp found the same). Off while a share is mounted; the reaper puts it back.
+  // each read would wait for one (ota.cpp found the same). Off while a share is mounted; the
+  // reaper puts it back.
   WiFi.setSleep(false);
   std::lock_guard<std::mutex> g(lock);
-  m.client = std::move(client);
+  m.backend = std::move(backend);
   m.cache.clear();
   m.mounted = true;
   ++m.users;
@@ -769,8 +652,8 @@ void Lease::start() {
   job_ = std::make_shared<Job>();
   job_->share = share_;
   auto *arg = new std::shared_ptr<Job>(job_);
-  // Wi-Fi's connect and the sockets want room: 8 KB, like the other network tasks.
-  if (xTaskCreate(run, "nfs-mount", 8192, arg, 1, nullptr) != pdPASS) {
+  // Wi-Fi's connect, the sockets and SMB's sign-in (NTLM, signing keys) want room.
+  if (xTaskCreate(run, "share-mount", 12288, arg, 1, nullptr) != pdPASS) {
     delete arg;
     job_->done = true;
     job_->error = "OUT OF MEMORY";
@@ -816,4 +699,4 @@ Lease::~Lease() {
   if (letGo) release(share_);
 }
 
-}  // namespace nfs
+}  // namespace shares

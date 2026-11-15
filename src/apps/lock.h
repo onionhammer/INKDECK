@@ -2,7 +2,7 @@
 // with chrome and the tag LOCKED. A pixel-art padlock (drawn like the Sleep frog), then
 // "// PIN" with DIGIT n/N, and the wheels. The active wheel is inverted, with its neighbouring
 // digits small above and below it. Entered wheels show a block, the ones still to come a dash.
-//   ▲▼ digit   ● next (UNLOCK on the last)   BOOT previous digit
+//   ▲▼ digit (to the one drawn above / below)   ● next (UNLOCK on the last)   BOOT previous digit
 // A wrong PIN starts again from the first wheel. The PIN and lock_minutes come from
 // SD:/inkdeck.ini (settings.h), or System's PIN LOCK (makePinTask()).
 //

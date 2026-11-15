@@ -26,7 +26,7 @@ there, rolling it left is ▲ and right is ▼.
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, a live I2C bus scan, and a CSV log to the card |
 | **Level** | Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
 | **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, in landscape when they're wider than tall. Phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short) |
-| **Network shares** | Files also browses NFS shares on the local network (a NAS or home server), listed in `inkdeck.ini` (below). Each share is a row on the card's root, after ONBOARD FLASH. Opening one joins Wi-Fi and mounts it (NFS v3 over TCP; read-only, so HOLD ● doesn't delete there), and its books, music, pictures and text open as they do from the card. Wi-Fi stays on while the share is open in Files or a file on it is (music playing, a book open), and goes off 30 s after |
+| **Network shares** | Files also browses shares on the local network (a NAS, a home server, a Windows PC), listed in `inkdeck.ini` (below): **SMB** (SMB2/3, user name and password) and **NFS** (v3). Each share is a row on the card's root after ONBOARD FLASH, tagged SMB or NFS. Opening one joins Wi-Fi and mounts it (read-only, so HOLD ● doesn't delete there), and its books, music, pictures and text open as they do from the card. Wi-Fi stays on while the share is open in Files or a file on it is (music playing, a book open), and goes off 30 s after |
 | **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, how often the screen does a full refresh, and the PIN lock (all below) |
 
 **Power**
@@ -60,32 +60,45 @@ and the setting is kept. The serial log reports each refresh and how much change
 up since the last full one. HOLD BOOT always does a full refresh.
 
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
-`.env` at build time (template:
-`.env.example`). `inkdeck.ini` in the card's root overrides the time zone and location
-without a rebuild, and sets the lock (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it
-at startup, and if the card has none, it writes one with every line commented out. Wi-Fi is
-never read from the card. `INKDECK_FAHRENHEIT` in `platformio.ini` switches between US and
-metric units.
+`.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
+Wi-Fi network, time zone and location without a rebuild, sets the lock and lists network shares
+(example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
+the card has none, it writes one with every line commented out. **Passwords don't stay on the
+card**, since a card is easy to lift: the board keeps the Wi-Fi password and each SMB share's in
+its flash (NVS) and rewrites their lines without them. To change one, write it in again. The
+flash isn't encrypted, so someone with the board and a USB cable can read them, as they can the
+`.env` values built into the firmware. `INKDECK_FAHRENHEIT` in `platformio.ini` switches between
+US and metric units.
 
 ```ini
+[wifi]
+ssid = HomeNet
+password = secret                     ; the board keeps it and replaces the line with a note
 [clock]
 timezone = GMT0BST,M3.5.0/1,M10.5.0   ; a POSIX TZ string, daylight saving rule included
 [location]
 latitude = 51.48                      ; decimal degrees, north and east positive
 longitude = 0.00
 [network]
-nfs = nfs://nas.local/volume1/books   ; an NFS share for Files: one line each, up to 4
-nfs = nas.local:/srv/media?name=Media&uid=1000&gid=1000
+smb = smb://erik:secret@192.168.1.20/share/media?name=Media  ; the board keeps the password
+nfs = nfs://nas.local/volume1/books   ; up to 4 shares in all
 [lock]
 pin = 2468                            ; 4 to 8 digits; pin = off removes it
 lock_minutes = 5                      ; also lock after 5 minutes without a key
 ```
 
-Each `nfs =` line is a share Files lists: `nfs://server/export` or `server:/export`, with options
-after a `?`: `name` (what Files calls it), `uid` and `gid` (who the server takes the board for,
-default 0), `nfsport` and `mountport` (else the server's portmapper says). The server must
-export the folder to the board's address over NFS v3 and TCP. Options and limits:
-[`src/nfs.h`](src/nfs.h).
+Each `smb =` or `nfs =` line is a share Files lists:
+
+- **SMB:** `smb://[domain;]user:password@server[:port]/share[/folder]`, SMB2 or SMB3 through
+  [libsmb2](lib/libsmb2/README.md), signed if the server asks. Write `@ : / ? ; %` in a password
+  as `%40 %3A %2F %3F %3B %25`. A folder after the share opens Files there.
+- **NFS:** `nfs://server/export` or `server:/export`, NFS v3 over TCP with no password. Options
+  `uid` and `gid` (who the server takes the board for, default 0), `nfsport` and `mountport`
+  (else the server's portmapper says). The server must export the folder to the board's address.
+
+Both take `name` (what Files calls the share) after a `?`. Use the server's IP address if it's on
+another subnet: `.local` names don't cross routers. Options and limits:
+[`src/shares.h`](src/shares.h).
 
 ## Build and flash
 

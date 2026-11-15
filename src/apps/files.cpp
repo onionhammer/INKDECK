@@ -14,7 +14,7 @@
 #include "audio.h"
 #include "dirlist.h"
 #include "flashfs.h"
-#include "nfs.h"
+#include "shares.h"
 #include "podcast_library.h"
 #include "sdcard.h"
 #include "textdoc.h"
@@ -88,31 +88,31 @@ bool isInside(const std::string &path, const std::string &dir) {
 std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
 
 // Which file system a Files screen browses. The card's root lists the onboard flash and then
-// each NFS share as extra first rows; each opens a Files screen of its own (BOOT at its root
-// comes back).
-enum class Volume : uint8_t { Sd, Flash, Nfs };
+// each network share (SMB, NFS) as extra first rows; each opens a Files screen of its own (BOOT
+// at its root comes back).
+enum class Volume : uint8_t { Sd, Flash, Net };
 
 std::string rootOf(Volume v, int share) {
   switch (v) {
     case Volume::Sd: return sdcard::kMountPoint;
     case Volume::Flash: return flashfs::kMountPoint;
-    case Volume::Nfs: break;
+    case Volume::Net: break;
   }
-  return nfs::shares()[share].path();
+  return shares::all()[share].mountPath();
 }
 
 class FilesScreen : public ui::Screen {
  public:
-  // share: which of nfs::shares() a Volume::Nfs screen browses.
+  // share: which of shares::all() a Volume::Net screen browses.
   FilesScreen(Volume volume, int share, const std::string &dir, const std::string &select)
       : volume_(volume), list_(rootOf(volume, share)) {
-    if (volume_ != Volume::Nfs) {
+    if (volume_ != Volume::Net) {
       openDir(dir, select);
       return;
     }
     // A share is listed once it's mounted: at once if it is already, else after a CONNECTING
     // header while a task joins Wi-Fi and mounts it (onTick() watches).
-    lease_ = std::make_unique<nfs::Lease>(share);
+    lease_ = std::make_unique<shares::Lease>(share);
     pendingDir_ = dir;
     pendingSelect_ = select;
     connect();
@@ -120,7 +120,7 @@ class FilesScreen : public ui::Screen {
 
   std::string tag() const override { return moduleTag("FILES"); }
   std::string context() const override {
-    // "SD:/", "SD:/Books/", "NFS:/Media/Music/"
+    // "SD:/", "SD:/Books/", "SMB:/Media/Music/"
     const std::string dir = list_.cwd().empty() ? rootOf(volume_, shareIndex()) : list_.cwd();
     const std::string shown = displayPath(dir);
     return shown.back() == '/' ? shown : shown + "/";
@@ -186,10 +186,10 @@ class FilesScreen : public ui::Screen {
       return true;
     }
     if (lease_ && waitingForMount_) {
-      const nfs::Lease::State s = lease_->state();
-      if (s == nfs::Lease::State::Connecting) return false;
+      const shares::Lease::State s = lease_->state();
+      if (s == shares::Lease::State::Connecting) return false;
       waitingForMount_ = false;
-      if (s == nfs::Lease::State::Ready) openDir(pendingDir_, pendingSelect_);
+      if (s == shares::Lease::State::Ready) openDir(pendingDir_, pendingSelect_);
       return true;
     }
     return audio::status().generation != drawnGeneration_;
@@ -200,10 +200,10 @@ class FilesScreen : public ui::Screen {
     Rect r = body;
     const Rect head = r.takeTop(ui::kSectionH);
     if (connecting()) {
-      const nfs::Share &share = nfs::shares()[shareIndex()];
+      const shares::Share &share = shares::all()[shareIndex()];
       ui::drawSectionHeader(c, head, "CONNECTING" + std::string(ui::glyph::kEllipsis), "");
       drawEmpty(c, r, ui::upper(share.name).c_str(),
-                "Joining the Wi-Fi network and mounting " + share.host + ":" + share.exportPath +
+                "Joining the Wi-Fi network and connecting to " + share.url() +
                     ". This can take a few seconds.");
       return;
     }
@@ -220,12 +220,11 @@ class FilesScreen : public ui::Screen {
 
     if (!list_.readable()) {
       const std::string retry = std::string(" Press ") + ui::glyph::kPress + " to retry.";
-      if (volume_ == Volume::Nfs && lease_->state() == nfs::Lease::State::Failed) {
-        const nfs::Share &share = nfs::shares()[shareIndex()];
+      if (volume_ == Volume::Net && lease_->state() == shares::Lease::State::Failed) {
+        const shares::Share &share = shares::all()[shareIndex()];
         drawEmpty(c, r, "CAN'T CONNECT",
-                  ui::upper(lease_->error()) + ". " + share.host + ":" + share.exportPath + "." +
-                      retry);
-      } else if (volume_ == Volume::Nfs) {
+                  ui::upper(lease_->error()) + ". " + share.url() + "." + retry);
+      } else if (volume_ == Volume::Net) {
         drawEmpty(c, r, "CAN'T READ", "This folder couldn't be read from the server." + retry);
       } else if (volume_ == Volume::Flash) {
         drawEmpty(c, r, "CAN'T MOUNT", "The onboard FAT partition couldn't be mounted." + retry);
@@ -262,8 +261,8 @@ class FilesScreen : public ui::Screen {
         return row;
       }
       if (i < extra) {
-        row.title = nfs::shares()[i - flashRows()].name;
-        row.tag = "NFS";
+        row.title = shares::all()[i - flashRows()].name;
+        row.tag = shares::all()[i - flashRows()].tag();
         row.trailing = sizeText(-1);  // blank, as wide as a size
         return row;
       }
@@ -280,8 +279,8 @@ class FilesScreen : public ui::Screen {
   bool onCardRoot() const { return volume_ == Volume::Sd && list_.atRoot() && list_.readable(); }
   // The ONBOARD FLASH row: first on the card's root, when the partition exists.
   int flashRows() const { return onCardRoot() && flashfs::available() ? 1 : 0; }
-  // A row per NFS share (SD:/inkdeck.ini), after it.
-  int shareRows() const { return onCardRoot() ? static_cast<int>(nfs::shares().size()) : 0; }
+  // A row per network share (SD:/inkdeck.ini), after it.
+  int shareRows() const { return onCardRoot() ? static_cast<int>(shares::all().size()) : 0; }
   int extraRows() const { return flashRows() + shareRows(); }
   int rowCount() const { return static_cast<int>(list_.entries().size()) + extraRows(); }
   // Which extra row the cursor is on (0 = the first), or -1.
@@ -293,9 +292,9 @@ class FilesScreen : public ui::Screen {
   }
   int shareIndex() const { return lease_ ? lease_->share() : -1; }
   // HOLD ● deletes the selection: an entry of the card's or the flash's, not a share's (read-only).
-  bool canDelete() const { return selected() && volume_ != Volume::Nfs; }
+  bool canDelete() const { return selected() && volume_ != Volume::Net; }
   // A share's screen before its mount has finished: nothing listed yet.
-  bool connecting() const { return lease_ && lease_->state() == nfs::Lease::State::Connecting; }
+  bool connecting() const { return lease_ && lease_->state() == shares::Lease::State::Connecting; }
   const DirList::Entry *selected() const {
     const int i = entryIndex();
     return i < 0 ? nullptr : &list_.entries()[i];
@@ -303,7 +302,7 @@ class FilesScreen : public ui::Screen {
 
   std::string folderLabel() const {
     const std::string rel = list_.relativePath();
-    if (rel.empty() && volume_ == Volume::Nfs) return ui::upper(nfs::shares()[shareIndex()].name);
+    if (rel.empty() && volume_ == Volume::Net) return ui::upper(shares::all()[shareIndex()].name);
     if (rel.empty()) return volume_ == Volume::Sd ? "SD CARD" : "ONBOARD FLASH";
     return ui::upper(rel.substr(rel.rfind('/') + 1));  // npos + 1 = 0: the whole name
   }
@@ -331,14 +330,14 @@ class FilesScreen : public ui::Screen {
   // Starts mounting the share (again, after a failure); lists it at once if it's mounted.
   void connect() {
     lease_->start();
-    const nfs::Lease::State s = lease_->state();
-    waitingForMount_ = s == nfs::Lease::State::Connecting;
-    if (s == nfs::Lease::State::Ready) openDir(pendingDir_, pendingSelect_);
+    const shares::Lease::State s = lease_->state();
+    waitingForMount_ = s == shares::Lease::State::Connecting;
+    if (s == shares::Lease::State::Ready) openDir(pendingDir_, pendingSelect_);
   }
 
   void activate() {
     if (!list_.readable()) {
-      if (volume_ == Volume::Nfs && lease_->state() != nfs::Lease::State::Ready) {
+      if (volume_ == Volume::Net && lease_->state() != shares::Lease::State::Ready) {
         connect();
         return;
       }
@@ -356,8 +355,8 @@ class FilesScreen : public ui::Screen {
         ui::nav::push(std::make_unique<FilesScreen>(Volume::Flash, -1, flashfs::kMountPoint, ""));
       } else {
         const int share = extra - flashRows();
-        ui::nav::push(
-            std::make_unique<FilesScreen>(Volume::Nfs, share, nfs::shares()[share].path(), ""));
+        const std::string root = shares::all()[share].mountPath();
+        ui::nav::push(std::make_unique<FilesScreen>(Volume::Net, share, root, ""));
       }
       return;
     }
@@ -512,7 +511,7 @@ class FilesScreen : public ui::Screen {
 
   Volume volume_;
   // A share's screen: its hold on the mount, and where to start once it's mounted.
-  std::unique_ptr<nfs::Lease> lease_;
+  std::unique_ptr<shares::Lease> lease_;
   std::string pendingDir_;
   std::string pendingSelect_;
   bool waitingForMount_ = false;
@@ -540,19 +539,22 @@ std::unique_ptr<ui::Screen> makeFiles(const std::string &dir, const std::string 
   if (dir.compare(0, flash.size(), flash) == 0) {
     return std::make_unique<FilesScreen>(Volume::Flash, -1, dir, select);
   }
-  if (const int share = nfs::shareOf(dir); share >= 0) {
-    return std::make_unique<FilesScreen>(Volume::Nfs, share, dir, select);
+  if (const int share = shares::shareOf(dir); share >= 0) {
+    return std::make_unique<FilesScreen>(Volume::Net, share, dir, select);
   }
   return std::make_unique<FilesScreen>(Volume::Sd, -1, dir, select);
 }
 
 std::string displayPath(const std::string &path) {
-  static const struct {
+  // A share shows as its protocol: /net/Media/x -> SMB:/Media/x.
+  const int share = shares::shareOf(path);
+  const std::string net = share >= 0 ? std::string(shares::all()[share].tag()) + ":" : "NET:";
+  const struct {
     const char *root;
     const char *shown;
   } kRoots[] = {{sdcard::kMountPoint, "SD:"},
                 {flashfs::kMountPoint, "FLASH:"},
-                {nfs::kMountPoint, "NFS:"}};
+                {shares::kMountPoint, net.c_str()}};
   for (const auto &r : kRoots) {
     const size_t n = strlen(r.root);
     if (path.compare(0, n, r.root) == 0 && (path.size() == n || path[n] == '/')) {

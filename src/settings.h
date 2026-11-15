@@ -1,7 +1,10 @@
-// Settings a file on the card can change without a rebuild. SD:/inkdeck.ini overrides the time
-// zone and the location built in from .env (scripts/gen_secrets.py), and sets the lock
-// (apps/lock.h):
+// Settings a file on the card can change without a rebuild. SD:/inkdeck.ini overrides the Wi-Fi
+// network, time zone and location built in from .env (scripts/gen_secrets.py), and sets the
+// lock (apps/lock.h):
 //
+//   [wifi]
+//   ssid = HomeNet
+//   password = secret                    ; the board keeps it and replaces the line with a note
 //   [clock]
 //   timezone = CST6CDT,M3.2.0,M11.1.0   ; a POSIX TZ string, daylight saving rule included
 //   [location]
@@ -11,18 +14,27 @@
 //   pin = 2468                           ; 4 to 8 digits; pin = off removes it
 //   lock_minutes = 5                     ; also lock after this long without a key (0: only at boot)
 //
-// and lists the NFS shares Files browses (nfs.h has the syntax), one line each:
+// and lists the network shares Files browses (shares.h has the syntax), one line each:
 //
 //   [network]
+//   smb = smb://erik:secret@nas.local/share/media   ; the board keeps the password, as for Wi-Fi
 //   nfs = nfs://nas.local/volume1/books
 //
 // inkdeck.ini.example in the repo root is a filled-in copy; keep it in step with kTemplate in
 // settings.cpp.
 //
-// Wi-Fi is never read from the card: a card is easy to lift. The file is read at boot (a missing
-// one is created, every line commented out). The values last read from it are kept in NVS, so a
-// standby wake (which doesn't mount the card) and a boot without the card keep using them; a
-// card whose file doesn't set a value puts the built-in one back.
+// The file is read at boot (a missing one is created, every line commented out). The values
+// last read from it are kept in NVS, so a standby wake (which doesn't mount the card) and a boot
+// without the card keep using them; a card whose file doesn't set a value puts the built-in one
+// back.
+//
+// Passwords don't stay on the card, which is easy to lift. The board keeps a Wi-Fi password
+// (with the ssid it belongs to) and each SMB share's (by its user, server and share) in NVS, and
+// rewrites their lines without them: the password line becomes a note, and an smb line loses
+// the :password part of its URL. To change one, write it in again. An ssid with no password
+// line joins its network with the stored password if it's the same network, else as an open
+// one. Without an ssid line, the built-in network and no stored password. NVS isn't encrypted:
+// anyone with the board and a USB cable can read it, as they can the firmware's .env values.
 //
 // The PIN is the exception: a card is easy to lift, so the board keeps it in NVS (System's PIN
 // LOCK sets it too) and replaces the pin line on the card with a note once it has acted on it.
@@ -33,6 +45,8 @@
 #pragma once
 #include <string>
 #include <vector>
+
+#include "shares.h"
 
 namespace settings {
 
@@ -54,8 +68,21 @@ double latitude();
 double longitude();
 Source locationSource();
 
-// The `nfs =` values, as written in the file (nfs::parse() reads them); empty if none.
-std::vector<std::string> nfsShares();
+// The Wi-Fi network wlan.h joins: the card's ([wifi] ssid), else .env's.
+bool hasWifi();  // either names a network
+std::string wifiSsid();
+std::string wifiPassword();  // "" for an open network
+Source wifiSource();
+
+// The file's `smb =` and `nfs =` lines, in order, SMB passwords taken out (shares.h reads them).
+struct ShareLine {
+  ::shares::Kind kind;
+  std::string url;
+  bool operator==(const ShareLine &o) const { return kind == o.kind && url == o.url; }
+};
+std::vector<ShareLine> shareLines();
+// The password the card gave for an SMB share (by shares::Share::credentialId()); "" if none.
+std::string sharePassword(const std::string &credentialId);
 
 // The lock. hasPin(): the board locks at boot, on waking the desk face and after lockMinutes()
 // without a key (0: never for that).
@@ -74,8 +101,8 @@ void unlocked();
 void setPin(const std::string &digits);
 void clearPin();
 
-// For the System screen: "SD:/inkdeck.ini · TZ, LOCATION", ".env (built in)". The lock has a
-// row of its own there (PIN LOCK).
+// For the System screen: "SD:/inkdeck.ini · WI-FI, TZ, LOCATION", ".env (built in)". The lock
+// has a row of its own there (PIN LOCK).
 std::string describe();
 
 // A POSIX TZ string newlib's tzset() understands: std offset [dst [offset] [,start,end]].

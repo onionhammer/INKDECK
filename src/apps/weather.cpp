@@ -343,7 +343,7 @@ class WeatherScreen : public Screen {
   // Why there's nothing to show, in the condition's place.
   std::string emptyReason() const {
     if (!sun::configured()) return "SET LAT/LON IN .ENV";
-    if (!wlan::configured()) return "SET WI-FI IN .ENV";
+    if (!wlan::configured()) return "SET WI-FI IN INKDECK.INI";
     if (weather::syncing()) return "SYNCING\xE2\x80\xA6";
     if (!rtc::timeValid()) return "CLOCK NOT SET";
     if (view_->has) return "FORECAST TOO OLD";

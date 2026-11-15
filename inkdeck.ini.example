@@ -3,8 +3,16 @@
 ; when it starts. If the card has no inkdeck.ini, the board writes one with every line
 ; commented out.
 ; Comments start with ; or #. Delete a line, or put ; in front of it, to use the built-in value.
-; Wi-Fi isn't read from this file: a card is easy to lift, so it stays in the firmware.
+; Passwords don't stay in this file, since a card is easy to lift: the board keeps each one and
+; rewrites its line (a password line becomes a note; an smb line loses its :password).
 ; Parser and rules: src/settings.h.
+
+[wifi]
+; The Wi-Fi network to join, instead of the one built into the firmware from .env. With no
+; password line, an open network (or the password the board kept for this same network).
+; Remove the ssid line to go back to the built-in network.
+ssid = HomeNet
+password = correct horse battery staple
 
 [clock]
 ; The time zone as a POSIX TZ string, which includes the daylight saving rule. The ESP32 can't
@@ -26,18 +34,25 @@ latitude = 51.48
 longitude = 0.00
 
 [network]
-; NFS shares (NFS version 3) to browse in Files, over the Wi-Fi network built in from .env.
-; One nfs = line each, up to 4: nfs://server/export, or server:/export. Options go after a ?,
-; joined by &:
-;   name       what Files calls the share (else the export's last folder)
+; Shares to browse in Files, up to 4 smb and nfs lines in all, read-only.
+;
+; SMB (Windows, Samba, most NAS boxes), SMB2 or SMB3 with a user name and password:
+;   smb = smb://[domain;]user:password@server[:port]/share[/folder]
+; The board keeps the password and takes it out of the line. In the password, write
+; @ : / ? ; % as %40 %3A %2F %3F %3B %25. A folder after the share opens Files there.
+;
+; NFS version 3 over TCP, with no password: nfs://server/export or server:/export.
 ;   uid, gid   who the server takes the board for (default 0, which many servers map to
 ;              nobody: give your own user's numbers if the files aren't readable by everyone)
 ;   nfsport    the server's NFS port, also written nfs://server:2049/export
 ;   mountport  its MOUNT port
 ; Without the ports the server's portmapper says (port 111), as it does on most NAS boxes.
-; The server must export the folder to the board's address, over NFS v3 and TCP. Read-only.
+; The server must export the folder to the board's address, over NFS v3 and TCP.
+;
+; Options go after a ?, joined by &. Both take name, what Files calls the share (else the last
+; folder of its path).
+smb = smb://erik:secret@192.168.1.20/share/media?name=Media
 nfs = nfs://nas.local/volume1/books
-nfs = nfs://192.168.1.20/srv/media?name=Media&uid=1000&gid=1000
 
 [lock]
 ; A PIN of 4 to 8 digits locks the board when it powers on, and when it wakes from the desk

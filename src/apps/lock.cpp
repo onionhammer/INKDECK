@@ -146,8 +146,9 @@ class PinScreen : public ui::Screen {
     }
     notice_.clear();
     switch (key) {
-      case Key::Up: digits_[cursor_] = (digits_[cursor_] + 1) % 10; return true;
-      case Key::Down: digits_[cursor_] = (digits_[cursor_] + 9) % 10; return true;
+      // ▲ turns the wheel to the digit drawn above the window (one less), ▼ to the one below.
+      case Key::Up: digits_[cursor_] = (digits_[cursor_] + 9) % 10; return true;
+      case Key::Down: digits_[cursor_] = (digits_[cursor_] + 1) % 10; return true;
       case Key::Select:
         if (step_ == Step::New) {
           if (cursor_ == kMaxDigits - 1) {

@@ -217,7 +217,7 @@ class SystemScreen : public ui::Screen {
       case Action::Sleep: apps::sleepNow(); break;
       case Action::SyncTime: {
         if (!wlan::configured()) {
-          message_ = "NO WI-FI: SET WIFI_SSID IN .ENV, REBUILD";
+          message_ = "NO WI-FI: SET ONE IN INKDECK.INI OR .ENV";
           break;
         }
         timesync::start();  // if one is already running, follow that
@@ -251,7 +251,7 @@ class SystemScreen : public ui::Screen {
       }
       case Action::Update: {
         if (!wlan::configured()) {
-          message_ = "NO WI-FI: SET WIFI_SSID IN .ENV, REBUILD";
+          message_ = "NO WI-FI: SET ONE IN INKDECK.INI OR .ENV";
           break;
         }
         if (!ota::configured()) {

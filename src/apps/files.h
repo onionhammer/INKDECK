@@ -1,5 +1,6 @@
 // Files: browse the microSD card, the onboard FAT partition (an ONBOARD FLASH row first on the
-// card's root) and NFS shares on the network (a row each after it, from SD:/inkdeck.ini; nfs.h).
+// card's root) and network shares, SMB and NFS (a row each after it, from SD:/inkdeck.ini;
+// shares.h).
 // Opens EPUBs in the reader, plays MP3s, queueing the rest of the folder's MP3s after the
 // chosen one, shows JPEG and PNG pictures full screen (apps/viewer.h), and opens any other file
 // that reads as text in the text reader (apps/textview.h).
@@ -24,7 +25,7 @@
 namespace apps {
 
 // Starts in dir, an absolute path under sdcard::kMountPoint (or flashfs::kMountPoint, or a
-// share's nfs::Share::path()), with the cursor on the entry named select if given.
+// share's shares::Share::mountPath()), with the cursor on the entry named select if given.
 std::unique_ptr<ui::Screen> makeFiles(const std::string &dir, const std::string &select = "");
 
 // The card's top-level folder called `name` in any case ("books" -> "/sdcard/Books"), or the
@@ -32,7 +33,7 @@ std::unique_ptr<ui::Screen> makeFiles(const std::string &dir, const std::string 
 std::string sdFolder(const char *name);
 
 // A path as the status bar shows it: "/sdcard/Books" -> "SD:/Books", "/ffat" -> "FLASH:/",
-// "/nfs/Media/x" -> "NFS:/Media/x".
+// "/net/Media/x" -> "SMB:/Media/x" (or NFS:, by the share).
 std::string displayPath(const std::string &path);
 
 }  // namespace apps
