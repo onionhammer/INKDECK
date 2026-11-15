@@ -48,7 +48,7 @@ constexpr uint32_t kExtraCodepoints[kExtraCount] = {
 };
 
 // The slot for a code point, or 0 if the fonts have none (transliterate it instead).
-inline uint8_t slotFor(uint32_t cp) {
+constexpr uint8_t slotFor(uint32_t cp) {
   if ((cp >= 0x20 && cp < 0x7F) || (cp >= 0xA0 && cp <= 0xFF)) {
     return static_cast<uint8_t>(cp);
   }

@@ -92,8 +92,8 @@ bool isAsciiLetter(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 
 
 // A line may break after these: a hyphen, an en dash, an em dash.
 bool isDash(char c) {
-  static const char kEnDash = static_cast<char>(ui::fonts::slotFor(0x2013));
-  static const char kEmDash = static_cast<char>(ui::fonts::slotFor(0x2014));
+  constexpr char kEnDash = static_cast<char>(ui::fonts::slotFor(0x2013));
+  constexpr char kEmDash = static_cast<char>(ui::fonts::slotFor(0x2014));
   return c == '-' || (c != 0 && (c == kEnDash || c == kEmDash));
 }
 
