@@ -23,7 +23,7 @@ std::string baseName(const std::string &path) { return path.substr(path.rfind('/
 // How the board is held.
 enum class Pose : uint8_t {
   Unclear,    // being moved, part way between the two, upside down, or no IMU
-  Flat,       // lying within 30° of flat: the picture's shape decides
+  Flat,       // lying within 30° of flat: the screen stays as it is
   Portrait,   // upright
   Landscape,  // turned a quarter clockwise, the wheel on top (screen.h's landscape)
 };
@@ -61,7 +61,7 @@ class ViewerScreen : public ui::Screen {
   ViewerScreen(std::vector<std::string> paths, int index,
                std::function<void(const std::string &)> shown)
       : paths_(std::move(paths)), shown_(std::move(shown)), held_(sensePose()) {
-    if (held_ == Pose::Unclear) held_ = Pose::Flat;  // till the ticks know better: by its shape
+    if (held_ == Pose::Unclear) held_ = Pose::Flat;  // till the ticks know better: portrait
     show(std::max(0, std::min(index, static_cast<int>(paths_.size()) - 1)));
   }
 
@@ -75,6 +75,9 @@ class ViewerScreen : public ui::Screen {
   }
   bool chrome() const override { return chrome_; }
   bool landscape() const override { return landscape_; }
+  // Turned with the board, so the wheel keeps its sense: the roll that steps forward upright
+  // steps forward turned too.
+  bool swapsDial() const override { return false; }
   bool reading() const override { return true; }
   bool wakeOnMotion() const override { return true; }
 
@@ -100,7 +103,7 @@ class ViewerScreen : public ui::Screen {
 
   // Follows the board as it's turned: a new pose seen on kSettleTicks ticks in a row is how it's
   // held now. Upright, the screen turns with it (a full refresh, the picture decoded again at
-  // the new size). Laid down, it stays as it is, and the next picture goes by its shape.
+  // the new size). Laid down, it stays as it is, for the next pictures too.
   bool onTick() override {
     const Pose p = sensePose();
     if (p == Pose::Unclear || p == held_) {
@@ -149,12 +152,9 @@ class ViewerScreen : public ui::Screen {
     failed_ = false;
     probed_ = picture::probeFile(paths_[index_], w_, h_);
     if (!probed_) log_w("viewer: %s: not a JPEG or PNG we can read", paths_[index_].c_str());
-    // As the board is held; lying flat, landscape when the picture is wider than tall.
-    if (held_ == Pose::Portrait || held_ == Pose::Landscape) {
-      landscape_ = held_ == Pose::Landscape;
-    } else if (probed_) {
-      landscape_ = w_ > h_;
-    }
+    // As the board is held, whatever the picture's shape; lying flat, as it was (portrait when
+    // the viewer opens flat).
+    if (held_ == Pose::Portrait || held_ == Pose::Landscape) landscape_ = held_ == Pose::Landscape;
     if (shown_) shown_(paths_[index_]);
   }
 

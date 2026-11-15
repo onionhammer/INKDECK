@@ -119,12 +119,15 @@ void render(Refresh refresh) {
 
 // Landscape turns the board so its wheel is on the top edge, where ▲ (rolled towards the
 // portrait top) now rolls to the right. Swapping ▲ and ▼ there keeps left as ▲ and right as ▼,
-// as they were when landscape had the wheel underneath. Decided when the dial is pressed, not
-// per repeat: a held dial in the picture viewer can step from a portrait picture to a landscape
-// one, and would turn back on itself if the swap changed under it.
+// as they were when landscape had the wheel underneath. Not for a screen that turns with the
+// board (Screen::swapsDial(), the picture viewer). Decided when the dial is pressed, not per
+// repeat, so a held dial can't turn back on itself if the screen turns under it.
 Key orientDial(Key key) {
   if (key != Key::Up && key != Key::Down) return key;
-  if (!input::lastKeyRepeat()) dialSwapped = baseScreen().landscape();
+  if (!input::lastKeyRepeat()) {
+    const Screen &base = baseScreen();
+    dialSwapped = base.landscape() && base.swapsDial();
+  }
   if (!dialSwapped) return key;
   return key == Key::Up ? Key::Down : Key::Up;
 }
