@@ -8,6 +8,7 @@
 #include "apps/clock.h"
 #include "apps/files.h"
 #include "apps/level.h"
+#include "apps/lock.h"
 #include "apps/music.h"
 #include "apps/podcasts.h"
 #include "apps/recorder.h"
@@ -386,9 +387,11 @@ class HomeScreen : public ui::Screen {
           ui::nav::push(makeFiles(sdFolder("music")));
         }
         break;
-      case Kind::Files: ui::nav::push(makeFiles(sdcard::kMountPoint)); break;
+      case Kind::Files:
+        openGuarded(Guarded::Files, [] { return makeFiles(sdcard::kMountPoint); });
+        break;
       case Kind::Sensors: ui::nav::push(makeSensors()); break;
-      case Kind::System: ui::nav::push(makeSystem()); break;
+      case Kind::System: openGuarded(Guarded::Settings, makeSystem); break;
       case Kind::Clock: ui::nav::push(makeClock()); break;
       case Kind::Podcasts: ui::nav::push(makePodcasts()); break;
       case Kind::Weather: ui::nav::push(makeWeather()); break;

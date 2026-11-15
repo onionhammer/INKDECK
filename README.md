@@ -25,7 +25,7 @@ there, rolling it left is ▲ and right is ▼.
 | **Recorder** | Voice memos from the onboard mic as 16 kHz WAV, with a live waveform, input meter and gain. Memos play back on the device with a volume meter (▲▼), and can be deleted |
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, a live I2C bus scan, and a CSV log to the card |
 | **Level** | Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
-| **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, in landscape when they're wider than tall. Phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short) |
+| **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. With a PIN set, it can ask for it first unless you used it in the last minute (see Lock). A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, in landscape when they're wider than tall. Phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short) |
 | **Network shares** | Files also browses shares on the local network (a NAS, a home server, a Windows PC), listed in `inkdeck.ini` (below): **SMB** (SMB2/3, user name and password) and **NFS** (v3). Each share is a row on the card's root after ONBOARD FLASH, tagged SMB or NFS. Opening one joins Wi-Fi and mounts it (read-only, so HOLD ● doesn't delete there), and its books, music, pictures and text open as they do from the card. Wi-Fi stays on while the share is open in Files or a file on it is (music playing, a book open), and goes off 30 s after |
 | **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, how often the screen does a full refresh, and the PIN lock (all below) |
 
@@ -41,17 +41,27 @@ there, rolling it left is ▲ and right is ▼.
 - While you read on battery, the board light-sleeps between page turns. Under a picture, the IMU's wake on motion wakes it when you turn the board.
 - On USB, PWR shows the clock face instead and the board stays on.
 
-**Lock:** with a PIN set (System → PIN LOCK, or `inkdeck.ini` below), the board asks for it
-whenever it starts and whenever it wakes from the USB clock face. If `lock_minutes` is set, it
-also asks after that many minutes without a key, and unlocking takes you back to the screen you
-were on. You enter the PIN like a combination padlock: turn the wheel to pick each digit, then
+**Lock:** with a PIN set (System → PIN LOCK, or `inkdeck.ini` below), the board asks for it in
+the places the build names in `INKDECK_PIN_ON` (`platformio.ini`, set to `files`; all three
+if it's unset):
+
+- `power_on`: whenever the board starts and whenever it wakes from the USB clock face. If
+  `lock_minutes` is set, it also asks after that many minutes without a key, and unlocking takes
+  you back to the screen you were on.
+- `settings`: on opening **System** from Home, unless you used it in the last minute.
+- `files`: on opening **Files** from Home, the same way. Reader and Music open their folders
+  without it.
+
+Leave `power_on` out to ask only for System and/or Files. Before System or Files, the wheels show
+under that module's tag with ● OPEN on the last one, and BOOT on the first wheel goes back to
+Home. You enter the PIN like a combination padlock: turn the wheel to pick each digit, then
 press to move to the next. BOOT goes back a digit. Alarms still ring over the lock, and
 stopping or snoozing one needs no PIN. In System, PIN LOCK sets a PIN of 4 to 8 digits (HOLD ●
 after the last one, then the same again to confirm). Once one is set, it offers CHANGE PIN and
 CLEAR PIN, and both ask for the current PIN first. The board keeps the PIN in its own flash and
 replaces a `pin =` line on the card with a note. A new `pin =` line, or `pin = off`, takes
-effect once you unlock with the current PIN. This is a casual lock: anyone with a USB cable can
-reflash the board.
+effect the next time you enter the current PIN. This is a casual lock: anyone with a USB cable
+can reflash the board.
 
 **Display:** screen changes use the fast partial refresh. A full refresh (the black-white flash)
 clears the ghosting that partials leave, once they have flipped two screens' worth of pixels

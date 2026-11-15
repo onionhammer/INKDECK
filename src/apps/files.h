@@ -16,6 +16,9 @@
 // A share's screen shows a CONNECTING header while it joins Wi-Fi and mounts the share, then
 // lists it like the card; if that fails it says why, and ● tries again. Shares are read-only:
 // no HOLD ● DELETE there.
+//
+// Home opens it behind the PIN when the build asks for one there (INKDECK_PIN_ON's files) and
+// Files wasn't on screen in the last minute (apps/lock.h openGuarded()).
 #pragma once
 #include <memory>
 #include <string>

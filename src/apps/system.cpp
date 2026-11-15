@@ -12,6 +12,7 @@
 #include "apps/updater.h"
 #include "audio.h"
 #include "board_pins.h"
+#include "pin_places.h"
 #include "ota.h"
 #include "pmic.h"
 #include "power.h"
@@ -67,10 +68,11 @@ int nextFullRefresh() {
   return kFullRefreshSteps[0];
 }
 
-// PIN LOCK's value: OFF, ON, or ON · 5 MIN with an idle lock (lock_minutes on the card).
+// PIN LOCK's value: OFF, ON, or ON · 5 MIN with an idle lock (lock_minutes on the card, which
+// only a build that locks at power_on uses; pin_places.h).
 std::string pinLockValue() {
   if (!settings::hasPin()) return "OFF";
-  const int minutes = settings::lockMinutes();
+  const int minutes = pinplaces::asks(pinplaces::kPowerOn) ? settings::lockMinutes() : 0;
   return minutes > 0 ? "ON \xC2\xB7 " + std::to_string(minutes) + " MIN" : "ON";
 }
 
@@ -161,7 +163,12 @@ class SystemScreen : public ui::Screen {
     return 4;
   }
 
+  // The PIN's minute in front of System (apps/lock.h openGuarded()) counts from the last of these.
+  void onEnter() override { guardedInUse(Guarded::Settings); }
+  void onLeave() override { guardedInUse(Guarded::Settings); }
+
   bool onKey(Key key) override {
+    guardedInUse(Guarded::Settings);
     switch (key) {
       case Key::Up:
       case Key::Down:

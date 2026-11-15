@@ -74,7 +74,7 @@ void setup() {
   ui::nav::onHoldBack(apps::openPlayer);
   // Woken for an alarm: show the Clock, and pollAlarms() rings over it.
   if (power::wake() == power::Wake::Alarm) ui::nav::push(apps::makeClock());
-  apps::lockNow();  // a PIN is set: every start asks for it (alarms still ring over it)
+  apps::lockNow();  // with a PIN and power_on (pin_places.h), every start asks (alarms ring over it)
   ui::nav::flush();  // the first frame: Home, the Clock or the lock, whichever is on top
   devtools::begin();  // after the first frame, so a screenshot never catches a blank buffer
   // The clock came up unset (first boot, or the battery was out): fetch it from NTP once, in

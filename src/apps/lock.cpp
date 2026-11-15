@@ -8,6 +8,7 @@
 #include "apps/home.h"
 #include "audio.h"
 #include "input.h"
+#include "pin_places.h"
 #include "settings.h"
 
 namespace apps {
@@ -90,20 +91,30 @@ void dashedFrame(ui::Canvas &c, const Rect &r) {
 
 std::string digitText(int d) { return std::string(1, static_cast<char>('0' + (d + 10) % 10)); }
 
-// What the wheels are for: opening the lock, or one step of a PinTask.
-enum class Step : uint8_t { Unlock, Current, New, Confirm };
+// What the wheels are for: opening the lock, opening a module (openGuarded()), or one step of a
+// PinTask.
+enum class Step : uint8_t { Unlock, Gate, Current, New, Confirm };
 
 class PinScreen : public ui::Screen {
  public:
   PinScreen() = default;  // the lock
   PinScreen(PinTask task, std::function<void(const std::string &)> done)
       : step_(settings::hasPin() ? Step::Current : Step::New), task_(task), done_(std::move(done)) {}
+  PinScreen(const char *module, std::function<std::unique_ptr<ui::Screen>()> open)
+      : step_(Step::Gate), module_(module), open_(std::move(open)) {}
 
-  std::string tag() const override { return step_ == Step::Unlock ? "LOCKED" : moduleTag("SYSTEM"); }
+  std::string tag() const override {
+    switch (step_) {
+      case Step::Unlock: return "LOCKED";
+      case Step::Gate: return moduleTag(module_);
+      default: return moduleTag("SYSTEM");
+    }
+  }
   std::string context() const override {
     // Short: the status bar has room for about 23 characters here.
     switch (step_) {
-      case Step::Unlock: break;
+      case Step::Unlock:
+      case Step::Gate: break;
       case Step::Current: return "CURRENT PIN";
       case Step::New: return "NEW PIN";
       case Step::Confirm: return "NEW PIN AGAIN";
@@ -238,8 +249,19 @@ class PinScreen : public ui::Screen {
     switch (step_) {
       case Step::Current: return task_ == PinTask::Clear ? "CLEAR" : "OK";
       case Step::Confirm: return "SAVE";
+      case Step::Gate: return "OPEN";
       default: return "UNLOCK";
     }
+  }
+
+  // After a first PIN: where this build asks for it (pin_places.h).
+  static std::string setMessage() {
+    using namespace pinplaces;
+    if (asks(kPowerOn)) return "PIN SET: ASKED AT EVERY START";
+    if (asks(kSettings) && asks(kFiles)) return "PIN SET: FOR SYSTEM AND FILES";
+    if (asks(kSettings)) return "PIN SET: FOR SYSTEM";
+    if (asks(kFiles)) return "PIN SET: FOR FILES";
+    return "PIN SET: THIS BUILD NEVER ASKS";
   }
 
   std::string entered(int length) const {
@@ -275,6 +297,14 @@ class PinScreen : public ui::Screen {
           return;
         }
         break;
+      case Step::Gate:
+        if (settings::pinMatches(pin)) {
+          log_i("lock: %s opened", module_);
+          settings::unlocked();
+          ui::nav::replace(open_());
+          return;
+        }
+        break;
       case Step::Current:
         if (settings::pinMatches(pin)) {
           if (task_ == PinTask::Clear) {
@@ -291,7 +321,7 @@ class PinScreen : public ui::Screen {
         if (pin == newPin_) {
           const bool changed = settings::hasPin();
           settings::setPin(newPin_);
-          finish(changed ? "PIN CHANGED" : "PIN SET: ASKED AT EVERY START");
+          finish(changed ? "PIN CHANGED" : setMessage());
         } else {
           step_ = Step::New;
           newPin_.clear();
@@ -310,6 +340,8 @@ class PinScreen : public ui::Screen {
   Step step_ = Step::Unlock;
   PinTask task_ = PinTask::Set;
   std::function<void(const std::string &)> done_;
+  const char *module_ = nullptr;                      // Gate: whose tag, and what it opens
+  std::function<std::unique_ptr<ui::Screen>()> open_;
   std::string newPin_;  // NEW PIN's digits, waiting for NEW PIN AGAIN
   int digits_[kMaxDigits] = {};
   int cursor_ = 0;
@@ -317,14 +349,24 @@ class PinScreen : public ui::Screen {
   std::string notice_;  // after a miss; cleared by the next key
 };
 
+// When each Guarded module's screens were last on top.
+struct LastUse {
+  bool ever = false;
+  uint32_t ms = 0;
+};
+LastUse lastUse[2];  // by Guarded
+
+constexpr uint32_t kGuardGraceMs = 60 * 1000;  // openGuarded(): no PIN within a minute of use
+
 }  // namespace
 
 void lockNow() {
-  if (!settings::hasPin() || ui::nav::locked()) return;
+  if (!pinplaces::asks(pinplaces::kPowerOn) || !settings::hasPin() || ui::nav::locked()) return;
   ui::nav::push(std::make_unique<PinScreen>());
 }
 
 void pollLock() {
+  if (!pinplaces::asks(pinplaces::kPowerOn)) return;
   const int minutes = settings::lockMinutes();
   if (minutes <= 0 || !settings::hasPin() || ui::nav::locked()) return;
   if (input::idleMs() < static_cast<uint32_t>(minutes) * 60000u) return;
@@ -336,6 +378,24 @@ void pollLock() {
 std::unique_ptr<ui::Screen> makePinTask(PinTask task,
                                         std::function<void(const std::string &)> done) {
   return std::make_unique<PinScreen>(task, std::move(done));
+}
+
+void guardedInUse(Guarded module) {
+  LastUse &use = lastUse[static_cast<int>(module)];
+  use.ever = true;
+  use.ms = millis();
+}
+
+void openGuarded(Guarded module, std::function<std::unique_ptr<ui::Screen>()> open) {
+  const bool settingsGate = module == Guarded::Settings;
+  const LastUse &use = lastUse[static_cast<int>(module)];
+  const bool fresh = use.ever && millis() - use.ms < kGuardGraceMs;
+  if (fresh || !settings::hasPin() ||
+      !pinplaces::asks(settingsGate ? pinplaces::kSettings : pinplaces::kFiles)) {
+    ui::nav::push(open());
+    return;
+  }
+  ui::nav::push(std::make_unique<PinScreen>(settingsGate ? "SYSTEM" : "FILES", std::move(open)));
 }
 
 }  // namespace apps
