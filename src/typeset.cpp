@@ -4,6 +4,7 @@
 
 #include "text.h"
 #include "ui/fonts/glyphs.h"
+#include "ui/packed_fonts.h"
 
 namespace gfx {
 namespace {
@@ -33,7 +34,7 @@ int ascent(const GFXfont *font) {
 int drawChar(GFXcanvas1 &canvas, int x, int baseline, char c, const GFXfont *font, uint16_t color) {
   auto ch = static_cast<uint8_t>(c);
   if (ch < font->first || ch > font->last) ch = '?';
-  canvas.setFont(font);
+  canvas.setFont(ui::fonts::drawable(font));
   canvas.drawChar(x, baseline, ch, color, color, 1);
   return x + font->glyph[ch - font->first].xAdvance;
 }
@@ -307,7 +308,7 @@ void Typesetter::drawDropCap(GFXcanvas1 &canvas, char letter, int x, int y) cons
   // Centre the glyph's ink in the box.
   const int gx = x + (drop_.box - g.width) / 2 - g.xOffset;
   const int baseline = y + (drop_.box - g.height) / 2 - g.yOffset;
-  canvas.setFont(f);
+  canvas.setFont(ui::fonts::drawable(f));
   canvas.drawChar(gx, baseline, slot, gfx::kWhite, gfx::kWhite, 1);
 }
 
