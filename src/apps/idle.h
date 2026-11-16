@@ -5,8 +5,10 @@
 //     minute), or Sleep (the frog) once the battery is below 15 %. Reading (the Reader open)
 //     and playing music never power off until the battery is below 15 %.
 //   - Reading on battery: once the page is drawn the board light-sleeps until the next key or
-//     the next minute (alarms ring on the minute), with the IMU in standby. A page turn wakes
-//     it in milliseconds. Nothing redraws while it naps, so the status-bar clock updates with
+//     the next minute (alarms ring on the minute), with the IMU in standby and the panel's
+//     power (ALDO3) off. A paused player doesn't stop it (pause switches the audio off), and
+//     the hourly weather sync waits for the next key (main.cpp). A page turn wakes it in
+//     milliseconds. Nothing redraws while it naps, so the status-bar clock updates with
 //     the next page. Under the picture viewer the IMU watches for motion instead, and turning
 //     the board wakes it for a few seconds to see which way up it ended. Never on USB: light
 //     sleep drops the USB console, and it stays dead until a reset, so USB power after naps
@@ -26,6 +28,10 @@ void powerKey();
 // Call from loop() before the navigator: naps if the conditions above hold. Returns true if it
 // napped (loop() should then start over).
 bool napIfIdle();
+
+// Between naps: from the first nap until a key, motion or anything else wakes the board for good.
+// The minute's timer wakes in between don't end it.
+bool isNapping();
 
 // Light-sleep totals since boot, for the System screen.
 struct NapStats {

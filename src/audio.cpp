@@ -18,6 +18,7 @@
 #include "board_pins.h"
 #include "es8311.h"
 #include "mp3info.h"
+#include "pmic.h"
 #include "text.h"
 
 namespace audio {
@@ -58,6 +59,7 @@ std::atomic<int> volume{kDefaultVolume};
 std::atomic<uint32_t> underruns{0};
 std::atomic<bool> countUnderruns{false};
 std::atomic<bool> ringOn{false};
+std::atomic<bool> outputLive{false};  // amp, I2S TX and the codec on
 // Recording: the UI reads these; `recShared` (under `lock`) holds the strings and the bins.
 std::string recordPath;  // where the next Record command writes (under `lock`)
 RecordStatus recShared;
@@ -84,6 +86,19 @@ void send(Cmd cmd, int arg = 0, int arg2 = 0) {
 
 i2s_chan_handle_t tx = nullptr;
 uint32_t txRate = 0;
+
+// The codec and its analog supply. ALDO2 feeds the codec's AVDD and the mic (AGENTS.md, Power
+// architecture), so both are on only for an output or recording session: power-down mode and the
+// rail off otherwise. Its digital side stays on 3V3, so the I2C writes work either way.
+void codecOn() {
+  pmic::setAudioRail(true);  // waits for the rail
+  es8311::begin();
+}
+
+void codecOff() {
+  es8311::powerDown();
+  pmic::setAudioRail(false);
+}
 
 bool IRAM_ATTR onSendQueueOverflow(i2s_chan_handle_t, i2s_event_data_t *, void *) {
   if (countUnderruns.load(std::memory_order_relaxed)) underruns.fetch_add(1, std::memory_order_relaxed);
@@ -131,11 +146,12 @@ bool outputStart(uint32_t rate) {
   }
   txRate = rate;
   delay(5);  // MCLK running before the codec's state machine starts
-  es8311::begin();
+  codecOn();
   es8311::setVolume(volume.load());
   digitalWrite(board::AMP_EN, HIGH);
   delay(20);
   es8311::mute(false);
+  outputLive = true;
   log_i("audio: output on at %lu Hz", (unsigned long)rate);
   return true;
 }
@@ -149,6 +165,8 @@ void outputStop() {
   i2s_del_channel(tx);
   tx = nullptr;
   txRate = 0;
+  codecOff();
+  outputLive = false;
   log_i("audio: output off");
 }
 
@@ -354,8 +372,7 @@ void playFrom(int index) {
   }
   for (; index < count; ++index) {
     if (openTrack(index)) {
-      if (tx) es8311::mute(false);  // a skip while paused: the DAC was muted for the pause
-      setState(State::Playing);
+      setState(State::Playing);  // a skip while paused plays: step() switches the output on
       return;
     }
   }
@@ -391,7 +408,6 @@ constexpr uint32_t kRampMs = 5;  // soft edges, so the beeps don't click
 
 struct Ring {
   bool on = false;
-  bool ownsOutput = false;  // the output was off (no music) and goes off again afterwards
   uint64_t sample = 0;
 } ring;
 
@@ -402,8 +418,7 @@ void ringStart() {
     Locked l;
     state = shared.state;
   }
-  if (state == State::Playing) setState(State::Paused);
-  ring.ownsOutput = !tx;
+  if (state == State::Playing) setState(State::Paused);  // rings at the music's rate
   if (!tx && !outputStart(kRingRate)) return;
   es8311::setVolume(std::max(volume.load(), kRingMinVolume));
   es8311::mute(false);
@@ -417,12 +432,7 @@ void ringStop() {
   if (!ring.on) return;
   ring.on = false;
   ringOn = false;
-  if (ring.ownsOutput) {
-    outputStop();
-  } else {
-    es8311::mute(true);  // the music it interrupted stays paused
-    es8311::setVolume(volume.load());
-  }
+  outputStop();  // music it interrupted stays paused, with the output off like any pause
   log_i("audio: ring stopped");
 }
 
@@ -488,11 +498,6 @@ void stepWav() {
   if (p.firstFrame) {
     p.firstFrame = false;
     p.rate = p.wavRate;
-    if (!tx && !outputStart(p.wavRate)) {
-      closeTrack();
-      setState(State::Stopped);
-      return;
-    }
     if (txRate != p.wavRate) outputSetRate(p.wavRate);
     {
       Locked l;
@@ -513,6 +518,12 @@ void stepWav() {
       p.seekMs = 0;
     }
     log_i("audio: WAV %lu Hz, %d ch", (unsigned long)p.wavRate, p.wavChannels);
+  }
+  // The track's first step, or the first after a pause (which switched the output off).
+  if (!tx && !outputStart(p.wavRate)) {
+    closeTrack();
+    setState(State::Stopped);
+    return;
   }
   constexpr int kFramesPerStep = 576;  // p.pcm holds 1152 stereo frames
   const int frameBytes = 2 * p.wavChannels;
@@ -606,6 +617,7 @@ void recordFinish() {
     i2s_channel_disable(rec.rx);
     i2s_del_channel(rec.rx);
     rec.rx = nullptr;
+    codecOff();
   }
   recOn = false;
   recPaused = false;
@@ -676,7 +688,7 @@ void recordStart() {
     return;
   }
   delay(5);  // MCLK running before the codec's state machine starts
-  es8311::begin();
+  codecOn();
   es8311::micBegin(micDigitalDb.load());
   rec.skip = kRecSkipReads;
   recBytes = 0;
@@ -778,11 +790,12 @@ void handle(const Command &c) {
       break;
     case Cmd::TogglePause:
       if (state == State::Playing) {
-        es8311::mute(true);
+        // Amp, I2S, codec and its rail off: a paused player draws nothing, so the board can
+        // nap under it. The track stays open where it stopped (less what was queued in DMA).
+        outputStop();
         setState(State::Paused);
       } else if (state == State::Paused) {
-        es8311::mute(false);
-        setState(State::Playing);
+        setState(State::Playing);  // step() switches the output back on
       } else {
         int track;
         {
@@ -904,13 +917,6 @@ void step() {
   if (p.firstFrame) {
     p.firstFrame = false;
     p.rate = info.samprate;
-    if (!tx) {
-      if (!outputStart(info.samprate)) {
-        closeTrack();
-        setState(State::Stopped);
-        return;
-      }
-    }
     const uint32_t duration =
         info.bitrate > 0 ? static_cast<uint32_t>(uint64_t(p.audioBytes) * 8000 / info.bitrate) : 0;
     {
@@ -938,6 +944,12 @@ void step() {
       return;
     }
     log_i("audio: %d Hz, %d ch, %d kbps", info.samprate, info.nChans, info.bitrate / 1000);
+  }
+  // The track's first frame, or the first after a pause (which switched the output off).
+  if (!tx && !outputStart(info.samprate)) {
+    closeTrack();
+    setState(State::Stopped);
+    return;
   }
   if (static_cast<uint32_t>(info.samprate) != txRate) outputSetRate(info.samprate);
   p.rate = info.samprate;
@@ -988,6 +1000,9 @@ void task(void *) {
 void begin() {
   pinMode(board::AMP_EN, OUTPUT);
   digitalWrite(board::AMP_EN, LOW);
+  // A software reset (an update, a crash) can leave the codec running from before: power-down
+  // mode and its rail off until something plays.
+  codecOff();
   commands = xQueueCreate(8, sizeof(Command));
   lock = xSemaphoreCreateMutex();
   p.in = static_cast<uint8_t *>(heap_caps_malloc(kInputBufferBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
@@ -1088,6 +1103,15 @@ bool active() {
   if (!lock) return false;
   Locked l;
   return shared.state != State::Stopped;
+}
+
+bool outputOn() { return outputLive.load(); }
+
+bool busy() {
+  if (!lock) return false;
+  if (outputLive.load() || recOn.load() || ringOn.load()) return true;
+  Locked l;
+  return shared.state == State::Playing;
 }
 
 std::vector<std::string> queue(int from, int count) {

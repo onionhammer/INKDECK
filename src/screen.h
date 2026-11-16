@@ -30,6 +30,10 @@ void setFullRefreshScreens(int screens);
 // power-off), so the next present() can be a partial refresh against it.
 void assumeShown();
 
+// Cuts the panel's power (ALDO3) until the next present(), which powers it again: the panel
+// keeps its image unpowered (Epd::powerOff()). For the Reader's naps.
+void powerOff();
+
 // Light sleep instead of polling while the panel refreshes (Epd::setSleepWhileBusy). For the
 // standby wake on battery; it drops a USB serial connection.
 void sleepWhileBusy(bool on);

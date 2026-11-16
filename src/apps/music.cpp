@@ -277,8 +277,8 @@ class MusicScreen : public ui::Screen {
     } cells[] = {
         {"CODEC", "ES8311" + dot + rate},
         {"FILE", file},
-        {"AMP", "NS4150B" + dot + (audio::active() ? "on" : "off")},
-        {"RAIL", "ALDO1" + dot + (pmic::status().aldo1 ? "on" : "off")},
+        {"AMP", "NS4150B" + dot + (audio::outputOn() ? "on" : "off")},
+        {"RAIL", "ALDO2" + dot + (audio::outputOn() ? "on" : "off")},  // follows the output
     };
     const Rect inner{area.x + kPadX, area.y + kRule + 10, area.w - 2 * kPadX, 2 * kChainRowH + 6};
     const int colW = (inner.w - 16) / 2;

@@ -6,6 +6,8 @@
 #include <Arduino.h>
 #include <Wire.h>
 
+#include <mutex>
+
 #include "board_pins.h"
 
 namespace pmic {
@@ -25,9 +27,13 @@ constexpr uint8_t kRegAdcEnable = 0x30;   // bit 0 VBAT, 2 VBUS, 3 VSYS (.29)
 constexpr uint8_t kRegAdc = 0x34;         // 0x34..0x3B: VBAT, TS, VBUS, VSYS, 14 bit, 1 mV (6.10)
 constexpr uint8_t kRegChargeCurrent = 0x62;  // 4:0 constant-current charge (.60)
 constexpr uint8_t kRegChargeVoltage = 0x64;  // 2:0 charge target voltage (.62)
-constexpr uint8_t kRegDcdcOn = 0x80;         // bit 0 DCDC1 (.68)
+constexpr uint8_t kRegDcdcOn = 0x80;         // bits 0-4 DCDC1-5 (.68)
 constexpr uint8_t kRegDc1Voltage = 0x82;     // 4:0, 1.5 V + 0.1 V/step (.70)
-constexpr uint8_t kRegLdoOn = 0x90;          // bit 0 ALDO1 ... bit 3 ALDO4 (.75)
+// bits 0-3 ALDO1-4, 4-5 BLDO1-2, 6 CPUSLDO, 7 DLDO1 (.75)
+constexpr uint8_t kRegLdoOn = 0x90;
+constexpr uint8_t kRegLdoOn1 = 0x91;         // bit 0 DLDO2 (.76)
+constexpr uint8_t kAldo2 = 1 << 1;
+constexpr uint8_t kAldo3 = 1 << 2;
 constexpr uint8_t kRegAldo1Voltage = 0x92;   // 0x92..0x94 ALDO1..3: 4:0, 0.5 V + 0.1 V/step
 constexpr uint8_t kRegPercent = 0xA4;        // fuel gauge, 0-100 (.88)
 constexpr uint32_t kCacheMs = 5000;
@@ -35,6 +41,7 @@ constexpr uint32_t kCacheMs = 5000;
 Status cached;
 uint32_t readAt = 0;
 bool everRead = false;
+std::mutex ldoMutex;  // 0x90 is read-modified-written from the audio task and the UI task
 
 bool read(uint8_t reg, uint8_t *out, uint8_t n) {
   Wire.beginTransmission(board::I2C_ADDR_PMIC);
@@ -68,8 +75,28 @@ Status readStatus() {
   const int pct = s.battery ? read1(kRegPercent) : -1;
   if (pct >= 0 && pct <= 100) s.percent = pct;
   const int ldo = read1(kRegLdoOn);
-  s.aldo1 = ldo >= 0 && (ldo & 1);
+  s.audioRail = ldo >= 0 && (ldo & kAldo2);
   return s;
+}
+
+// Switches one ALDO; on, waits settleMs if it was off.
+bool setLdo(uint8_t bit, bool on, uint32_t settleMs, const char *name) {
+  int was;
+  bool ok;
+  {
+    std::lock_guard<std::mutex> lock(ldoMutex);
+    was = read1(kRegLdoOn);
+    const uint8_t want = on ? (was | bit) : (was & ~bit);
+    ok = was >= 0 && (want == was || write1(kRegLdoOn, want));
+  }
+  if (!ok) {
+    log_e("PMIC: switching %s %s failed", name, on ? "on" : "off");
+    return false;
+  }
+  if (static_cast<bool>(was & bit) == on) return true;
+  log_i("PMIC: %s %s", name, on ? "on" : "off");
+  if (on) delay(settleMs);
+  return true;
 }
 
 int adc14(const uint8_t *hl) { return ((hl[0] & 0x3F) << 8) | hl[1]; }
@@ -98,6 +125,10 @@ void configure() {
       {kRegPrecharge, 0x0F, 2, "precharge 50 mA"},                // 25 mA x 2
       {kRegChargeCurrent, 0x1F, 11, "charge 500 mA"},             // 200 + 100 x (11 - 8)
       {kRegTermination, 0x1F, 0x10 | 1, "stop charging at 25 mA"},  // enable + 25 mA x 1
+      // The schematic leaves LX2-4, FB2-4 and these LDO pins unconnected, ALDO1's but for R74 (NC).
+      {kRegDcdcOn, 0x0E, 0x00, "DCDC2-4 off (no inductors)"},
+      {kRegLdoOn, 0xF9, 0x00, "ALDO1, ALDO4, BLDO1-2, CPUSLDO, DLDO1 off (no loads)"},
+      {kRegLdoOn1, 0x01, 0x00, "DLDO2 off (no load)"},
   };
   for (const Field &f : kFields) {
     const int old = read1(f.reg);
@@ -114,6 +145,11 @@ void configure() {
     log_i("PMIC: 0x%02X %02X -> %02X (%s)", f.reg, old, want, f.what);
   }
 }
+
+// 10 ms each: the codec's AVDD and the mic sit behind about 13 uF, and Waveshare waits 10 ms
+// after ALDO3 before resetting the panel (references/epaper.md).
+bool setAudioRail(bool on) { return setLdo(kAldo2, on, 10, "ALDO2 (codec + mic)"); }
+bool setPanelRail(bool on) { return setLdo(kAldo3, on, 10, "ALDO3 (panel)"); }
 
 Status status() {
   if (everRead && millis() - readAt < kCacheMs) return cached;

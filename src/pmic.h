@@ -13,18 +13,30 @@ struct Status {
   int percent = -1;       // fuel gauge, 0-100; -1 without a battery
   bool vbus = false;      // USB power present
   bool charging = false;
-  bool aldo1 = false;     // AudioCTR_VCC rail on (LDO enable register 0x90, bit 0)
+  bool audioRail = false; // ALDO2 on: the codec's analog supply and the mic (0x90 bit 1)
 };
 
 // Writes the settings agreed for this board (references/power.md §2 compares them with the
-// chip's defaults and Waveshare's axp_init()). Only the fields named here change; rails,
+// chip's defaults and Waveshare's axp_init()). Only the fields named here change; voltages,
 // cut-off voltage, input limits and everything else stay at the chip's defaults:
 //   PWR key: 1 s press powers on, 4 s hold forces off      (0x27, chip default 128 ms / 6 s)
 //   ADC: USB (VBUS) and system (VSYS) voltage channels on  (0x30, chip default battery only)
 //   charging, for the 1500 mAh cell: precharge 50 mA, constant current 500 mA,
 //   stop at 25 mA                                          (0x61-0x63, default 125/200/125 mA)
+//   outputs nothing uses off: DCDC2-4 (no inductor fitted), ALDO1 (its one load, R74, isn't
+//   fitted), ALDO4, BLDO1-2, CPUSLDO, DLDO1-2        (0x80, 0x90, 0x91; the chip turns them all on)
+// DC1 (3V3), ALDO2 (setAudioRail) and ALDO3 (setPanelRail) stay on. The enables return to the
+// chip's defaults at every power-on, so this runs at every boot, standby wakes included.
 // Call once at boot, after Wire.begin(). Writes only registers that differ, and logs them.
 void configure();
+
+// The two outputs with switchable loads (AGENTS.md, Power architecture). On waits for the rail
+// to settle before returning; false if the PMIC didn't take it. Safe from any task.
+//   ALDO2: the codec's analog supply (AVDD) and the mic. On only while audio plays or records
+//          (audio.h); the codec is put in power-down first.
+//   ALDO3: the panel's power switch. Off while the Reader naps (Epd::powerOff()).
+bool setAudioRail(bool on);
+bool setPanelRail(bool on);
 
 // Cached: reads the PMIC at most every few seconds. Begin Wire first.
 Status status();

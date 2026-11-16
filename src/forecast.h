@@ -6,7 +6,8 @@
 // The last forecast is kept in NVS, so the Weather screen opens at once and works offline;
 // when the "current" block is more than an hour old, the hour of the forecast stands in for
 // it. While the board is on, poll() syncs once an hour, or every half hour on USB (join Wi-Fi,
-// one HTTPS request, Wi-Fi off) on its own task. In standby, syncInStandby() can do the same
+// one HTTPS request, Wi-Fi off) on its own task; loop() doesn't call it while the Reader naps
+// (apps::isNapping()), so that sync waits for a key. In standby, syncInStandby() can do the same
 // every few hours (INKDECK_STANDBY_WEATHER_HOURS below).
 #pragma once
 #include <stdint.h>
