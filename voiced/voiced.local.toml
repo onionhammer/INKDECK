@@ -1,0 +1,15 @@
+# Speech in and out run inside the daemon (cargo run -p voiced --features local); the model is
+# still mocked. Models: see README.md.
+listen = "127.0.0.1:7391"
+
+[stt]
+backend = "sherpa_streaming"
+dir = "models/sherpa-onnx-streaming-zipformer-en-kroko-2025-08-06"
+
+[llm]
+backend = "mock"
+
+[tts]
+backend = "sherpa_pocket"
+dir = "models/sherpa-onnx-pocket-tts-int8-2026-01-26"
+voice = "models/sherpa-onnx-pocket-tts-int8-2026-01-26/test_wavs/bria.wav"

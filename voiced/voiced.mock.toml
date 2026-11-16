@@ -1,0 +1,11 @@
+# Every stage mocked: tests the protocol and the audio path with no services or keys.
+listen = "127.0.0.1:7391"
+
+[stt]
+backend = "mock"
+
+[llm]
+backend = "mock"
+
+[tts]
+backend = "mock"

@@ -1,0 +1,397 @@
+//! voiced.toml. Every stage names a backend; API keys come from the environment or a `.env` file.
+
+use anyhow::{Context, Result};
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    #[serde(default = "default_listen")]
+    pub listen: String,
+    /// Devices must send this in `hello`. Empty: anyone on the network may connect.
+    #[serde(default)]
+    pub token: String,
+    #[serde(default = "default_system_prompt")]
+    pub system_prompt: String,
+    pub stt: Stt,
+    pub llm: Llm,
+    pub tts: Tts,
+    pub home_assistant: Option<HomeAssistant>,
+    /// A second model the first can hand hard questions to (tools::THINK_TOOL).
+    pub think: Option<Think>,
+    #[serde(default)]
+    pub cache: Cache,
+    #[serde(default)]
+    pub js: Js,
+    /// MCP servers whose tools the models get (mcp.rs).
+    #[serde(default)]
+    pub mcp: Vec<McpServer>,
+    #[serde(default)]
+    pub skills: Skills,
+}
+
+/// Agent Skills (skills.rs): instructions the models load by name when a task calls for them.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Skills {
+    /// Folders holding one folder per skill, relative to the config file. Empty: no skills.
+    #[serde(default)]
+    pub dirs: Vec<String>,
+}
+
+/// An MCP server: a command speaking MCP on stdin/stdout, or a streamable HTTP endpoint.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServer {
+    /// Prefixes its tools' names: tool "HassTurnOn" of server "home" becomes "home_HassTurnOn".
+    pub name: String,
+    /// Streamable HTTP endpoint, e.g. http://homeassistant.local:8123/api/mcp.
+    pub url: Option<String>,
+    /// Environment variable holding a bearer token for `url`.
+    pub token_env: Option<String>,
+    /// A program to start, speaking MCP on stdin/stdout.
+    pub command: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: std::collections::HashMap<String, String>,
+    /// Only these tools (the server's names). Unset: all of them.
+    pub tools: Option<Vec<String>>,
+    /// A call that takes longer fails.
+    #[serde(default = "default_mcp_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+/// The run_js tool (js.rs): a JavaScript sandbox for arithmetic and for chaining tool calls.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Js {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// A script is stopped after this long, its tool calls included.
+    #[serde(default = "default_js_timeout_ms")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_js_memory_mb")]
+    pub memory_mb: usize,
+    /// Home tool calls one script may make.
+    #[serde(default = "default_js_tool_calls")]
+    pub max_tool_calls: usize,
+}
+
+impl Default for Js {
+    fn default() -> Self {
+        Js {
+            enabled: true,
+            timeout_ms: default_js_timeout_ms(),
+            memory_mb: default_js_memory_mb(),
+            max_tool_calls: default_js_tool_calls(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Think {
+    /// Any [llm] backend; typically one that reasons (reasoning = "medium") or a larger model.
+    pub llm: Llm,
+    /// Said while it thinks, one after another. Synthesised at startup, so they play at once.
+    #[serde(default = "default_think_phrases")]
+    pub phrases: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cache {
+    /// Synthesised sentences of up to tts::CACHED_CHARS characters kept in memory, so a
+    /// sentence said again plays without a request. 0 turns the cache off.
+    #[serde(default = "default_tts_entries")]
+    pub tts_entries: usize,
+    /// Synthesised at startup, besides [think]'s phrases.
+    #[serde(default)]
+    pub phrases: Vec<String>,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Cache {
+            tts_entries: default_tts_entries(),
+            phrases: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Stt {
+    /// POST {base_url}/audio/transcriptions when the utterance ends.
+    OpenaiCompat {
+        base_url: String,
+        model: String,
+        #[serde(default = "default_openai_key_env")]
+        api_key_env: String,
+        language: Option<String>,
+    },
+    /// In-process streaming transducer through sherpa-onnx (build with --features local).
+    /// `dir` holds the three model files and tokens.txt.
+    #[cfg_attr(not(feature = "local"), allow(dead_code))]
+    SherpaStreaming {
+        dir: String,
+        #[serde(default = "default_encoder")]
+        encoder: String,
+        #[serde(default = "default_decoder")]
+        decoder: String,
+        #[serde(default = "default_joiner")]
+        joiner: String,
+        #[serde(default = "default_threads")]
+        threads: i32,
+        /// cpu | coreml | cuda
+        #[serde(default = "default_provider")]
+        provider: String,
+    },
+    /// Returns `text` for every utterance (testing without a service).
+    Mock {
+        #[serde(default = "default_mock_text")]
+        text: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Llm {
+    Anthropic {
+        model: String,
+        #[serde(default = "default_anthropic_url")]
+        base_url: String,
+        #[serde(default = "default_anthropic_key_env")]
+        api_key_env: String,
+        /// low | medium | high | xhigh | max. Thinking depth; low answers soonest.
+        #[serde(default = "default_effort")]
+        effort: String,
+        #[serde(default = "default_max_tokens")]
+        max_tokens: u32,
+        /// Let the API re-run a declined request on a fallback model. Not every model
+        /// supports it (Haiku does not).
+        #[serde(default)]
+        fallbacks: bool,
+    },
+    /// POST {base_url}/chat/completions (Ollama, llama.cpp, vLLM, hosted).
+    OpenaiCompat {
+        base_url: String,
+        model: String,
+        #[serde(default = "default_openai_key_env")]
+        api_key_env: String,
+        #[serde(default = "default_max_tokens")]
+        max_tokens: u32,
+        /// How much the model thinks before answering: off | minimal | low | medium | high |
+        /// xhigh. Sent as OpenRouter's `reasoning` parameter; unset sends nothing (the
+        /// model's default). Other servers may ignore or reject it.
+        reasoning: Option<String>,
+    },
+    Mock,
+}
+
+/// The `reasoning` request parameter for a config value (OpenRouter's format).
+pub fn reasoning_param(value: &str) -> Result<serde_json::Value> {
+    match value {
+        "off" => Ok(serde_json::json!({"enabled": false})),
+        "minimal" | "low" | "medium" | "high" | "xhigh" => Ok(serde_json::json!({"effort": value})),
+        _ => anyhow::bail!("reasoning = \"{value}\": use off, minimal, low, medium, high or xhigh"),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Tts {
+    /// POST {base_url}/audio/speech with response_format "pcm" (s16le mono).
+    OpenaiCompat {
+        base_url: String,
+        model: String,
+        voice: String,
+        #[serde(default = "default_openai_key_env")]
+        api_key_env: String,
+        /// Sample rate of the PCM the service returns.
+        #[serde(default = "default_tts_rate")]
+        rate: u32,
+    },
+    /// In-process Pocket TTS through sherpa-onnx (build with --features local). `dir` holds
+    /// the model; `voice` is a WAV of the voice to speak in.
+    #[cfg_attr(not(feature = "local"), allow(dead_code))]
+    SherpaPocket {
+        dir: String,
+        voice: String,
+        #[serde(default = "default_threads")]
+        threads: i32,
+        #[serde(default = "default_provider")]
+        provider: String,
+        /// Flow steps per frame: fewer is faster, more is cleaner.
+        #[serde(default = "default_pocket_steps")]
+        steps: i32,
+    },
+    /// A tone per sentence.
+    Mock,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HomeAssistant {
+    pub url: String,
+    #[serde(default = "default_ha_token_env")]
+    pub token_env: String,
+    /// The action play_music calls, as domain.service.
+    #[serde(default = "default_play_service")]
+    pub play_service: String,
+}
+
+fn default_encoder() -> String {
+    "encoder.onnx".into()
+}
+fn default_decoder() -> String {
+    "decoder.onnx".into()
+}
+fn default_joiner() -> String {
+    "joiner.onnx".into()
+}
+fn default_think_phrases() -> Vec<String> {
+    [
+        "Let me think about that.",
+        "Give me a moment to think.",
+        "Hmm, let me think.",
+    ]
+    .map(String::from)
+    .to_vec()
+}
+fn default_mcp_timeout_ms() -> u64 {
+    20000
+}
+fn default_true() -> bool {
+    true
+}
+fn default_js_timeout_ms() -> u64 {
+    3000
+}
+fn default_js_memory_mb() -> usize {
+    32
+}
+fn default_js_tool_calls() -> usize {
+    20
+}
+fn default_tts_entries() -> usize {
+    200
+}
+fn default_threads() -> i32 {
+    2
+}
+fn default_provider() -> String {
+    "cpu".into()
+}
+fn default_pocket_steps() -> i32 {
+    5
+}
+fn default_listen() -> String {
+    format!("0.0.0.0:{}", voice_proto::DEFAULT_PORT)
+}
+fn default_system_prompt() -> String {
+    "You are a voice assistant on a small device in someone's home. Your replies are spoken \
+     aloud, so answer in one or two short plain sentences with no markdown, lists or emoji. \
+     Use the tools to control things in the home; if no tool fits, say so. Only say you did \
+     something if a tool call in this conversation did it, and don't offer to do things no \
+     tool can do."
+        .into()
+}
+fn default_openai_key_env() -> String {
+    "OPENAI_API_KEY".into()
+}
+fn default_anthropic_key_env() -> String {
+    "ANTHROPIC_API_KEY".into()
+}
+fn default_anthropic_url() -> String {
+    "https://api.anthropic.com".into()
+}
+fn default_effort() -> String {
+    "low".into()
+}
+fn default_max_tokens() -> u32 {
+    16000
+}
+fn default_tts_rate() -> u32 {
+    24000
+}
+fn default_mock_text() -> String {
+    "what can you do".into()
+}
+fn default_ha_token_env() -> String {
+    "HOME_ASSISTANT_TOKEN".into()
+}
+fn default_play_service() -> String {
+    "music_assistant.play_media".into()
+}
+
+pub fn load(path: &str) -> Result<Config> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+    toml::from_str(&text).with_context(|| format!("parsing {path}"))
+}
+
+/// Values from `.env` files (`NAME=value` lines), for keys the environment doesn't set.
+static DOTENV: std::sync::OnceLock<std::collections::HashMap<String, String>> =
+    std::sync::OnceLock::new();
+
+/// Reads `.env` next to the config file and in the working directory. The environment wins
+/// over both; the file next to the config wins over the other.
+pub fn load_dotenv(config_path: &str) {
+    let beside = std::path::Path::new(config_path).with_file_name(".env");
+    let mut values = std::collections::HashMap::new();
+    for file in [std::path::PathBuf::from(".env"), beside] {
+        let Ok(text) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        values.extend(parse_dotenv(&text));
+        tracing::info!(file = %file.display(), "read keys");
+    }
+    let _ = DOTENV.set(values);
+}
+
+fn parse_dotenv(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| line.strip_prefix("export ").unwrap_or(line).split_once('='))
+        .map(|(name, value)| {
+            let value = value.trim();
+            let unquoted = ['"', '\'']
+                .iter()
+                .find_map(|&q| value.strip_prefix(q).and_then(|v| v.strip_suffix(q)))
+                .unwrap_or(value);
+            (name.trim().to_string(), unquoted.to_string())
+        })
+        .collect()
+}
+
+/// The key in `var`, from the environment or a `.env` file, or `None` if it is unset or empty
+/// (local servers need none).
+pub fn env_key(var: &str) -> Option<String> {
+    let key = std::env::var(var)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            DOTENV
+                .get()
+                .and_then(|values| values.get(var))
+                .filter(|v| !v.is_empty())
+                .cloned()
+        });
+    if key.is_none() {
+        tracing::warn!("{var} is not set: requests go without a key (fine for a local server)");
+    }
+    key
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dotenv_lines() {
+        let parsed =
+            super::parse_dotenv("# note\nA=1\nexport B = \"two words\"\n\nC='x=y'\nnot a pair\n");
+        let expect = [("A", "1"), ("B", "two words"), ("C", "x=y")];
+        assert_eq!(parsed, expect.map(|(k, v)| (k.to_string(), v.to_string())));
+    }
+}

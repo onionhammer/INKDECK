@@ -8,6 +8,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
+#include <freertos/stream_buffer.h>
+#include <freertos/idf_additions.h>
 #include <mp3dec.h>
 #include <stdio.h>
 #include <string.h>
@@ -37,7 +39,8 @@ constexpr uint32_t kDmaDescriptors = 8;
 constexpr uint32_t kDmaFrames = 511;
 
 enum class Cmd : uint8_t {
-  Play, TogglePause, Next, Stop, Volume, Ring, Beep, Record, RecordStop, RecordPause, MicGain
+  Play, TogglePause, Next, Stop, Volume, Ring, Beep, Record, RecordStop, RecordPause, MicGain,
+  Capture, CaptureStop, StreamStart, StreamAbort
 };
 struct Command {
   Cmd cmd;
@@ -69,6 +72,18 @@ std::atomic<uint32_t> recBytes{0};  // audio data bytes so far
 std::atomic<int> recLevelCenti{-9600};  // levelDb x 100
 std::atomic<int> micDigitalDb{12};  // on top of the PGA's 30 dB: 42 dB in all to start
 std::atomic<uint32_t> recGeneration{0};
+// Voice streams: PCM rings in PSRAM between the audio task and the one task that calls
+// capture*() and stream*() (voice_client.cpp). One writer and one reader each.
+constexpr size_t kCaptureBytes = 256 * 1024;  // 8 s of the mic: rides out a Wi-Fi join
+constexpr size_t kStreamBytes = 256 * 1024;   // 5.3 s of a reply at 24 kHz
+StreamBufferHandle_t captureBuf = nullptr;
+StreamBufferHandle_t streamBuf = nullptr;
+SemaphoreHandle_t acked = nullptr;  // given once a command sent with sendAndWait() is handled
+std::atomic<bool> ackOk{false};
+std::atomic<bool> captureOn{false};
+std::atomic<uint32_t> captureDropped{0};  // bytes lost because nobody read the ring in time
+std::atomic<bool> streamOn{false};
+std::atomic<bool> streamEnded{false};
 
 struct Locked {
   Locked() { xSemaphoreTake(lock, portMAX_DELAY); }
@@ -79,6 +94,20 @@ void send(Cmd cmd, int arg = 0, int arg2 = 0) {
   if (!commands) return;  // begin() hasn't run (a standby wake powers off without audio)
   const Command c{cmd, arg, arg2};
   xQueueSend(commands, &c, portMAX_DELAY);
+}
+
+// Sends a command and waits until the audio task has handled it. True if it succeeded there.
+bool sendAndWait(Cmd cmd, int arg = 0) {
+  if (!commands) return false;
+  xSemaphoreTake(acked, 0);  // an ack nobody waited for
+  send(cmd, arg);
+  if (xSemaphoreTake(acked, pdMS_TO_TICKS(3000)) != pdTRUE) return false;
+  return ackOk.load();
+}
+
+void ack(bool ok) {
+  ackOk = ok;
+  xSemaphoreGive(acked);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -549,6 +578,92 @@ void stepWav() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Stream playback (audio task only): mono PCM from streamBuf as it arrives over the network.
+// Playing waits until 200 ms is buffered (again after running dry), so a Wi-Fi stall is a
+// pause between words rather than a stutter.
+
+struct Stream {
+  bool on = false;
+  bool primed = false;  // enough is buffered to play
+  uint32_t rate = 0;
+  int carry = -1;  // the first byte of a sample the ring handed over split in two
+} strm;
+
+void streamStop() {
+  if (!strm.on) return;
+  strm.on = false;
+  streamOn = false;
+  outputStop();
+  log_i("audio: stream off");
+}
+
+bool streamBegin(uint32_t rate) {
+  streamStop();
+  closeTrack();
+  outputStop();  // a paused track leaves the output on and muted
+  setState(State::Stopped);
+  if (!streamBuf) {
+    streamBuf = xStreamBufferCreateWithCaps(kStreamBytes, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  if (!streamBuf) return false;
+  xStreamBufferReset(streamBuf);
+  streamEnded = false;
+  if (!outputStart(rate)) return false;
+  strm = Stream{};
+  strm.on = true;
+  strm.rate = rate;
+  streamOn = true;
+  return true;
+}
+
+// Everything was played: push it through the DMA buffers with silence, then the output goes off.
+void streamFinish() {
+  constexpr int kFrames = 256;
+  memset(p.pcm, 0, kFrames * 2 * sizeof(int16_t));
+  for (uint32_t done = 0; done < kDmaDescriptors * kDmaFrames; done += kFrames) {
+    size_t written = 0;
+    i2s_channel_write(tx, p.pcm, kFrames * 2 * sizeof(int16_t), &written, portMAX_DELAY);
+  }
+  streamStop();
+}
+
+void streamStep() {
+  const bool ended = streamEnded.load();
+  if (!strm.primed) {
+    const size_t have = xStreamBufferBytesAvailable(streamBuf);
+    if (have >= strm.rate * 2 / 5 || (ended && have > 0)) {
+      strm.primed = true;
+    } else if (ended) {
+      streamFinish();
+      return;
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(10));
+      return;
+    }
+  }
+  constexpr int kFrames = 512;
+  uint8_t *in = p.in;
+  size_t n = 0;
+  if (strm.carry >= 0) {
+    in[n++] = static_cast<uint8_t>(strm.carry);
+    strm.carry = -1;
+  }
+  n += xStreamBufferReceive(streamBuf, in + n, kFrames * 2 - n, pdMS_TO_TICKS(20));
+  if (n % 2) strm.carry = in[--n];
+  if (n == 0) {
+    if (strm.carry < 0) strm.primed = false;  // ran dry: buffer up again (or finish, if ended)
+    return;
+  }
+  const int frames = static_cast<int>(n / 2);
+  for (int i = 0; i < frames; ++i) {  // the DAC plays the left slot: mono into both
+    const int16_t v = static_cast<int16_t>(in[2 * i] | in[2 * i + 1] << 8);
+    p.pcm[2 * i] = p.pcm[2 * i + 1] = v;
+  }
+  size_t written = 0;
+  i2s_channel_write(tx, p.pcm, frames * 2 * sizeof(int16_t), &written, portMAX_DELAY);
+}
+
+// ---------------------------------------------------------------------------------------------
 // Recording (audio task only): I2S receive, 16 kHz mono (the left slot, the ADC with REG44 =
 // 0x08), into a WAV file on the card in 8 KB writes from internal RAM.
 
@@ -560,6 +675,7 @@ constexpr int kRecSkipReads = 3;                // ~100 ms of start-up thump dro
 struct Recorder {
   i2s_chan_handle_t rx = nullptr;
   FILE *file = nullptr;
+  bool capture = false;  // into captureBuf instead of a file
   size_t fill = 0;  // bytes waiting in p.in
   uint32_t dataBytes = 0;
   int skip = 0;
@@ -620,10 +736,12 @@ void recordFinish() {
     codecOff();
   }
   recOn = false;
+  captureOn = false;
   recPaused = false;
   recLevelCenti = -9600;
   recGeneration++;
-  log_i("audio: recording done, %lu bytes", (unsigned long)rec.dataBytes);
+  log_i("audio: %s done, %lu bytes, %lu dropped", rec.capture ? "capture" : "recording",
+        (unsigned long)rec.dataBytes, (unsigned long)captureDropped.load());
 }
 
 void recordFail(const char *why) {
@@ -636,34 +754,14 @@ void recordFail(const char *why) {
   recordFinish();
 }
 
-void recordStart() {
-  if (recOn) return;
-  std::string path;
-  {
-    Locked l;
-    path = recordPath;
-    recShared.error.clear();
-    recShared.bins.clear();
-    recShared.path = path;
-  }
-  // Playback, a paused track or the alarm tone give up the output first.
+// Opens the mic: I2S receive at 16 kHz, then the codec's ADC. Whatever was using the output
+// (playback, a paused track, the alarm tone, a voice reply) gives the port up first.
+bool micOpen() {
   if (ring.on) ringStop();
+  streamStop();
   closeTrack();
   outputStop();
   setState(State::Stopped);
-
-  rec = Recorder{};
-  rec.file = fopen(path.c_str(), "wb");
-  if (!rec.file) {
-    Locked l;
-    recShared.error = "CAN'T CREATE THE FILE";
-    recGeneration++;
-    return;
-  }
-  uint8_t h[44];
-  wavHeader(h, 0);
-  memcpy(p.in, h, sizeof h);  // written from RAM with the first audio (AGENTS.md, Gotchas)
-  rec.fill = sizeof h;
 
   i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   chan.dma_desc_num = kDmaDescriptors;  // 8 x 511 frames = 255 ms: rides out an SD write
@@ -679,13 +777,7 @@ void recordStart() {
       i2s_channel_init_std_mode(rec.rx, &cfg) != ESP_OK || i2s_channel_enable(rec.rx) != ESP_OK) {
     if (rec.rx) i2s_del_channel(rec.rx);
     rec.rx = nullptr;
-    fclose(rec.file);
-    rec.file = nullptr;
-    remove(path.c_str());
-    Locked l;
-    recShared.error = "I2S WON'T START";
-    recGeneration++;
-    return;
+    return false;
   }
   delay(5);  // MCLK running before the codec's state machine starts
   codecOn();
@@ -695,8 +787,59 @@ void recordStart() {
   recOn = true;
   recPaused = false;
   recGeneration++;
+  return true;
+}
+
+void recordStart() {
+  if (recOn) return;
+  std::string path;
+  {
+    Locked l;
+    path = recordPath;
+    recShared.error.clear();
+    recShared.bins.clear();
+    recShared.path = path;
+  }
+  rec = Recorder{};
+  rec.file = fopen(path.c_str(), "wb");
+  if (!rec.file) {
+    Locked l;
+    recShared.error = "CAN'T CREATE THE FILE";
+    recGeneration++;
+    return;
+  }
+  uint8_t h[44];
+  wavHeader(h, 0);
+  memcpy(p.in, h, sizeof h);  // written from RAM with the first audio (AGENTS.md, Gotchas)
+  rec.fill = sizeof h;
+  if (!micOpen()) {
+    fclose(rec.file);
+    rec.file = nullptr;
+    remove(path.c_str());
+    Locked l;
+    recShared.error = "I2S WON'T START";
+    recGeneration++;
+    return;
+  }
   log_i("audio: recording to %s, mic gain %d dB", path.c_str(),
         es8311::kMicPgaDb + micDigitalDb.load());
+}
+
+// The mic into captureBuf (a voice utterance) instead of a file.
+bool captureBegin() {
+  if (recOn) recordFinish();
+  if (!captureBuf) {
+    captureBuf = xStreamBufferCreateWithCaps(kCaptureBytes, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  if (!captureBuf) return false;
+  xStreamBufferReset(captureBuf);
+  captureDropped = 0;
+  rec = Recorder{};
+  rec.capture = true;
+  if (!micOpen()) return false;
+  captureOn = true;
+  log_i("audio: capturing, mic gain %d dB", es8311::kMicPgaDb + micDigitalDb.load());
+  return true;
 }
 
 void recordStep() {
@@ -737,6 +880,13 @@ void recordStep() {
     }
   }
   if (recPaused) return;
+  if (rec.capture) {
+    const size_t sent = xStreamBufferSend(captureBuf, p.pcm, got, 0);
+    if (sent != got) captureDropped += got - sent;
+    rec.dataBytes += sent;
+    recBytes = rec.dataBytes;
+    return;
+  }
   memcpy(p.in + rec.fill, p.pcm, got);
   rec.fill += got;
   rec.dataBytes += got;
@@ -748,8 +898,13 @@ void handle(const Command &c) {
   if (ring.on && c.cmd != Cmd::Ring && c.cmd != Cmd::Volume && c.cmd != Cmd::Beep) ringStop();
   // Playback (or the alarm) needs the I2S port: a recording in progress is finished first.
   if (recOn && (c.cmd == Cmd::Play || c.cmd == Cmd::TogglePause || c.cmd == Cmd::Stop ||
-                (c.cmd == Cmd::Ring && c.arg))) {
+                c.cmd == Cmd::StreamStart || (c.cmd == Cmd::Ring && c.arg))) {
     recordFinish();
+  }
+  // So does anything else that plays, and stop() (power-off) ends a voice reply too.
+  if (strm.on && (c.cmd == Cmd::Play || c.cmd == Cmd::TogglePause || c.cmd == Cmd::Stop ||
+                  c.cmd == Cmd::StreamAbort || (c.cmd == Cmd::Ring && c.arg))) {
+    streamStop();
   }
   State state;
   {
@@ -758,8 +913,20 @@ void handle(const Command &c) {
   }
   switch (c.cmd) {
     case Cmd::Beep:
-      if (!recOn && !ring.on && state == State::Stopped) beepNow(c.arg, c.arg2);
+      if (!recOn && !ring.on && !strm.on && state == State::Stopped) beepNow(c.arg, c.arg2);
       break;
+    case Cmd::Capture:
+      ack(captureBegin());
+      break;
+    case Cmd::CaptureStop:
+      if (rec.capture) recordFinish();
+      ack(true);
+      break;
+    case Cmd::StreamStart:
+      ack(streamBegin(static_cast<uint32_t>(c.arg)));
+      break;
+    case Cmd::StreamAbort:
+      break;  // stopped above
     case Cmd::Record:
       recordStart();
       break;
@@ -979,7 +1146,7 @@ void task(void *) {
       state = shared.state;
     }
     const bool playing = state == State::Playing && (p.decoder || p.wav);
-    const bool busy = playing || ring.on || recOn;
+    const bool busy = playing || ring.on || recOn || strm.on;
     Command c;
     if (xQueueReceive(commands, &c, busy ? 0 : portMAX_DELAY) == pdTRUE) {
       handle(c);
@@ -989,6 +1156,8 @@ void task(void *) {
       recordStep();
     } else if (ring.on) {
       ringStep();
+    } else if (strm.on) {
+      streamStep();
     } else if (playing) {
       step();
     }
@@ -1005,6 +1174,7 @@ void begin() {
   codecOff();
   commands = xQueueCreate(8, sizeof(Command));
   lock = xSemaphoreCreateMutex();
+  acked = xSemaphoreCreateBinary();
   p.in = static_cast<uint8_t *>(heap_caps_malloc(kInputBufferBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   p.pcm = static_cast<int16_t *>(
       heap_caps_malloc(kPcmSamples * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
@@ -1097,7 +1267,33 @@ RecordStatus recordStatus() {
   return s;
 }
 
-bool recording() { return recOn.load(); }
+bool recording() { return recOn.load() && !captureOn.load(); }
+
+bool captureStart() { return sendAndWait(Cmd::Capture); }
+
+void captureStop() { sendAndWait(Cmd::CaptureStop); }
+
+bool capturing() { return captureOn.load(); }
+
+size_t captureRead(uint8_t *out, size_t max, uint32_t timeoutMs) {
+  if (!captureBuf) return 0;
+  return xStreamBufferReceive(captureBuf, out, max, pdMS_TO_TICKS(timeoutMs));
+}
+
+float captureLevelDb() { return captureOn.load() ? recLevelCenti.load() / 100.0f : -96; }
+
+bool streamStart(uint32_t rate) { return sendAndWait(Cmd::StreamStart, static_cast<int>(rate)); }
+
+size_t streamWrite(const uint8_t *pcm, size_t bytes, uint32_t timeoutMs) {
+  if (!streamOn.load() || !streamBuf) return 0;
+  return xStreamBufferSend(streamBuf, pcm, bytes, pdMS_TO_TICKS(timeoutMs));
+}
+
+void streamEnd() { streamEnded = true; }
+
+void streamAbort() { send(Cmd::StreamAbort); }
+
+bool streaming() { return streamOn.load(); }
 
 bool active() {
   if (!lock) return false;

@@ -17,6 +17,8 @@ enum class Key : uint8_t {
   Back,        // BOOT (GPIO0) short press
   BackLong,    // BOOT held
   Power,       // PWR released within 2 s (longer is someone forcing the PMIC off)
+  SelectDown,  // wheel press went down / came up: only while onSelectEdge() has a handler,
+  SelectUp,    // and then instead of Select and SelectLong
 };
 
 const char *name(Key key);
@@ -37,6 +39,12 @@ bool lastKeyRepeat();
 // Queues a key as if it had been pressed (dev tools drive the UI over serial with this).
 // fast: as a repeat from a dial held long enough to page (lastKeyRepeat() is true too).
 void inject(Key key, bool fast = false);
+
+// Push-to-talk: while a handler is set, the wheel press reports its two edges instead of
+// Select / SelectLong. The handler runs at once in the timer task, so a press made while the
+// panel is refreshing isn't late (keep it short: post to a queue), and Key::SelectDown /
+// Key::SelectUp follow through wait(). nullptr puts Select back.
+void onSelectEdge(void (*handler)(bool down));
 
 // Milliseconds since the last key (injected ones count).
 uint32_t idleMs();

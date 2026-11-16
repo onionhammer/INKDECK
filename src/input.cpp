@@ -33,6 +33,7 @@ struct Button {
   uint8_t integrator = 0;
   uint32_t heldMs = 0;
   bool longFired = false;
+  bool edges = false;  // this press went to the onSelectEdge() handler
 };
 
 Button buttons[] = {
@@ -45,6 +46,7 @@ Button buttons[] = {
 
 QueueHandle_t queue = nullptr;
 esp_timer_handle_t timer = nullptr;
+std::atomic<void (*)(bool)> selectEdge{nullptr};
 
 std::atomic<uint32_t> lastKeyMs{0};
 bool lastFast = false;    // only touched by the task calling wait()
@@ -71,7 +73,19 @@ void tick(void *) {
       if (pressed) {
         b.heldMs = 0;
         b.longFired = false;
-        if (b.autoRepeat) emit(b.shortKey);
+        const auto edge = b.shortKey == Key::Select ? selectEdge.load() : nullptr;
+        b.edges = edge != nullptr;
+        if (edge) {
+          edge(true);
+          emit(Key::SelectDown);
+        } else if (b.autoRepeat) {
+          emit(b.shortKey);
+        }
+      } else if (b.edges) {
+        b.edges = false;
+        // The press had a handler; its release goes to the one set now, if any is.
+        if (const auto edge = selectEdge.load()) edge(false);
+        emit(Key::SelectUp);
       } else if (!b.autoRepeat && !b.longFired) {
         emit(b.shortKey);
       }
@@ -88,7 +102,7 @@ void tick(void *) {
       }
     } else if (b.shortKey == Key::Power) {
       if (b.heldMs > kPowerMaxMs) b.longFired = true;  // released later: no key
-    } else if (!b.longFired && b.heldMs >= kLongPressMs) {
+    } else if (!b.edges && !b.longFired && b.heldMs >= kLongPressMs) {
       b.longFired = true;
       emit(b.longKey);
     }
@@ -106,6 +120,8 @@ const char *name(Key key) {
     case Key::Back: return "Back";
     case Key::BackLong: return "BackLong";
     case Key::Power: return "Power";
+    case Key::SelectDown: return "SelectDown";
+    case Key::SelectUp: return "SelectUp";
   }
   return "?";
 }
@@ -154,6 +170,8 @@ bool lastKeyFast() { return lastFast; }
 bool lastKeyRepeat() { return lastRepeat; }
 
 void inject(Key key, bool fast) { emit(key, fast, fast); }
+
+void onSelectEdge(void (*handler)(bool down)) { selectEdge = handler; }
 
 bool anyDown() {
   for (const auto &b : buttons) {
