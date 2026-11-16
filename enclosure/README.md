@@ -6,7 +6,8 @@ every opening and clearance comes from the real part geometry. Printed once (202
 print had the screw heads standing proud, and a gap above the PCB at the back of the thumbwheel
 notch. Both are fixed in the model now (see **Screws** and **Front bezel**). Since that print the
 seam has also moved down from the glass to just above the PCB, so the bezel's frame is 2.55 mm
-deep and about 6.5 times as stiff (see **Stiffer bezel**). Earlier designs
+deep and about 6.5 times as stiff (see **Stiffer bezel**), and the caps hold with eight deeper
+hooks instead of four (see **Hooks**). Earlier designs
 (v0.1, a two-part shell with a screwed-on bezel; v0.2, the tray alone with no front) are in git
 history.
 
@@ -18,11 +19,11 @@ history.
 
 | File | What |
 | --- | --- |
-| `ereader-enclosure.scanruler` | Parametric source: 94 features (1 suppressed), 106 parameters (4 pinned), board STEP, battery dummy, 1 open note |
+| `ereader-enclosure.scanruler` | Parametric source: 106 features (1 suppressed), 107 parameters (4 pinned), board STEP, battery dummy, 1 open note |
 | `ereader-enclosure.step` | Both parts as solids, `Back tray` and `Bezel` (read back and verified) |
 | `back-tray.stl` | Tray print mesh (0.02 mm chord), the right way up to print |
 | `front-bezel.stl` | Bezel print mesh (0.02 mm chord), as fitted: turn it face-down to print |
-| `renders/*.png` | Assembly, the back with the frog, the tray and the bezel apart, a corner cap, the USB-C / microSD end, the thumbwheel slot, sections through a cap hook, a button and the wheel |
+| `renders/*.png` | Assembly, the back with the frog, the tray and the bezel apart, a corner cap, the USB-C / microSD end, the thumbwheel slot, sections through a side hook, an end hook, a button and the wheel |
 
 **Size:** 105.9 × 66.1 mm over the corner caps (the tray alone is 104.3 × 64.5). **11.86 mm**
 from the flat back to the bezel's flat front (v0.1 was 14.85). The seam is 9.31 up from the back
@@ -45,7 +46,7 @@ pry notch, it went from 0.63 to 4.16. The USB-C end already had its end skirt an
 Twist stiffness rises about 5× (a Saint-Venant estimate). The bezel weighs 1166 mm³ more and the
 tray 572 mm³ less, about 0.75 g of PETG more in all. The new seam is below the tops of the PWR /
 BOOT slots, so those slots now run up through the wall top and the bezel closes them (**Printing
-the tray**). The cap hooks stay where they were, which makes the snap firmer (**Hooks**). The end
+the tray**). The cap hooks now flex from the seam; they're covered under **Hooks**. The end
 fins stay centred between the back and the seam, so they sit 0.575 lower.
 
 **Battery:** a 1500 mAh 454261 pouch, measured 62.5 long (with its protection board) and ~4.61
@@ -80,8 +81,8 @@ its brass standoffs, clamping it onto the bosses. The tray's walls stop 0.2 mm a
 top face, below the panel glass, except at the USB-C end, which stops lower still. The bezel then
 snaps on over the glass and the walls. Its frame carries the walls the rest of the way up and
 fills the strip between them and the glass, and its skirt fills in the top of the USB-C end. Its
-four corner caps run down over the tray's corners to the back face, and a hook inside each one
-clicks into a groove in the tray.
+four corner caps run down over the tray's corners to the back face, and two hooks inside each one
+(one per leg) click into grooves in the tray.
 
 ![tray and bezel apart](renders/tray_inside.png)
 
@@ -121,24 +122,32 @@ thick, and the tray wall behind it is still 1.1 mm at its thinnest. `bump_up` (0
 caps stand proud of the front: anything above 0 needs supports under the whole front when
 printing.
 
-**Hooks.** Inside each cap's long-side leg, toward its free end (`hook_x0`, mirrored), a 3 mm wide
-hook (`hook_w`) sits 5.85 mm below the wall top (`hook_l`), at z −5.65, where it was when the seam
-was at the glass (7 mm down then). It's 0.5 deep (`hook_d`), with a 45°
-retaining face, a 0.2 flat (`hook_tip`) and a 1:2 lead-in. It clicks into a groove in the tray's
-recess whose 45° roof meets the retaining face with no gap. Going on, the cap wall flexes 0.35 mm
-there (`hook_d` − `cap_gap`). The cap is joined to the frame above the seam, so it bends over the
-5.85 mm below it. As a plain cantilever that's about 1.5 % strain (1.1 % over the 7 mm before), so
-the snap is firmer than on the first print. A larger `hook_l` lowers the hook and softens it, up
-to about 6.9, where the groove floor comes within 0.5 of the back face. The corner stiffens
-the wall, so it takes more force than a free tab would; only a test print will say how much. The
-45° faces let a firm pull release it. To take the bezel off, put a spudger in the pry notch
-(6 × 1.5 × 0.6, `pry_*`) under the middle of the antenna end and lever that end up. The two hooks
-there let go first, then the other two. The knobs for a test print are `hook_d` (grip), `hook_l`
-(stiffness) and `cap_gap` (fit).
+**Hooks.** Eight, one inside each leg of each cap, toward the leg's free end: on the long sides
+(`Cap hook`, centred at `hook_x0`) and on the USB-C and antenna ends (`End hook`, at `hook_y0`),
+each mirrored to all four corners. The first print had only the four on the long sides, 0.5 deep,
+and the joint was a bit flimsy. Each hook is 3 mm wide (`hook_w`) and 0.65 deep (`hook_d`), with a 45°
+retaining face, a 0.2 flat (`hook_tip`) and a 1:2 lead-in. Its top is 6.4 mm below the wall top
+(`hook_l`), at z −6.2. It clicks into a groove in the tray's corner recess whose 45° roof meets
+the retaining face with no gap. Once in, the hook overlaps the tray by 0.5 (0.35 before). The
+groove floor is 0.61 above the back face, and the end grooves leave 1.0 of end wall behind them.
+Going on, the cap wall flexes 0.5 mm there (`hook_d` − `cap_gap`). The cap is joined to the frame
+above the seam, so it bends over the 6.4 mm below it. As a plain cantilever that's about 1.8 %
+strain, and about 1.9 times the force per hook of the first print. With twice the hooks, the
+bezel holds nearly four times as hard. The USB-C end's caps are joined to the end skirt as well, so
+their end hooks are stiffer still. The corner stiffens the wall too, so it takes more force than
+a free tab would; only a test print will say how much. Since the caps bend across the layer lines,
+**print in PETG**. The 45° faces let a firm pull release the hooks. To take the bezel off, put a
+spudger in the pry notch (6 × 1.5 × 0.6, `pry_*`) under the middle of the antenna end and lever
+that end up. The four hooks there let go first, then the other four. The knobs for a test print
+are `hook_d` (grip), `hook_l` (stiffness; up to about 6.5, where the groove floor comes within
+0.5 of the back face) and `cap_gap` (fit). Suppressing `Join end hooks` and `Cut end grooves`
+takes the end hooks out.
 
 ![corner cap](renders/corner_cap.png)
 
-![cap section](renders/section_cap.png)
+![side hook section](renders/section_cap.png)
+
+![end hook section](renders/section_end_hook.png)
 
 **Frog.** The sleeping frog from the Sleep screen (`kFrog` in `src/apps/sleep.cpp`) is engraved
 in the hatch panel on the back, as a dot matrix of 2 mm cells centred on the battery. Ink cells
@@ -190,7 +199,7 @@ the socket, where the panel's flex cable wraps the board edge (0.72 mm away). Th
 1. Plug the battery into `BAT`, and tape it into the pocket in the floor.
 2. Drop the board in face up, letting the wheel slide down its notch.
 3. Fit 4 × M2.5 × 6 countersunk screws (DIN 965 / ISO 10642 style, head ≤ 5.0 mm) from the back. Not longer than 6: the standoff threads are blind.
-4. Press the bezel straight down over the glass until all four corner hooks click.
+4. Press the bezel straight down over the glass until all eight hooks click (two in each corner).
 
 **Printing the tray:** back face on the bed, no supports. Everything is laid out for that:
 - The back is flat. Its decoration is inward grooves with 45° walls (`groove_draft`), so each layer steps in by at most its own height and nothing bridges. That covers the hatch outline, the hazard stripes and the vent slots.
