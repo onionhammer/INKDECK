@@ -92,7 +92,10 @@ void loop() {
   apps::pollAlarms();
   apps::pollPower();
   apps::pollLock();  // before the nap: a lock over the Reader ends the naps and gets drawn
-  weather::poll();  // the hourly forecast sync, in the background
+  // The hourly forecast sync, in the background. Not while the Reader naps on battery: that
+  // would wake the radio every hour (every 15 minutes out of range) with nobody reading. It
+  // runs after the next key instead.
+  if (!apps::isNapping()) weather::poll();
   podcasts::poll();  // saves the playing episode's position
   if (apps::napIfIdle()) return;  // reading on battery: light sleep until a key or the minute
   ui::nav::loop();

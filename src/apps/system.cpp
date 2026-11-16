@@ -369,10 +369,11 @@ class SystemScreen : public ui::Screen {
       const char *net;
       pmic::Rail rail;
     };
-    // Nets from AGENTS.md "Power architecture" and the schematic.
+    // Nets from AGENTS.md "Power architecture" and the schematic. ALDO1 has no load (R74 isn't
+    // fitted) and stays off; ALDO2 is on while audio plays or records, ALDO3 off while napping.
     const RailRow rows[] = {{"DC1", "3V3 system", d.dc1},
-                            {"ALDO1", "audio codec + amp", d.aldo1},
-                            {"ALDO2", "microphone", d.aldo2},
+                            {"ALDO1", "unused", d.aldo1},
+                            {"ALDO2", "codec + mic", d.aldo2},
                             {"ALDO3", "display power", d.aldo3}};
     for (const RailRow &row : rows) {
       const Rect line = r.takeTop(kRailH);

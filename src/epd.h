@@ -2,8 +2,8 @@
 //
 // Every update is self-contained: hardware reset -> SWRESET -> init -> write both RAMs ->
 // refresh -> deep sleep. Because the "old" RAM (0x26) is rewritten from our own copy of the
-// last frame each time, partial refreshes survive panel deep sleep (and an ALDO3 power cut,
-// once we start doing that) without any extra bookkeeping.
+// last frame each time, partial refreshes survive panel deep sleep and an ALDO3 power cut
+// (powerOff()) without any extra bookkeeping.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -34,7 +34,14 @@ class Epd {
   // Light sleep drops a USB serial connection, so the standby wake turns it on only on battery.
   void setSleepWhileBusy(bool on) { sleepWhileBusy_ = on; }
 
+  // Cuts the panel's power (ALDO3): the image stays, the controller and its RAM go, and the pins
+  // are driven low so they don't feed the unpowered controller through its inputs. The next
+  // show() powers it again, 10 ms before its usual reset. Saves the ~0.3 mA its power switch
+  // (Q3's base and Q2's gate pull-up) draws while ALDO3 is on, deep sleep or not.
+  void powerOff();
+
  private:
+  void powerOn();
   void reset();
   bool waitIdle(uint32_t timeoutMs);
   void sleepUntilIdle(uint32_t maxMs);
@@ -47,4 +54,5 @@ class Epd {
   uint8_t *prev_ = nullptr;  // last frame shown, PSRAM
   bool hasPrev_ = false;
   bool sleepWhileBusy_ = false;
+  bool powered_ = true;  // ALDO3 is on at power-up
 };

@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "board_pins.h"
+#include "pmic.h"
 
 // Command bytes and init values follow Waveshare's EPD_Init / EPD_Display_Base /
 // EPD_Display_Partial (see .claude/skills/waveshare-epaper-reference/references/epaper.md §3).
@@ -34,6 +35,9 @@ constexpr uint8_t kRamYStart[] = {(Epd::kHeight - 1) & 0xFF, (Epd::kHeight - 1) 
 }  // namespace
 
 bool Epd::begin() {
+  // A software reset (USB plugged into a napping board, an update, a crash) leaves the PMIC as
+  // it was, so ALDO3 may still be off from a nap. Waits 10 ms only if it was.
+  pmic::setPanelRail(true);
   pinMode(board::EPD_CS, OUTPUT);
   digitalWrite(board::EPD_CS, HIGH);
   pinMode(board::EPD_DC, OUTPUT);
@@ -48,6 +52,32 @@ bool Epd::begin() {
     return false;
   }
   return true;
+}
+
+void Epd::powerOff() {
+  if (!powered_) return;
+  // Every update ends in deep sleep, so the controller is idle. The SPI pins are detached and
+  // driven low with the rest (the last bit sent may have left MOSI high), BUSY pulled down
+  // rather than up into the unpowered pin; Waveshare's EPD_Sleep() also drops RST/CS/DC first.
+  epdSpi.end();
+  const int low[] = {board::EPD_CS, board::EPD_DC, board::EPD_RST, board::EPD_SCK, board::EPD_MOSI};
+  for (const int pin : low) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
+  }
+  pinMode(board::EPD_BUSY, INPUT_PULLDOWN);
+  pmic::setPanelRail(false);
+  powered_ = false;
+}
+
+void Epd::powerOn() {
+  if (powered_) return;
+  pmic::setPanelRail(true);  // waits 10 ms for the rail, as Waveshare's EPD_Init() does
+  pinMode(board::EPD_BUSY, INPUT_PULLUP);
+  digitalWrite(board::EPD_CS, HIGH);
+  digitalWrite(board::EPD_RST, HIGH);
+  epdSpi.begin(board::EPD_SCK, -1, board::EPD_MOSI, -1);
+  powered_ = true;
 }
 
 void Epd::reset() {
@@ -155,6 +185,7 @@ bool Epd::show(const uint8_t *frame, bool full) {
   if (!hasPrev_) full = true;
 
   const uint32_t t0 = millis();
+  powerOn();  // after powerOff(); the reset and init below are the same either way
   epdSpi.beginTransaction(kSpiSettings);
   bool ok = initController(full);
   if (ok) {

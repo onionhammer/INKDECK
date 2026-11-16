@@ -44,6 +44,15 @@ constexpr RegValue kInit[] = {
     {0x31, 0x60},                // DAC muted
 };
 
+// esp_codec_dev's es8311_suspend, in order: DAC and ADC volume to zero, PGA, modulator, DAC and
+// mic input powered down, analog blocks off, reset, clocks stopped, VMID off. 0x0D ends at 0xFC,
+// 0x12 at 0x02, 0x00 at 0x1F and 0x01 at 0x00: the datasheet's power-on defaults.
+constexpr RegValue kPowerDown[] = {
+    {0x32, 0x00}, {0x17, 0x00}, {0x0E, 0xFF}, {0x12, 0x02}, {0x14, 0x00},
+    {0x0D, 0xFA}, {0x15, 0x00}, {0x02, 0x10}, {0x00, 0x00}, {0x00, 0x1F},
+    {0x01, 0x30}, {0x01, 0x00}, {0x45, 0x00}, {0x0D, 0xFC}, {0x02, 0x00},
+};
+
 }  // namespace
 
 bool begin() {
@@ -59,6 +68,12 @@ bool begin() {
   for (const auto &rv : kInit) ok &= write(rv.reg, rv.value);
   if (!ok) log_e("ES8311: init write failed");
   return ok;
+}
+
+void powerDown() {
+  bool ok = true;
+  for (const auto &rv : kPowerDown) ok &= write(rv.reg, rv.value);
+  if (!ok) log_w("ES8311: power-down write failed");
 }
 
 void setVolume(int volume) {

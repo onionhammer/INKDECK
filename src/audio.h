@@ -4,7 +4,9 @@
 // while the UI (core 1) is busy refreshing the panel or loading a book. The task owns I2S and
 // the codec: playback and recording take turns.
 //
-// The amp (AMP_EN) and I2S/MCLK are only on during a playback session; pause just mutes the DAC.
+// The amp (AMP_EN), I2S/MCLK, the codec and its analog supply (ALDO2, shared with the mic) are
+// on only while sound plays, rings or records; otherwise the codec is in power-down and the rail
+// off. Pause switches them all off too and keeps the track open: play picks up where it paused.
 // The same task rings alarms: ring() pauses any music and plays a beep pattern until stopped.
 // Recording uses the mic through the codec's ADC, I2S receive only; the amp stays off.
 #pragma once
@@ -47,7 +49,11 @@ void stop();  // playback, the alarm tone and any recording (finished properly)
 void changeVolume(int delta);
 
 Status status();
-bool active();  // playing or paused (the amp and I2S are on)
+bool active();    // playing or paused: a track is open
+bool outputOn();  // the amp, I2S and the codec are on (playing, ringing or a beep; not paused)
+// Something the board mustn't light-sleep through: playing, ringing, recording or a beep. A
+// paused player doesn't count; its output is off.
+bool busy();
 
 // Paths of playlist entries [from, from + count), clipped to the playlist.
 std::vector<std::string> queue(int from, int count);

@@ -110,6 +110,12 @@ void setFullRefreshScreens(int screens) {
 
 void assumeShown() { epd.assumeShown(fb->getBuffer()); }
 
+void powerOff() {
+  lock();  // not in the middle of a frame
+  epd.powerOff();
+  unlock();
+}
+
 void sleepWhileBusy(bool on) { epd.setSleepWhileBusy(on); }
 
 void setLandscape(bool landscape) { fb->setRotation(landscape ? kLandscapeRotation : kRotation); }

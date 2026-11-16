@@ -128,7 +128,7 @@ differs from what Waveshare writes, the vendor value applies only while their `a
 | VSYS power-off (VOFF) | `0x24` | 2.6 V | same | |
 | DC1 / ALDO1 / ALDO2 | `0x82` / `0x92` / `0x93` | 3.3 V each | same | |
 | ALDO3 (panel) | `0x94` | **3.0 V** (`19`) | 3.3 V | Panel datasheet: VCI 2.2 V min, 3.0 V typ, **3.3 V max**; logic inputs to VDDIO + 0.5 V, so 3.3 V SPI is fine at 3.0 V |
-| Rails enabled | `0x80` / `0x90` / `0x91` | DCDC1–4, every LDO (`0F` / `FF` / `01`) | unchanged | Only DC1 and ALDO1–3 have known loads |
+| Rails enabled | `0x80` / `0x90` / `0x91` | DCDC1–4, every LDO (`0F` / `FF` / `01`) | unchanged | Only DC1, ALDO2 (codec AVDD + mic) and ALDO3 (panel switch) have loads: ALDO1's one load, R74, isn't fitted, and LX2–4/FB2–4 and the other LDO pins are unconnected. Our `pmic::configure()` turns the rest off at every boot (verified: `80=01 90=04 91=00` idle) |
 | ADC channels | `0x30` | VBAT + TS (`03`) | VBAT, VBUS, VSYS, die temp (`1D`) | VBUS/VSYS read 0 until enabled |
 | TS pin | `0x50` | `12`: TS doesn't affect the charger, current source off | unchanged (XPowersLib also clears the TS ADC) | No battery-temperature protection either way; JEITA off (`0x58`=`00`) |
 | Precharge / CC / termination / CV | `0x61`–`0x64` | 125 mA / 200 mA / 125 mA / 4.2 V | 50 mA / 200 mA / 25 mA / 4.2 V | |

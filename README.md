@@ -21,7 +21,7 @@ portrait sense there.
 | **Reader** | EPUB 2/3 from microSD in Literata (three sizes), justified, with drop caps and line breaks at soft hyphens and dashes. Shows pictures (JPEG/PNG, dithered), the table of contents, and the cover as a page and on Home. Honours `display:none`. Resumes each book where you left it, even after a power loss |
 | **Podcasts** | RSS feeds over Wi-Fi plus folders of MP3s. Downloads resume after a reset. Playback resumes where you stopped, and played episodes are marked |
 | **Music** | MP3 and WAV from the card through the codec and speaker, with a waveform overview, queue and volume. Playback continues on any screen; HOLD BOOT jumps back to the player |
-| **Weather** | Open-Meteo forecast: now, 12 hours and 6 days, with a detail sheet per day. Synced hourly (every half hour on USB) and cached for offline use |
+| **Weather** | Open-Meteo forecast: now, 12 hours and 6 days, with a detail sheet per day. Synced hourly (every half hour on USB; while the Reader naps, at the next page turn) and cached for offline use |
 | **Clock** | Landscape desk clock: calendar, sunrise and sunset, a weather strip, now-playing, and three alarms. An alarm can boot the board from power-off |
 | **Recorder** | Voice memos from the onboard mic as 16 kHz WAV, with a live waveform, input meter and gain. Memos play back on the device with a volume meter (▲▼), and can be deleted |
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, a live I2C bus scan, and a CSV log to the card |
@@ -40,7 +40,12 @@ the same way round in both. Phone photos come out upright (EXIF orientation), an
   forecast every so many hours (0: never). Each wake light-sleeps through the panel refresh
   and runs at 80 MHz once the face is drawn.
 - Reading (a book, a text file or a picture) and music don't time out until the battery is low.
-- While you read on battery, the board light-sleeps between page turns. Under a picture, the IMU's wake on motion wakes it when you turn the board.
+- While you read on battery, the board light-sleeps between page turns, with the panel's power
+  off. A paused podcast or song doesn't keep it awake: pause switches the speaker amp, the codec
+  and its supply off. The hourly weather sync waits for the next page turn. Under a picture, the
+  IMU's wake on motion wakes it when you turn the board.
+- Audio hardware (amp, codec, the codec's and mic's supply) is on only while something plays,
+  rings or records. The PMIC outputs nothing uses stay off.
 - On USB, PWR shows the clock face instead and the board stays on.
 
 **Lock:** with a PIN set (System → PIN LOCK, or `inkdeck.ini` below), the board asks for it in

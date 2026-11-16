@@ -8,8 +8,13 @@
 
 namespace es8311 {
 
-// Resets and configures the codec for 16-bit I2S playback, DAC muted. Start MCLK first.
+// Resets and configures the codec for 16-bit I2S playback, DAC muted. Start MCLK first, with
+// ALDO2 (its AVDD) on.
 bool begin();
+
+// Power-down mode (datasheet: 0 uA): every block back at its power-on default, clocks off.
+// begin() wakes it. Its analog supply, ALDO2, can go off after this.
+void powerDown();
 
 // 0..100, mapped linearly in dB to -50..0 dB (0.5 dB steps). 0 = silence. Never adds gain.
 void setVolume(int volume);

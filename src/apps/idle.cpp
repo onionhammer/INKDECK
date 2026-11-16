@@ -16,6 +16,7 @@
 #include "podcast_library.h"
 #include "power.h"
 #include "qmi8658.h"
+#include "screen.h"
 #include "timesync.h"
 #include "forecast.h"
 #include "ui/nav.h"
@@ -53,7 +54,8 @@ bool readingNow() {
 }
 
 bool mayNap() {
-  if (!readingNow() || audio::active() || audio::ringing() || wlan::radioOn()) return false;
+  // A paused player doesn't count: pause switches the audio output off (audio.h).
+  if (!readingNow() || audio::busy() || wlan::radioOn()) return false;
   if (weather::syncing() || podcasts::busy() || ota::active()) return false;
   const timesync::Phase t = timesync::status().phase;
   if (t == timesync::Phase::Connecting || t == timesync::Phase::Asking) return false;
@@ -138,6 +140,9 @@ bool napIfIdle() {
     napMotion = b && b->wakeOnMotion() && qmi8658::wakeOnMotion();
     if (!napMotion) qmi8658::setEnabled(false);
     if (b) b->onNap();
+    // The panel holds its image unpowered, and its switch draws about 0.3 mA while ALDO3 is on.
+    // The next refresh powers it again (Epd::show()).
+    screen::powerOff();
   }
   // Until the next minute boundary (an alarm rings on the minute), a little after it.
   timeval tv;
@@ -157,6 +162,8 @@ bool napIfIdle() {
   }
   return true;
 }
+
+bool isNapping() { return napping; }
 
 NapStats napStats() {
   NapStats s;
