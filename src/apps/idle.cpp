@@ -141,8 +141,11 @@ void pollPower() {
 void powerKey() {
   if (wakeDesk() || reopenBook()) return;
   const pmic::Status p = pmic::status();
+  const ui::Screen *base = ui::nav::base();
   if (p.ok && p.vbus) {
     enterDesk();
+  } else if (base && base->closesWhenIdle()) {
+    closeBook();  // a book open in the Reader: off behind its cover, as the idle timeout does
   } else {
     sleepNow();
   }
