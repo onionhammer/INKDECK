@@ -1,8 +1,11 @@
 #include "covers.h"
 
 #include <Arduino.h>
+#include <math.h>
 #include <stdio.h>
 #include <sys/stat.h>
+
+#include <algorithm>
 
 #include "epub.h"
 #include "sdcard.h"
@@ -67,16 +70,28 @@ void store(const std::string &file, bool hasCover, const picture::Bitmap &bmp) {
   fclose(f);
 }
 
-// From the EPUB: open it, find the cover, fit and dither it.
-bool renderCover(const std::string &bookPath, int maxW, int maxH, picture::Bitmap &out) {
+// From the EPUB: open it, find the cover, fit it into the box (or fill the box, if that crops
+// at most an eighth of either side) and dither it.
+bool renderCover(const std::string &bookPath, int maxW, int maxH, bool fill,
+                 picture::Bitmap &out) {
   const uint32_t t0 = millis();
   Epub book;
   std::string err, data;
   if (!book.open(bookPath, err)) return false;
   if (book.coverPath().empty() || !book.readFile(book.coverPath(), data, err)) return false;
+  int srcW = 0, srcH = 0;
+  if (!picture::size(data, srcW, srcH)) return false;
   int w = 0, h = 0;
-  if (!picture::size(data, w, h)) return false;
-  picture::fit(w, h, maxW, maxH, w, h);
+  picture::fit(srcW, srcH, maxW, maxH, w, h);
+  if (fill) {
+    const float scale = std::max(static_cast<float>(maxW) / srcW, static_cast<float>(maxH) / srcH);
+    const int fillW = static_cast<int>(lroundf(srcW * scale));
+    const int fillH = static_cast<int>(lroundf(srcH * scale));
+    if (fillW * 7 <= maxW * 8 && fillH * 7 <= maxH * 8) {
+      w = std::max(fillW, maxW);
+      h = std::max(fillH, maxH);
+    }
+  }
   if (!picture::render(data, w, h, out)) return false;
   log_i("covers: %s -> %dx%d in %lu ms", book.coverPath().c_str(), w, h,
         static_cast<unsigned long>(millis() - t0));
@@ -94,7 +109,7 @@ bool thumbnail(const std::string &bookPath, int maxW, int maxH, picture::Bitmap 
     bool hasCover = false;
     picture::Bitmap bmp;
     if (!load(file, hasCover, bmp)) {
-      hasCover = renderCover(bookPath, maxW, maxH, bmp);
+      hasCover = renderCover(bookPath, maxW, maxH, false, bmp);
       store(file, hasCover, bmp);
     }
     lastKey = ramKey;
@@ -103,6 +118,10 @@ bool thumbnail(const std::string &bookPath, int maxW, int maxH, picture::Bitmap 
   }
   if (lastOk) out = last;
   return lastOk;
+}
+
+bool full(const std::string &bookPath, int w, int h, picture::Bitmap &out) {
+  return sdcard::mounted() && !bookPath.empty() && renderCover(bookPath, w, h, true, out);
 }
 
 }  // namespace covers

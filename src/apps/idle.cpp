@@ -8,6 +8,7 @@
 #include <atomic>
 
 #include "apps/clock.h"
+#include "apps/closed_book.h"
 #include "apps/sleep.h"
 #include "audio.h"
 #include "input.h"
@@ -36,6 +37,7 @@ constexpr uint32_t kMotionAwakeMs = 3500;
 constexpr uint32_t kUsbGraceMs = 3000;  // USB power without a host talking, after naps
 
 std::atomic<int> standbyRequest{-1};
+std::atomic<bool> closeBookRequest{false};
 
 bool napping = false;
 bool napMotion = false;  // this nap's IMU is on wake on motion (else it's off)
@@ -105,20 +107,39 @@ void pollPower() {
     enterStandby(request);
     return;
   }
+  const ui::Screen *top = ui::nav::top();
+  if (top && top->offFace()) return;  // already on its way off
+  const ui::Screen *base = ui::nav::base();
+  const bool book = base && base->closesWhenIdle();
+  if (closeBookRequest.exchange(false) && book) {
+    stopNapping();
+    closeBook(true);
+    return;
+  }
+  // A book left open: 15 minutes of naps, then off behind its cover.
+  if (book && power::idleBook()) {
+    log_i("idle on battery with a book open: closing it");
+    stopNapping();
+    closeBook();
+    return;
+  }
   if (!power::idle(readingNow())) return;
   stopNapping();
   const pmic::Status p = pmic::status();
   const bool low = p.percent >= 0 && p.percent < power::kLowBatteryPercent;
-  log_i("idle on battery (%d %%): %s", p.percent, low ? "sleep" : "standby");
-  if (low) {
-    sleepNow();
-  } else {
+  log_i("idle on battery (%d %%): %s", p.percent,
+        !low ? "standby" : book ? "closing the book" : "sleep");
+  if (!low) {
     enterStandby(0);
+  } else if (book) {
+    closeBook();
+  } else {
+    sleepNow();
   }
 }
 
 void powerKey() {
-  if (wakeDesk()) return;
+  if (wakeDesk() || reopenBook()) return;
   const pmic::Status p = pmic::status();
   if (p.ok && p.vbus) {
     enterDesk();
@@ -174,5 +195,6 @@ NapStats napStats() {
 }
 
 void requestStandby(int cycles) { standbyRequest = cycles; }
+void requestCloseBook() { closeBookRequest = true; }
 
 }  // namespace apps

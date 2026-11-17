@@ -23,6 +23,7 @@ namespace {
 
 constexpr const char *kNamespace = "power";
 constexpr uint32_t kIdleMs = 10 * 60 * 1000;
+constexpr uint32_t kBookIdleMs = 15 * 60 * 1000;
 constexpr int kOnBitPwron = 1 << 0;  // PMIC 0x20: PWRON pulled low (the key or the RTC's INT)
 constexpr int kOnBitVbus = 1 << 2;   // USB plugged in
 
@@ -30,6 +31,23 @@ Wake wakeReason = Wake::Reset;
 Mode mode = Mode::On;
 time_t armed = 0;
 int cyclesLeft = 0;
+
+const char *modeName(Mode m) {
+  switch (m) {
+    case Mode::Sleep: return "sleep";
+    case Mode::Standby: return "standby";
+    case Mode::Book: return "book";
+    case Mode::On: break;
+  }
+  return "-";
+}
+
+// A sync or a download that a power-off would cut short.
+bool working() {
+  if (weather::syncing() || podcasts::busy() || ota::active()) return true;
+  const timesync::Phase t = timesync::status().phase;
+  return t == timesync::Phase::Connecting || t == timesync::Phase::Asking;
+}
 
 }  // namespace
 
@@ -58,10 +76,9 @@ void begin() {
     cyclesLeft = prefs.getInt("cycles", 0);
     prefs.end();
   }
-  if (mode > Mode::Standby) mode = Mode::On;
+  if (mode > Mode::Book) mode = Mode::On;
   log_i("power: woke by %s (reset %d, PMIC 0x20 = %02X), last off: %s, armed %ld", wakeName(wakeReason),
-        static_cast<int>(reset), bits, mode == Mode::Sleep ? "sleep" : mode == Mode::Standby ? "standby" : "-",
-        static_cast<long>(armed));
+        static_cast<int>(reset), bits, modeName(mode), static_cast<long>(armed));
 }
 
 Wake wake() { return wakeReason; }
@@ -117,8 +134,7 @@ void off(Mode m, time_t wakeAt, int standbyCycles) {
     prefs.end();
   }
   mode = m;  // so markOn() below rewrites it if the power-off fails
-  log_i("power: off (%s), wake at %ld", m == Mode::Standby ? "standby" : "sleep",
-        static_cast<long>(wakeAt));
+  log_i("power: off (%s), wake at %ld", modeName(m), static_cast<long>(wakeAt));
   if (pmic::powerOff()) delay(2000);  // power goes within milliseconds
   // Still here: the PMIC didn't take it. Undo, so the alarm can't hold PWRON low.
   log_e("power: the PMIC didn't power off");
@@ -135,9 +151,14 @@ bool idle(bool reading) {
       audio::status().state == audio::State::Playing || audio::recording();  // a memo too
   const bool low = p.percent >= 0 && p.percent < kLowBatteryPercent;
   if ((reading || playing) && !low) return false;
-  if (weather::syncing() || podcasts::busy() || ota::active()) return false;
-  const timesync::Phase t = timesync::status().phase;
-  return t != timesync::Phase::Connecting && t != timesync::Phase::Asking;
+  return !working();
+}
+
+bool idleBook() {
+  if (input::idleMs() < kBookIdleMs) return false;
+  const pmic::Status p = pmic::status();
+  if (!p.ok || !p.battery || p.vbus) return false;  // on USB (or unknown): the page stays
+  return !audio::busy() && !working();
 }
 
 NapEnd nap(uint32_t maxMs, bool motion) {

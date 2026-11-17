@@ -39,7 +39,12 @@ the same way round in both. Phone photos come out upright (EXIF orientation), an
   the saved forecast. `INKDECK_STANDBY_WEATHER_HOURS` in `platformio.ini` has it fetch a new
   forecast every so many hours (0: never). Each wake light-sleeps through the panel refresh
   and runs at 80 MHz once the face is drawn.
-- Reading (a book, a text file or a picture) and music don't time out until the battery is low.
+- Reading (a text file or a picture) and music don't time out until the battery is low.
+- A book left open on battery closes after 15 minutes without a key: the panel shows its cover
+  across the whole screen with HOLD PWR 1 s TO RESUME, and the board powers off completely.
+  PWR opens the book again at its page (so does an alarm's wake, under the Clock, and plugging
+  in USB). A book without a cover picture gets its title in type. Not on USB, where the page
+  stays, and not while music plays.
 - While you read on battery, the board light-sleeps between page turns, with the panel's power
   off. A paused podcast or song doesn't keep it awake: pause switches the speaker amp, the codec
   and its supply off. The hourly weather sync waits for the next page turn. Under a picture, the

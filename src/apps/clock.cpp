@@ -937,6 +937,7 @@ class StandbyScreen : public ui::Screen {
   std::string tag() const override { return moduleTag("CLOCK"); }
   bool chrome() const override { return false; }  // drawStandbyFace() draws its own
   bool landscape() const override { return true; }
+  bool offFace() const override { return true; }
   bool onKey(Key) override {  // a key in the second before power-off: stay on
     ui::nav::pop();
     return true;
@@ -962,10 +963,10 @@ class StandbyScreen : public ui::Screen {
   int ticks_ = 0;  // since drawn
 };
 
-// Landscape without chrome: the Standby or Sleep screen, on its way to a power-off.
+// On top: a screen on its way to a power-off (Standby, Sleep, a closed book), or the desk face.
 bool poweringOff() {
   const ui::Screen *top = ui::nav::top();
-  return top && top->landscape() && !top->chrome();
+  return top && (top == desk || top->offFace());
 }
 
 }  // namespace

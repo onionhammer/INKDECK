@@ -14,4 +14,10 @@ namespace covers {
 // the book has no cover we can decode, or there's no card.
 bool thumbnail(const std::string &bookPath, int maxW, int maxH, picture::Bitmap &out);
 
+// The cover at full size, for a w x h area (the closed book, apps/closed_book.h): scaled to
+// fill it when that crops at most an eighth of the cover's width or height (the bitmap is then
+// larger than the area: draw it centred and clipped), otherwise fitted inside. Rendered from
+// the EPUB each time (not cached). False as for thumbnail().
+bool full(const std::string &bookPath, int w, int h, picture::Bitmap &out);
+
 }  // namespace covers

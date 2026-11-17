@@ -3,7 +3,11 @@
 //     current) instead of powering off.
 //   - On battery, after 10 minutes without a key: standby (the Clock face, redrawn each
 //     minute), or Sleep (the frog) once the battery is below 15 %. Reading (the Reader open)
-//     and playing music never power off until the battery is below 15 %.
+//     and playing music never power off until the battery is below 15 %, except a book:
+//   - A book open in the Reader on battery, 15 minutes without a key (or 10 with the battery
+//     below 15 %): the book closes. The panel shows its cover, the board powers off, and the
+//     next start opens the book at its page (closed_book.h). Never on USB, and not while
+//     music plays. The text reader and the picture viewer stay as above.
 //   - Reading on battery: once the page is drawn the board light-sleeps until the next key or
 //     the next minute (alarms ring on the minute), with the IMU in standby and the panel's
 //     power (ALDO3) off. A paused player doesn't stop it (pause switches the audio off), and
@@ -43,5 +47,8 @@ NapStats napStats();
 
 // Dev tools (any task): standby now; cycles > 0: stay on after that many wakes.
 void requestStandby(int cycles);
+// Dev tools (any task): close the book open in the Reader now, as 15 idle minutes on battery
+// do; the RTC boots the board a minute later.
+void requestCloseBook();
 
 }  // namespace apps

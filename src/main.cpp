@@ -18,6 +18,7 @@
 #include "apps/idle.h"
 #include "apps/lock.h"
 #include "apps/music.h"
+#include "apps/reader.h"
 #include "apps/sleep.h"
 #include "audio.h"
 #include "board_pins.h"
@@ -60,6 +61,8 @@ void setup() {
   if (!screen::begin()) Serial.println("screen init failed");
   // A standby wake with no alarm due redraws the clock face and powers straight off again.
   apps::standbyWake();
+  // Powered off behind a book's cover (apps/closed_book.h): this start opens the book again.
+  const bool reopenBook = power::lastMode() == power::Mode::Book;
   power::markOn();
   pmic::status();  // first read logs what the PMIC reports
   net::begin();  // TLS buffers in PSRAM
@@ -72,6 +75,9 @@ void setup() {
   ui::nav::begin(apps::makeHome());
   ui::nav::onPowerKey(apps::powerKey);
   ui::nav::onHoldBack(apps::openPlayer);
+  if (reopenBook) {
+    if (auto book = apps::resumeLastBook()) ui::nav::push(std::move(book));
+  }
   // Woken for an alarm: show the Clock, and pollAlarms() rings over it.
   if (power::wake() == power::Wake::Alarm) ui::nav::push(apps::makeClock());
   apps::lockNow();  // with a PIN and power_on (pin_places.h), every start asks (alarms ring over it)
@@ -94,8 +100,10 @@ void loop() {
   apps::pollLock();  // before the nap: a lock over the Reader ends the naps and gets drawn
   // The hourly forecast sync, in the background. Not while the Reader naps on battery: that
   // would wake the radio every hour (every 15 minutes out of range) with nobody reading. It
-  // runs after the next key instead.
-  if (!apps::isNapping()) weather::poll();
+  // runs after the next key instead. Nor under the last frame before a power-off, which would
+  // cut it short.
+  const ui::Screen *top = ui::nav::top();
+  if (!apps::isNapping() && !(top && top->offFace())) weather::poll();
   podcasts::poll();  // saves the playing episode's position
   if (apps::napIfIdle()) return;  // reading on battery: light sleep until a key or the minute
   ui::nav::loop();
