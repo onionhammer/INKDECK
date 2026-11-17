@@ -1,5 +1,7 @@
 // A menu sheet: an overlay screen that rises from the bottom of the screen below it, with a
-// "// TITLE" header and one row per item (label left, current value right).
+// "// TITLE" header and one row per item (label left, current value right). It grows to fit its
+// items, up to the whole body; past that it shows a page of them at a time, with the cursor's
+// place ("03/12") on the header's right.
 //   ▲▼ move   ● run the item   BOOT close
 // An item's action runs inside the key handler. It can change things in place (the menu
 // redraws, and so does the screen below, live) or navigate: nav::pop() closes the menu, and
@@ -21,7 +23,8 @@ struct MenuItem {
 
 class MenuScreen : public Screen {
  public:
-  MenuScreen(std::string title, std::vector<MenuItem> items);
+  // cursor: the row selected when it opens.
+  MenuScreen(std::string title, std::vector<MenuItem> items, int cursor = 0);
 
   std::string tag() const override { return {}; }  // the screen below supplies the chrome
   bool overlay() const override { return true; }

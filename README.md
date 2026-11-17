@@ -29,7 +29,7 @@ portrait sense there.
 | **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. With a PIN set, it can ask for it first unless you used it in the last minute (see Lock). A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, they stay as they were (tilt decides, not the picture's shape). The wheel works
 the same way round in both. Phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short) |
 | **Network shares** | Files also browses shares on the local network (a NAS, a home server, a Windows PC), listed in `inkdeck.ini` (below): **SMB** (SMB2/3, user name and password) and **NFS** (v3). Each share is a row on the card's root after ONBOARD FLASH, tagged SMB or NFS. Opening one joins Wi-Fi and mounts it (read-only, so HOLD ● doesn't delete there), and its books, music, pictures and text open as they do from the card. Wi-Fi stays on while the share is open in Files or a file on it is (music playing, a book open), and goes off 30 s after |
-| **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, how often the screen does a full refresh, and the PIN lock (all below) |
+| **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, how often the screen does a full refresh, the PIN lock, and the card as a network drive (all below). The actions are in a sheet that ● opens |
 
 **Power**
 - PWR shows a sleep screen and powers the board off completely. The e-paper keeps its image,
@@ -87,6 +87,21 @@ clears the ghosting that partials leave, once they have flipped two screens' wor
 or after 30 of them. System's AUTO FULL REFRESH sets that to 2, 5, 10 or 20 screens, or OFF,
 and the setting is kept. The serial log reports each refresh and how much change has built
 up since the last full one. HOLD BOOT always does a full refresh.
+
+**Wi-Fi drive:** System → WI-FI DRIVE puts the microSD card on the network as a drive, to copy
+books, music and `inkdeck.ini` without taking the card out. The board joins Wi-Fi and serves the
+card over WebDAV at `http://inkdeck.local` (the screen shows the IP too) until you leave the
+screen, or after 10 minutes without a file read or written or a key pressed. On a Mac: Finder →
+Go → Connect to Server, `http://inkdeck.local`, then Registered User (not Guest). On Windows: Map
+network drive, the same address. Sign in as `inkdeck` with the password on the screen; the board
+makes it up the first time and keeps it, so the computer can remember it. A Mac shows the drive's
+free space as unknown: told it, macOS hangs 90 s while it mounts. The board keeps using the card
+meanwhile, and nothing restarts. If the computer changed `inkdeck.ini` or `Podcasts`, leaving the
+screen reads them again. It's slow, about 0.5 MB/s, so pull the card for big copies. BOOT stops
+it, after asking if a copy is under way. If the build asks for the PIN before Files, WI-FI DRIVE
+asks too, unless opening System already did. (The card as a USB drive was tried first and
+dropped: macOS reads a FAT32 card's whole FAT before mounting it, and at USB full speed a big
+card's takes longer than macOS waits.)
 
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the

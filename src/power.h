@@ -40,8 +40,9 @@ void off(Mode mode, time_t wakeAt, int standbyCycles = 0);
 constexpr int kLowBatteryPercent = 15;
 
 // True when the board should power itself off: on battery, no key for 10 minutes, no alarm
-// ringing, no time or weather sync or podcast download. While reading (the Reader is open) or while music plays, only once
-// the battery is below kLowBatteryPercent as well.
+// ringing, no time or weather sync, podcast download or Wi-Fi drive (webdav.h). While reading
+// (the Reader is open) or while music plays, only once the battery is below kLowBatteryPercent
+// as well.
 bool idle(bool reading);
 
 // True when an open book should close (apps/closed_book.h): on battery, no key for 15 minutes,

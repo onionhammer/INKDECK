@@ -10,6 +10,7 @@
 #include "apps/lock.h"
 #include "apps/sleep.h"
 #include "apps/updater.h"
+#include "apps/wifi_drive.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "pin_places.h"
@@ -18,6 +19,7 @@
 #include "power.h"
 #include "rtc.h"
 #include "screen.h"
+#include "sdcard.h"
 #include "settings.h"
 #include "sysinfo.h"
 #include "timesync.h"
@@ -39,16 +41,20 @@ constexpr TextStyle kAction{&ui::fonts::kMono15Bold, 0};
 constexpr TextStyle kActionSelected{&ui::fonts::kMono15ExtraBold, 0};
 
 constexpr int kRailH = 34;
-constexpr int kStateH = 21;  // 7 rows in the space 6 rows of 24 had
-constexpr int kStateRows = 7;
+constexpr int kStateH = 21;
+constexpr int kStateRows = 8;
 constexpr int kStateKeyW = 104;
-constexpr int kActionH = 22;  // 6 rows in about the space 5 rows of 26 had
 constexpr int kPillW = 52;
 constexpr int kCells = 10;
+// The ACTIONS strip under its header: the two settings' values beside the ● ACTIONS button.
+constexpr int kStripH = 66;
+constexpr int kStripKeyW = 124;
 
-enum class Action : uint8_t { Sleep, SyncTime, FullRefresh, PinLock, Update, Reboot };
-constexpr const char *kActionLabels[] = {"SLEEP NOW", "SYNC TIME (NTP)", "AUTO FULL REFRESH",
-                                         "PIN LOCK",  "UPDATE OVER WI-FI", "REBOOT"};
+// The actions live in a sheet (● ACTIONS), which pages once they outgrow the screen.
+enum class Action : uint8_t { Sleep, SyncTime, FullRefresh, PinLock, Update, WifiDrive, Reboot };
+constexpr const char *kActionLabels[] = {"SLEEP NOW", "SYNC TIME (NTP)",   "AUTO FULL REFRESH",
+                                         "PIN LOCK",  "UPDATE OVER WI-FI", "WI-FI DRIVE",
+                                         "REBOOT"};
 constexpr int kActionCount = sizeof kActionLabels / sizeof kActionLabels[0];
 
 // AUTO FULL REFRESH's steps, in screens' worth of pixels flipped (screen.h); 0 = off.
@@ -125,6 +131,14 @@ std::string sleepState() {
   return buf;
 }
 
+// The card's size, from the SDMMC driver (its free space takes FatFs a while to count).
+std::string sdCardState() {
+  if (!sdcard::mounted()) return "none";
+  char buf[32];
+  snprintf(buf, sizeof buf, "%.1f GB \xC2\xB7 mounted", sdcard::sizeBytes() / 1e9);
+  return buf;
+}
+
 // The RTC is armed only on the way to a power-off (power.h), so while the board runs this is
 // the wake that a power-off now would set: the next alarm or snooze.
 std::string nextWake() {
@@ -143,7 +157,6 @@ std::string nextWake() {
 class SystemScreen : public ui::Screen {
  public:
   SystemScreen() {
-    cursor_.reset(kActionCount);
     // Opened while a sync runs (the boot-time one, say): follow it like a SYNC TIME press.
     const timesync::Phase p = timesync::status().phase;
     syncing_ = p == timesync::Phase::Connecting || p == timesync::Phase::Asking;
@@ -156,11 +169,10 @@ class SystemScreen : public ui::Screen {
     return std::string("FW ") + sysinfo::kFirmwareVersion + " \xC2\xB7 " + sysinfo::buildId();
   }
   int hints(ui::Hint *out) const override {
-    out[0] = {ui::glyph::kDial, "MOVE"};
-    out[1] = {ui::glyph::kPress, "RUN"};
-    out[2] = {"BOOT", "BACK"};
-    out[3] = {"PWR", "OFF"};
-    return 4;
+    out[0] = {ui::glyph::kPress, "ACTIONS"};
+    out[1] = {"BOOT", "BACK"};
+    out[2] = {"PWR", "OFF"};
+    return 3;
   }
 
   // The PIN's minute for System (apps/lock.h openGuarded()): onEnter() may put the wheels in
@@ -170,15 +182,10 @@ class SystemScreen : public ui::Screen {
 
   bool onKey(Key key) override {
     guardedInUse(Guarded::Settings);
-    switch (key) {
-      case Key::Up:
-      case Key::Down:
-        message_.clear();
-        cursor_.move(key == Key::Up ? -1 : +1, true);
-        return true;
-      case Key::Select: run(static_cast<Action>(cursor_.cursor())); return true;
-      default: return false;
-    }
+    if (key != Key::Select) return false;
+    message_.clear();
+    openActions();
+    return true;
   }
 
   // Live values: battery and power source (the PMIC status is cached for 5 s) and the uptime
@@ -204,7 +211,7 @@ class SystemScreen : public ui::Screen {
     rebootShown_ = rebooting_;
     const pmic::Detail d = pmic::detail();
     Rect r = body;
-    const Rect actions = r.takeBottom(ui::kRule + ui::kSectionH + kActionCount * kActionH);
+    const Rect actions = r.takeBottom(ui::kRule + ui::kSectionH + kStripH);
     const Rect state = r.takeBottom(ui::kRule + ui::kSectionH + 4 + kStateRows * kStateH + 6);
     const Rect rails = r.takeBottom(ui::kRule + ui::kSectionH + 4 * kRailH);
     drawBattery(c, r, d);
@@ -220,19 +227,47 @@ class SystemScreen : public ui::Screen {
            (s.battery << 10) | (s.ok << 11) | ((sysinfo::uptimeSeconds() / 60) << 12);
   }
 
+  // The sheet opens on the action last run. Each item runs inside the sheet's key handler: one
+  // that changes a value in place (AUTO FULL REFRESH) leaves it open, one that opens a screen
+  // takes its place, and one with something to say closes it so the notice in the ACTIONS
+  // header shows.
+  void openActions() {
+    std::vector<ui::MenuItem> items;
+    for (int i = 0; i < kActionCount; ++i) {
+      const Action a = static_cast<Action>(i);
+      std::function<std::string()> value;
+      if (a == Action::FullRefresh) value = fullRefreshValue;
+      if (a == Action::PinLock) value = pinLockValue;
+      items.push_back({kActionLabels[i], value, [this, i] {
+                         lastAction_ = i;
+                         run(static_cast<Action>(i));
+                       }});
+    }
+    ui::nav::push(std::make_unique<ui::MenuScreen>("ACTIONS", std::move(items), lastAction_));
+  }
+
+  // Closes the sheet with a line for the ACTIONS header.
+  void say(const std::string &m) {
+    message_ = m;
+    ui::nav::pop();
+  }
+
   void run(Action a) {
     switch (a) {
-      case Action::Sleep: apps::sleepNow(); break;
+      case Action::Sleep:
+        ui::nav::pop();
+        apps::sleepNow();
+        break;
       case Action::SyncTime: {
         if (!wlan::configured()) {
-          message_ = "NO WI-FI: SET ONE IN INKDECK.INI OR .ENV";
+          say("NO WI-FI: SET ONE IN INKDECK.INI OR .ENV");
           break;
         }
         timesync::start();  // if one is already running, follow that
         const timesync::Status s = timesync::status();
         shownPhase_ = s.phase;
-        message_ = syncMessage(s);
         syncing_ = true;
+        say(syncMessage(s));
         break;
       }
       case Action::FullRefresh:
@@ -244,10 +279,10 @@ class SystemScreen : public ui::Screen {
         // Each task asks for the current PIN first, if there is one (apps/lock.h).
         const auto done = [this](const std::string &m) { message_ = m; };
         if (!settings::hasPin()) {
-          ui::nav::push(apps::makePinTask(apps::PinTask::Set, done));
+          ui::nav::replace(apps::makePinTask(apps::PinTask::Set, done));
           break;
         }
-        ui::nav::push(std::make_unique<ui::MenuScreen>(
+        ui::nav::replace(std::make_unique<ui::MenuScreen>(
             "PIN LOCK",
             std::vector<ui::MenuItem>{
                 {"CHANGE PIN", nullptr,
@@ -259,26 +294,42 @@ class SystemScreen : public ui::Screen {
       }
       case Action::Update: {
         if (!wlan::configured()) {
-          message_ = "NO WI-FI: SET ONE IN INKDECK.INI OR .ENV";
+          say("NO WI-FI: SET ONE IN INKDECK.INI OR .ENV");
           break;
         }
         if (!ota::configured()) {
-          message_ = "NO OTA_PASSWORD: SET IT IN .ENV, REBUILD";
+          say("NO OTA_PASSWORD: SET IT IN .ENV, REBUILD");
           break;
         }
         // An interrupted update is harmless (the running firmware stays), but a flat battery
         // halfway through wastes the try.
         const pmic::Status p = pmic::status();
         if (p.ok && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent) {
-          message_ = "CHARGE FIRST: BATTERY BELOW " + std::to_string(power::kLowBatteryPercent) +
-                     " %";
+          say("CHARGE FIRST: BATTERY BELOW " + std::to_string(power::kLowBatteryPercent) + " %");
           break;
         }
-        ui::nav::push(apps::makeUpdater());
+        ui::nav::replace(apps::makeUpdater());
         break;
       }
+      case Action::WifiDrive:
+        if (!wlan::configured()) {
+          say("NO WI-FI: SET ONE IN INKDECK.INI OR .ENV");
+          break;
+        }
+        if (!sdcard::mounted()) {
+          say("NO SD CARD");
+          break;
+        }
+        // The whole card goes on the network, so it takes the PIN that Files takes, unless
+        // getting into System took it already.
+        if (pinplaces::asks(pinplaces::kSettings)) {
+          ui::nav::replace(apps::makeWifiDrive());
+        } else {
+          apps::openGuarded(apps::Guarded::Files, apps::makeWifiDrive, true);
+        }
+        break;
       case Action::Reboot:
-        ui::nav::push(std::make_unique<ui::MenuScreen>(
+        ui::nav::replace(std::make_unique<ui::MenuScreen>(
             "REBOOT?", std::vector<ui::MenuItem>{
                            {"CANCEL", nullptr, [] { ui::nav::pop(); }},
                            {"REBOOT NOW", nullptr,
@@ -415,6 +466,7 @@ class SystemScreen : public ui::Screen {
         {"OTA", sysinfo::otaState()},
         {"MEMORY", sysinfo::memory()},
         {"SETTINGS", settings::describe()},
+        {"SD CARD", sdCardState()},
     };
     for (const auto &row : rows) {
       const Rect line = r.takeTop(kStateH);
@@ -425,6 +477,8 @@ class SystemScreen : public ui::Screen {
     }
   }
 
+  // The header (or the last action's notice), then the two settings' values on the left and
+  // the ● ACTIONS button that opens the sheet on the right.
   void drawActions(ui::Canvas &c, const Rect &area) const {
     using namespace ui;
     Rect r = area;
@@ -432,33 +486,28 @@ class SystemScreen : public ui::Screen {
     r.takeTop(kRule);
     const Rect header = r.takeTop(kSectionH);
     if (message_.empty()) {
-      drawSectionHeader(c, header, "ACTIONS", cursor_.label());
+      drawSectionHeader(c, header, "ACTIONS", std::to_string(kActionCount));
     } else {
       drawNotice(c, header, message_);
     }
-    for (int i = 0; i < kActionCount; ++i) {
-      const Rect line = r.takeTop(kActionH);
-      const bool selected = i == cursor_.cursor();
-      const int x = line.x + kPadX;
-      const Rect text{x + 24, line.y, line.w - x - 24 - kPadX, line.h};
-      const Action a = static_cast<Action>(i);
-      const std::string value = a == Action::FullRefresh ? fullRefreshValue()
-                                : a == Action::PinLock   ? pinLockValue()
-                                                         : "";
-      if (selected) {
-        fill(c, line, kInk);
-        drawText(c, {x, line.y, 14, line.h}, glyph::kPlay, style::kCap, Align::Left, kPaper);
-        drawText(c, text, kActionLabels[i], kActionSelected, Align::Left, kPaper);
-        drawText(c, text, value, kActionSelected, Align::Right, kPaper);
-      } else {
-        drawText(c, text, kActionLabels[i], kAction);
-        drawText(c, text, value, kAction, Align::Right);
-        if (i + 1 < kActionCount) dashedH(c, line.x, line.bottom() - 1, line.w);
-      }
+    constexpr int kButtonH = 44, kShadow = 6;
+    const int top = r.y + (r.h - kButtonH - kShadow) / 2;
+    const Rect button = drawButton(c, r.right() - 20 - kShadow, top, glyph::kPress, "ACTIONS");
+    const std::pair<const char *, std::string> rows[] = {
+        {"FULL REFRESH", fullRefreshValue()},
+        {"PIN LOCK", pinLockValue()},
+    };
+    const int x = r.x + kPadX;
+    int y = top + (kButtonH - 2 * kStateH) / 2;
+    for (const auto &row : rows) {
+      drawText(c, {x, y, kStripKeyW, kStateH}, row.first, style::kKey);
+      drawText(c, {x + kStripKeyW, y, button.x - 12 - x - kStripKeyW, kStateH}, row.second,
+               kStateValue);
+      y += kStateH;
     }
   }
 
-  ui::ListCursor cursor_;
+  int lastAction_ = 0;  // where the sheet opens: the action last run
   std::string message_;  // shown in place of the ACTIONS header until the cursor moves
   bool rebooting_ = false;
   bool rebootShown_ = false;  // the "REBOOTING…" frame has been drawn

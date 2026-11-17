@@ -1,10 +1,12 @@
 #include "ui/menu.h"
 
+#include <algorithm>
+
 namespace ui {
 
-MenuScreen::MenuScreen(std::string title, std::vector<MenuItem> items)
+MenuScreen::MenuScreen(std::string title, std::vector<MenuItem> items, int cursor)
     : title_(std::move(title)), items_(std::move(items)) {
-  cursor_.reset(static_cast<int>(items_.size()));
+  cursor_.reset(static_cast<int>(items_.size()), cursor);
 }
 
 int MenuScreen::hints(Hint *out) const {
@@ -27,14 +29,16 @@ bool MenuScreen::onKey(Key key) {
 }
 
 void MenuScreen::draw(Canvas &c, const Rect &body) {
-  const int rows = static_cast<int>(items_.size());
+  const int fit = std::max(1, (body.h - kRule - kSectionH) / kRowH);
+  const int count = static_cast<int>(items_.size());
+  const int rows = std::min(count, fit);
   Rect sheet{body.x, body.bottom() - (kRule + kSectionH + rows * kRowH), body.w, 0};
   sheet.h = body.bottom() - sheet.y;
   fill(c, sheet, kPaper);
   hrule(c, sheet.x, sheet.y, sheet.w);
   Rect r = sheet;
   r.takeTop(kRule);
-  drawSectionHeader(c, r.takeTop(kSectionH), title_);
+  drawSectionHeader(c, r.takeTop(kSectionH), title_, count > fit ? cursor_.label() : "");
   drawList(c, r, kRowH, cursor_, [this](int i) {
     Row row;
     row.title = items_[i].label;
