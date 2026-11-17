@@ -16,6 +16,7 @@
 #include "sensor_hub.h"
 #include "timesync.h"
 #include "forecast.h"
+#include "webdav.h"
 #include "wlan.h"
 
 namespace power {
@@ -42,9 +43,9 @@ const char *modeName(Mode m) {
   return "-";
 }
 
-// A sync or a download that a power-off would cut short.
+// A sync, a download or a Wi-Fi drive session that a power-off would cut short.
 bool working() {
-  if (weather::syncing() || podcasts::busy() || ota::active()) return true;
+  if (weather::syncing() || podcasts::busy() || ota::active() || webdav::active()) return true;
   const timesync::Phase t = timesync::status().phase;
   return t == timesync::Phase::Connecting || t == timesync::Phase::Asking;
 }
