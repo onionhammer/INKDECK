@@ -2,10 +2,12 @@
 // rail but the RTC's; the panel keeps its last image. The RTC alarm, diode-OR'd onto the PMIC's
 // PWRON, boots the board again, as do PWR held 1 s and plugging in USB.
 //
-// Two ways to be off:
+// Three ways to be off:
 //   Sleep    the Sleep screen (the frog); wakes only for an alarm.
 //   Standby  the Clock face; wakes every minute to redraw it, and for alarms. No radio, unless
 //            INKDECK_STANDBY_WEATHER_HOURS (forecast.h) has it fetch the forecast.
+//   Book     a book's cover (apps/closed_book.h); wakes only for an alarm, and the next start
+//            opens the book again, whatever started the board.
 #pragma once
 #include <stdint.h>
 #include <time.h>
@@ -13,7 +15,7 @@
 namespace power {
 
 enum class Wake : uint8_t { Reset, PowerKey, Alarm, Usb, Other };
-enum class Mode : uint8_t { On, Sleep, Standby };
+enum class Mode : uint8_t { On, Sleep, Standby, Book };
 
 // Early in setup(), after Wire.begin(), pmic::configure() and rtc::begin(): works out why the
 // board started and releases the RTC's interrupt (while it holds PWRON low, 4 s of that would
@@ -41,6 +43,11 @@ constexpr int kLowBatteryPercent = 15;
 // ringing, no time or weather sync or podcast download. While reading (the Reader is open) or while music plays, only once
 // the battery is below kLowBatteryPercent as well.
 bool idle(bool reading);
+
+// True when an open book should close (apps/closed_book.h): on battery, no key for 15 minutes,
+// and nothing playing, ringing, recording, syncing or downloading. A night of naps under an
+// open book took 3 % of the battery (2026-11-17); off, the board draws about 40 uA.
+bool idleBook();
 
 // Light sleep: the CPUs stop, RAM, PSRAM and peripherals keep their state, and the board draws
 // a fraction of a milliamp plus whatever the rails feed. A button (dial, press, BOOT, PWR)

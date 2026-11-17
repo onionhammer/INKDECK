@@ -65,9 +65,17 @@ class Screen {
   // the IMU's wake on motion armed, and a movement keeps the board awake a few seconds, long
   // enough for onTick() to see how it's held now.
   virtual bool wakeOnMotion() const { return false; }
-  // Called when the board starts light-sleeping under this screen: save anything that a power
-  // loss shouldn't take (the Reader saves its place).
+  // Called when the board starts light-sleeping under this screen, and before it powers off
+  // behind a closed book: save anything that a power loss shouldn't take (the Reader saves its
+  // place).
   virtual void onNap() {}
+  // true for a reading() screen with a book open (the Reader): on battery, 15 minutes without a
+  // key close the book. The panel shows its cover, the board powers off, and the next start
+  // opens the book again (apps/closed_book.h).
+  virtual bool closesWhenIdle() const { return false; }
+  // true for the last frame before a power-off (Sleep, Standby, a closed book): nothing else
+  // starts a power-off or a sync while it's on top.
+  virtual bool offFace() const { return false; }
   // true for the player (Music): HOLD BOOT goes home from it rather than opening it again.
   virtual bool isPlayer() const { return false; }
   // true for the lock screen (apps/lock.h): nothing under it can be reached until it pops

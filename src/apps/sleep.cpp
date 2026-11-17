@@ -138,6 +138,7 @@ class SleepScreen : public ui::Screen {
   std::string tag() const override { return "SLEEP"; }
   bool chrome() const override { return false; }
   bool landscape() const override { return true; }
+  bool offFace() const override { return true; }
   bool onKey(Key) override {  // a key in the second before power-off: stay on
     ui::nav::pop();
     return true;
@@ -275,7 +276,7 @@ class SleepScreen : public ui::Screen {
 
 void sleepNow() {
   const ui::Screen *top = ui::nav::top();
-  if (top && top->landscape() && !top->chrome()) return;  // Sleep or Standby already showing
+  if (top && top->offFace()) return;  // Sleep, Standby or a closed book already showing
   lockNow();  // under the frog: a key that cancels the power-off lands on the lock
   ui::nav::push(std::make_unique<SleepScreen>());
   ui::nav::invalidate(ui::Refresh::Full);
