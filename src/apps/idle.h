@@ -7,7 +7,8 @@
 //   - A book open in the Reader on battery, 15 minutes without a key (or 10 with the battery
 //     below 15 %): the book closes. The panel shows its cover, the board powers off, and the
 //     next start opens the book at its page (closed_book.h). Never on USB, and not while
-//     music plays. The text reader and the picture viewer stay as above.
+//     music plays. The text reader and the picture viewer stay as above. PWR on battery
+//     closes the book at once, music or not.
 //   - Reading on battery: once the page is drawn the board light-sleeps until the next key or
 //     the next minute (alarms ring on the minute), with the IMU in standby and the panel's
 //     power (ALDO3) off. A paused player doesn't stop it (pause switches the audio off), and
@@ -25,8 +26,8 @@ namespace apps {
 // Call from loop(): powers off when power::idle() says so (or when requested).
 void pollPower();
 
-// The PWR key (the navigator's handler): on USB the desk face, on battery Sleep; on the desk
-// face, wake.
+// The PWR key (the navigator's handler): on USB the desk face; on battery Sleep, or with a book
+// open in the Reader its cover (closed_book.h); on the desk face, wake.
 void powerKey();
 
 // Call from loop() before the navigator: naps if the conditions above hold. Returns true if it

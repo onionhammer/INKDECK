@@ -4,7 +4,8 @@
 // through the book it is.
 //
 // On battery, 15 minutes without a key under the Reader close the book (power::idleBook(),
-// apps/idle.h); so does a low battery after 10. The board powers off as power::Mode::Book, wakes
+// apps/idle.h); so does a low battery after 10, and PWR at once (apps::powerKey()). The board
+// powers off as power::Mode::Book, wakes
 // for alarms as Sleep does, and the next start opens the book at its page (main.cpp). A key in
 // the second before the power-off, PWR included, goes back to the page.
 #pragma once
