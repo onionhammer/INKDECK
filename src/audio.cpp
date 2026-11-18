@@ -490,42 +490,73 @@ void ringStep() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Beep (audio task only): one tone with soft edges, gliding from hz to hzEnd, then enough silence
-// to push it through the DMA buffers before the output goes off again. Returns once it has played.
+// Tones (audio task only): a run of tones and silences, each tone with soft edges and gliding
+// from hz to hzEnd, then enough silence to push them through the DMA buffers before the output
+// goes off again. Returns once they have played. At the music volume: at 0, nothing plays.
 
-// The voice cue (captureStart(true)): an octave up in a tenth of a second, "listening". Low and
-// soft rather than a beep: 440 to 880 Hz.
-constexpr uint32_t kCueMs = 100, kCueHz = 440, kCueEndHz = 880;
+struct Tone {
+  uint16_t ms;
+  uint16_t hz;     // 0: silence
+  uint16_t hzEnd;  // the glide's end; hz for a steady tone
+};
 
-void beepNow(uint32_t ms, uint32_t hz, uint32_t hzEnd) {
+void tonesNow(const Tone *tones, int count, float level, uint32_t rampMs) {
   constexpr uint32_t kRate = 16000;
   constexpr float kTwoPi = 2 * static_cast<float>(M_PI);
-  if (volume.load() == 0) return;  // at the music volume: turned down to 0, no beep
+  if (volume.load() == 0) return;
   if (!outputStart(kRate)) return;
-  const uint32_t total = ms * kRate / 1000;
-  const uint32_t ramp = kRampMs * kRate / 1000;
-  const uint32_t tail = kDmaDescriptors * kDmaFrames;  // silence that flushes the tone out
+  const uint32_t ramp = std::max<uint32_t>(1, rampMs * kRate / 1000);
   constexpr int kFrames = 256;
-  float phase = 0;  // accumulated, so a glide stays continuous
-  for (uint32_t done = 0; done < total + tail;) {
-    const int n = static_cast<int>(std::min<uint32_t>(kFrames, total + tail - done));
-    for (int i = 0; i < n; ++i, ++done) {
-      float amp = 0;
-      if (done < total) {
-        amp = 0.6f;
-        if (done < ramp) amp *= static_cast<float>(done) / ramp;
-        if (total - done < ramp) amp *= static_cast<float>(total - done) / ramp;
-        const float hzNow = hz + (static_cast<float>(hzEnd) - hz) * done / total;
-        phase += kTwoPi * hzNow / kRate;
-        if (phase > kTwoPi) phase -= kTwoPi;
-      }
-      p.pcm[2 * i] = p.pcm[2 * i + 1] = static_cast<int16_t>(amp * 32767 * sinf(phase));
+  int n = 0;
+  auto put = [&n](int16_t v) {
+    p.pcm[2 * n] = p.pcm[2 * n + 1] = v;
+    if (++n == kFrames) {
+      size_t written = 0;
+      i2s_channel_write(tx, p.pcm, n * 2 * sizeof(int16_t), &written, portMAX_DELAY);
+      n = 0;
     }
+  };
+  for (int t = 0; t < count; ++t) {
+    const Tone &tone = tones[t];
+    const uint32_t total = tone.ms * kRate / 1000;
+    float phase = 0;  // accumulated, so a glide stays continuous
+    for (uint32_t done = 0; done < total; ++done) {
+      if (tone.hz == 0) {
+        put(0);
+        continue;
+      }
+      float amp = level;
+      if (done < ramp) amp *= static_cast<float>(done) / ramp;
+      if (total - done < ramp) amp *= static_cast<float>(total - done) / ramp;
+      const float hzNow = tone.hz + (static_cast<float>(tone.hzEnd) - tone.hz) * done / total;
+      phase += kTwoPi * hzNow / kRate;
+      if (phase > kTwoPi) phase -= kTwoPi;
+      put(static_cast<int16_t>(amp * 32767 * sinf(phase)));
+    }
+  }
+  for (uint32_t i = 0; i < kDmaDescriptors * kDmaFrames; ++i) put(0);  // flushes them out
+  if (n > 0) {
     size_t written = 0;
     i2s_channel_write(tx, p.pcm, n * 2 * sizeof(int16_t), &written, portMAX_DELAY);
   }
   outputStop();
 }
+
+// audio::beep(): one tone.
+void beepNow(uint32_t ms, uint32_t hz, uint32_t hzEnd) {
+  const Tone tone{static_cast<uint16_t>(ms), static_cast<uint16_t>(hz),
+                  static_cast<uint16_t>(hzEnd)};
+  tonesNow(&tone, 1, 0.6f, kRampMs);
+}
+
+// The voice cue (captureStart(true)), "talk now": a push-to-talk chirp after Nextel's Direct
+// Connect talk-permit tone, three 1800 Hz pips (30, 30 and 50 ms, 20 ms apart). Quieter than
+// the other beeps: 1800 Hz comes through the small speaker far louder than the old 440-880 Hz
+// glide did at 0.6.
+constexpr Tone kCue[] = {{30, 1800, 1800}, {20, 0, 0}, {30, 1800, 1800}, {20, 0, 0},
+                         {50, 1800, 1800}};
+constexpr float kCueLevel = 0.3f;
+constexpr uint32_t kCueRampMs = 3;  // crisp pips, still without clicks
 
 // ---------------------------------------------------------------------------------------------
 // WAV playback (audio task only): 16-bit PCM read straight into the output.
@@ -849,7 +880,7 @@ bool captureBegin(bool cue) {
   if (!captureBuf) return false;
   if (cue) {
     releaseOutput();
-    beepNow(kCueMs, kCueHz, kCueEndHz);
+    tonesNow(kCue, sizeof kCue / sizeof kCue[0], kCueLevel, kCueRampMs);
   }
   xStreamBufferReset(captureBuf);
   captureDropped = 0;

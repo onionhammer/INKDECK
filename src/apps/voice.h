@@ -1,7 +1,7 @@
 // Voice: talk to the assistant on the home network (voice_client.h; the daemon is inkharness/). Only
 // in a build with INKDECK_VOICE (features.h).
 //
-// From any screen, HOLD BOOT (about half a second; apps/hold_boot.h) talks: a short rising chirp, and the mic opens
+// From any screen, HOLD BOOT (about half a second; apps/hold_boot.h) talks: a push-to-talk chirp (three quick pips), and the mic opens
 // (at once, even while the panel is refreshing; the chirp is the signal to speak, and the mic
 // doesn't hear it). The voice sheet rises over the lower half of the screen with the
 // session's state, the mic's level, what the daemon heard and the reply's text as it is spoken.
