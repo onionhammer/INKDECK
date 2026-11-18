@@ -114,7 +114,8 @@ card**, since a card is easy to lift: the board keeps the Wi-Fi password and eac
 its flash (NVS) and rewrites their lines without them. To change one, write it in again. The
 flash isn't encrypted, so someone with the board and a USB cable can read them, as they can the
 `.env` values built into the firmware. `INKDECK_FAHRENHEIT` in `platformio.ini` switches between
-US and metric units.
+US and metric units, and `INKDECK_VOICE` builds the voice assistant in (`1`, as set) or leaves
+it out (`0`): no VOICE on Home, and HOLD BOOT only raises the player sheet.
 
 ```ini
 [wifi]

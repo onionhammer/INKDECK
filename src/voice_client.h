@@ -2,7 +2,7 @@
 // for the screens: AGENTS.md gotcha 8): holds a TCP session with voiced on the home network
 // (docs/voice-protocol.md), sends what the mic hears while the talk key is down, and plays the
 // spoken reply as it arrives. The daemon does the listening, thinking and speaking; this is the
-// device's end of the wire.
+// device's end of the wire. Only in a build with INKDECK_VOICE (features.h).
 //
 // A session is open while the Voice screen or the voice sheet (HOLD BOOT, apps/voice.h) is on
 // top: open() joins Wi-Fi and connects in the background, close() ends it and lets the radio go.

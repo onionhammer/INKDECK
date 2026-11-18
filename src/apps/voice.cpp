@@ -1,13 +1,15 @@
+#include "features.h"
+
+#if INKDECK_VOICE  // the whole file (features.h)
+
 #include "apps/voice.h"
 
 #include <Arduino.h>
 
 #include <algorithm>
-#include <atomic>
 #include <string>
 
 #include "apps/home.h"
-#include "apps/music.h"
 #include "audio.h"
 #include "input.h"
 #include "settings.h"
@@ -30,7 +32,7 @@ constexpr int kSheetHeardLines = 2;
 constexpr uint32_t kSheetCloseMs = 30000;  // after the last reply, and as long since a key
 
 // The Voice screen or the sheet while on top: HOLD BOOT there talks without opening another.
-const ui::Screen *voiceOnTop = nullptr;
+const ui::Screen *onTop = nullptr;
 
 const char *stateWord(voice::State s) {
   switch (s) {
@@ -102,14 +104,14 @@ class VoiceScreen : public ui::Screen {
   }
 
   void onEnter() override {
-    voiceOnTop = this;
+    onTop = this;
     if (!voice::configured()) return;
     voice::open();
     input::onSelectEdge(onEdge);
   }
 
   void onLeave() override {
-    voiceOnTop = nullptr;
+    onTop = nullptr;
     input::onSelectEdge(nullptr);
     voice::close();
   }
@@ -173,7 +175,7 @@ class VoiceScreen : public ui::Screen {
 };
 
 // The voice sheet (HOLD BOOT): an overlay over the lower half of whatever is on screen. The hold
-// that opens it has already started the session (talkEdge()); closing it ends the session.
+// that opens it has already started the session (apps/hold_boot.cpp); closing it ends it.
 class VoiceSheet : public ui::Screen {
  public:
   std::string tag() const override { return {}; }  // the screen below supplies the chrome
@@ -191,10 +193,10 @@ class VoiceSheet : public ui::Screen {
     return n;
   }
 
-  void onEnter() override { voiceOnTop = this; }
+  void onEnter() override { onTop = this; }
 
   void onLeave() override {
-    voiceOnTop = nullptr;
+    onTop = nullptr;
     voice::close();  // covered (the lock, an alarm, PWR) or closed: either way, done
   }
 
@@ -271,49 +273,17 @@ class VoiceSheet : public ui::Screen {
   uint32_t activeMs_ = millis();
 };
 
-// What the last HOLD BOOT's edge chose: talk, or (music or a podcast playing, or talking not
-// allowed) not. talkKey() follows it, so the two can't disagree if playback ends in between.
-std::atomic<bool> holdTalks{false};
-
-// HOLD BOOT's two ends, from the input timer: straight to the voice task, so the mic opens on
-// time even while the panel is refreshing. Playback comes first: while it plays, HOLD BOOT is the
-// player's shortcut. The release always goes (a stray one does nothing).
-void talkEdge(bool down) {
-  if (!down) {
-    voice::talkStop();
-    return;
-  }
-  const bool talks = ui::nav::talkAllowed() && !audio::playing();
-  holdTalks = talks;
-  if (talks) voice::talkStart();  // with no session, opens one
-}
-
-// HOLD BOOT in the UI task, after talkEdge(): the player's shortcut while something plays,
-// otherwise the sheet, unless the Voice screen or the sheet is on top already.
-void talkKey(bool held) {
-  if (!held) return;  // the release went to the voice task already; the navigator redraws
-  if (!holdTalks) {
-    openPlayer();  // does nothing if nothing plays (talking wasn't allowed)
-    return;
-  }
-  ui::Screen *top = ui::nav::top();
-  if (top && top == voiceOnTop) return;
-  if (!ui::nav::talkAllowed()) {
-    // The stack changed between the hold and now (the lock came up): undo what the hold began.
-    voice::close();
-    return;
-  }
-  ui::nav::push(std::make_unique<VoiceSheet>());
-}
-
 }  // namespace
 
 std::unique_ptr<ui::Screen> makeVoice() { return std::make_unique<VoiceScreen>(); }
 
-void beginTalkKey() {
-  voice::begin();
-  input::onBackHold(talkEdge);
-  ui::nav::onTalkKey(talkKey);
+bool voiceOnTop() {
+  const ui::Screen *top = ui::nav::top();
+  return top && top == onTop;
 }
 
+void raiseVoiceSheet() { ui::nav::push(std::make_unique<VoiceSheet>()); }
+
 }  // namespace apps
+
+#endif  // INKDECK_VOICE

@@ -490,17 +490,23 @@ void ringStep() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Beep (audio task only): one tone with soft edges, then enough silence to push it through the
-// DMA buffers before the output goes off again.
+// Beep (audio task only): one tone with soft edges, gliding from hz to hzEnd, then enough silence
+// to push it through the DMA buffers before the output goes off again. Returns once it has played.
 
-void beepNow(uint32_t ms, uint32_t hz) {
+// The voice cue (captureStart(true)): an octave up in a tenth of a second, "listening". Low and
+// soft rather than a beep: 440 to 880 Hz.
+constexpr uint32_t kCueMs = 100, kCueHz = 440, kCueEndHz = 880;
+
+void beepNow(uint32_t ms, uint32_t hz, uint32_t hzEnd) {
   constexpr uint32_t kRate = 16000;
+  constexpr float kTwoPi = 2 * static_cast<float>(M_PI);
   if (volume.load() == 0) return;  // at the music volume: turned down to 0, no beep
   if (!outputStart(kRate)) return;
   const uint32_t total = ms * kRate / 1000;
   const uint32_t ramp = kRampMs * kRate / 1000;
   const uint32_t tail = kDmaDescriptors * kDmaFrames;  // silence that flushes the tone out
   constexpr int kFrames = 256;
+  float phase = 0;  // accumulated, so a glide stays continuous
   for (uint32_t done = 0; done < total + tail;) {
     const int n = static_cast<int>(std::min<uint32_t>(kFrames, total + tail - done));
     for (int i = 0; i < n; ++i, ++done) {
@@ -509,8 +515,10 @@ void beepNow(uint32_t ms, uint32_t hz) {
         amp = 0.6f;
         if (done < ramp) amp *= static_cast<float>(done) / ramp;
         if (total - done < ramp) amp *= static_cast<float>(total - done) / ramp;
+        const float hzNow = hz + (static_cast<float>(hzEnd) - hz) * done / total;
+        phase += kTwoPi * hzNow / kRate;
+        if (phase > kTwoPi) phase -= kTwoPi;
       }
-      const float phase = 2 * static_cast<float>(M_PI) * hz * (done % kRate) / kRate;
       p.pcm[2 * i] = p.pcm[2 * i + 1] = static_cast<int16_t>(amp * 32767 * sinf(phase));
     }
     size_t written = 0;
@@ -754,14 +762,19 @@ void recordFail(const char *why) {
   recordFinish();
 }
 
-// Opens the mic: I2S receive at 16 kHz, then the codec's ADC. Whatever was using the output
-// (playback, a paused track, the alarm tone, a voice reply) gives the port up first.
-bool micOpen() {
+// Whatever was using the output (playback, a paused track, the alarm tone, a voice reply) gives
+// the port up.
+void releaseOutput() {
   if (ring.on) ringStop();
   streamStop();
   closeTrack();
   outputStop();
   setState(State::Stopped);
+}
+
+// Opens the mic: I2S receive at 16 kHz, then the codec's ADC, after releaseOutput().
+bool micOpen() {
+  releaseOutput();
 
   i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   chan.dma_desc_num = kDmaDescriptors;  // 8 x 511 frames = 255 ms: rides out an SD write
@@ -826,12 +839,18 @@ void recordStart() {
 }
 
 // The mic into captureBuf (a voice utterance) instead of a file.
-bool captureBegin() {
+// cue: the "listening" chirp first. The speaker and the mic take turns on the one I2S port, so it
+// plays out before the mic opens, and the mic doesn't hear it.
+bool captureBegin(bool cue) {
   if (recOn) recordFinish();
   if (!captureBuf) {
     captureBuf = xStreamBufferCreateWithCaps(kCaptureBytes, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   }
   if (!captureBuf) return false;
+  if (cue) {
+    releaseOutput();
+    beepNow(kCueMs, kCueHz, kCueEndHz);
+  }
   xStreamBufferReset(captureBuf);
   captureDropped = 0;
   rec = Recorder{};
@@ -913,10 +932,10 @@ void handle(const Command &c) {
   }
   switch (c.cmd) {
     case Cmd::Beep:
-      if (!recOn && !ring.on && !strm.on && state == State::Stopped) beepNow(c.arg, c.arg2);
+      if (!recOn && !ring.on && !strm.on && state == State::Stopped) beepNow(c.arg, c.arg2, c.arg2);
       break;
     case Cmd::Capture:
-      ack(captureBegin());
+      ack(captureBegin(c.arg != 0));
       break;
     case Cmd::CaptureStop:
       if (rec.capture) recordFinish();
@@ -1269,7 +1288,7 @@ RecordStatus recordStatus() {
 
 bool recording() { return recOn.load() && !captureOn.load(); }
 
-bool captureStart() { return sendAndWait(Cmd::Capture); }
+bool captureStart(bool cue) { return sendAndWait(Cmd::Capture, cue ? 1 : 0); }
 
 void captureStop() { sendAndWait(Cmd::CaptureStop); }
 

@@ -9,7 +9,7 @@ and power decision on this file, `include/board_pins.h`, or the primary sources 
 
 | Path | Purpose |
 | --- | --- |
-| `platformio.ini` | Single env `epaper397`: official `espressif32 @ ~8.0.0` (Arduino core 3.3.x / IDF 5.5), partition table (2×3 MB OTA + 9.9 MB FAT), `-Os` (gotcha 9), LTO for `src/` (`build_src_flags`, gotcha 11), log level, display units (`INKDECK_FAHRENHEIT`, see `src/units.h`), standby forecast interval (`INKDECK_STANDBY_WEATHER_HOURS`, see `src/forecast.h`), where a set PIN is asked (`INKDECK_PIN_ON`: `power_on`, `settings`, `files`; see `src/pin_places.h`) |
+| `platformio.ini` | Single env `epaper397`: official `espressif32 @ ~8.0.0` (Arduino core 3.3.x / IDF 5.5), partition table (2×3 MB OTA + 9.9 MB FAT), `-Os` (gotcha 9), LTO for `src/` (`build_src_flags`, gotcha 11), log level, display units (`INKDECK_FAHRENHEIT`, see `src/units.h`), standby forecast interval (`INKDECK_STANDBY_WEATHER_HOURS`, see `src/forecast.h`), where a set PIN is asked (`INKDECK_PIN_ON`: `power_on`, `settings`, `files`; see `src/pin_places.h`), the voice assistant (`INKDECK_VOICE`: 1 builds it in, 0 leaves out Home's VOICE, HOLD BOOT talking and `voice_client`; see `src/features.h`) |
 | `boards/waveshare_esp32_s3_epaper_397.json` | Custom board def: 16 MB QIO flash, **octal PSRAM (`qio_opi`)**, native USB CDC |
 | `include/board_pins.h` | **All GPIOs and I2C addresses**, from the schematic. Use these constants; don't hard-code pins |
 | `src/` | Firmware. `ui/` is the navigator (screen stack and key language, `ui/nav.h`), components, text styles and generated fonts. `apps/` holds the screens. Drivers sit flat in `src/` |

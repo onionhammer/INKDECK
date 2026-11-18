@@ -42,6 +42,7 @@
 //               ("!unzip /sdcard/Books/Some Book.epub|OEBPS/style.css")
 //   !voiceloop  the voice paths without a network: 3 s of the mic into the capture ring, then
 //               the same samples out through the stream ring; prints the bytes and the peak
+//               (with INKDECK_VOICE, features.h)
 //   !sdtest     write test patterns to the card from internal RAM, PSRAM and flash, read them
 //               back and report wrong bytes (flash in one large write is known to fail)
 //   !wom [N [MG]]   arm the IMU's wake on motion for N seconds (10) at a threshold of MG

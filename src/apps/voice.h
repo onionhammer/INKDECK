@@ -1,7 +1,9 @@
-// Voice: talk to the assistant on the home network (voice_client.h; the daemon is voiced/).
+// Voice: talk to the assistant on the home network (voice_client.h; the daemon is voiced/). Only
+// in a build with INKDECK_VOICE (features.h).
 //
-// From any screen, HOLD BOOT (about half a second) talks: the mic opens at once, even while
-// the panel is refreshing, and the voice sheet rises over the lower half of the screen with the
+// From any screen, HOLD BOOT (about half a second; apps/hold_boot.h) talks: a short rising chirp, and the mic opens
+// (at once, even while the panel is refreshing; the chirp is the signal to speak, and the mic
+// doesn't hear it). The voice sheet rises over the lower half of the screen with the
 // session's state, the mic's level, what the daemon heard and the reply's text as it is spoken.
 // Let go to send. On the sheet:
 //   HOLD BOOT  talk again; during a reply it stops the reply and listens
@@ -26,7 +28,8 @@ namespace apps {
 
 std::unique_ptr<ui::Screen> makeVoice();
 
-// From setup(): starts the voice client's task and puts talking on HOLD BOOT.
-void beginTalkKey();
+// For HOLD BOOT (apps/hold_boot.cpp), which has already started the session when it asks:
+bool voiceOnTop();       // the Voice screen or the voice sheet is on top: the hold just talks
+void raiseVoiceSheet();  // the voice sheet over the screen on top
 
 }  // namespace apps

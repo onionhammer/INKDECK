@@ -16,7 +16,10 @@
 #include "sensor_hub.h"
 #include "timesync.h"
 #include "forecast.h"
+#include "features.h"
+#if INKDECK_VOICE
 #include "voice_client.h"
+#endif
 #include "webdav.h"
 #include "wlan.h"
 
@@ -47,7 +50,9 @@ const char *modeName(Mode m) {
 // A sync, a download, a Wi-Fi drive session or a voice exchange that a power-off would cut short.
 bool working() {
   if (weather::syncing() || podcasts::busy() || ota::active() || webdav::active()) return true;
+#if INKDECK_VOICE
   if (voice::busy()) return true;
+#endif
   const timesync::Phase t = timesync::status().phase;
   return t == timesync::Phase::Connecting || t == timesync::Phase::Asking;
 }

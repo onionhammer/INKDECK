@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "board_pins.h"
 #include "epub.h"
+#include "features.h"
 #include "flashfs.h"
 #include "forecast.h"
 #include "input.h"
@@ -159,6 +160,7 @@ void lineCommand(const String &line) {
     Serial.printf("devtools: appended %u bytes\n", static_cast<unsigned>(wrote));
     return;
   }
+#if INKDECK_VOICE
   if (line == "voiceloop") {
     // The voice paths without a network: 3 s of the mic into the capture ring, then the same
     // samples back out through the stream ring (16 kHz).
@@ -202,6 +204,7 @@ void lineCommand(const String &line) {
     Serial.printf("voiceloop: done in %lu ms\n", static_cast<unsigned long>(millis() - t1));
     return;
   }
+#endif
   if (line == "sdtest") {
     // Writes 64 KB of a pattern from internal RAM, from PSRAM and from flash, reads each back.
     constexpr size_t kSize = 64 * 1024;

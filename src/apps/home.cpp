@@ -15,7 +15,10 @@
 #include "apps/reader.h"
 #include "apps/sensors.h"
 #include "apps/system.h"
+#include "features.h"
+#if INKDECK_VOICE
 #include "apps/voice.h"
+#endif
 #include "apps/weather.h"
 #include "audio.h"
 #include "covers.h"
@@ -42,7 +45,10 @@ using ui::Key;
 using ui::Rect;
 
 enum class Kind : uint8_t {
-  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder, Voice
+  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder,
+#if INKDECK_VOICE
+  Voice,
+#endif
 };
 
 struct Module {
@@ -70,8 +76,10 @@ constexpr Module kModules[] = {
      "PCF85063A @ 0x51", Kind::Clock},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
      "ES8311 ADC \xC2\xB7 ALDO2", Kind::Recorder},
+#if INKDECK_VOICE
     {"VOICE", "NET", "Hold BOOT on any screen and talk to the assistant on your network. It speaks back.",
      "Wi-Fi \xC2\xB7 ES8311 \xC2\xB7 voiced", Kind::Voice},
+#endif
     {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},
     {"LEVEL", "IMU", "Bubble level for surfaces, a vial for edges, and a tone when it's level.",
@@ -311,13 +319,15 @@ int statsFor(const Module &m, Stat out[4]) {
       out[3] = {"MIC GAIN", std::to_string(r.gainDb) + " dB"};
       return 4;
     }
+#if INKDECK_VOICE
     case Kind::Voice: {
       out[0] = {"DAEMON", settings::hasVoice() ? settings::voiceHost() : "NOT SET"};
       out[1] = {"PORT", std::to_string(settings::voicePort())};
       out[2] = {"WI-FI", wlan::configured() ? wlan::network() : "NOT SET"};
-      out[3] = {"TALK", "HOLD \xE2\x97\x8F"};
+      out[3] = {"TALK", "HOLD BOOT"};
       return 4;
     }
+#endif
   }
   return 0;
 }
@@ -409,7 +419,9 @@ class HomeScreen : public ui::Screen {
       case Kind::Weather: ui::nav::push(makeWeather()); break;
       case Kind::Level: ui::nav::push(makeLevel()); break;
       case Kind::Recorder: ui::nav::push(makeRecorder()); break;
+#if INKDECK_VOICE
       case Kind::Voice: ui::nav::push(makeVoice()); break;
+#endif
     }
   }
 

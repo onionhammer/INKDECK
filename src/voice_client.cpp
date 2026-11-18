@@ -1,3 +1,7 @@
+#include "features.h"
+
+#if INKDECK_VOICE  // the whole file (features.h)
+
 #include "voice_client.h"
 
 #include <Arduino.h>
@@ -377,7 +381,7 @@ void talkIntoNewSession() {
     setState(State::Error, settings::hasVoice() ? "NO WI-FI NETWORK SET" : "NO VOICE HOST SET");
     return;
   }
-  const bool mic = audio::captureStart();
+  const bool mic = audio::captureStart(true);
   if (mic) {
     s.capturing = true;
     s.talkStartMs = millis();
@@ -419,7 +423,7 @@ void beginTalk() {
     shared.reply.clear();
     shared.error.clear();
   }
-  if (!audio::captureStart()) {
+  if (!audio::captureStart(true)) {
     setState(State::Ready, "THE MIC WON'T START");
     return;
   }
@@ -540,3 +544,5 @@ bool busy() {
 }
 
 }  // namespace voice
+
+#endif  // INKDECK_VOICE

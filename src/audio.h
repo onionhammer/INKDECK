@@ -104,8 +104,10 @@ bool recording();  // to a file (not a capture)
 // take turns: starting one ends the other, and stop() ends both.
 
 // Starts the mic at kRecordRate into the capture ring (8 s deep). Returns once it is running;
-// false if it couldn't start. Stops playback first.
-bool captureStart();
+// false if it couldn't start. Stops playback first. cue: a "listening" chirp first (a tenth of a
+// second gliding up an octave, at the music volume), which plays out before the mic opens: the
+// speaker and the mic take turns, so the mic doesn't hear it.
+bool captureStart(bool cue = false);
 void captureStop();  // returns once the mic is off; what's in the ring can still be read
 bool capturing();
 // Takes up to max bytes from the capture ring, waiting up to timeoutMs for the first.

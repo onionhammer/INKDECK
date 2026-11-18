@@ -11,7 +11,8 @@
 //   BOOT     back: the screen may use it first (parent folder), otherwise it pops the screen.
 //            On the root, with nothing to pop, it redraws with a full refresh (cleans the
 //            screen)
-//   HOLD BOOT talk to the assistant, from any screen (onTalkKey(), apps/voice.h): held about
+//   HOLD BOOT talk to the assistant, from any screen (onTalkKey(), apps/hold_boot.h; only in a
+//            build with the voice assistant, INKDECK_VOICE in features.h): held about
 //            half a second, the voice sheet rises over the lower half; let go to send. Not while
 //            the lock is on the stack, under an off face, or over a screen that has the mic or
 //            the speaker (allowsTalk()). While music or a podcast plays, it raises the player

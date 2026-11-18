@@ -11,7 +11,7 @@ namespace apps {
 
 std::unique_ptr<ui::Screen> makeMusic();
 
-// HOLD BOOT while music or a podcast plays (asked before talking, apps/voice.h): closes any menu
+// HOLD BOOT while music or a podcast plays (apps/hold_boot.h, before talking): closes any menu
 // or sheet and raises the player sheet over the lower half of the screen: the title, the artist
 // (or a podcast's show), the waveform with the playhead, the times, the play state and volume.
 //   ●  pause / play   HOLD ●  next   ▲▼  volume   BOOT (or HOLD BOOT)  close
