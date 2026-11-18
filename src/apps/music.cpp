@@ -61,15 +61,8 @@ std::string baseName(const std::string &path) {
   return dot == std::string::npos ? name : name.substr(0, dot);
 }
 
-// The player opened by HOLD BOOT (openPlayer), while it's on the stack: HOLD BOOT on it goes
-// back to where it was opened from.
-const ui::Screen *shortcutPlayer = nullptr;
-
 class MusicScreen : public ui::Screen {
  public:
-  ~MusicScreen() override {
-    if (shortcutPlayer == this) shortcutPlayer = nullptr;
-  }
   std::string tag() const override { return moduleTag("MUSIC"); }
   bool isPlayer() const override { return true; }
   std::string context() const override {
@@ -295,6 +288,159 @@ class MusicScreen : public ui::Screen {
   uint32_t drawnGeneration_ = 0;
   uint32_t drawnInfo_ = 0;
   uint32_t drawnAt_ = 0;
+
+  friend class PlayerSheet;
+};
+
+// The player sheet (HOLD BOOT while something plays): what's playing and its controls, over the
+// lower half of whatever is on screen.
+constexpr int kSheetMinH = 300;
+constexpr int kSheetPad = 14;
+constexpr int kSheetWaveMaxH = 88;
+constexpr int kSheetPillH = 26;
+
+// The sheet while on top: HOLD BOOT there closes it.
+const ui::Screen *sheetOnTop = nullptr;
+
+// The folder a track is in ("Up First from NPR" for a podcast episode), for a track with no
+// artist.
+std::string folderName(const std::string &path) {
+  const size_t slash = path.rfind('/');
+  if (slash == std::string::npos || slash == 0) return {};
+  const size_t start = path.rfind('/', slash - 1);
+  return path.substr(start == std::string::npos ? 0 : start + 1, slash - start - 1);
+}
+
+class PlayerSheet : public ui::Screen {
+ public:
+  std::string tag() const override { return {}; }  // the screen below supplies the chrome
+  bool overlay() const override { return true; }
+  bool allowsTalk() const override { return false; }  // HOLD BOOT closes it (openPlayer())
+
+  int hints(ui::Hint *out) const override {
+    const audio::Status s = audio::status();
+    if (s.path.empty()) {
+      out[0] = {"BOOT", "CLOSE"};
+      return 1;
+    }
+    out[0] = {ui::glyph::kPress, s.state == audio::State::Playing ? "PAUSE" : "PLAY"};
+    out[1] = {ui::glyph::kHoldPress, "NEXT"};
+    out[2] = {ui::glyph::kDial, "VOL"};
+    out[3] = {"BOOT", "CLOSE"};
+    return 4;
+  }
+
+  void onEnter() override { sheetOnTop = this; }
+  void onLeave() override { sheetOnTop = nullptr; }
+
+  bool onKey(Key key) override {
+    switch (key) {
+      case Key::Up: audio::changeVolume(+kVolumeStep); return true;
+      case Key::Down: audio::changeVolume(-kVolumeStep); return true;
+      case Key::Select: audio::togglePause(); break;
+      case Key::SelectLong: audio::next(); break;
+      default: return false;  // BOOT closes (the navigator pops)
+    }
+    delay(50);  // commands are asynchronous: let the audio task apply it before the redraw
+    return true;
+  }
+
+  bool onTick() override {
+    const audio::Status s = audio::status();
+    if (s.generation != drawnGeneration_ || trackinfo::generation() != drawnInfo_) return true;
+    return s.state == audio::State::Playing && millis() - drawnAt_ >= kLiveRedrawMs;
+  }
+
+  void draw(ui::Canvas &c, const Rect &body) override {
+    using namespace ui;
+    const audio::Status s = audio::status();
+    drawnGeneration_ = s.generation;
+    drawnInfo_ = trackinfo::generation();
+    drawnAt_ = millis();
+    if (!s.path.empty()) trackinfo::request(s.path, true);  // the waveform and a true duration
+    trackinfo::Info info;
+    const bool haveInfo = !s.path.empty() && trackinfo::get(s.path, info);
+
+    // Over a screen without chrome (the desk face), the sheet shows its keys itself.
+    Hint keys[kMaxHints];
+    const Screen *under = nav::base();
+    const int keyCount = under && !under->chrome() ? hints(keys) : 0;
+    Rect r = drawSheet(c, body, kSheetMinH, keys, keyCount);
+
+    char trk[24];
+    snprintf(trk, sizeof trk, "TRK %02d/%02d", s.track + 1, s.trackCount);
+    drawSectionHeader(c, r.takeTop(kSectionH), "NOW PLAYING", s.trackCount ? trk : "");
+    const Rect p{r.x + kPadX, r.y + kSheetPad, r.w - 2 * kPadX, r.h - 2 * kSheetPad};
+
+    // Title: one line at 38 px if it fits, else up to two at 22.
+    const std::string title = upper(s.path.empty() ? "Nothing playing" : s.title);
+    const TextStyle *style = &kSmallTitle;
+    std::vector<std::string> lines = wrap(kSmallTitle, title, p.w, 0);
+    if (lines.size() != 1 || lines[0].find(glyph::kEllipsis) != std::string::npos) {
+      style = &style::kReading;
+      lines = wrap(style::kReading, title, p.w, 2);
+    }
+    int y = p.y + capHeight(*style);
+    for (size_t i = 0; i < lines.size(); ++i) {
+      drawText(c, p.x, y + static_cast<int>(i) * lineHeight(*style), lines[i], *style);
+    }
+    y += static_cast<int>(lines.size() - 1) * lineHeight(*style) + 12;
+
+    // The artist, or for a track without one (a podcast episode) its folder: the show.
+    const std::string by = !s.artist.empty() ? s.artist : folderName(s.path);
+    if (!by.empty()) {
+      y += capHeight(kArtist);
+      drawText(c, p.x, y, ellipsize(kArtist, upper(by), p.w), kArtist);
+    }
+    y += 14;
+
+    // The waveform, as tall as there's room for, the times right under it, and the play state
+    // and volume along the bottom.
+    const int pillTop = p.bottom() - kSheetPillH;
+    const int timeH = capHeight(kTimeLeft);
+    const uint32_t duration = haveInfo && info.meta.durationMs ? info.meta.durationMs : s.durationMs;
+    const int waveH = std::min(kSheetWaveMaxH, pillTop - 16 - timeH - 12 - y);
+    if (waveH >= 24) {
+      const float played = duration ? std::min(1.0f, float(s.elapsedMs) / duration) : 0.0f;
+      MusicScreen::drawWave(c, {p.x, y, p.w, waveH}, haveInfo ? info.wave : std::vector<uint8_t>(),
+                            played);
+      y += waveH + 12;
+    }
+    const int timeBase = y + timeH;
+
+    if (!s.path.empty()) {
+      int x = drawText(c, p.x, timeBase, clock(s.elapsedMs), kTimeLeft);
+      if (duration) {
+        drawText(c, x + 8, timeBase, "/ " + clock(duration), kTimeTotal);
+        const std::string left = std::string("\xE2\x88\x92") +  // −
+                                 clock(duration > s.elapsedMs ? duration - s.elapsedMs : 0);
+        drawText(c, p.right() - textWidth(kTimeLeft, left), timeBase, left, kTimeLeft);
+      }
+    }
+
+    const char *state = s.state == audio::State::Playing  ? "\xE2\x96\xB6 PLAYING"
+                        : s.state == audio::State::Paused ? "II PAUSED"
+                                                          : "\xE2\x96\xA0 STOPPED";
+    const int pillW = drawTag(c, p.x, pillTop + kSheetPillH / 2, kSheetPillH, state, kStatePill,
+                              TagKind::Inverted, 9);
+
+    // "VOL ▮▮▮▮▮▯▯▯▯▯ 60%" to the right of the state.
+    const std::string pct = std::to_string(s.volume) + "%";
+    const int volX = p.x + pillW + 24;
+    const int volLabelW = textWidth(style::kLabel, "VOL");
+    const int pctW = textWidth(style::kLabel, "100%");
+    const int volY = pillTop + (kSheetPillH - 18) / 2;
+    const int base = baselineCentered(style::kLabel, volY, 18);
+    drawText(c, volX, base, "VOL", style::kLabel);
+    drawText(c, p.right() - textWidth(style::kLabel, pct), base, pct, style::kLabel);
+    drawSegments(c, {volX + volLabelW + 10, volY, p.right() - volX - volLabelW - pctW - 20, 18}, 10,
+                 (s.volume + 5) / 10);
+  }
+
+ private:
+  uint32_t drawnGeneration_ = 0;
+  uint32_t drawnInfo_ = 0;
+  uint32_t drawnAt_ = 0;
 };
 
 }  // namespace
@@ -302,20 +448,17 @@ class MusicScreen : public ui::Screen {
 std::unique_ptr<ui::Screen> makeMusic() { return std::make_unique<MusicScreen>(); }
 
 bool openPlayer() {
-  const ui::Screen *base = ui::nav::base();
-  if (base && base->isPlayer()) {
-    if (base != shortcutPlayer) return false;  // reached the usual way: HOLD BOOT means home
-    // Opened by HOLD BOOT: back to where it came from, like switching back to the last app.
-    while (ui::nav::top() && ui::nav::top() != base) ui::nav::pop();
+  ui::Screen *top = ui::nav::top();
+  if (top && top == sheetOnTop) {  // HOLD BOOT on the sheet: closed, as BOOT does
     ui::nav::pop();
     return true;
   }
-  if (!audio::active()) return false;
-  // Close menus and sheets first, so the player isn't drawn over one.
+  if (!audio::playing() || ui::nav::locked()) return false;
+  if (top && top->offFace()) return false;
+  if (top && top->isPlayer()) return true;  // the full player shows all of it already
+  // Close menus and sheets first, so the sheet isn't drawn over one hidden under it.
   while (ui::nav::top() && ui::nav::top()->overlay()) ui::nav::pop();
-  auto player = std::make_unique<MusicScreen>();
-  shortcutPlayer = player.get();
-  ui::nav::push(std::move(player));
+  ui::nav::push(std::make_unique<PlayerSheet>());
   return true;
 }
 

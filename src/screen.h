@@ -21,7 +21,7 @@ bool present(bool forceFull = false);
 
 // The automatic full refresh: after partial refreshes have flipped this many screens' worth of
 // pixels (going from Home to System flips about a quarter of one), or 15 partials per screen.
-// 0 turns it off; HOLD BOOT, a switch of orientation, the Clock's half-hourly one and the
+// 0 turns it off; BOOT on Home, a switch of orientation, the Clock's half-hourly one and the
 // power-off screens still do one. Kept in NVS.
 int fullRefreshScreens();
 void setFullRefreshScreens(int screens);

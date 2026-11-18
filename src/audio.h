@@ -51,6 +51,7 @@ void changeVolume(int delta);
 
 Status status();
 bool active();    // playing or paused: a track is open
+bool playing();   // a track is playing (not paused). Any task, the input timer's included
 bool outputOn();  // the amp, I2S and the codec are on (playing, ringing or a beep; not paused)
 // Something the board mustn't light-sleep through: playing, ringing, recording or a beep. A
 // paused player doesn't count; its output is off.

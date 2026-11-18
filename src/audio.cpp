@@ -1301,6 +1301,12 @@ bool active() {
   return shared.state != State::Stopped;
 }
 
+bool playing() {
+  if (!lock) return false;
+  Locked l;
+  return shared.state == State::Playing;
+}
+
 bool outputOn() { return outputLive.load(); }
 
 bool busy() {

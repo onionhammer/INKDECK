@@ -70,7 +70,7 @@ constexpr Module kModules[] = {
      "PCF85063A @ 0x51", Kind::Clock},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
      "ES8311 ADC \xC2\xB7 ALDO2", Kind::Recorder},
-    {"VOICE", "NET", "Hold the wheel and talk to the assistant on your network. It speaks back.",
+    {"VOICE", "NET", "Hold BOOT on any screen and talk to the assistant on your network. It speaks back.",
      "Wi-Fi \xC2\xB7 ES8311 \xC2\xB7 voiced", Kind::Voice},
     {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},

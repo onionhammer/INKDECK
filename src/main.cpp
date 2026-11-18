@@ -3,7 +3,7 @@
 //
 // Keys, the same on every screen (details in ui/nav.h):
 //   ▲ / ▼ dial: move, page, adjust      ●  primary action      HOLD ●  secondary action
-//   BOOT  back                          HOLD BOOT  home (with a full refresh)
+//   BOOT  back (on Home: full refresh)  HOLD BOOT  talk to the assistant (apps/voice.h)
 //   PWR   the Sleep screen, then power-off (power.h)
 //
 // Screens live in apps/, one per module on Home (README.md lists them): Reader, Podcasts,
@@ -17,9 +17,9 @@
 #include "apps/home.h"
 #include "apps/idle.h"
 #include "apps/lock.h"
-#include "apps/music.h"
 #include "apps/reader.h"
 #include "apps/sleep.h"
+#include "apps/voice.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "devtools.h"
@@ -74,7 +74,7 @@ void setup() {
   settings::loadCard();  // SD:/inkdeck.ini: time zone and location
   ui::nav::begin(apps::makeHome());
   ui::nav::onPowerKey(apps::powerKey);
-  ui::nav::onHoldBack(apps::openPlayer);
+  apps::beginTalkKey();
   if (reopenBook) {
     if (auto book = apps::resumeLastBook()) ui::nav::push(std::move(book));
   }
