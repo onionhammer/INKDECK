@@ -11,6 +11,7 @@
 #include "apps/closed_book.h"
 #include "apps/sleep.h"
 #include "audio.h"
+#include "file_copy.h"
 #include "input.h"
 #include "ota.h"
 #include "pmic.h"
@@ -58,7 +59,7 @@ bool readingNow() {
 bool mayNap() {
   // A paused player doesn't count: pause switches the audio output off (audio.h).
   if (!readingNow() || audio::busy() || wlan::radioOn()) return false;
-  if (weather::syncing() || podcasts::busy() || ota::active()) return false;
+  if (weather::syncing() || podcasts::busy() || ota::active() || filecopy::busy()) return false;
   const timesync::Phase t = timesync::status().phase;
   if (t == timesync::Phase::Connecting || t == timesync::Phase::Asking) return false;
   if (millis() - keyWakeMs < kKeyWakeGuardMs) return false;

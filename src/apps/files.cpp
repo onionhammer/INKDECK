@@ -2,7 +2,9 @@
 
 #include <Arduino.h>
 #include <stdio.h>
+#include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 
 #include <algorithm>
 
@@ -14,6 +16,7 @@
 #include "apps/viewer.h"
 #include "audio.h"
 #include "dirlist.h"
+#include "file_copy.h"
 #include "flashfs.h"
 #include "shares.h"
 #include "podcast_library.h"
@@ -87,6 +90,70 @@ bool isInside(const std::string &path, const std::string &dir) {
 }
 
 std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
+std::string folderOf(const std::string &path) { return path.substr(0, path.rfind('/')); }
+
+// HOLD ● SAVE on a share: where a file can go on the card, by its type. Each is a top-level
+// folder of the card's, made if it's missing.
+enum class Library : uint8_t { Music, Podcasts, Pictures, Documents, Books };
+
+// The folder's name as it's made; an existing one in any case is used instead.
+const char *libraryName(Library l) {
+  switch (l) {
+    case Library::Music: return "Music";
+    case Library::Podcasts: return "Podcasts";
+    case Library::Pictures: return "Pictures";
+    case Library::Documents: return "Documents";
+    case Library::Books: return "Books";
+  }
+  return "";
+}
+
+// The card's top-level folder `name`, in any case, or where it would be made.
+std::string libraryFolder(Library l) {
+  const std::string root = sdcard::kMountPoint;
+  const std::string found = DirList::findSubdir(root, libraryName(l));
+  return root + "/" + (found.empty() ? std::string(libraryName(l)) : found);
+}
+
+// A name FAT takes: \ / : * ? " < > | and control characters become _, and trailing dots and
+// spaces go (an NFS export, or a Samba share, can have them).
+std::string fatName(const std::string &name) {
+  std::string out;
+  for (const char ch : name) {
+    out += static_cast<uint8_t>(ch) < 0x20 || strchr("\\/:*?\"<>|", ch) ? '_' : ch;
+  }
+  while (!out.empty() && (out.back() == '.' || out.back() == ' ')) out.pop_back();
+  return out.empty() ? "_" : out;
+}
+
+// The name a file of `size` bytes takes in folder: name, or "name (2).ext" and on when a
+// different file (or a folder) has it. already: a file of that name and size is there, most
+// likely saved before; that name is returned.
+std::string freeName(const std::string &folder, const std::string &name, int64_t size,
+                     bool &already) {
+  const std::string ext = extensionOf(name);
+  const std::string stem = ext.empty() ? name : name.substr(0, name.size() - ext.size() - 1);
+  already = false;
+  std::string candidate = name;
+  for (int n = 2; n <= 100; ++n) {
+    struct stat st;
+    if (stat((folder + "/" + candidate).c_str(), &st) != 0) break;
+    if (!S_ISDIR(st.st_mode) && size >= 0 && st.st_size == size) {
+      already = true;
+      break;
+    }
+    candidate = stem + " (" + std::to_string(n) + ")" + (ext.empty() ? "" : "." + ext);
+  }
+  return candidate;
+}
+
+// The last max characters of text (UTF-8), with an ellipsis in front if it's longer.
+std::string tail(const std::string &text, size_t max) {
+  if (text.size() <= max) return text;
+  size_t from = text.size() - max;
+  while (from < text.size() && (static_cast<uint8_t>(text[from]) & 0xC0) == 0x80) ++from;
+  return ui::glyph::kEllipsis + text.substr(from);
+}
 
 // Which file system a Files screen browses. The card's root lists the onboard flash and then
 // each network share (SMB, NFS) as extra first rows; each opens a Files screen of its own (BOOT
@@ -142,6 +209,10 @@ class FilesScreen : public ui::Screen {
   int hints(ui::Hint *out) const override {
     int n = 0;
     if (!pending_.path.empty()) return 0;  // deleting: no keys until it's done
+    if (saving_) {
+      out[n++] = {"BOOT", "STOP"};
+      return n;
+    }
     if (connecting()) {
       // nothing to do but wait, or go back
     } else if (!list_.readable()) {
@@ -155,7 +226,11 @@ class FilesScreen : public ui::Screen {
       } else if (isText(entryIndex())) {
         out[n++] = {ui::glyph::kPress, "READ"};
       }
-      if (canDelete()) out[n++] = {ui::glyph::kHoldPress, "DELETE"};
+      if (canDelete()) {
+        out[n++] = {ui::glyph::kHoldPress, "DELETE"};
+      } else if (canSave()) {
+        out[n++] = {ui::glyph::kHoldPress, "SAVE"};
+      }
     }
     out[n++] = {"BOOT", atTop() ? "BACK" : "UP"};
     return n;
@@ -169,6 +244,10 @@ class FilesScreen : public ui::Screen {
   bool onKey(Key key) override {
     if (!confined()) guardedInUse(Guarded::Files);
     if (!pending_.path.empty()) return key == Key::Back;  // BOOT mustn't pop it mid-delete
+    if (saving_) {  // BOOT stops the copy; onTick() sees it end
+      if (key == Key::Back) filecopy::cancel();
+      return key == Key::Back;
+    }
     if (connecting()) return false;  // BOOT goes back; the mount carries on and is let go
     const bool hadNotice = !notice_.empty();
     notice_.clear();
@@ -177,8 +256,13 @@ class FilesScreen : public ui::Screen {
       case Key::Down: return cursor_.move(+1) || hadNotice;
       case Key::Select: activate(); return true;
       case Key::SelectLong:
-        if (!canDelete()) return hadNotice;
-        confirmDelete(entryIndex());
+        if (canDelete()) {
+          confirmDelete(entryIndex());
+        } else if (canSave()) {
+          chooseSave(entryIndex());
+        } else {
+          return hadNotice;
+        }
         return true;
       case Key::Back: return goUp();  // unused at the top: the navigator pops
       default: return hadNotice;
@@ -186,14 +270,21 @@ class FilesScreen : public ui::Screen {
   }
 
   // A folder delete runs on the tick after its DELETING header is on the panel; a share's
-  // screen lists it once the mount finishes. Otherwise the playing-track marker follows the
-  // audio state.
+  // screen lists it once the mount finishes; a save's header follows its percent until it ends.
+  // Otherwise the playing-track marker follows the audio state.
   bool onTick() override {
     if (!pending_.path.empty()) {
       if (!pending_.shown) return false;
       const Pending p = pending_;
       pending_ = {};
       deleteNow(p.path, true, p.row);
+      return true;
+    }
+    if (saving_) {
+      const filecopy::Status s = filecopy::status();
+      if (s.state == filecopy::State::Copying) return progressText(s) != drawnProgress_;
+      saving_ = false;
+      finishSave(s);
       return true;
     }
     if (lease_ && waitingForMount_) {
@@ -223,6 +314,12 @@ class FilesScreen : public ui::Screen {
                             "DELETING " + ui::upper(nameOf(pending_.path)) + ui::glyph::kEllipsis,
                             itemsText(pending_.items), {true});
       pending_.shown = true;
+    } else if (saving_) {
+      const filecopy::Status s = filecopy::status();
+      drawnProgress_ = progressText(s);
+      ui::drawSectionHeader(c, head,
+                            "SAVING " + ui::upper(nameOf(s.dst)) + ui::glyph::kEllipsis,
+                            drawnProgress_, {true});
     } else if (!notice_.empty()) {
       ui::drawNotice(c, head, notice_);
     } else {
@@ -310,6 +407,9 @@ class FilesScreen : public ui::Screen {
   int shareIndex() const { return lease_ ? lease_->share() : -1; }
   // HOLD ● deletes the selection: an entry of the card's or the flash's, not a share's (read-only).
   bool canDelete() const { return selected() && volume_ != Volume::Net && !confined(); }
+  // On a share, HOLD ● saves the selection to the card instead: a file of a type the card has a
+  // folder for.
+  bool canSave() const { return volume_ == Volume::Net && !librariesFor(entryIndex()).empty(); }
   // A share's screen before its mount has finished: nothing listed yet.
   bool connecting() const { return lease_ && lease_->state() == shares::Lease::State::Connecting; }
   const DirList::Entry *selected() const {
@@ -452,6 +552,11 @@ class FilesScreen : public ui::Screen {
       notice_ = "PODCASTS ARE DOWNLOADING; TRY LATER";
       return;
     }
+    // A save from a share that carries on behind this screen has its .part open.
+    if (filecopy::busy() && isInside(filecopy::status().dst + ".part", path)) {
+      notice_ = "A SAVE IS WRITING THERE; TRY LATER";
+      return;
+    }
     if (isDir && items > 0) {
       pending_ = {path, items, row, false};
     } else {
@@ -505,6 +610,146 @@ class FilesScreen : public ui::Screen {
     return sniffedText_;
   }
 
+  // Where entry i can be saved on the card: an MP3 in Music or Podcasts, a WAV in Music, a
+  // picture in Pictures, an EPUB in Books, anything else that reads as text in Documents.
+  // Nowhere for a folder, or a file the board can't open.
+  std::vector<Library> librariesFor(int i) const {
+    if (i < 0 || list_.entries()[i].isDir) return {};
+    const std::string &name = list_.entries()[i].name;
+    if (DirList::isMp3(name)) return {Library::Music, Library::Podcasts};
+    if (DirList::isAudio(name)) return {Library::Music};
+    if (DirList::isPicture(name)) return {Library::Pictures};
+    if (DirList::isEpub(name)) return {Library::Books};
+    if (isText(i)) return {Library::Documents};
+    return {};
+  }
+
+  // The folder a save to lib goes in. Pictures, Documents and Books: the library's own. Music and
+  // Podcasts keep where the file was: below a folder of the share's named like the library, the
+  // folders under it (music/Artist/Album -> Music/Artist/Album), else the folder it's in (the
+  // album). A podcast keeps only the first of those, its show (podcasts/Show/episodes ->
+  // Podcasts/Show), since a show is one folder with its MP3s in it; with none, the share's name.
+  std::string saveFolder(Library lib) const {
+    const std::string folder = libraryFolder(lib);
+    if (lib != Library::Music && lib != Library::Podcasts) return folder;
+    const std::vector<std::string> dirs = shareDirs();
+    const auto named = namedFolder(dirs, lib);
+    std::vector<std::string> keep;
+    if (named != dirs.end()) {
+      keep.assign(named + 1, dirs.end());
+    } else if (!dirs.empty()) {
+      keep.push_back(dirs.back());
+    }
+    if (lib == Library::Podcasts) {
+      if (keep.size() > 1) keep.resize(1);
+      if (keep.empty()) keep.push_back(shares::all()[shareIndex()].name);
+    }
+    std::string out = folder;
+    for (const std::string &d : keep) out += "/" + fatName(d);
+    return out;
+  }
+
+  // The share's folders from its root down to this one ("podcasts/Show/episodes").
+  std::vector<std::string> shareDirs() const {
+    std::vector<std::string> dirs;
+    const std::string rel = list_.relativePath();
+    for (size_t at = 0; at < rel.size();) {
+      size_t slash = rel.find('/', at);
+      if (slash == std::string::npos) slash = rel.size();
+      if (slash > at) dirs.push_back(rel.substr(at, slash - at));
+      at = slash + 1;
+    }
+    return dirs;
+  }
+
+  // The first of dirs named like lib, in any case (the share's own Music or Podcasts), or end.
+  static std::vector<std::string>::const_iterator namedFolder(const std::vector<std::string> &dirs,
+                                                              Library lib) {
+    return std::find_if(dirs.begin(), dirs.end(), [lib](const std::string &d) {
+      return strcasecmp(d.c_str(), libraryName(lib)) == 0;
+    });
+  }
+
+  // This folder is in, or is, a folder of the share's named like lib.
+  bool pathNames(Library lib) const {
+    const std::vector<std::string> dirs = shareDirs();
+    return namedFolder(dirs, lib) != dirs.end();
+  }
+
+  // HOLD ● on a share's file: a sheet of the card's folders it can go to, each with where it
+  // lands, or ALREADY THERE when a file of its name and size is.
+  void chooseSave(int i) {
+    if (!sdcard::mounted()) {
+      notice_ = "NO SD CARD";
+      return;
+    }
+    const DirList::Entry &e = list_.entries()[i];
+    const std::string src = list_.pathOf(i);
+    const int64_t size = list_.sizeOf(i);
+    std::vector<ui::MenuItem> items;
+    int first = 0;  // the cursor starts on a library the share's path names (podcasts/...)
+    for (const Library lib : librariesFor(i)) {
+      if (pathNames(lib)) first = static_cast<int>(items.size());
+      const std::string folder = saveFolder(lib);
+      bool already;
+      const std::string dst = folder + "/" + freeName(folder, fatName(e.name), size, already);
+      const std::string label = ui::upper(libraryName(lib));
+      const std::string where = already ? "ALREADY THERE" : tail(displayPath(folder) + "/", 26);
+      items.push_back({label, [where] { return where; }, [this, src, dst, size, already, label] {
+                         ui::nav::pop();
+                         if (already) {
+                           notice_ = "ALREADY IN " + label;
+                         } else {
+                           startSave(src, dst, size);
+                         }
+                       }});
+    }
+    ui::nav::push(std::make_unique<ui::MenuScreen>("SAVE " + ui::upper(e.name) + " TO",
+                                                   std::move(items), first));
+  }
+
+  // The copy runs on its own task; the header shows how far it has got (onTick()).
+  void startSave(const std::string &src, const std::string &dst, int64_t size) {
+    std::string error;
+    if (!filecopy::start(src, dst, size, error)) {
+      notice_ = "CAN'T SAVE: " + error;
+      return;
+    }
+    saving_ = true;
+    drawnProgress_.clear();
+  }
+
+  // The copy has ended: where it went, why it failed, or that it was stopped.
+  void finishSave(const filecopy::Status &s) {
+    switch (s.state) {
+      case filecopy::State::Done:
+        notice_ = "SAVED TO " + ui::upper(displayPath(folderOf(s.dst)));
+        break;
+      case filecopy::State::Failed: notice_ = "CAN'T SAVE: " + s.error; break;
+      case filecopy::State::Stopped: notice_ = "STOPPED; NOTHING SAVED"; break;
+      default: break;
+    }
+  }
+
+  // The SAVING header's right side: "42% · 3 MIN", the time left once a few seconds have shown
+  // the rate (in tens of seconds under a minute and a half), or what's written so far if the
+  // size isn't known.
+  static std::string progressText(const filecopy::Status &s) {
+    if (s.total <= 0) {
+      std::string t = sizeText(s.done);
+      t.erase(0, t.find_first_not_of(' '));
+      return t;
+    }
+    std::string t = std::to_string(static_cast<int>(s.done * 100 / s.total)) + "%";
+    if (s.done > 0 && s.done < s.total && s.elapsedMs >= 3000) {
+      const int64_t left = (s.total - s.done) * s.elapsedMs / s.done / 1000;  // seconds
+      t += std::string(" ") + ui::glyph::kDot + " " +
+           (left >= 90 ? std::to_string((left + 30) / 60) + " MIN"
+                       : std::to_string(std::max<int64_t>(10, (left + 9) / 10 * 10)) + " S");
+    }
+    return t;
+  }
+
   // Shows picture i full screen; the dial steps through the folder's other pictures.
   void view(int i) {
     int index;
@@ -540,6 +785,9 @@ class FilesScreen : public ui::Screen {
   mutable std::string sniffedPath_;  // isText()'s last answer
   mutable bool sniffedText_ = false;
   uint32_t drawnGeneration_ = 0;
+  // A save to the card (HOLD ● SAVE) is running: the header shows it, and BOOT stops it.
+  bool saving_ = false;
+  std::string drawnProgress_;  // what the header's right side shows: percent, time left
   // A folder waiting to be deleted on the next tick.
   struct Pending {
     std::string path;   // "" = none

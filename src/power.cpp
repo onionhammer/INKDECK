@@ -8,6 +8,7 @@
 
 #include "audio.h"
 #include "board_pins.h"
+#include "file_copy.h"
 #include "input.h"
 #include "ota.h"
 #include "pmic.h"
@@ -47,9 +48,11 @@ const char *modeName(Mode m) {
   return "-";
 }
 
-// A sync, a download, a Wi-Fi drive session or a voice exchange that a power-off would cut short.
+// A sync, a download, a copy from a share, a Wi-Fi drive session or a voice exchange that a
+// power-off would cut short.
 bool working() {
   if (weather::syncing() || podcasts::busy() || ota::active() || webdav::active()) return true;
+  if (filecopy::busy()) return true;
 #if INKDECK_VOICE
   if (voice::busy()) return true;
 #endif

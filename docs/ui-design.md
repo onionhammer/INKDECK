@@ -123,7 +123,18 @@ BACK` only). Then it lists the share like the card: the folder name in the heade
 name at its root), `SMB:/NAME/path/` or `NFS:/NAME/path/` in the status bar, and the same ●
 verbs. If the mount fails, the body says `CAN'T CONNECT` with the reason (`WI-FI: NETWORK NOT
 FOUND`, `SIGN-IN FAILED (USER OR PASSWORD?)`, `NO SUCH SHARE`, `NO SUCH EXPORT`, `ACCESS DENIED`,
-`NO ANSWER FROM THE SERVER`) and ● RETRY. Shares are read-only: no HOLD ● DELETE.
+`NO ANSWER FROM THE SERVER`) and ● RETRY. Shares are read-only: no HOLD ● DELETE. In its place,
+HOLD ● SAVE (on a file of a type the board opens) copies it to the card, into a top-level folder
+by its type. A menu sheet `// SAVE NAME.EXT TO` lists the choices with where each lands on the
+right (`SD:/Podcasts/Show/`, or `ALREADY THERE` for a file of that name and size): MP3 → MUSIC
+and PODCASTS, WAV → MUSIC, JPEG/PNG → PICTURES, EPUB → BOOKS, other text → DOCUMENTS. The
+cursor starts on the library the share's path names (a file under its `podcasts` folder: on
+PODCASTS). Music keeps the folders below the share's `music` folder (else the album's); a
+podcast goes in its show's folder (the one below the share's `podcasts` folder). While it
+copies, an inverted `// SAVING NAME.EXT…` header with `42% · 3 MIN` on the right (the time
+left, in tens of seconds under 90 s) replaces the folder header, and the hints show only
+`BOOT STOP`. The outcome comes up as a notice: `SAVED TO SD:/PODCASTS/SHOW`, `CAN'T SAVE: CARD
+FULL` (or `CONNECTION LOST`, `SD WRITE FAILED`, ...), `STOPPED; NOTHING SAVED`.
 
 All on-screen content is sample data: book text (H. G. Wells, public domain), track list, the
 fictional podcast feeds, weather and sensor values.
