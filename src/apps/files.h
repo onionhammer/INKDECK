@@ -15,7 +15,17 @@
 //     SD:/Podcasts it waits until no download is running. (HOLD BOOT raises the player sheet while it plays.)
 // A share's screen shows a CONNECTING header while it joins Wi-Fi and mounts the share, then
 // lists it like the card; if that fails it says why, and ● tries again. Shares are read-only:
-// no HOLD ● DELETE there.
+// no HOLD ● DELETE there. HOLD ● SAVE copies the selected file to the card instead (file_copy.h),
+// into a top-level folder by its type, after a sheet of the choices (`// SAVE NAME.MP3 TO`):
+//   MP3 -> MUSIC or PODCASTS, WAV -> MUSIC, JPEG/PNG -> PICTURES, EPUB -> BOOKS, any other file
+//   that reads as text -> DOCUMENTS.
+// Each row shows where it lands (SD:/Podcasts/Show/), or ALREADY THERE for a file of the same
+// name and size; another file of that name makes it "name (2).ext". Music keeps the folders
+// below the share's own music folder (else the album's), a podcast its show's (the folder below
+// the share's podcasts folder; else the one it's in, or the share's name at its root). The cursor
+// starts on the library the share's path names. While it copies, an inverted
+// `// SAVING NAME.MP3…` header shows the percent and the time left, and only BOOT works: it
+// stops the copy. The result comes up as a notice (SAVED TO SD:/PODCASTS/SHOW, CAN'T SAVE: ...).
 //
 // Home opens it behind the PIN when the build asks for one there (INKDECK_PIN_ON's files) and
 // Files wasn't in use in the last minute, and the PIN comes back in front of it after a minute
