@@ -550,11 +550,11 @@ void beepNow(uint32_t ms, uint32_t hz, uint32_t hzEnd) {
 }
 
 // The voice cue (captureStart(true)), "talk now": a push-to-talk chirp after Nextel's Direct
-// Connect talk-permit tone, three 1800 Hz pips (30, 30 and 50 ms, 20 ms apart). Quieter than
-// the other beeps: 1800 Hz comes through the small speaker far louder than the old 440-880 Hz
-// glide did at 0.6.
-constexpr Tone kCue[] = {{30, 1800, 1800}, {20, 0, 0}, {30, 1800, 1800}, {20, 0, 0},
-                         {50, 1800, 1800}};
+// Connect talk-permit tone: three pips (30, 30 and 50 ms, 20 ms apart), a little lower than its
+// 1800 Hz, at 1500 Hz. Quieter than the other beeps: that pitch comes through the small speaker
+// far louder than the old 440-880 Hz glide did at 0.6.
+constexpr Tone kCue[] = {{30, 1500, 1500}, {20, 0, 0}, {30, 1500, 1500}, {20, 0, 0},
+                         {50, 1500, 1500}};
 constexpr float kCueLevel = 0.3f;
 constexpr uint32_t kCueRampMs = 3;  // crisp pips, still without clicks
 

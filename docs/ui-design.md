@@ -56,7 +56,7 @@ The device has no touch screen. All navigation uses the buttons in `include/boar
 | --- | --- | --- |
 | `▲` / `▼` | Rotary switch up / down (`BTN_UP`, `BTN_DOWN`); swapped on landscape screens, where the wheel is on top | 4 / 6 |
 | `●` | Rotary push (`BTN_PRESS`); `HOLD ●` = long press (≈1 s) | 5 |
-| `BOOT` | Back (`BTN_BOOT`): taps go back a screen at a time to Home, where a tap does a full refresh. `HOLD BOOT` (≈0.5 s) = talk to the voice assistant from any screen (in a build with `INKDECK_VOICE`; `src/apps/hold_boot.h`): a push-to-talk chirp (three quick 1800 Hz pips, after Nextel's) says the mic is open, the voice sheet rises, and letting go sends (`src/apps/voice.h`). While music or a podcast is playing (not paused), `HOLD BOOT` raises the player sheet instead (nothing on the full player) | 0 |
+| `BOOT` | Back (`BTN_BOOT`): taps go back a screen at a time to Home, where a tap does a full refresh. `HOLD BOOT` (≈0.5 s) = talk to the voice assistant from any screen (in a build with `INKDECK_VOICE`; `src/apps/hold_boot.h`): a push-to-talk chirp (three quick 1500 Hz pips, after Nextel's) says the mic is open, the voice sheet rises, and letting go sends (`src/apps/voice.h`). While music or a podcast is playing (not paused), `HOLD BOOT` raises the player sheet instead (nothing on the full player) | 0 |
 | `PWR` | PMIC `PWRON` key: 1 s = on, 4 s = forced off | — |
 
 `HOLD BOOT` neither talks nor raises the player sheet while the lock screen is on the stack or under an
