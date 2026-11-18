@@ -10,10 +10,10 @@ session_*.json
 .claude/worktrees/
 __pycache__/
 
-# voiced (Rust voice daemon): build output, local config, downloaded models
-voiced/target/
-voiced/voiced.toml
-voiced/models/
-voiced/reply.wav
+# inkharness (the Rust assistant daemon): build output, local config, downloaded models
+inkharness/target/
+inkharness/inkharness.toml
+inkharness/models/
+inkharness/reply.wav
 
-voiced/command.wav
+inkharness/command.wav

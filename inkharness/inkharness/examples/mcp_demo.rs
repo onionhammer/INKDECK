@@ -1,4 +1,4 @@
-//! A small MCP server for trying voiced's MCP support without a real one. Speaks MCP on
+//! A small MCP server for trying inkharness's MCP support without a real one. Speaks MCP on
 //! stdin/stdout, or with --http ADDR as a streamable HTTP endpoint at http://ADDR/mcp.
 //!
 //!   cargo build --release --example mcp_demo

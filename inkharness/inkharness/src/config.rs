@@ -1,18 +1,25 @@
-//! voiced.toml. Every stage names a backend; API keys come from the environment or a `.env` file.
+//! inkharness.toml (layered by place.rs). Every stage names a backend; API keys come from the
+//! environment or a `.env` file.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Where `serve` listens for devices (docs/voice-protocol.md).
     #[serde(default = "default_listen")]
     pub listen: String,
-    /// Devices must send this in `hello`. Empty: anyone on the network may connect.
+    /// Where `serve` answers HTTP (http.rs). Empty: no HTTP.
+    #[serde(default = "default_http")]
+    pub http: String,
+    /// Devices must send this in `hello`, and HTTP requests as a bearer token. Empty: anyone
+    /// who can reach the ports may use them.
     #[serde(default)]
     pub token: String,
-    #[serde(default = "default_system_prompt")]
-    pub system_prompt: String,
+    /// Replaces the built-in prompt, for speech and text alike. Unset: one written for replies
+    /// that are spoken (devices) or read (the terminal, HTTP).
+    pub system_prompt: Option<String>,
     /// Speech to text. Optional when the model hears the recording itself ([llm] input =
     /// "audio"); then, if present, it runs alongside the model for the device's display and
     /// the conversation history.
@@ -23,6 +30,8 @@ pub struct Config {
     pub home_assistant: Option<HomeAssistant>,
     /// A second model the first can hand hard questions to (tools::THINK_TOOL).
     pub think: Option<Think>,
+    /// What text turns (the terminal, HTTP) use instead of [llm].
+    pub chat: Option<ChatModel>,
     #[serde(default)]
     pub cache: Cache,
     #[serde(default)]
@@ -59,6 +68,9 @@ pub struct McpServer {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+    /// Headers sent with every request to `url` (from a .mcp.json's `headers`).
+    #[serde(default)]
+    pub headers: std::collections::HashMap<String, String>,
     /// Only these tools (the server's names). Unset: all of them.
     pub tools: Option<Vec<String>>,
     /// A call that takes longer fails.
@@ -91,6 +103,13 @@ impl Default for Js {
             max_tool_calls: default_js_tool_calls(),
         }
     }
+}
+
+/// [chat]: a model for replies that are read, such as a text model where [llm] hears and speaks.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatModel {
+    pub llm: Llm,
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,6 +249,14 @@ impl Llm {
             _ => Modality::Text,
         }
     }
+
+    /// The model's name, for the banner and the health check.
+    pub fn name(&self) -> &str {
+        match self {
+            Llm::Anthropic { model, .. } | Llm::OpenaiCompat { model, .. } => model,
+            Llm::Mock => "mock",
+        }
+    }
 }
 
 impl Config {
@@ -336,7 +363,7 @@ fn default_think_phrases() -> Vec<String> {
     .map(String::from)
     .to_vec()
 }
-fn default_mcp_timeout_ms() -> u64 {
+pub(crate) fn default_mcp_timeout_ms() -> u64 {
     20000
 }
 fn default_true() -> bool {
@@ -366,12 +393,23 @@ fn default_pocket_steps() -> i32 {
 fn default_listen() -> String {
     format!("0.0.0.0:{}", voice_proto::DEFAULT_PORT)
 }
-fn default_system_prompt() -> String {
+fn default_http() -> String {
+    format!("127.0.0.1:{}", voice_proto::DEFAULT_PORT + 1)
+}
+/// For replies a device speaks.
+pub fn spoken_prompt() -> String {
     "You are a voice assistant on a small device in someone's home. Your replies are spoken \
      aloud, so answer in one or two short plain sentences with no markdown, lists or emoji. \
      Use the tools to control things in the home; if no tool fits, say so. Only say you did \
      something if a tool call in this conversation did it, and don't offer to do things no \
      tool can do."
+        .into()
+}
+/// For replies that are read: the terminal, HTTP.
+pub fn written_prompt() -> String {
+    "You are an assistant with tools, answering in a text chat. Keep answers short and plain; \
+     use markdown only where it helps. Use the tools to act and to look things up; if no tool \
+     fits, say so. Only say you did something if a tool call in this conversation did it."
         .into()
 }
 fn default_openai_key_env() -> String {
@@ -402,28 +440,46 @@ fn default_play_service() -> String {
     "music_assistant.play_media".into()
 }
 
-pub fn load(path: &str) -> Result<Config> {
-    let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
-    toml::from_str(&text).with_context(|| format!("parsing {path}"))
+impl Config {
+    /// The config in `table` (the merged layers).
+    pub fn from_table(table: toml::Table) -> Result<Config> {
+        Ok(toml::Value::Table(table).try_into()?)
+    }
 }
 
 /// Values from `.env` files (`NAME=value` lines), for keys the environment doesn't set.
 static DOTENV: std::sync::OnceLock<std::collections::HashMap<String, String>> =
     std::sync::OnceLock::new();
 
-/// Reads `.env` next to the config file and in the working directory. The environment wins
-/// over both; the file next to the config wins over the other.
-pub fn load_dotenv(config_path: &str) {
-    let beside = std::path::Path::new(config_path).with_file_name(".env");
+/// Reads the `.env` files that exist of `files`; a later file wins over an earlier one, and the
+/// environment over them all. Returns the ones it read.
+pub fn load_dotenv(files: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {
     let mut values = std::collections::HashMap::new();
-    for file in [std::path::PathBuf::from(".env"), beside] {
-        let Ok(text) = std::fs::read_to_string(&file) else {
+    let mut read = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(file) else {
             continue;
         };
         values.extend(parse_dotenv(&text));
         tracing::info!(file = %file.display(), "read keys");
+        read.push(file.clone());
     }
     let _ = DOTENV.set(values);
+    read
+}
+
+/// `var` from the environment or a `.env` file, if it is set and not empty.
+pub fn lookup(var: &str) -> Option<String> {
+    std::env::var(var)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            DOTENV
+                .get()
+                .and_then(|values| values.get(var))
+                .filter(|v| !v.is_empty())
+                .cloned()
+        })
 }
 
 fn parse_dotenv(text: &str) -> Vec<(String, String)> {
@@ -445,16 +501,7 @@ fn parse_dotenv(text: &str) -> Vec<(String, String)> {
 /// The key in `var`, from the environment or a `.env` file, or `None` if it is unset or empty
 /// (local servers need none).
 pub fn env_key(var: &str) -> Option<String> {
-    let key = std::env::var(var)
-        .ok()
-        .filter(|v| !v.is_empty())
-        .or_else(|| {
-            DOTENV
-                .get()
-                .and_then(|values| values.get(var))
-                .filter(|v| !v.is_empty())
-                .cloned()
-        });
+    let key = lookup(var);
     if key.is_none() {
         tracing::warn!("{var} is not set: requests go without a key (fine for a local server)");
     }

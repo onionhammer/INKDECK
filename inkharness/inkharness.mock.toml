@@ -1,4 +1,5 @@
 # Every stage mocked: tests the protocol and the audio path with no services or keys.
+#   cargo run -p inkharness -- serve --config inkharness.mock.toml
 listen = "127.0.0.1:7391"
 
 [stt]

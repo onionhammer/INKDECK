@@ -1,8 +1,8 @@
 # Voice protocol
 
-How the device talks to the voice daemon (`voiced/`). The device sends what the mic hears; the
+How the device talks to the assistant daemon (`inkharness serve`, in `inkharness/`). The device sends what the mic hears; the
 daemon turns it into text, asks a language model, and sends the spoken reply back. The Rust
-types are in `voiced/voice-proto/src/lib.rs`; keep this file and that one in step.
+types are in `inkharness/voice-proto/src/lib.rs`; keep this file and that one in step.
 
 ## Transport
 
@@ -79,12 +79,12 @@ as context for as long as it does.
 
 ## Testing without the board
 
-`voiced/voice-client` plays the device's part from a WAV file:
+`inkharness/voice-client` plays the device's part from a WAV file:
 
 ```sh
-cd voiced
-cargo run -p voiced -- voiced.mock.toml          # every stage mocked, no keys needed
-cargo run -p voice-client -- --silence 1.5       # or --wav command.wav
+cd inkharness
+cargo run -p inkharness -- serve --config inkharness.mock.toml   # every stage mocked, no keys needed
+cargo run -p voice-client -- --silence 1.5                         # or --wav command.wav
 ```
 
 It prints each message with its time since `listen_stop` and saves the reply audio.

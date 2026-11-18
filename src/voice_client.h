@@ -1,5 +1,5 @@
 // Voice assistant client (voice_client.h rather than voice.h, which apps/voice.h would shadow
-// for the screens: AGENTS.md gotcha 8): holds a TCP session with voiced on the home network
+// for the screens: AGENTS.md gotcha 8): holds a TCP session with inkharness on the home network
 // (docs/voice-protocol.md), sends what the mic hears while the talk key is down, and plays the
 // spoken reply as it arrives. The daemon does the listening, thinking and speaking; this is the
 // device's end of the wire. Only in a build with INKDECK_VOICE (features.h).
@@ -7,7 +7,7 @@
 // A session is open while the Voice screen or the voice sheet (HOLD BOOT, apps/voice.h) is on
 // top: open() joins Wi-Fi and connects in the background, close() ends it and lets the radio go.
 // talkStart() with no session open one too, the mic first, so what's said while Wi-Fi joins is
-// kept (the capture ring holds 8 s) and sent once voiced answers. Its own task owns the socket
+// kept (the capture ring holds 8 s) and sent once inkharness answers. Its own task owns the socket
 // and the audio streams (audio.h capture*/stream*), so the UI never waits on the network.
 //
 // Half-duplex: the mic is off while a reply plays. Pressing the talk key during a reply stops

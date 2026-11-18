@@ -1,4 +1,4 @@
-//! Agent Skills ([skills] in voiced.toml): folders of instructions the models load when a task
+//! Agent Skills ([skills] in inkharness.toml, and the folders place.rs finds): folders of instructions the models load when a task
 //! calls for one, so the system prompt carries only a line per skill.
 //!
 //! A skill is a folder holding `SKILL.md`: a frontmatter block between `---` lines with at least
@@ -56,6 +56,10 @@ pub struct Skills {
 }
 
 impl Skills {
+    pub fn names(&self) -> Vec<&str> {
+        self.skills.iter().map(|s| s.name.as_str()).collect()
+    }
+
     /// Scans `dirs`: each holds one folder per skill, or is a skill's folder itself. Problems
     /// are logged and leave that skill out.
     pub fn load(dirs: &[PathBuf]) -> Skills {
@@ -539,7 +543,7 @@ pub(crate) mod tests {
 
     /// A fresh, empty folder under the system's temporary folder.
     pub fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("voiced-skills-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("inkharness-skills-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

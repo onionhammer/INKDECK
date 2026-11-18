@@ -1,4 +1,4 @@
-//! voice-client: plays the device's part against voiced, from a WAV file. Sends the
+//! voice-client: plays the device's part against inkharness, from a WAV file. Sends the
 //! utterance, prints what comes back with timings, and saves the reply audio.
 
 use std::path::PathBuf;
@@ -13,12 +13,12 @@ use voice_proto::{
 };
 
 #[derive(Parser)]
-#[command(about = "Send an utterance to voiced and save the spoken reply")]
+#[command(about = "Send an utterance to inkharness and save the spoken reply")]
 struct Args {
     /// The daemon's address.
     #[arg(long, default_value_t = format!("127.0.0.1:{}", voice_proto::DEFAULT_PORT))]
     addr: String,
-    /// The token voiced.toml asks for.
+    /// The token inkharness.toml asks for.
     #[arg(long, default_value = "")]
     token: String,
     /// The utterance: a 16-bit mono WAV (16 kHz is what the device sends).

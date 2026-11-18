@@ -184,6 +184,11 @@ impl Speaker {
             .map_err(|_| anyhow!("the reply was cancelled"))
     }
 
+    /// A tool call starting.
+    pub async fn tool(&mut self, name: &str) -> Result<()> {
+        self.send(Piece::Tool(name.to_string())).await
+    }
+
     fn next_round(&mut self) {
         self.round_start = true;
     }
@@ -225,6 +230,9 @@ impl<A: ChatApi> Llm for ToolLoop<A> {
                 return Ok(Outcome::Think {
                     spoke: speaker.spoke,
                 });
+            }
+            for call in &round.calls {
+                speaker.tool(&call.name).await?;
             }
             let results = join_all(round.calls.iter().map(|c| run(request.tools, c))).await;
             api.add_round(&mut conversation, round.said, &round.calls, &results);

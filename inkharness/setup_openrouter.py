@@ -3,14 +3,14 @@
 # requires-python = ">=3.11"
 # dependencies = []
 # ///
-"""Sets voiced up to run all three stages through OpenRouter, asking as it goes.
+"""Sets inkharness up to run all three stages through OpenRouter, asking as it goes.
 
     uv run setup_openrouter.py            (or: python3 setup_openrouter.py)
 
 It asks for the API key (kept in .env next to this file, which git ignores), lets you pick the
 speech-to-text, chat and text-to-speech models and a voice from OpenRouter's live lists, tries
 each one with a short request, finds the sample rate of the speech model's PCM by playing it
-to you, and writes voiced.toml. An existing voiced.toml keeps its listen address, token, system
+to you, and writes inkharness.toml. An existing inkharness.toml keeps its listen address, token, system
 prompt and [home_assistant] section.
 
 --no-test skips the trial requests (each costs a fraction of a cent).
@@ -37,7 +37,7 @@ BASE = "https://openrouter.ai/api/v1"
 KEY_ENV = "OPENROUTER_API_KEY"
 HERE = Path(__file__).resolve().parent
 ENV_FILE = HERE / ".env"
-CONFIG = HERE / "voiced.toml"
+CONFIG = HERE / "inkharness.toml"
 RATES = [8000, 16000, 22050, 24000, 44100, 48000]
 PHRASE = "Okay, playing jazz on the kitchen speaker."
 MENU_MAX = 60  # longer lists ask for a search word first
@@ -52,7 +52,7 @@ class Failed(Exception):
 
 def request(path, key=None, body=None, headers=None):
     """An open response for GET (no body) or POST. Raises Failed with the service's message."""
-    all_headers = {"User-Agent": "voiced-setup"}
+    all_headers = {"User-Agent": "inkharness-setup"}
     if key:
         all_headers["Authorization"] = f"Bearer {key}"
     if isinstance(body, dict):
@@ -225,7 +225,7 @@ def try_speech(key, model, voice):
     if len(pcm) < 2000:
         raise Failed(f"only {len(pcm)} bytes of audio came back")
     if pcm[:4] in (b"RIFF", b"OggS", b"fLaC") or pcm[:3] == b"ID3":
-        raise Failed("the service returned an encoded file, not raw PCM; voiced needs PCM")
+        raise Failed("the service returned an encoded file, not raw PCM; inkharness needs PCM")
     return bytes(pcm[: len(pcm) & ~1]), content_type, first, time.monotonic() - start
 
 
@@ -295,7 +295,7 @@ def try_transcription(key, model, wav):
     return reply["text"].strip(), time.monotonic() - start
 
 
-REASONING = {"off": {"enabled": False}}  # other levels: {"effort": level}, as voiced sends
+REASONING = {"off": {"enabled": False}}  # other levels: {"effort": level}, as inkharness sends
 
 
 def try_chat(key, model, reasoning=None):
@@ -345,7 +345,7 @@ def try_chat(key, model, reasoning=None):
     return called, text.strip(), first, time.monotonic() - start
 
 
-# --- voiced.toml --------------------------------------------------------------------------
+# --- inkharness.toml --------------------------------------------------------------------------
 
 
 def toml_string(s):
@@ -372,7 +372,7 @@ def toml_table(name, table):
     return lines
 
 
-# Sections the script doesn't ask about but keeps from an existing voiced.toml.
+# Sections the script doesn't ask about but keeps from an existing inkharness.toml.
 KEPT_SECTIONS = ("think", "cache", "js", "mcp", "skills")
 
 
@@ -563,7 +563,7 @@ def main():
     args = parser.parse_args()
     test = not args.no_test
 
-    print("voiced through OpenRouter\n")
+    print("inkharness through OpenRouter\n")
     key, unsaved = get_key()
     kept, current = existing_config()
 
@@ -588,7 +588,7 @@ def main():
         print(f"\nThe key was not saved: export {KEY_ENV} before starting the daemon.")
     print(
         f"\nRun the daemon (it reads .env itself):\n  cd {HERE}\n"
-        "  cargo run --release -p voiced -- voiced.toml\n"
+        "  inkharness serve      (or from the checkout: cargo run --release -p inkharness -- serve)\n"
         "and in another terminal, a turn from a 16-bit mono WAV:\n"
         '  say -o command.wav --data-format=LEI16@16000 "What speakers are there?"   # macOS\n'
         "  cargo run --release -p voice-client -- --wav command.wav"

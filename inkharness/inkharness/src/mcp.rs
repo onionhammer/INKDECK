@@ -1,4 +1,4 @@
-//! MCP servers ([[mcp]] in voiced.toml) as tools: each server's tools join the tool set under
+//! MCP servers ([[mcp]] in inkharness.toml, and .mcp.json: place.rs) as tools: each server's tools join the tool set under
 //! "<server>_<tool>", for the models and for run_js scripts alike.
 //!
 //! Servers are connected at startup, all at once. One that can't be reached is logged and left
@@ -14,6 +14,7 @@ use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
+use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::Value;
 
 use crate::config;
@@ -53,9 +54,11 @@ pub struct Mcp {
 
 impl Mcp {
     /// Connects to every configured server. Failures are logged and leave that server out.
-    pub async fn connect(cfgs: &[config::McpServer]) -> Arc<Mcp> {
+    /// `logs`: what the servers started as commands write to stderr goes to ours (otherwise
+    /// nowhere, so it doesn't land in the middle of a chat).
+    pub async fn connect(cfgs: &[config::McpServer], logs: bool) -> Arc<Mcp> {
         let clients = futures_util::future::join_all(cfgs.iter().map(|cfg| async move {
-            let client = tokio::time::timeout(CONNECT_TIMEOUT, open(cfg))
+            let client = tokio::time::timeout(CONNECT_TIMEOUT, open(cfg, logs))
                 .await
                 .unwrap_or_else(|_| Err(anyhow::anyhow!("no answer in {CONNECT_TIMEOUT:?}")));
             (cfg, client)
@@ -143,6 +146,15 @@ impl Mcp {
         &self.tools
     }
 
+    /// The connected servers' names, with how many tools each gives.
+    pub fn servers(&self) -> Vec<(&str, usize)> {
+        self.servers
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.as_str(), self.tools.iter().filter(|t| t.server == i).count()))
+            .collect()
+    }
+
     /// Calls the tool the models know as `name`. `None` if no MCP server offers it.
     pub async fn call(&self, name: &str, input: Value) -> Option<Result<String, String>> {
         let tool = self.tools.iter().find(|t| t.name == name)?;
@@ -165,14 +177,18 @@ impl Mcp {
 }
 
 /// Starts or reaches one server and completes the MCP handshake.
-async fn open(cfg: &config::McpServer) -> Result<Client> {
+async fn open(cfg: &config::McpServer, logs: bool) -> Result<Client> {
     match (&cfg.command, &cfg.url) {
         (Some(command), None) => {
             let mut process = tokio::process::Command::new(command);
             process.args(&cfg.args).envs(&cfg.env);
-            // The server's log goes to ours.
+            let stderr = if logs {
+                std::process::Stdio::inherit()
+            } else {
+                std::process::Stdio::null()
+            };
             let (transport, _) = TokioChildProcess::builder(process)
-                .stderr(std::process::Stdio::inherit())
+                .stderr(stderr)
                 .spawn()
                 .with_context(|| format!("starting {command}"))?;
             Ok(().serve(transport).await?)
@@ -183,6 +199,9 @@ async fn open(cfg: &config::McpServer) -> Result<Client> {
                 let token = config::env_key(var).with_context(|| format!("no token in ${var}"))?;
                 transport = transport.auth_header(token);
             }
+            if !cfg.headers.is_empty() {
+                transport = transport.custom_headers(headers(&cfg.headers)?);
+            }
             Ok(
                 ().serve(StreamableHttpClientTransport::from_config(transport))
                     .await?,
@@ -190,6 +209,21 @@ async fn open(cfg: &config::McpServer) -> Result<Client> {
         }
         _ => bail!("give either command or url"),
     }
+}
+
+fn headers(
+    values: &std::collections::HashMap<String, String>,
+) -> Result<std::collections::HashMap<HeaderName, HeaderValue>> {
+    values
+        .iter()
+        .map(|(name, value)| {
+            Ok((
+                HeaderName::from_bytes(name.as_bytes())
+                    .with_context(|| format!("header name {name:?}"))?,
+                HeaderValue::from_str(value).with_context(|| format!("the {name} header's value"))?,
+            ))
+        })
+        .collect()
 }
 
 /// "<server>_<tool>" with anything but letters, digits, _ and - replaced, as the model APIs

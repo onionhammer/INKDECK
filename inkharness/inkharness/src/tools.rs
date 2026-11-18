@@ -15,9 +15,9 @@ use crate::js;
 use crate::mcp::Mcp;
 use crate::skills::{self, Skills};
 
-/// The tool that hands a turn to the thinking model ([think] in voiced.toml).
+/// The tool that hands a turn to the thinking model ([think] in inkharness.toml).
 pub const THINK_TOOL: &str = "think_harder";
-/// The JavaScript sandbox ([js] in voiced.toml).
+/// The JavaScript sandbox ([js] in inkharness.toml).
 pub const JS_TOOL: &str = "run_js";
 
 #[derive(Clone)]
@@ -472,11 +472,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn run_js_calls_the_home_tools() {
         // SAFETY: tests that read this variable don't run alongside others that change it.
-        unsafe { std::env::set_var("VOICED_TEST_HA_TOKEN", "t") };
+        unsafe { std::env::set_var("INKHARNESS_TEST_HA_TOKEN", "t") };
         let (url, mut requests) = fake_home().await;
         let ha = config::HomeAssistant {
             url,
-            token_env: "VOICED_TEST_HA_TOKEN".into(),
+            token_env: "INKHARNESS_TEST_HA_TOKEN".into(),
             play_service: "music_assistant.play_media".into(),
         };
         let tools = ToolSet::build(
@@ -592,11 +592,11 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn the_goodnight_skill_pauses_what_plays() {
         // SAFETY: tests that read this variable don't run alongside others that change it.
-        unsafe { std::env::set_var("VOICED_TEST_HA_TOKEN", "t") };
+        unsafe { std::env::set_var("INKHARNESS_TEST_HA_TOKEN", "t") };
         let (url, mut requests) = fake_home().await;
         let ha = config::HomeAssistant {
             url,
-            token_env: "VOICED_TEST_HA_TOKEN".into(),
+            token_env: "INKHARNESS_TEST_HA_TOKEN".into(),
             play_service: "music_assistant.play_media".into(),
         };
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills");

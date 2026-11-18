@@ -81,6 +81,8 @@ pub enum Piece {
     /// The model's own speech: s16le mono at [`Llm::speaks`]'s rate. A chunk may end in
     /// the middle of a sample.
     Audio(Bytes),
+    /// The name of a tool the model is calling, as the call starts: shown in a chat, not said.
+    Tool(String),
 }
 
 /// How a reply ended.
@@ -274,6 +276,7 @@ pub(crate) mod testserver {
                 match piece {
                     super::Piece::Text(t) | super::Piece::Transcript(t) => text.push_str(&t),
                     super::Piece::Audio(a) => pcm.extend_from_slice(&a),
+                    super::Piece::Tool(_) => {}
                 }
             }
             (text, pcm)

@@ -1,6 +1,7 @@
-# All three stages through OpenRouter, with one key. Copy to voiced.toml and run:
-#   export OPENROUTER_API_KEY=...
-#   cargo run --release -p voiced -- voiced.toml
+# All three stages through OpenRouter, with one key. Copy to inkharness.toml (in this folder, or
+# in ~/.config/inkharness to use it from any folder) and run:
+#   export OPENROUTER_API_KEY=...        # or OPENROUTER_API_KEY=... in a .env beside it
+#   inkharness serve                     # the daemon for boards; plain `inkharness` chats
 #
 # Pick the models from OpenRouter's lists:
 #   curl "https://openrouter.ai/api/v1/models?output_modalities=transcription"
@@ -76,7 +77,9 @@ api_key_env = "OPENROUTER_API_KEY"
 
 # --- MCP servers -----------------------------------------------------------------------
 # Each server's tools join the models' tools as <name>_<tool>, and run_js scripts can call
-# them too. A server that can't be reached at startup is logged and left out.
+# them too. A server that can't be reached at startup is logged and left out. A .mcp.json in
+# the folder inkharness starts in (or in ~/.config/inkharness) adds its mcpServers, in the
+# format other agents use, with ${VAR} from the environment and .env.
 #
 # Home Assistant: /api/mcp/assist is device control, limited to the entities exposed to voice
 # assistants (Settings > Voice assistants > Expose). A long-lived access token is expected to
@@ -100,6 +103,8 @@ api_key_env = "OPENROUTER_API_KEY"
 # Agent Skills: a folder per skill with a SKILL.md (name and description between --- lines,
 # then instructions). The models see each skill's name and description, and load the
 # instructions with load_skill when a request matches; read_skill_file reads its other files.
-# skills/goodnight is an example. Off without dirs.
+# skills/goodnight is an example. Found without any setting in skills/, .agents/skills/ and
+# .claude/skills/ of the folder inkharness starts in, and in ~/.config/inkharness/skills/;
+# dirs adds others.
 # [skills]
-# dirs = ["skills"]             # relative to this file
+# dirs = ["../shared-skills"]   # relative to this file

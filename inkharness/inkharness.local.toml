@@ -1,4 +1,5 @@
-# Speech in and out run inside the daemon (cargo run -p voiced --features local); the model is
+# Speech in and out run inside the daemon (cargo run -p inkharness --features local -- serve
+# --config inkharness.local.toml); the model is
 # still mocked. Models: see README.md.
 listen = "127.0.0.1:7391"
 

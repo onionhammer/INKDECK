@@ -6,19 +6,19 @@
 """Compares voice pipelines on the same spoken commands: cost, tokens, latency, and whether the
 right thing happened in the home.
 
-    cargo build -p voiced -p voice-client
+    cargo build -p inkharness -p voice-client
     uv run compare_pipelines.py --out results.json          (macOS: the commands are made with `say`)
     cargo clean
 
 The pipelines:
 
-    3  speech-to-text → model → text-to-speech     (what voiced.toml runs today)
+    3  speech-to-text → model → text-to-speech     (what inkharness.toml runs today)
     2  the model hears the recording → text-to-speech        ([llm] input = "audio")
     1  the model hears and speaks                            (input = "audio", output = "audio")
 
-Each one runs as a real voiced with a fake Home Assistant that records the actions it is asked
+Each one runs as a real inkharness with a fake Home Assistant that records the actions it is asked
 for (no real speaker is touched). voice-client sends every command on a fresh connection, after
-one warm-up turn per pipeline. Latency is voiced's own, from the end of speech: first audio is
+one warm-up turn per pipeline. Latency is inkharness's own, from the end of speech: first audio is
 when the reply starts playing, total when the turn is over. Costs are what OpenRouter charged,
 looked up per request through its generation endpoint (the speech cache is off, so every sentence
 is paid for). Needs OPENROUTER_API_KEY in .env; a full run with --repeat 2 costs about 30 cents, half of
@@ -189,21 +189,24 @@ def field(line, name, kind=float):
 
 
 class Daemon:
-    """voiced on its own port, its log in a file."""
+    """inkharness on its own port, its log in a file."""
 
     def __init__(self, config, workdir, binary):
         self.port = free_port()
-        self.config = Path(workdir) / "voiced.toml"
+        self.config = Path(workdir) / "inkharness.toml"
         self.config.write_text(config.replace("{port}", str(self.port)))
-        self.log_path = Path(workdir) / "voiced.log"
+        self.log_path = Path(workdir) / "inkharness.log"
         self.log = open(self.log_path, "w")
-        env = dict(os.environ, NO_COLOR="1", EVAL_HA_TOKEN="eval", RUST_LOG="info")
-        # The working directory is this folder, so voiced reads the key from .env here.
-        self.proc = subprocess.Popen([binary, str(self.config)], cwd=HERE, stdout=self.log, stderr=subprocess.STDOUT, env=env)
+        # INKHARNESS_HOME: no global config folder to layer under this one.
+        env = dict(os.environ, NO_COLOR="1", EVAL_HA_TOKEN="eval", RUST_LOG="info", INKHARNESS_HOME=str(workdir))
+        # The working directory is this folder, so inkharness reads the key from .env here (and
+        # the skills in skills/, as the board's daemon does).
+        self.proc = subprocess.Popen([binary, "serve", "--config", str(self.config), "--http", ""], cwd=HERE,
+                                     stdout=self.log, stderr=subprocess.STDOUT, env=env)
         deadline = time.time() + 30
-        while "voiced is up" not in self.log_path.read_text():
+        while "inkharness is up" not in self.log_path.read_text():
             if self.proc.poll() is not None or time.time() > deadline:
-                raise RuntimeError("voiced didn't start:\n" + self.log_path.read_text()[-2000:])
+                raise RuntimeError("inkharness didn't start:\n" + self.log_path.read_text()[-2000:])
             time.sleep(0.1)
 
     def turns(self):
@@ -233,7 +236,7 @@ def generation(api_key, gen_id):
     """OpenRouter's record of one request: cost and tokens. It can take a few seconds to appear."""
     for attempt in range(15):
         req = urllib.request.Request(f"{OPENROUTER}/generation?id={gen_id}",
-                                     headers={"Authorization": f"Bearer {api_key}", "User-Agent": "voiced-eval"})
+                                     headers={"Authorization": f"Bearer {api_key}", "User-Agent": "inkharness-eval"})
         try:
             with urllib.request.urlopen(req, timeout=20) as r:
                 return json.load(r)["data"]
@@ -323,7 +326,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", help="comma-separated pipelines: " + ", ".join(PIPELINES))
     ap.add_argument("--repeat", type=int, default=1, help="times to send each command")
-    ap.add_argument("--profile", default="debug", help="the cargo profile voiced was built with")
+    ap.add_argument("--profile", default="debug", help="the cargo profile inkharness was built with")
     ap.add_argument("--out", default="pipeline-results.json")
     ap.add_argument("--summarize", nargs="+", metavar="RESULTS", help="only print the table of earlier runs' result files")
     args = ap.parse_args()
@@ -336,10 +339,10 @@ def main():
         return
     names = args.only.split(",") if args.only else list(PIPELINES)
     target = HERE / "target" / args.profile
-    voiced, client = target / "voiced", target / "voice-client"
-    for b in (voiced, client):
+    inkharness, client = target / "inkharness", target / "voice-client"
+    for b in (inkharness, client):
         if not b.exists():
-            sys.exit(f"{b} is missing: cargo build -p voiced -p voice-client")
+            sys.exit(f"{b} is missing: cargo build -p inkharness -p voice-client")
     api_key = key()
 
     home = ThreadingHTTPServer(("127.0.0.1", 0), FakeHome)
@@ -367,7 +370,7 @@ tts_entries = 0
             work = tmp / name
             work.mkdir()
             print(f"\n== {name}: {label}", flush=True)
-            daemon = Daemon(common + stages, work, str(voiced))
+            daemon = Daemon(common + stages, work, str(inkharness))
             rows = []
             try:
                 run_command(daemon, str(client), wavs["warmup"], work / "warmup.wav")

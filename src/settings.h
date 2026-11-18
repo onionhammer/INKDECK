@@ -14,7 +14,7 @@
 //   pin = 2468                           ; 4 to 8 digits; pin = off removes it
 //   lock_minutes = 5                     ; also lock after this long without a key (0: only at boot)
 //   [voice]
-//   voice_host = nas.local               ; the machine running voiced (voice_client.h); only the card sets it
+//   voice_host = nas.local               ; the machine running inkharness serve (voice_client.h); only the card sets it
 //   voice_port = 7391
 //   voice_token = something-long         ; stays on the card: it only opens the voice daemon
 //

@@ -1,2 +1,2 @@
-cargo run --release -p voiced -- voiced.toml
+cargo run --release -p inkharness -- serve
 

@@ -313,7 +313,7 @@ mod tests {
         let llm = ToolLoop(OpenAiCompat::new(
             reqwest::Client::new(),
             &url,
-            "VOICED_TEST_NO_SUCH_KEY",
+            "INKHARNESS_TEST_NO_SUCH_KEY",
             "m",
             500,
             Some(config::reasoning_param("off").unwrap()),
@@ -359,7 +359,7 @@ mod tests {
         let mut api = OpenAiCompat::new(
             reqwest::Client::new(),
             &url,
-            "VOICED_TEST_NO_SUCH_KEY",
+            "INKHARNESS_TEST_NO_SUCH_KEY",
             "m",
             500,
             None,
@@ -406,7 +406,7 @@ mod tests {
         let llm = ToolLoop(OpenAiCompat::new(
             reqwest::Client::new(),
             &url,
-            "VOICED_TEST_NO_SUCH_KEY",
+            "INKHARNESS_TEST_NO_SUCH_KEY",
             "m",
             500,
             None,

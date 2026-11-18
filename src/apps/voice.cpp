@@ -52,7 +52,7 @@ const char *notSetUp() {
 }
 
 constexpr const char *kSetUpHelp =
-    "Name the machine that runs voiced in SD:/inkdeck.ini: voice_host, and voice_token if it "
+    "Name the machine that runs inkharness in SD:/inkdeck.ini: voice_host, and voice_token if it "
     "asks for one. Then restart the board.";
 
 int meterFill(const voice::Status &s) {

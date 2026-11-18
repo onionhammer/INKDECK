@@ -1,10 +1,14 @@
-# voiced configuration. Copy to voiced.toml and run:  cargo run --release -p voiced -- voiced.toml
-# API keys are read from the environment, never from this file.
+# inkharness configuration. Copy to inkharness.toml in a folder, or to ~/.config/inkharness to
+# use it from any folder (a folder's own file is layered over that one), then run
+# `inkharness serve` (the daemon for boards) or plain `inkharness` (a chat in the terminal).
+# API keys are read from the environment or a .env file, never from this file.
 
-listen = "0.0.0.0:7391"
-# Devices must send this token (voice_token in SD:/inkdeck.ini). Empty: no check.
+listen = "0.0.0.0:7391"         # boards connect here
+http = "127.0.0.1:7392"         # the HTTP API (POST /chat); "" turns it off
+# Boards must send this token (voice_token in SD:/inkdeck.ini), and HTTP requests as a bearer
+# token. Empty: no check.
 token = ""
-# system_prompt = "..."   # replaces the built-in one
+# system_prompt = "..."   # replaces the built-in ones (for spoken and for written replies)
 
 # --- Speech to text --------------------------------------------------------------------
 # Any server with OpenAI's /audio/transcriptions: a hosted service, or locally Speaches,
@@ -60,6 +64,16 @@ api_key_env = "OPENAI_API_KEY"
 # effort = "medium"
 # api_key_env = "ANTHROPIC_API_KEY"
 
+# --- Text turns (optional) -------------------------------------------------------------
+# The terminal chat and the HTTP API use [llm]. A model that speaks is still asked for its audio
+# there (OpenAI's audio models answer text only that way) and only its transcript is shown; a
+# text model here is cheaper and quicker for them.
+# [chat.llm]
+# backend = "anthropic"
+# model = "claude-opus-5-5"
+# effort = "low"
+# api_key_env = "ANTHROPIC_API_KEY"
+
 # --- Speech cache ----------------------------------------------------------------------
 # Short sentences (up to 80 characters) are kept as audio and replayed without a request;
 # the phrases under think and these are synthesised at startup. On by default.
@@ -79,7 +93,9 @@ api_key_env = "OPENAI_API_KEY"
 
 # --- MCP servers -----------------------------------------------------------------------
 # Each server's tools join the models' tools as <name>_<tool>, and run_js scripts can call
-# them too. A server that can't be reached at startup is logged and left out.
+# them too. A server that can't be reached at startup is logged and left out. A .mcp.json in
+# the folder inkharness starts in (or in ~/.config/inkharness) adds its mcpServers, in the
+# format other agents use, with ${VAR} from the environment and .env.
 #
 # Home Assistant: /api/mcp/assist is device control, limited to the entities exposed to voice
 # assistants (Settings > Voice assistants > Expose). A long-lived access token is expected to
@@ -103,6 +119,8 @@ api_key_env = "OPENAI_API_KEY"
 # Agent Skills: a folder per skill with a SKILL.md (name and description between --- lines,
 # then instructions). The models see each skill's name and description, and load the
 # instructions with load_skill when a request matches; read_skill_file reads its other files.
-# skills/goodnight is an example. Off without dirs.
+# skills/goodnight is an example. Found without any setting in skills/, .agents/skills/ and
+# .claude/skills/ of the folder inkharness starts in, and in ~/.config/inkharness/skills/;
+# dirs adds others.
 # [skills]
-# dirs = ["skills"]             # relative to this file
+# dirs = ["../shared-skills"]   # relative to this file

@@ -332,7 +332,7 @@ void connectSession() {
   freeaddrinfo(res);
   s.fd = connectTo(ip, static_cast<uint16_t>(settings::voicePort()), 4000);
   if (s.fd < 0) {
-    setState(State::Error, "VOICED ISN'T ANSWERING");
+    setState(State::Error, "INKHARNESS ISN'T ANSWERING");
     return;
   }
   if (s.rx.empty()) s.rx.resize(kRxBytes);
@@ -346,11 +346,11 @@ void connectSession() {
   while (s.fd >= 0 && !s.hello && millis() - t0 < 4000) pump(100);
   if (s.fd < 0) {  // closed on us: a wrong token ends this way, after an error message
     Locked l;
-    if (shared.error == "DISCONNECTED") shared.error = "VOICED REFUSED (TOKEN?)";
+    if (shared.error == "DISCONNECTED") shared.error = "INKHARNESS REFUSED (TOKEN?)";
     return;
   }
   if (!s.hello) {
-    drop("VOICED DIDN'T SAY HELLO");
+    drop("INKHARNESS DIDN'T SAY HELLO");
     return;
   }
   log_i("voice: connected to %s:%d", host.c_str(), settings::voicePort());
@@ -373,7 +373,7 @@ void closeSession() {
 
 // No session yet (the voice sheet's first hold) or a failed one: this press opens one and is
 // heard. The mic goes on first and the capture ring keeps what's said while Wi-Fi joins and
-// voiced answers; sendMic() catches up once it has. A release while connecting is still queued
+// inkharness answers; sendMic() catches up once it has. A release while connecting is still queued
 // and ends the utterance as usual.
 void talkIntoNewSession() {
   s.wanted = true;

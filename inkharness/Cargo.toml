@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["voice-proto", "voiced", "voice-client"]
+members = ["voice-proto", "inkharness", "voice-client"]
 
 [profile.release]
 lto = "thin"

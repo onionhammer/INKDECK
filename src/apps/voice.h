@@ -1,4 +1,4 @@
-// Voice: talk to the assistant on the home network (voice_client.h; the daemon is voiced/). Only
+// Voice: talk to the assistant on the home network (voice_client.h; the daemon is inkharness/). Only
 // in a build with INKDECK_VOICE (features.h).
 //
 // From any screen, HOLD BOOT (about half a second; apps/hold_boot.h) talks: a short rising chirp, and the mic opens
