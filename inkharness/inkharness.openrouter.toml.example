@@ -1,0 +1,110 @@
+# All three stages through OpenRouter, with one key. Copy to inkharness.toml (in this folder, or
+# in ~/.config/inkharness to use it from any folder) and run:
+#   export OPENROUTER_API_KEY=...        # or OPENROUTER_API_KEY=... in a .env beside it
+#   inkharness serve                     # the daemon for boards; plain `inkharness` chats
+#
+# Pick the models from OpenRouter's lists:
+#   curl "https://openrouter.ai/api/v1/models?output_modalities=transcription"
+#   curl "https://openrouter.ai/api/v1/models?output_modalities=speech"
+#   curl "https://openrouter.ai/api/v1/models?supported_parameters=tools"
+#   curl "https://openrouter.ai/api/v1/models?input_modalities=audio&supported_parameters=tools"   (hear)
+
+listen = "0.0.0.0:7391"
+token = ""
+
+[stt]
+backend = "openai_compat"
+base_url = "https://openrouter.ai/api/v1"
+model = "REPLACE_ME"
+api_key_env = "OPENROUTER_API_KEY"
+
+[llm]
+backend = "openai_compat"
+base_url = "https://openrouter.ai/api/v1"
+model = "REPLACE_ME"            # one that supports tools, e.g. a Claude Haiku or another small fast model
+# reasoning = "off"             # off | minimal | low | medium | high | xhigh; unset: the model's default.
+                                # A model that thinks first answers later; some can't turn it off.
+api_key_env = "OPENROUTER_API_KEY"
+# A model that hears and one that speaks leave out a stage (README: Models that hear or speak).
+# input = "audio"               # it gets the recording: [stt] becomes optional (if kept, it runs
+                                # alongside, for the display and the history)
+# output = "audio"              # it speaks its reply: [tts] becomes optional
+# voice = "alloy"               # with output = "audio"; voices belong to the model
+# audio_rate = 24000            # the rate of its PCM16 (OpenAI's is 24000)
+
+[tts]
+backend = "openai_compat"
+base_url = "https://openrouter.ai/api/v1"
+model = "REPLACE_ME"
+voice = "REPLACE_ME"            # voices belong to the speech model
+rate = 24000                    # must match the PCM the model returns, or the reply plays at the wrong speed
+api_key_env = "OPENROUTER_API_KEY"
+
+# [home_assistant]
+# url = "http://homeassistant.local:8123"
+# token_env = "HOME_ASSISTANT_TOKEN"
+# play_service = "music_assistant.play_media"
+
+# --- Thinking harder (optional) -------------------------------------------------------
+# The model above gets a think_harder tool. When it calls it, one of the phrases is said and
+# this model answers instead, with the same conversation and tools.
+# [think]
+# phrases = ["Let me think about that.", "Give me a moment to think.", "Hmm, let me think."]
+#
+# [think.llm]
+# backend = "openai_compat"
+# base_url = "https://openrouter.ai/api/v1"
+# model = "anthropic/claude-haiku-5.5"
+# reasoning = "low"             # off | minimal | low | medium | high | xhigh
+# api_key_env = "OPENROUTER_API_KEY"
+
+# --- Speech cache ----------------------------------------------------------------------
+# Short sentences (up to 80 characters) are kept as audio and replayed without a request;
+# the phrases under think and these are synthesised at startup. On by default.
+# [cache]
+# tts_entries = 200             # 0 turns it off
+# phrases = ["Done.", "Sorry, I didn't catch that."]
+
+# --- JavaScript sandbox ----------------------------------------------------------------
+# The run_js tool: the model writes and runs JavaScript for arithmetic and dates, or to chain
+# home tools (tools.list_speakers(), tools.play_music({...})) in one step. QuickJS, with no
+# network, files or timers. On by default.
+# [js]
+# enabled = true
+# timeout_ms = 3000             # tool calls included
+# memory_mb = 32
+# max_tool_calls = 20           # home tool calls per script
+
+# --- MCP servers -----------------------------------------------------------------------
+# Each server's tools join the models' tools as <name>_<tool>, and run_js scripts can call
+# them too. A server that can't be reached at startup is logged and left out. A .mcp.json in
+# the folder inkharness starts in (or in ~/.config/inkharness) adds its mcpServers, in the
+# format other agents use, with ${VAR} from the environment and .env.
+#
+# Home Assistant: /api/mcp/assist is device control, limited to the entities exposed to voice
+# assistants (Settings > Voice assistants > Expose). A long-lived access token is expected to
+# work as the bearer token; check with one request before relying on it.
+# [[mcp]]
+# name = "home"
+# url = "http://homeassistant.local:8123/api/mcp/assist"
+# token_env = "HOME_ASSISTANT_TOKEN"
+# tools = ["HassTurnOn", "HassTurnOff", "HassLightSet"]   # optional allowlist; unset: all
+# timeout_ms = 20000
+#
+# A local server started as a command (stdio). cargo build --release --example mcp_demo
+# builds a small demo one.
+# [[mcp]]
+# name = "demo"
+# command = "target/release/examples/mcp_demo"
+# args = []
+# env = { }
+
+# --- Skills ----------------------------------------------------------------------------
+# Agent Skills: a folder per skill with a SKILL.md (name and description between --- lines,
+# then instructions). The models see each skill's name and description, and load the
+# instructions with load_skill when a request matches; read_skill_file reads its other files.
+# skills/goodnight is an example. Found without any setting in skills/, .agents/skills/ and
+# .claude/skills/ of the folder inkharness starts in, and in ~/.config/inkharness/skills/;
+# dirs adds others.
+# [skills]
+# dirs = ["../shared-skills"]   # relative to this file

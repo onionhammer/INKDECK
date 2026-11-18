@@ -8,11 +8,15 @@
 //            (swapsDial())
 //   ●        primary action on what's selected (open, play, pause, run)
 //   HOLD ●   secondary action, shown in the hint bar when a screen has one (skip, edit, sync)
-//   BOOT     back: the screen may use it first (parent folder), otherwise it pops the screen
-//   HOLD BOOT home: back to the root screen from anywhere, with a full refresh. While music
-//            or a podcast is playing or paused, it opens the player instead (onHoldBack), and
-//            HOLD BOOT on that player goes back to where it was opened. While the lock screen
-//            is on the stack it only goes back down to the lock. Screens never see it.
+//   BOOT     back: the screen may use it first (parent folder), otherwise it pops the screen.
+//            On the root, with nothing to pop, it redraws with a full refresh (cleans the
+//            screen)
+//   HOLD BOOT talk to the assistant, from any screen (onTalkKey(), apps/hold_boot.h; only in a
+//            build with the voice assistant, INKDECK_VOICE in features.h): held about
+//            half a second, the voice sheet rises over the lower half; let go to send. Not while
+//            the lock is on the stack, under an off face, or over a screen that has the mic or
+//            the speaker (allowsTalk()). While music or a podcast plays, it raises the player
+//            sheet instead (apps/music.h). Screens never see it.
 //
 // Screens draw only their body. For portrait screens with chrome() the navigator draws the
 // status bar (tag(), context(), battery, clock) and the key-hint bar (hints()) around it.
@@ -76,10 +80,14 @@ class Screen {
   // true for the last frame before a power-off (Sleep, Standby, a closed book): nothing else
   // starts a power-off or a sync while it's on top.
   virtual bool offFace() const { return false; }
-  // true for the player (Music): HOLD BOOT goes home from it rather than opening it again.
+  // false: HOLD BOOT doesn't talk over this screen (the Recorder, which has the mic; an alarm
+  // ringing). Asked of the screen on top and the one under it when the stack changes.
+  virtual bool allowsTalk() const { return true; }
+  // true for the full player (Music): HOLD BOOT on it while something plays raises no player
+  // sheet, which would only repeat it (apps::openPlayer()).
   virtual bool isPlayer() const { return false; }
   // true for the lock screen (apps/lock.h): nothing under it can be reached until it pops
-  // itself. HOLD BOOT stops at it rather than going home, and never opens the player.
+  // itself, and HOLD BOOT doesn't talk while it's on the stack.
   virtual bool locks() const { return false; }
 
   // Called when the screen becomes the top of the stack (pushed, or uncovered by a pop) and
@@ -114,7 +122,7 @@ void loop();
 // after its handler returns).
 void push(std::unique_ptr<Screen> screen);
 void pop();
-void home();  // back to the root, or to the lock screen if one is on the stack
+void home();  // back to the root (or to the lock screen if one is on the stack), full refresh
 void replace(std::unique_ptr<Screen> screen);
 
 void invalidate(Refresh refresh = Refresh::Partial);
@@ -122,11 +130,17 @@ Screen *top();
 Screen *base();  // the top screen that isn't an overlay (the one under a menu)
 bool locked();   // a screen that locks() is on the stack
 
+// True if HOLD BOOT may talk over the screens on the stack now: no lock on it, no off face on
+// top, and the top screen and the one under it allowsTalk(). Any task may ask (input::onBackHold()
+// handlers do, in the timer task); it changes only with the stack.
+bool talkAllowed();
+
 // What a PWR press does (input::Key::Power; screens never see it).
 void onPowerKey(void (*handler)());
-// Asked first on HOLD BOOT: returns true if it handled the key (opened the player), false to go
-// home as usual.
-void onHoldBack(bool (*handler)());
+// What HOLD BOOT does (Key::BackLong, then Key::BackLongUp at its release: held true, then
+// false). Called in the UI task whether or not talkAllowed(); screens never see these keys. A
+// redraw follows.
+void onTalkKey(void (*handler)(bool held));
 
 }  // namespace nav
 }  // namespace ui

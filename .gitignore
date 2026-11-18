@@ -9,3 +9,11 @@ session_*.json
 # Claude Code worktrees (local checkouts, never part of the repo)
 .claude/worktrees/
 __pycache__/
+
+# inkharness (the Rust assistant daemon): build output, local config, downloaded models
+inkharness/target/
+inkharness/inkharness.toml
+inkharness/models/
+inkharness/reply.wav
+
+inkharness/command.wav

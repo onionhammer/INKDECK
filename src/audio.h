@@ -9,6 +9,7 @@
 // off. Pause switches them all off too and keeps the track open: play picks up where it paused.
 // The same task rings alarms: ring() pauses any music and plays a beep pattern until stopped.
 // Recording uses the mic through the codec's ADC, I2S receive only; the amp stays off.
+// The voice assistant uses the same two paths without files: capture and stream, below.
 #pragma once
 #include <stdint.h>
 
@@ -50,6 +51,7 @@ void changeVolume(int delta);
 
 Status status();
 bool active();    // playing or paused: a track is open
+bool playing();   // a track is playing (not paused). Any task, the input timer's included
 bool outputOn();  // the amp, I2S and the codec are on (playing, ringing or a beep; not paused)
 // Something the board mustn't light-sleep through: playing, ringing, recording or a beep. A
 // paused player doesn't count; its output is off.
@@ -95,6 +97,30 @@ void togglePauseRecording();
 // Mic gain in 6 dB steps, kept between recordings (RAM only).
 void changeMicGain(int deltaDb);
 RecordStatus recordStatus();
-bool recording();
+bool recording();  // to a file (not a capture)
+
+// --- Voice (voice_client.h): the mic as a stream, and a reply played as it arrives. Both are mono
+// 16-bit PCM through rings in PSRAM. Call these from one task only. Playback and capture still
+// take turns: starting one ends the other, and stop() ends both.
+
+// Starts the mic at kRecordRate into the capture ring (8 s deep). Returns once it is running;
+// false if it couldn't start. Stops playback first. cue: a push-to-talk chirp first (three quick
+// 1500 Hz pips, 0.15 s, softly at the music volume), which plays out before the mic opens: the
+// speaker and the mic take turns, so the mic doesn't hear it.
+bool captureStart(bool cue = false);
+void captureStop();  // returns once the mic is off; what's in the ring can still be read
+bool capturing();
+// Takes up to max bytes from the capture ring, waiting up to timeoutMs for the first.
+size_t captureRead(uint8_t *out, size_t max, uint32_t timeoutMs);
+float captureLevelDb();  // loudest sample of the last second, dBFS; -96 when not capturing
+
+// Opens the output at `rate` for a stream. Returns once it is ready; false if it couldn't.
+bool streamStart(uint32_t rate);
+// Queues PCM (little-endian; a sample may be split between calls). Blocks up to timeoutMs
+// while the ring (5 s at 24 kHz) is full. Returns the bytes taken; 0 once the stream is off.
+size_t streamWrite(const uint8_t *pcm, size_t bytes, uint32_t timeoutMs);
+void streamEnd();    // no more data: what's queued plays out, then the output goes off
+void streamAbort();  // output off now, the rest dropped
+bool streaming();    // from streamStart() until it has played out or was stopped
 
 }  // namespace audio

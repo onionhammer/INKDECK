@@ -1,0 +1,152 @@
+# inkharness configuration. Copy to inkharness.toml in a folder, or to ~/.config/inkharness to
+# use it from any folder (a folder's own file is layered over that one), then run
+# `inkharness serve` (the daemon for boards) or plain `inkharness` (a chat in the terminal).
+# API keys are read from the environment or a .env file, never from this file.
+
+listen = "0.0.0.0:7391"         # boards connect here
+http = "127.0.0.1:7392"         # the HTTP API (POST /chat); "" turns it off
+# Boards must send this token (voice_token in SD:/inkdeck.ini), and HTTP requests as a bearer
+# token. Empty: no check.
+token = ""
+# system_prompt = "..."   # replaces the built-in ones (for spoken and for written replies)
+
+# --- Speech to text --------------------------------------------------------------------
+# Any server with OpenAI's /audio/transcriptions: a hosted service, or locally Speaches,
+# whisper.cpp's whisper-server, mlx-audio. Moving to local hardware is a base_url change.
+[stt]
+backend = "openai_compat"
+base_url = "https://api.openai.com/v1"
+model = "REPLACE_ME"            # the service's current transcription model
+api_key_env = "OPENAI_API_KEY"  # unset or empty: no Authorization header (local servers)
+# language = "en"
+
+# --- Language model --------------------------------------------------------------------
+[llm]
+backend = "anthropic"
+model = "claude-opus-5-5"       # claude-haiku-5-5 is the one to compare for first-token time
+effort = "low"                  # thinking depth: low answers soonest
+api_key_env = "ANTHROPIC_API_KEY"
+fallbacks = true                # re-run a declined request on a fallback model; set false for Haiku
+
+# Or any server with OpenAI's /chat/completions (Ollama, llama.cpp, vLLM):
+# [llm]
+# backend = "openai_compat"
+# base_url = "http://localhost:11434/v1"
+# model = "qwen3.6:27b"
+
+# --- Text to speech --------------------------------------------------------------------
+# Any server with OpenAI's /audio/speech that can return raw PCM (response_format "pcm"):
+# a hosted service, or locally Kokoro-FastAPI, Speaches, mlx-audio.
+[tts]
+backend = "openai_compat"
+base_url = "https://api.openai.com/v1"
+model = "REPLACE_ME"            # the service's current speech model
+voice = "REPLACE_ME"
+rate = 24000                    # sample rate of the PCM the service returns
+api_key_env = "OPENAI_API_KEY"
+
+# --- Home control ----------------------------------------------------------------------
+# Without this section the model has no tools and only talks.
+# [home_assistant]
+# url = "http://homeassistant.local:8123"
+# token_env = "HOME_ASSISTANT_TOKEN"            # a long-lived access token
+# play_service = "music_assistant.play_media"   # the action play_music calls
+
+# --- Thinking harder (optional) -------------------------------------------------------
+# The model above gets a think_harder tool. When it calls it, one of the phrases is said and
+# this model answers instead, with the same conversation and tools.
+# [think]
+# phrases = ["Let me think about that.", "Give me a moment to think.", "Hmm, let me think."]
+#
+# [think.llm]
+# backend = "anthropic"
+# model = "claude-opus-5-5"
+# effort = "medium"
+# api_key_env = "ANTHROPIC_API_KEY"
+
+# --- Text turns (optional) -------------------------------------------------------------
+# The terminal chat and the HTTP API use [llm]. A model that speaks is still asked for its audio
+# there (OpenAI's audio models answer text only that way) and only its transcript is shown; a
+# text model here is cheaper and quicker for them.
+# [chat.llm]
+# backend = "anthropic"
+# model = "claude-opus-5-5"
+# effort = "low"
+# api_key_env = "ANTHROPIC_API_KEY"
+
+# --- Speech cache ----------------------------------------------------------------------
+# Short sentences (up to 80 characters) are kept as audio and replayed without a request;
+# the phrases under think and these are synthesised at startup. On by default.
+# [cache]
+# tts_entries = 200             # 0 turns it off
+# phrases = ["Done.", "Sorry, I didn't catch that."]
+
+# --- JavaScript sandbox ----------------------------------------------------------------
+# The run_js tool: the model writes and runs JavaScript for arithmetic and dates, or to chain
+# home tools (tools.list_speakers(), tools.play_music({...})) in one step. QuickJS, with no
+# network, files or timers. On by default.
+# [js]
+# enabled = true
+# timeout_ms = 3000             # tool calls included
+# memory_mb = 32
+# max_tool_calls = 20           # home tool calls per script
+
+# --- MCP servers -----------------------------------------------------------------------
+# Each server's tools join the models' tools as <name>_<tool>, and run_js scripts can call
+# them too. A server that can't be reached at startup is logged and left out. A .mcp.json in
+# the folder inkharness starts in (or in ~/.config/inkharness) adds its mcpServers, in the
+# format other agents use, with ${VAR} from the environment and .env.
+#
+# Home Assistant: /api/mcp/assist is device control, limited to the entities exposed to voice
+# assistants (Settings > Voice assistants > Expose). A long-lived access token is expected to
+# work as the bearer token; check with one request before relying on it.
+# [[mcp]]
+# name = "home"
+# url = "http://homeassistant.local:8123/api/mcp/assist"
+# token_env = "HOME_ASSISTANT_TOKEN"
+# tools = ["HassTurnOn", "HassTurnOff", "HassLightSet"]   # optional allowlist; unset: all
+# timeout_ms = 20000
+#
+# A local server started as a command (stdio). cargo build --release --example mcp_demo
+# builds a small demo one.
+# [[mcp]]
+# name = "demo"
+# command = "target/release/examples/mcp_demo"
+# args = []
+# env = { }
+
+# --- Web search ------------------------------------------------------------------------
+# The web_search tool, for what the models don't know or what has changed: news, scores,
+# opening hours. [search] for one backend; [[search]] for several, tried in order until one
+# answers (the next is asked when one fails or finds nothing). results: how many (default 5).
+#
+# SearXNG, a metasearch engine you run yourself: free, no key, nothing leaves your network but
+# the query to its engines. Its settings.yml must allow json (search: formats: [html, json]).
+# [search]
+# backend = "searxng"
+# url = "http://searxng.local:8080"
+# language = "en"            # optional
+# engines = "brave,duckduckgo"   # optional; unset: the instance's defaults
+#
+# Brave's Search API (its own index; a key from api-search.brave.com):
+# [[search]]
+# backend = "brave"
+# api_key_env = "BRAVE_API_KEY"
+# country = "us"             # optional
+#
+# Tavily, a search API for agents: each search comes with a short answer written from the
+# results (a key from tavily.com):
+# [[search]]
+# backend = "tavily"
+# api_key_env = "TAVILY_API_KEY"
+# depth = "basic"            # or "advanced": better snippets, slower, costs more
+
+# --- Skills ----------------------------------------------------------------------------
+# Agent Skills: a folder per skill with a SKILL.md (name and description between --- lines,
+# then instructions). The models see each skill's name and description, and load the
+# instructions with load_skill when a request matches; read_skill_file reads its other files.
+# skills/goodnight is an example. Found without any setting in skills/, .agents/skills/ and
+# .claude/skills/ of the folder inkharness starts in, and in ~/.config/inkharness/skills/;
+# dirs adds others.
+# [skills]
+# dirs = ["../shared-skills"]   # relative to this file

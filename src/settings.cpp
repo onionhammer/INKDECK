@@ -29,10 +29,14 @@ struct Values {
   std::string wifiSsid;
   std::vector<ShareLine> shares;  // passwords taken out
   int lockMinutes = 0;
+  std::string voiceHost;
+  int voicePort = 0;  // 0: the default
+  std::string voiceToken;
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
-           wifiSsid == o.wifiSsid && shares == o.shares && lockMinutes == o.lockMinutes;
+           wifiSsid == o.wifiSsid && shares == o.shares && lockMinutes == o.lockMinutes &&
+           voiceHost == o.voiceHost && voicePort == o.voicePort && voiceToken == o.voiceToken;
   }
 };
 
@@ -113,7 +117,15 @@ constexpr const char *kTemplate =
     "; once you unlock with the current PIN.\n"
     "; pin = 2468\n"
     "; Also lock after this many minutes without a key (0: only at power-on). Power-on builds only.\n"
-    "; lock_minutes = 5\n";
+    "; lock_minutes = 5\n"
+    "\n"
+    "[voice]\n"
+    "; The machine on your network that runs inkharness, the assistant daemon (a name or an\n"
+    "; address), its port (7391 unless you changed it) and the token its inkharness.toml asks for.\n"
+    "; The token stays in this file.\n"
+    "; voice_host = nas.local\n"
+    "; voice_port = 7391\n"
+    "; voice_token = something-long\n";
 
 // The share lines and SMB passwords go in NVS as one string each, a line apiece.
 std::vector<std::string> splitLines(const std::string &text) {
@@ -171,6 +183,9 @@ void loadNvs() {
   card.wifiSsid = nvsString(prefs, "wssid");
   card.shares = sharesFromRecords(splitLines(nvsString(prefs, "shares")));
   card.lockMinutes = prefs.getInt("lockmin", 0);
+  card.voiceHost = nvsString(prefs, "vhost");
+  card.voicePort = prefs.getInt("vport", 0);
+  card.voiceToken = nvsString(prefs, "vtoken");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
   prefs.end();
@@ -186,6 +201,9 @@ void saveNvs() {
   prefs.putString("wssid", card.wifiSsid.c_str());
   prefs.putString("shares", joinLines(shareRecords(card.shares)).c_str());
   prefs.putInt("lockmin", card.lockMinutes);
+  prefs.putString("vhost", card.voiceHost.c_str());
+  prefs.putInt("vport", card.voicePort);
+  prefs.putString("vtoken", card.voiceToken.c_str());
   prefs.end();
 }
 
@@ -400,6 +418,18 @@ Values parse(const std::string &text, CardPin &cardPin, CardSecrets &secrets) {
       } else {
         v.lockMinutes = static_cast<int>(m);
       }
+    } else if (key == "voice_host") {
+      v.voiceHost = value;
+    } else if (key == "voice_port") {
+      char *end = nullptr;
+      const long port = strtol(value.c_str(), &end, 10);
+      if (value.empty() || *end != '\0' || port < 1 || port > 65535) {
+        log_w("settings: %s: voice_port must be 1 to 65535", kFile);
+      } else {
+        v.voicePort = static_cast<int>(port);
+      }
+    } else if (key == "voice_token") {
+      v.voiceToken = value;
     } else {
       log_w("settings: %s: unknown setting \"%s\"", kFile, key.c_str());
     }
@@ -720,6 +750,26 @@ bool pinMatches(const std::string &digits) {
 int lockMinutes() {
   loadNvs();
   return card.lockMinutes;
+}
+
+bool hasVoice() {
+  loadNvs();
+  return !card.voiceHost.empty();
+}
+
+std::string voiceHost() {
+  loadNvs();
+  return card.voiceHost;
+}
+
+int voicePort() {
+  loadNvs();
+  return card.voicePort > 0 ? card.voicePort : 7391;
+}
+
+std::string voiceToken() {
+  loadNvs();
+  return card.voiceToken;
 }
 
 PinChange pendingPin() { return pending; }

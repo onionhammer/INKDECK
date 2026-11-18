@@ -4,7 +4,7 @@
 //   Shows:     ▲▼ move   ● open   HOLD ● refresh the feeds   BOOT back
 //   Episodes:  ▲▼ move   ● play (or GET one that isn't on the card)
 //              HOLD ● mark played / unplayed (cancel a download)   BOOT back to the shows
-// Playing opens the player; HOLD BOOT comes back to it from anywhere while it plays.
+// Playing opens the player; while it plays, HOLD BOOT raises the player sheet over any screen.
 #pragma once
 #include <memory>
 

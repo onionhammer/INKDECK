@@ -13,6 +13,10 @@
 //   [lock]
 //   pin = 2468                           ; 4 to 8 digits; pin = off removes it
 //   lock_minutes = 5                     ; also lock after this long without a key (0: only at boot)
+//   [voice]
+//   voice_host = nas.local               ; the machine running inkharness serve (voice_client.h); only the card sets it
+//   voice_port = 7391
+//   voice_token = something-long         ; stays on the card: it only opens the voice daemon
 //
 // and lists the network shares Files browses (shares.h has the syntax), one line each:
 //
@@ -83,6 +87,12 @@ struct ShareLine {
 std::vector<ShareLine> shareLines();
 // The password the card gave for an SMB share (by shares::Share::credentialId()); "" if none.
 std::string sharePassword(const std::string &credentialId);
+
+// The voice daemon (voice_client.h, docs/voice-protocol.md). Only the card names one.
+bool hasVoice();
+std::string voiceHost();
+int voicePort();
+std::string voiceToken();  // "" if the daemon asks for none
 
 // The lock. hasPin(): the board locks at boot, on waking the desk face and after lockMinutes()
 // without a key (0: never for that).

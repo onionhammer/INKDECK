@@ -3,7 +3,8 @@
 //
 // Keys, the same on every screen (details in ui/nav.h):
 //   ▲ / ▼ dial: move, page, adjust      ●  primary action      HOLD ●  secondary action
-//   BOOT  back                          HOLD BOOT  home (with a full refresh)
+//   BOOT  back (on Home: full refresh)  HOLD BOOT  the player sheet while music plays, else
+//                                       talk to the assistant (apps/hold_boot.h)
 //   PWR   the Sleep screen, then power-off (power.h)
 //
 // Screens live in apps/, one per module on Home (README.md lists them): Reader, Podcasts,
@@ -14,12 +15,13 @@
 
 #include "alarms.h"
 #include "apps/clock.h"
+#include "apps/hold_boot.h"
 #include "apps/home.h"
 #include "apps/idle.h"
 #include "apps/lock.h"
-#include "apps/music.h"
 #include "apps/reader.h"
 #include "apps/sleep.h"
+#include "apps/voice_tools.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "devtools.h"
@@ -74,7 +76,7 @@ void setup() {
   settings::loadCard();  // SD:/inkdeck.ini: time zone and location
   ui::nav::begin(apps::makeHome());
   ui::nav::onPowerKey(apps::powerKey);
-  ui::nav::onHoldBack(apps::openPlayer);
+  apps::beginHoldBoot();
   if (reopenBook) {
     if (auto book = apps::resumeLastBook()) ui::nav::push(std::move(book));
   }
@@ -98,6 +100,7 @@ void loop() {
   apps::pollAlarms();
   apps::pollPower();
   apps::pollLock();  // before the nap: a lock over the Reader ends the naps and gets drawn
+  apps::pollVoiceTools();  // the assistant's calls to the board, and the screens they open
   // The hourly forecast sync, in the background. Not while the Reader naps on battery: that
   // would wake the radio every hour (every 15 minutes out of range) with nobody reading. It
   // runs after the next key instead. Nor under the last frame before a power-off, which would

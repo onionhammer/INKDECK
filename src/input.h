@@ -14,9 +14,12 @@ enum class Key : uint8_t {
   Down,        // rotary wheel down (GPIO6); auto-repeats while held
   Select,      // wheel press (GPIO5), released before the long-press time
   SelectLong,  // wheel press held about 1 s
-  Back,        // BOOT (GPIO0) short press
-  BackLong,    // BOOT held
+  Back,        // BOOT (GPIO0) released before the hold time
+  BackLong,    // BOOT held about half a second (HOLD BOOT: talk, ui/nav.h)
   Power,       // PWR released within 2 s (longer is someone forcing the PMIC off)
+  SelectDown,  // wheel press went down / came up: only while onSelectEdge() has a handler,
+  SelectUp,    // and then instead of Select and SelectLong
+  BackLongUp,  // BOOT let go after a BackLong
 };
 
 const char *name(Key key);
@@ -36,7 +39,24 @@ bool lastKeyRepeat();
 
 // Queues a key as if it had been pressed (dev tools drive the UI over serial with this).
 // fast: as a repeat from a dial held long enough to page (lastKeyRepeat() is true too).
+// BackLong and BackLongUp go to the onBackHold() handler too, as a real hold does.
 void inject(Key key, bool fast = false);
+
+// Ends a wait() early, as a timeout would, from any task: work for the UI task has come in
+// (apps/voice_tools.h).
+void wake();
+
+// Push-to-talk: while a handler is set, the wheel press reports its two edges instead of
+// Select / SelectLong. The handler runs at once in the timer task, so a press made while the
+// panel is refreshing isn't late (keep it short: post to a queue), and Key::SelectDown /
+// Key::SelectUp follow through wait(). nullptr puts Select back.
+void onSelectEdge(void (*handler)(bool down));
+
+// HOLD BOOT's two ends, for push-to-talk from any screen: the handler runs in the timer task
+// with true when BOOT has been held long enough to be a hold (as Key::BackLong is queued) and
+// with false at its release (Key::BackLongUp), so the mic opens on time even while the panel
+// refreshes. Keep it short. The release goes to the handler that had the hold.
+void onBackHold(void (*handler)(bool down));
 
 // Milliseconds since the last key (injected ones count).
 uint32_t idleMs();

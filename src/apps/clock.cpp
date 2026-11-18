@@ -761,6 +761,7 @@ class RingScreen : public ui::Screen {
 
   std::string tag() const override { return {}; }
   bool overlay() const override { return true; }
+  bool allowsTalk() const override { return false; }  // the mic would silence the alarm
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kPress, "STOP"};
     out[1] = {ui::glyph::kHoldPress, "SNOOZE"};

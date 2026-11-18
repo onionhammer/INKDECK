@@ -15,6 +15,10 @@
 #include "apps/reader.h"
 #include "apps/sensors.h"
 #include "apps/system.h"
+#include "features.h"
+#if INKDECK_VOICE
+#include "apps/voice.h"
+#endif
 #include "apps/weather.h"
 #include "audio.h"
 #include "covers.h"
@@ -26,11 +30,13 @@
 #include "flashfs.h"
 #include "sdcard.h"
 #include "sensor_hub.h"
+#include "settings.h"
 #include "suntimes.h"
 #include "sysinfo.h"
 #include "timesync.h"
 #include "units.h"
 #include "forecast.h"
+#include "wlan.h"
 
 namespace apps {
 namespace {
@@ -39,7 +45,10 @@ using ui::Key;
 using ui::Rect;
 
 enum class Kind : uint8_t {
-  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder
+  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder,
+#if INKDECK_VOICE
+  Voice,
+#endif
 };
 
 struct Module {
@@ -67,6 +76,10 @@ constexpr Module kModules[] = {
      "PCF85063A @ 0x51", Kind::Clock},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
      "ES8311 ADC \xC2\xB7 ALDO2", Kind::Recorder},
+#if INKDECK_VOICE
+    {"VOICE", "NET", "Hold BOOT on any screen and talk to the assistant on your network. It speaks back.",
+     "Wi-Fi \xC2\xB7 ES8311 \xC2\xB7 inkharness", Kind::Voice},
+#endif
     {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},
     {"LEVEL", "IMU", "Bubble level for surfaces, a vial for edges, and a tone when it's level.",
@@ -306,6 +319,15 @@ int statsFor(const Module &m, Stat out[4]) {
       out[3] = {"MIC GAIN", std::to_string(r.gainDb) + " dB"};
       return 4;
     }
+#if INKDECK_VOICE
+    case Kind::Voice: {
+      out[0] = {"DAEMON", settings::hasVoice() ? settings::voiceHost() : "NOT SET"};
+      out[1] = {"PORT", std::to_string(settings::voicePort())};
+      out[2] = {"WI-FI", wlan::configured() ? wlan::network() : "NOT SET"};
+      out[3] = {"TALK", "HOLD BOOT"};
+      return 4;
+    }
+#endif
   }
   return 0;
 }
@@ -397,6 +419,9 @@ class HomeScreen : public ui::Screen {
       case Kind::Weather: ui::nav::push(makeWeather()); break;
       case Kind::Level: ui::nav::push(makeLevel()); break;
       case Kind::Recorder: ui::nav::push(makeRecorder()); break;
+#if INKDECK_VOICE
+      case Kind::Voice: ui::nav::push(makeVoice()); break;
+#endif
     }
   }
 
@@ -404,7 +429,9 @@ class HomeScreen : public ui::Screen {
   static void drawPreview(ui::Canvas &c, const Rect &area, int i) {
     using namespace ui;
     const Module &m = kModules[i];
-    const Rect p{area.x + 20, area.y + 18, area.w - 40, area.h - 18 - 16};
+    // 10 px above and 8 below: with 11 modules in the list the preview is 34 px shorter than
+    // the canvas drew it, and the stats would otherwise meet the OPEN button.
+    const Rect p{area.x + 20, area.y + 10, area.w - 40, area.h - 10 - 8};
 
     const std::string num = twoDigits(i + 1);
     const int base = p.y + capHeight(style::kHuge);

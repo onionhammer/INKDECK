@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "board_pins.h"
 #include "epub.h"
+#include "features.h"
 #include "flashfs.h"
 #include "forecast.h"
 #include "input.h"
@@ -159,6 +160,51 @@ void lineCommand(const String &line) {
     Serial.printf("devtools: appended %u bytes\n", static_cast<unsigned>(wrote));
     return;
   }
+#if INKDECK_VOICE
+  if (line == "voiceloop") {
+    // The voice paths without a network: 3 s of the mic into the capture ring, then the same
+    // samples back out through the stream ring (16 kHz).
+    static uint8_t chunk[1024];
+    if (!audio::captureStart()) {
+      Serial.println("voiceloop: the mic won't start");
+      return;
+    }
+    Serial.println("voiceloop: speak for 3 s");
+    std::string pcm;
+    const uint32_t t0 = millis();
+    while (millis() - t0 < 3000) {
+      const size_t n = audio::captureRead(chunk, sizeof chunk, 50);
+      pcm.append(reinterpret_cast<const char *>(chunk), n);
+    }
+    audio::captureStop();
+    for (size_t n; (n = audio::captureRead(chunk, sizeof chunk, 0)) > 0;) {
+      pcm.append(reinterpret_cast<const char *>(chunk), n);
+    }
+    int peak = 0;
+    for (size_t i = 0; i + 1 < pcm.size(); i += 2) {
+      const int16_t v = static_cast<int16_t>(static_cast<uint8_t>(pcm[i]) |
+                                             static_cast<uint8_t>(pcm[i + 1]) << 8);
+      peak = std::max(peak, abs(static_cast<int>(v)));
+    }
+    Serial.printf("voiceloop: captured %u bytes, peak %d; playing\n",
+                  static_cast<unsigned>(pcm.size()), peak);
+    if (!audio::streamStart(audio::kRecordRate)) {
+      Serial.println("voiceloop: the output won't start");
+      return;
+    }
+    for (size_t off = 0; off < pcm.size();) {
+      const size_t n = audio::streamWrite(reinterpret_cast<const uint8_t *>(pcm.data()) + off,
+                                          std::min<size_t>(1024, pcm.size() - off), 200);
+      if (n == 0 && !audio::streaming()) break;
+      off += n;
+    }
+    audio::streamEnd();
+    const uint32_t t1 = millis();
+    while (audio::streaming() && millis() - t1 < 6000) delay(20);
+    Serial.printf("voiceloop: done in %lu ms\n", static_cast<unsigned long>(millis() - t1));
+    return;
+  }
+#endif
   if (line == "sdtest") {
     // Writes 64 KB of a pattern from internal RAM, from PSRAM and from flash, reads each back.
     constexpr size_t kSize = 64 * 1024;
@@ -362,6 +408,7 @@ void lineCommand(const String &line) {
 
 void task(void *) {
   using input::Key;
+  bool bootHeld = false;  // 'B' holds BOOT (talk); the next 'B' lets it go
   for (;;) {
     while (Serial.available() > 0) {
       switch (Serial.read()) {
@@ -372,7 +419,10 @@ void task(void *) {
         case 'p': input::inject(Key::Select); break;
         case 'P': input::inject(Key::SelectLong); break;
         case 'b': input::inject(Key::Back); break;
-        case 'B': input::inject(Key::BackLong); break;
+        case 'B':
+          bootHeld = !bootHeld;
+          input::inject(bootHeld ? Key::BackLong : Key::BackLongUp);
+          break;
         case 's': screen::dump(Serial); break;
         case '-': audio::changeVolume(-5); break;  // e.g. silence the speaker before a test
         case '+': audio::changeVolume(+5); break;

@@ -126,6 +126,25 @@ int drawKeycap(Canvas &c, int x, int centerY, const char *cap) {
   return w;
 }
 
+Rect drawSheet(Canvas &c, const Rect &body, int minH, const Hint *hints, int count) {
+  constexpr int kShadow = 6;  // as deep as a button's
+  const int h = std::min(body.h, std::max(body.h / 2, minH));
+  const Rect sheet{body.x, body.bottom() - h, body.w, h};
+  // On paper, so the shadow reads the same over a dark row cut off there as over text.
+  const int shadowH = std::min(kShadow, sheet.y - body.y);
+  if (shadowH > 0) {
+    const Rect shadow{body.x, sheet.y - shadowH, body.w, shadowH};
+    fill(c, shadow, kPaper);
+    dither50(c, shadow);
+  }
+  fill(c, sheet, kPaper);
+  hrule(c, sheet.x, sheet.y, sheet.w);
+  Rect r = sheet;
+  r.takeTop(kRule);
+  if (count > 0) drawHintBar(c, r.takeBottom(kHintBarH), hints, count);
+  return r;
+}
+
 void drawHintBar(Canvas &c, const Rect &r, const Hint *hints, int count) {
   hrule(c, r.x, r.y, r.w);
   if (count <= 0) return;

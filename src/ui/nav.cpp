@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <time.h>
 
+#include <atomic>
 #include <vector>
 
 #include "audio.h"
@@ -22,8 +23,9 @@ Refresh pending = Refresh::None;
 uint32_t lastTick = 0;
 std::string drawnStatus;  // clock + battery as last drawn, to spot when they change
 void (*powerKeyHandler)() = nullptr;
-bool (*holdBackHandler)() = nullptr;
+void (*talkKeyHandler)(bool) = nullptr;
 bool dialSwapped = false;  // the swap orientDial() chose at the dial's press, kept for its repeats
+std::atomic<bool> talkOk{false};  // talkAllowed(), worked out when the stack changes
 
 void request(Refresh r) {
   if (r > pending) pending = r;
@@ -32,6 +34,17 @@ void request(Refresh r) {
 void retireTop() {
   retired.push_back(std::move(stack.back()));
   stack.pop_back();
+}
+
+// After every change to the stack, for talkAllowed() in other tasks.
+void stackChanged() {
+  bool ok = !stack.empty() && !locked();
+  if (ok) {
+    const Screen &t = *stack.back();
+    const Screen *under = stack.size() > 1 ? stack[stack.size() - 2].get() : nullptr;
+    ok = !t.offFace() && t.allowsTalk() && (!under || under->allowsTalk());
+  }
+  talkOk = ok;
 }
 
 StatusInfo statusFor(const Screen &s) {
@@ -135,9 +148,9 @@ Key orientDial(Key key) {
 void dispatch(Key key) {
   key = orientDial(key);
   log_d("key %s", input::name(key));
-  if (key == Key::BackLong) {
-    // Locked: never the player, which would open over the lock.
-    if (locked() || !holdBackHandler || !holdBackHandler()) home();
+  if (key == Key::BackLong || key == Key::BackLongUp) {
+    if (talkKeyHandler) talkKeyHandler(key == Key::BackLong);
+    request(Refresh::Partial);
     return;
   }
   if (key == Key::Power) {
@@ -147,7 +160,11 @@ void dispatch(Key key) {
   if (stack.back()->onKey(key)) {
     request(Refresh::Partial);
   } else if (key == Key::Back) {
-    pop();
+    if (stack.size() > 1) {
+      pop();
+    } else {
+      request(Refresh::Full);  // nothing to go back to: clean the screen instead
+    }
   }
 }
 
@@ -166,6 +183,7 @@ void begin(std::unique_ptr<Screen> root) {
   stack.clear();
   stack.push_back(std::move(root));
   stack.back()->onEnter();
+  stackChanged();
   lastTick = millis();
   request(Refresh::Full);
 }
@@ -198,6 +216,7 @@ void push(std::unique_ptr<Screen> screen) {
   stack.back()->onLeave();
   stack.push_back(std::move(screen));
   stack.back()->onEnter();
+  stackChanged();
   request(Refresh::Partial);
 }
 
@@ -206,6 +225,7 @@ void pop() {
   stack.back()->onLeave();
   retireTop();
   stack.back()->onEnter();
+  stackChanged();
   request(Refresh::Partial);
 }
 
@@ -215,8 +235,9 @@ void home() {
     stack.back()->onLeave();
     while (stack.size() > depth) retireTop();
     stack.back()->onEnter();
+    stackChanged();
   }
-  request(Refresh::Full);  // also the "clean the screen" gesture on the root (or the lock)
+  request(Refresh::Full);
 }
 
 void replace(std::unique_ptr<Screen> screen) {
@@ -224,6 +245,7 @@ void replace(std::unique_ptr<Screen> screen) {
   retireTop();
   stack.push_back(std::move(screen));
   stack.back()->onEnter();
+  stackChanged();
   request(Refresh::Partial);
 }
 
@@ -240,8 +262,10 @@ bool locked() {
   return false;
 }
 
+bool talkAllowed() { return talkOk.load(); }
+
 void onPowerKey(void (*handler)()) { powerKeyHandler = handler; }
 
-void onHoldBack(bool (*handler)()) { holdBackHandler = handler; }
+void onTalkKey(void (*handler)(bool held)) { talkKeyHandler = handler; }
 
 }  // namespace ui::nav
