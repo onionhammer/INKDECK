@@ -29,7 +29,7 @@ namespace {
 // ---------------------------------------------------------------------------------------------
 // Configuration
 
-constexpr int kDefaultVolume = 60;
+constexpr int kDefaultVolume = 100;  // the DAC at 0 dB (es8311::setVolume()); RAM only
 constexpr size_t kMaxQueue = 64;  // tracks kept by play()
 constexpr int kInputBufferBytes = 16 * 1024;           // compressed data, ~1 s at 128 kbps
 constexpr int kRefillBelow = 2 * MAINBUF_SIZE;
