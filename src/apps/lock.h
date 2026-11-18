@@ -15,13 +15,13 @@
 // power_on, the lock: every boot that reaches the UI, under each off screen (Sleep, Standby and
 // the desk face, so waking the desk face or cancelling a power-off lands on it), and after
 // lock_minutes without a key. While locked, alarms still ring over it (stopping and snoozing need
-// no PIN), PWR works as usual, and HOLD BOOT stops at it (ui/nav.h).
+// no PIN), PWR works as usual, and HOLD BOOT doesn't talk (ui/nav.h).
 //
 // settings and files: the same wheels in front of System or Files as Home opens them
 // (openGuarded()), unless that module was on screen in the last minute. Under the module's tag
-// with ● OPEN on the last wheel. That isn't a lock: BOOT on the first wheel and HOLD BOOT go back
-// as usual. Opening either with the PIN applies a PIN change waiting on the card, as unlocking
-// does, and so does unlocking the lock for both.
+// with ● OPEN on the last wheel. That isn't a lock: BOOT on the first wheel goes back as usual,
+// and HOLD BOOT talks. Opening either with the PIN applies a PIN change waiting on the card, as
+// unlocking does, and so does unlocking the lock for both.
 //
 // The minute also holds while the module is open: when one of its screens comes back on top
 // (a book or picture closed, the desk face woken, a sheet gone) more than a minute after it was

@@ -11,20 +11,21 @@ Screens as the panel draws them, saved over USB with `tools/screenshot.py`.
 ## Features
 
 Home lists ten modules, each with a live preview. Every screen uses one key language: ▲▼ to
-move or adjust, ● for the main action, HOLD ● for the second one, BOOT for back, HOLD BOOT for
-Home. Landscape screens (Clock, Level) turn the board so the wheel is on top; there, rolling it
-left is ▲ and right is ▼. Pictures turn with the board instead, and the wheel keeps its
-portrait sense there.
+move or adjust, ● for the main action, HOLD ● for the second one, BOOT for back (on Home, a
+full refresh), and HOLD BOOT on any screen to talk to the voice assistant (while music or a
+podcast plays, it raises a player sheet instead). Landscape screens (Clock, Level) turn the board
+so the wheel is on top; there, rolling it left is ▲ and right is ▼. Pictures turn with the
+board instead, and the wheel keeps its portrait sense there.
 
 | Module | What it does |
 | --- | --- |
 | **Reader** | EPUB 2/3 from microSD in Literata (three sizes), justified, with drop caps and line breaks at soft hyphens and dashes. Shows pictures (JPEG/PNG, dithered), the table of contents, and the cover as a page and on Home. Honours `display:none`. Resumes each book where you left it, even after a power loss |
 | **Podcasts** | RSS feeds over Wi-Fi plus folders of MP3s. Downloads resume after a reset. Playback resumes where you stopped, and played episodes are marked |
-| **Music** | MP3 and WAV from the card through the codec and speaker, with a waveform overview, queue and volume. Playback continues on any screen; HOLD BOOT jumps back to the player |
+| **Music** | MP3 and WAV from the card through the codec and speaker, with a waveform overview, queue and volume. Playback continues on any screen; while it plays, HOLD BOOT raises a player sheet over any screen (what's playing, pause / play, next, volume; BOOT closes it) |
 | **Weather** | Open-Meteo forecast: now, 12 hours and 6 days, with a detail sheet per day. Synced hourly (every half hour on USB; while the Reader naps, at the next page turn) and cached for offline use |
 | **Clock** | Landscape desk clock: calendar, sunrise and sunset, a weather strip, now-playing, and three alarms. An alarm can boot the board from power-off |
 | **Recorder** | Voice memos from the onboard mic as 16 kHz WAV, with a live waveform, input meter and gain. Memos play back on the device with a volume meter (▲▼), and can be deleted |
-| **Voice** | Hold the wheel and talk to an assistant on your network; it speaks back, and can play music on speakers through Home Assistant. The board streams the mic to [`voiced`](voiced/README.md), a Rust daemon that runs speech-to-text, a language model and text-to-speech (hosted or local, each swappable; a model that hears or speaks can stand in for the first or last), and plays the reply as it arrives. Set `voice_host` in `SD:/inkdeck.ini`. Protocol: [`docs/voice-protocol.md`](docs/voice-protocol.md). **Not yet tested on the board** |
+| **Voice** | Hold BOOT on any screen (or the wheel on the Voice screen) and talk to an assistant on your network: a sheet rises over the lower half of the screen with what it heard and its reply; it speaks back, and can play music on speakers through Home Assistant. The board streams the mic to [`voiced`](voiced/README.md), a Rust daemon that runs speech-to-text, a language model and text-to-speech (hosted or local, each swappable; a model that hears or speaks can stand in for the first or last), and plays the reply as it arrives. Set `voice_host` in `SD:/inkdeck.ini`. Protocol: [`docs/voice-protocol.md`](docs/voice-protocol.md). **Not yet tested on the board** |
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, a live I2C bus scan, and a CSV log to the card |
 | **Level** | Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
 | **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. With a PIN set, it can ask for it first unless you used it in the last minute (see Lock). A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, they stay as they were (tilt decides, not the picture's shape). The wheel works
@@ -87,7 +88,7 @@ can reflash the board.
 clears the ghosting that partials leave, once they have flipped two screens' worth of pixels
 or after 30 of them. System's AUTO FULL REFRESH sets that to 2, 5, 10 or 20 screens, or OFF,
 and the setting is kept. The serial log reports each refresh and how much change has built
-up since the last full one. HOLD BOOT always does a full refresh.
+up since the last full one. BOOT on Home always does a full refresh.
 
 **Wi-Fi drive:** System → WI-FI DRIVE puts the microSD card on the network as a drive, to copy
 books, music and `inkdeck.ini` without taking the card out. The board joins Wi-Fi and serves the

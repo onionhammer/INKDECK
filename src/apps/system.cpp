@@ -273,7 +273,7 @@ class SystemScreen : public ui::Screen {
       case Action::FullRefresh:
         screen::setFullRefreshScreens(nextFullRefresh());
         message_ = screen::fullRefreshScreens() ? "AFTER " + fullRefreshValue() + " OF CHANGE"
-                                                : "OFF: HOLD BOOT CLEANS THE SCREEN";
+                                                : "OFF: BOOT ON HOME CLEANS THE SCREEN";
         break;
       case Action::PinLock: {
         // Each task asks for the current PIN first, if there is one (apps/lock.h).

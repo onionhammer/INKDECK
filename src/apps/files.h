@@ -12,7 +12,7 @@
 //   - HOLD ● deletes the selection, after a sheet that asks (CANCEL first) and shows the file's
 //     size or how many items a folder holds. A folder goes with everything in it, under an
 //     inverted DELETING header. The player stops first if it has a file in there open; inside
-//     SD:/Podcasts it waits until no download is running. (The player itself is HOLD BOOT.)
+//     SD:/Podcasts it waits until no download is running. (HOLD BOOT raises the player sheet while it plays.)
 // A share's screen shows a CONNECTING header while it joins Wi-Fi and mounts the share, then
 // lists it like the card; if that fails it says why, and ● tries again. Shares are read-only:
 // no HOLD ● DELETE there.

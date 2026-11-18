@@ -15,6 +15,9 @@ namespace {
 constexpr uint32_t kTickMs = 5;
 constexpr uint8_t kDebounceTicks = 3;  // ~15 ms, like the vendor's MultiButton setup
 constexpr uint32_t kLongPressMs = 1000;  // docs/ui-design.md: HOLD = ~1 s
+// HOLD BOOT talks: half a second, so the mic opens sooner than a wheel hold would. A tap that
+// means back is well under that.
+constexpr uint32_t kBackHoldMs = 500;
 constexpr uint32_t kRepeatDelayMs = 500;
 constexpr uint32_t kRepeatEveryMs = 200;
 constexpr uint32_t kFastAfterMs = 1700;  // repeats after this page through lists (6 rows first)
@@ -28,6 +31,7 @@ struct Button {
   Key longKey;
   bool autoRepeat;  // true: fire on press + repeat; false: fire on release, or long on hold
   bool activeHigh;  // PWR_KEY_SENSE; the others are active low
+  uint32_t longMs;  // the hold time for longKey
   // state
   bool down = false;
   uint8_t integrator = 0;
@@ -37,16 +41,21 @@ struct Button {
 };
 
 Button buttons[] = {
-    {board::BTN_UP, Key::Up, Key::Up, true, false},
-    {board::BTN_DOWN, Key::Down, Key::Down, true, false},
-    {board::BTN_PRESS, Key::Select, Key::SelectLong, false, false},
-    {board::BTN_BOOT, Key::Back, Key::BackLong, false, false},
-    {board::PWR_KEY_SENSE, Key::Power, Key::Power, false, true},
+    {board::BTN_UP, Key::Up, Key::Up, true, false, 0},
+    {board::BTN_DOWN, Key::Down, Key::Down, true, false, 0},
+    {board::BTN_PRESS, Key::Select, Key::SelectLong, false, false, kLongPressMs},
+    {board::BTN_BOOT, Key::Back, Key::BackLong, false, false, kBackHoldMs},
+    {board::PWR_KEY_SENSE, Key::Power, Key::Power, false, true, 0},
 };
 
 QueueHandle_t queue = nullptr;
 esp_timer_handle_t timer = nullptr;
 std::atomic<void (*)(bool)> selectEdge{nullptr};
+std::atomic<void (*)(bool)> backHold{nullptr};
+// The handler that had the current HOLD BOOT, for its release. Timer task (and inject(), which
+// only dev tools call).
+void (*backHeldBy)(bool) = nullptr;
+bool backHeld = false;
 
 std::atomic<uint32_t> lastKeyMs{0};
 bool lastFast = false;    // only touched by the task calling wait()
@@ -57,6 +66,22 @@ void emit(Key key, bool fast = false, bool repeat = false) {
   const uint8_t item =
       static_cast<uint8_t>(key) | (fast ? kFastFlag : 0) | (repeat ? kRepeatFlag : 0);
   xQueueSend(queue, &item, 0);
+}
+
+void backHoldStart() {
+  if (backHeld) return;
+  backHeld = true;
+  backHeldBy = backHold.load();
+  if (backHeldBy) backHeldBy(true);
+  emit(Key::BackLong);
+}
+
+void backHoldEnd() {
+  if (!backHeld) return;
+  backHeld = false;
+  if (backHeldBy) backHeldBy(false);
+  backHeldBy = nullptr;
+  emit(Key::BackLongUp);
 }
 
 bool isPressed(const Button &b) {
@@ -88,6 +113,8 @@ void tick(void *) {
         emit(Key::SelectUp);
       } else if (!b.autoRepeat && !b.longFired) {
         emit(b.shortKey);
+      } else if (b.longKey == Key::BackLong) {
+        backHoldEnd();  // nothing if the hold began before begin()
       }
       continue;
     }
@@ -102,9 +129,13 @@ void tick(void *) {
       }
     } else if (b.shortKey == Key::Power) {
       if (b.heldMs > kPowerMaxMs) b.longFired = true;  // released later: no key
-    } else if (!b.edges && !b.longFired && b.heldMs >= kLongPressMs) {
+    } else if (!b.edges && !b.longFired && b.heldMs >= b.longMs) {
       b.longFired = true;
-      emit(b.longKey);
+      if (b.longKey == Key::BackLong) {
+        backHoldStart();
+      } else {
+        emit(b.longKey);
+      }
     }
   }
 }
@@ -122,6 +153,7 @@ const char *name(Key key) {
     case Key::Power: return "Power";
     case Key::SelectDown: return "SelectDown";
     case Key::SelectUp: return "SelectUp";
+    case Key::BackLongUp: return "BackLongUp";
   }
   return "?";
 }
@@ -169,9 +201,19 @@ bool lastKeyFast() { return lastFast; }
 
 bool lastKeyRepeat() { return lastRepeat; }
 
-void inject(Key key, bool fast) { emit(key, fast, fast); }
+void inject(Key key, bool fast) {
+  if (key == Key::BackLong) {
+    backHoldStart();
+  } else if (key == Key::BackLongUp) {
+    backHoldEnd();
+  } else {
+    emit(key, fast, fast);
+  }
+}
 
 void onSelectEdge(void (*handler)(bool down)) { selectEdge = handler; }
+
+void onBackHold(void (*handler)(bool down)) { backHold = handler; }
 
 bool anyDown() {
   for (const auto &b : buttons) {

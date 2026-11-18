@@ -405,6 +405,7 @@ void lineCommand(const String &line) {
 
 void task(void *) {
   using input::Key;
+  bool bootHeld = false;  // 'B' holds BOOT (talk); the next 'B' lets it go
   for (;;) {
     while (Serial.available() > 0) {
       switch (Serial.read()) {
@@ -415,7 +416,10 @@ void task(void *) {
         case 'p': input::inject(Key::Select); break;
         case 'P': input::inject(Key::SelectLong); break;
         case 'b': input::inject(Key::Back); break;
-        case 'B': input::inject(Key::BackLong); break;
+        case 'B':
+          bootHeld = !bootHeld;
+          input::inject(bootHeld ? Key::BackLong : Key::BackLongUp);
+          break;
         case 's': screen::dump(Serial); break;
         case '-': audio::changeVolume(-5); break;  // e.g. silence the speaker before a test
         case '+': audio::changeVolume(+5); break;

@@ -171,6 +171,7 @@ class RecorderScreen : public ui::Screen {
   std::string tag() const override { return moduleTag("RECORDER"); }
   std::string context() const override { return "SD:/Recordings/"; }
   bool contextIsPath() const override { return true; }
+  bool allowsTalk() const override { return false; }  // the mic is ours (HOLD BOOT would end a memo)
 
   int hints(ui::Hint *out) const override {
     if (audio::recording()) {

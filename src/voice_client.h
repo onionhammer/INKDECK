@@ -4,9 +4,11 @@
 // spoken reply as it arrives. The daemon does the listening, thinking and speaking; this is the
 // device's end of the wire.
 //
-// A session is open while the Voice screen is on top: open() joins Wi-Fi and connects in the
-// background, close() ends it and lets the radio go. Its own task owns the socket and the
-// audio streams (audio.h capture*/stream*), so the UI never waits on the network.
+// A session is open while the Voice screen or the voice sheet (HOLD BOOT, apps/voice.h) is on
+// top: open() joins Wi-Fi and connects in the background, close() ends it and lets the radio go.
+// talkStart() with no session open one too, the mic first, so what's said while Wi-Fi joins is
+// kept (the capture ring holds 8 s) and sent once voiced answers. Its own task owns the socket
+// and the audio streams (audio.h capture*/stream*), so the UI never waits on the network.
 //
 // Half-duplex: the mic is off while a reply plays. Pressing the talk key during a reply stops
 // it and listens again.
@@ -33,15 +35,18 @@ struct Status {
   std::string reply;  // the reply's text so far
   std::string error;  // why the session failed, or what the daemon reported for this turn
   float levelDb = -96;  // the mic's level while listening
+  bool mic = false;     // the mic is on: listening, or a talk that waits for the session
   uint32_t generation = 0;  // changes with the state and the texts
 };
 
 bool configured();  // inkdeck.ini names a daemon and there is a Wi-Fi network
 
+void begin();  // starts the task; open() and talkStart() work only after it
 void open();
 void close();
 
 // The talk key. Safe from any task, the input timer's included: they only post an event.
+// With no session (or a failed one), talkStart() opens one and the press is heard.
 void talkStart();
 void talkStop();
 

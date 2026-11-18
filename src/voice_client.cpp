@@ -367,12 +367,40 @@ void closeSession() {
   setState(State::Off);
 }
 
+// No session yet (the voice sheet's first hold) or a failed one: this press opens one and is
+// heard. The mic goes on first and the capture ring keeps what's said while Wi-Fi joins and
+// voiced answers; sendMic() catches up once it has. A release while connecting is still queued
+// and ends the utterance as usual.
+void talkIntoNewSession() {
+  s.wanted = true;
+  if (!configured()) {  // nothing to connect to: say why, and leave the mic off
+    setState(State::Error, settings::hasVoice() ? "NO WI-FI NETWORK SET" : "NO VOICE HOST SET");
+    return;
+  }
+  const bool mic = audio::captureStart();
+  if (mic) {
+    s.capturing = true;
+    s.talkStartMs = millis();
+  }
+  connectSession();  // blocks; key events wait in the queue
+  if (s.fd < 0) {
+    if (s.capturing) audio::captureStop();
+    s.capturing = false;
+    dropTalkEvents();  // a retry is the next press, not one made while this one failed
+    return;
+  }
+  if (!mic) {
+    dropTalkEvents();
+    setState(State::Ready, "THE MIC WON'T START");
+    return;
+  }
+  if (!sendControl("{\"type\":\"listen_start\"}")) return;
+  setState(State::Listening);
+}
+
 void beginTalk() {
   if (s.fd < 0) {
-    if (s.wanted) {  // the key retries a failed session; this press isn't heard
-      connectSession();
-      dropTalkEvents();
-    }
+    talkIntoNewSession();
     return;
   }
   if (!s.hello || s.capturing) return;
@@ -479,6 +507,8 @@ void start() {
 
 bool configured() { return settings::hasVoice() && wlan::configured(); }
 
+void begin() { start(); }
+
 void open() {
   start();
   post(Event::Open);
@@ -499,6 +529,7 @@ Status status() {
   }
   out.generation = generation.load();
   out.levelDb = audio::captureLevelDb();
+  out.mic = audio::capturing();
   return out;
 }
 
