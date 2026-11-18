@@ -34,7 +34,12 @@ pub async fn run(place: Place, harness: Harness) -> Result<()> {
             .await
             .with_context(|| format!("HTTP on {}", cfg.http))?;
         let chat = Chat::build(cfg, &harness)?;
-        let skills = harness.skills.names().iter().map(|s| s.to_string()).collect();
+        let skills = harness
+            .skills
+            .names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let api = Arc::new(http::Api::new(chat, cfg.token.clone(), skills));
         Some(tokio::spawn(http::serve(listener, api)))
     };

@@ -8,6 +8,7 @@
 
 #if INKDECK_VOICE
 #include "apps/voice.h"
+#include "apps/voice_tools.h"
 #include "audio.h"
 #include "input.h"
 #include "voice_client.h"
@@ -58,6 +59,7 @@ void key(bool held) {
 
 void beginHoldBoot() {
 #if INKDECK_VOICE
+  beginVoiceTools();
   voice::begin();
   input::onBackHold(edge);
 #endif

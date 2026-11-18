@@ -58,7 +58,12 @@ impl Chat {
 
     /// One turn. The reply goes to `out` as it is written (with the tools it calls); returns
     /// all of its text. The caller adds the turn to the history ([`remember`]).
-    pub async fn turn(&self, history: &[Turn], user: &str, out: mpsc::Sender<Piece>) -> Result<String> {
+    pub async fn turn(
+        &self,
+        history: &[Turn],
+        user: &str,
+        out: mpsc::Sender<Piece>,
+    ) -> Result<String> {
         let (tx, mut rx) = mpsc::channel::<Piece>(64);
         let model = async move {
             let request = |tools| llm::Request {
@@ -301,7 +306,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_turn_streams_and_is_remembered() {
-        let cfg = Config::from_table(toml::from_str("[llm]\nbackend = \"mock\"\n").unwrap()).unwrap();
+        let cfg =
+            Config::from_table(toml::from_str("[llm]\nbackend = \"mock\"\n").unwrap()).unwrap();
         let place = Place {
             config: cfg,
             read: vec![],
@@ -309,7 +315,11 @@ mod tests {
             skill_dirs: vec![],
         };
         let harness = Harness::build(&place, false).await.unwrap();
-        assert!(harness.prompt(&place.config, false).ends_with("Instructions from AGENTS.md:\n\nBe brief."));
+        assert!(
+            harness
+                .prompt(&place.config, false)
+                .ends_with("Instructions from AGENTS.md:\n\nBe brief.")
+        );
         let chat = Chat::build(&place.config, &harness).unwrap();
         let (tx, mut rx) = mpsc::channel(64);
         let pieces = async {

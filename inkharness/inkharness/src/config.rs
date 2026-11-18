@@ -41,6 +41,97 @@ pub struct Config {
     pub mcp: Vec<McpServer>,
     #[serde(default)]
     pub skills: Skills,
+    /// Web search (search.rs): `[search]` for one backend, `[[search]]` for several, tried in
+    /// order until one answers.
+    #[serde(default, deserialize_with = "one_or_more")]
+    pub search: Vec<Search>,
+}
+
+/// A table, or an array of them.
+fn one_or_more<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMore<T> {
+        More(Vec<T>),
+        One(T),
+    }
+    Ok(match OneOrMore::deserialize(d)? {
+        OneOrMore::More(all) => all,
+        OneOrMore::One(one) => vec![one],
+    })
+}
+
+/// A web search backend for the web_search tool (search.rs).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Search {
+    /// A SearXNG instance's JSON API: `json` must be in `search.formats` in its settings.yml.
+    Searxng {
+        url: String,
+        /// Its engines to ask, comma-separated (unset: the instance's defaults).
+        engines: Option<String>,
+        /// A language code such as "en" or "en-US" (unset: the instance's default).
+        language: Option<String>,
+        #[serde(default = "default_search_results")]
+        results: usize,
+    },
+    /// Brave's Search API (an independent index).
+    Brave {
+        #[serde(default = "default_brave_key_env")]
+        api_key_env: String,
+        /// Two-letter country the results are for, e.g. "us".
+        country: Option<String>,
+        #[serde(default = "default_brave_url")]
+        base_url: String,
+        #[serde(default = "default_search_results")]
+        results: usize,
+    },
+    /// Tavily, a search API for agents: with each search, a short answer written from the
+    /// results, and their text.
+    Tavily {
+        #[serde(default = "default_tavily_key_env")]
+        api_key_env: String,
+        /// "basic" or "advanced" (slower, better snippets, costs more).
+        #[serde(default = "default_tavily_depth")]
+        depth: String,
+        #[serde(default = "default_tavily_url")]
+        base_url: String,
+        #[serde(default = "default_search_results")]
+        results: usize,
+    },
+}
+
+impl Search {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Search::Searxng { .. } => "searxng",
+            Search::Brave { .. } => "brave",
+            Search::Tavily { .. } => "tavily",
+        }
+    }
+}
+
+fn default_search_results() -> usize {
+    5
+}
+fn default_brave_key_env() -> String {
+    "BRAVE_API_KEY".into()
+}
+fn default_brave_url() -> String {
+    "https://api.search.brave.com/res/v1".into()
+}
+fn default_tavily_key_env() -> String {
+    "TAVILY_API_KEY".into()
+}
+fn default_tavily_depth() -> String {
+    "basic".into()
+}
+fn default_tavily_url() -> String {
+    "https://api.tavily.com".into()
 }
 
 /// Agent Skills (skills.rs): instructions the models load by name when a task calls for them.

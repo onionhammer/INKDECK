@@ -77,7 +77,11 @@ impl Api {
             all.next += 1;
             format!("c{}", all.next)
         });
-        let history = all.by_id.get(&id).map(|(_, h)| h.clone()).unwrap_or_default();
+        let history = all
+            .by_id
+            .get(&id)
+            .map(|(_, h)| h.clone())
+            .unwrap_or_default();
         (id, history)
     }
 
@@ -113,7 +117,13 @@ pub async fn serve(listener: TcpListener, api: Arc<Api>) -> Result<()> {
 async fn health(State(api): State<Arc<Api>>, headers: HeaderMap) -> Json<Value> {
     let mut status = json!({"ok": true, "model": api.chat.model});
     if api.authorized(&headers) {
-        let tools: Vec<&str> = api.chat.tools().defs().iter().map(|d| d.name.as_str()).collect();
+        let tools: Vec<&str> = api
+            .chat
+            .tools()
+            .defs()
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect();
         status["tools"] = json!(tools);
         status["skills"] = json!(api.skills);
     }
@@ -166,8 +176,9 @@ async fn chat_turn(
         }
     }
     match task.await {
-        Ok(Ok(reply)) => Json(json!({"reply": reply.trim(), "conversation": id, "tools": tools}))
-            .into_response(),
+        Ok(Ok(reply)) => {
+            Json(json!({"reply": reply.trim(), "conversation": id, "tools": tools})).into_response()
+        }
         Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, format!("{e:#}")),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
@@ -203,7 +214,9 @@ fn events(
             Some(Piece::Audio(_)) => unreachable!(),
             None => {
                 let end = match task.await {
-                    Ok(Ok(reply)) => json!({"done": true, "reply": reply.trim(), "conversation": id}),
+                    Ok(Ok(reply)) => {
+                        json!({"done": true, "reply": reply.trim(), "conversation": id})
+                    }
                     Ok(Err(e)) => json!({"error": format!("{e:#}")}),
                     Err(e) => json!({"error": e.to_string()}),
                 };
@@ -250,7 +263,12 @@ mod tests {
             .json()
             .await
             .unwrap();
-        assert!(first["reply"].as_str().unwrap().starts_with("You said: one."));
+        assert!(
+            first["reply"]
+                .as_str()
+                .unwrap()
+                .starts_with("You said: one.")
+        );
         let id = first["conversation"].as_str().unwrap().to_string();
         let streamed = http
             .post(format!("{url}/chat"))
@@ -263,10 +281,26 @@ mod tests {
             .unwrap();
         assert!(streamed.contains(r#"data: {"text":"#), "{streamed}");
         assert!(streamed.contains(r#""done":true"#), "{streamed}");
-        assert!(streamed.contains(&format!(r#""conversation":"{id}""#)), "{streamed}");
-        let health: Value = http.get(format!("{url}/health")).send().await.unwrap().json().await.unwrap();
+        assert!(
+            streamed.contains(&format!(r#""conversation":"{id}""#)),
+            "{streamed}"
+        );
+        let health: Value = http
+            .get(format!("{url}/health"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         assert_eq!(health["model"], "mock");
-        assert!(health["tools"].as_array().unwrap().iter().any(|t| t == "run_js"));
+        assert!(
+            health["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t == "run_js")
+        );
     }
 
     #[tokio::test]
@@ -274,7 +308,9 @@ mod tests {
         let url = start("s3cret").await;
         let http = reqwest::Client::new();
         let chat = |token: Option<&str>| {
-            let mut request = http.post(format!("{url}/chat")).json(&json!({"text": "hi"}));
+            let mut request = http
+                .post(format!("{url}/chat"))
+                .json(&json!({"text": "hi"}));
             if let Some(token) = token {
                 request = request.bearer_auth(token);
             }
@@ -283,7 +319,14 @@ mod tests {
         assert_eq!(chat(None).await.unwrap().status(), 401);
         assert_eq!(chat(Some("nope")).await.unwrap().status(), 401);
         assert_eq!(chat(Some("s3cret")).await.unwrap().status(), 200);
-        let health: Value = http.get(format!("{url}/health")).send().await.unwrap().json().await.unwrap();
+        let health: Value = http
+            .get(format!("{url}/health"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
         assert!(health.get("tools").is_none());
     }
 }

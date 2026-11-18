@@ -1,8 +1,10 @@
 //! What the model can do. In the home: speakers, through Home Assistant's REST API (only the
 //! media_player domain is reachable, whatever the model asks for), and the tools of any MCP
-//! servers (mcp.rs). Then run_js, a JavaScript sandbox that can call all of those (js.rs), the
-//! skill tools (skills.rs), and the think tool, which the chat backends hand back to the
-//! session instead of running.
+//! servers (mcp.rs). Web search (search.rs). On a board that is talking: the tools it runs
+//! itself (device.rs). Then run_js, a JavaScript sandbox that can call all of those (js.rs), the
+//! skill tools
+//! (skills.rs), and the think tool, which the chat backends hand back to the session instead of
+//! running.
 
 use std::sync::Arc;
 
@@ -11,9 +13,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::config;
+use crate::device::Device;
 use crate::js;
 use crate::mcp::Mcp;
-use crate::skills::{self, Skills};
+use crate::search::{self, Search};
+use crate::skills::Skills;
 
 /// The tool that hands a turn to the thinking model ([think] in inkharness.toml).
 pub const THINK_TOOL: &str = "think_harder";
@@ -30,11 +34,40 @@ pub struct ToolDef {
 
 #[derive(Clone)]
 pub struct ToolSet {
+    /// What the model gets: `callable`, run_js, the skill tools, the think tool.
     defs: Vec<ToolDef>,
-    ha: Option<Arc<HomeAssistant>>,
-    mcp: Arc<Mcp>,
+    /// What a script can call too: Home Assistant's tools, the MCP servers', web search, the
+    /// device's.
+    callable: Vec<ToolDef>,
+    think: bool,
+    backends: Backends,
     js: Option<js::Limits>,
     skills: Arc<Skills>,
+}
+
+/// What runs the tools a script can call too.
+#[derive(Clone)]
+struct Backends {
+    ha: Option<Arc<HomeAssistant>>,
+    mcp: Arc<Mcp>,
+    search: Option<Arc<Search>>,
+    device: Option<Arc<Device>>,
+}
+
+impl Backends {
+    /// A Home Assistant, MCP, search or device tool.
+    async fn call(&self, name: &str, input: Value) -> Result<String, String> {
+        if let Some(device) = self.device.as_deref().filter(|d| d.has(name)) {
+            return device.call(name, input).await;
+        }
+        if let (search::TOOL, Some(search)) = (name, &self.search) {
+            return search.call(input).await;
+        }
+        if let Some(result) = self.mcp.call(name, input.clone()).await {
+            return result;
+        }
+        call_home(self.ha.as_deref(), name, input).await
+    }
 }
 
 impl ToolSet {
@@ -65,12 +98,12 @@ impl ToolSet {
                 }))
             }
         };
-        let mut defs = if ha.is_some() {
+        let mut callable = if ha.is_some() {
             definitions()
         } else {
             Vec::new()
         };
-        defs.extend(mcp.tools().iter().map(|t| ToolDef {
+        callable.extend(mcp.tools().iter().map(|t| ToolDef {
             name: t.name.clone(),
             description: t.description.clone(),
             schema: t.schema.clone(),
@@ -80,35 +113,60 @@ impl ToolSet {
             memory_bytes: js.memory_mb << 20,
             max_tool_calls: js.max_tool_calls,
         });
-        if let Some(limits) = &js {
-            let callable: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+        let mut tools = ToolSet {
+            defs: Vec::new(),
+            callable,
+            think: false,
+            backends: Backends {
+                ha,
+                mcp,
+                search: None,
+                device: None,
+            },
+            js,
+            skills,
+        };
+        tools.assemble();
+        Ok(tools)
+    }
+
+    fn assemble(&mut self) {
+        let mut defs = self.callable.clone();
+        if let Some(limits) = &self.js {
+            let callable: Vec<&str> = self.callable.iter().map(|d| d.name.as_str()).collect();
             defs.push(js_definition(&callable, limits));
         }
         // After run_js, so scripts don't get them: see skills.rs.
-        defs.extend(skills.defs());
-        Ok(ToolSet {
-            defs,
-            ha,
-            mcp,
-            js,
-            skills,
-        })
+        defs.extend(self.skills.defs());
+        if self.think {
+            defs.push(think_definition());
+        }
+        self.defs = defs;
     }
 
     /// The same tools plus the think tool, for the fast model.
     pub fn with_think(&self) -> ToolSet {
         let mut tools = self.clone();
-        tools.defs.push(ToolDef {
-            name: THINK_TOOL.into(),
-            description: "Hands this request to a slower model that thinks it through before \
-                          answering. Use it when a good answer needs reasoning, planning or \
-                          facts you are not sure of. Don't use it for commands, greetings or \
-                          anything you can answer well at once. The user hears a short phrase \
-                          while it thinks, then its answer, so say nothing yourself before or \
-                          after calling it."
-                .into(),
-            schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
-        });
+        tools.think = true;
+        tools.assemble();
+        tools
+    }
+
+    /// The same tools plus a connected device's (scripts can call them too).
+    pub fn with_device(&self, device: Arc<Device>) -> ToolSet {
+        let mut tools = self.clone();
+        tools.callable.extend(device.defs().iter().cloned());
+        tools.backends.device = Some(device);
+        tools.assemble();
+        tools
+    }
+
+    /// The same tools plus web search.
+    pub fn with_search(&self, search: Arc<Search>) -> ToolSet {
+        let mut tools = self.clone();
+        tools.callable.push(search.def());
+        tools.backends.search = Some(search);
+        tools.assemble();
         tools
     }
 
@@ -116,9 +174,17 @@ impl ToolSet {
         &self.defs
     }
 
-    /// True if anything besides run_js can be called: Home Assistant or an MCP tool.
+    /// The names a device's tools can't have.
+    pub fn names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.defs.iter().map(|d| d.name.as_str()).collect();
+        names.push(THINK_TOOL);
+        names
+    }
+
+    /// True if anything in the home besides run_js can be called: Home Assistant or an MCP
+    /// tool.
     pub fn has_home(&self) -> bool {
-        self.ha.is_some() || !self.mcp.tools().is_empty()
+        self.backends.ha.is_some() || !self.backends.mcp.tools().is_empty()
     }
 
     /// Runs a tool. `Err` is a message for the model (bad input, or the call failed).
@@ -132,43 +198,35 @@ impl ToolSet {
                 let Some(code) = input["code"].as_str().filter(|c| !c.trim().is_empty()) else {
                     return Err("invalid input: code is required".into());
                 };
-                // The script gets the home tools: not run_js itself, the think tool or the
-                // skill tools.
-                let names: Vec<String> = self
-                    .defs
-                    .iter()
-                    .map(|d| d.name.clone())
-                    .filter(|n| {
-                        ![JS_TOOL, THINK_TOOL, skills::LOAD_TOOL, skills::READ_TOOL]
-                            .contains(&n.as_str())
-                    })
-                    .collect();
-                let (ha, mcp) = (self.ha.clone(), self.mcp.clone());
+                // The script gets the home's, search and the device's tools: not run_js itself,
+                // the think tool or the skill tools.
+                let names: Vec<String> = self.callable.iter().map(|d| d.name.clone()).collect();
+                let backends = self.backends.clone();
                 let call: js::Caller = Arc::new(move |name, input| {
-                    let (ha, mcp) = (ha.clone(), mcp.clone());
-                    Box::pin(async move { call_tool(ha.as_deref(), &mcp, &name, input).await })
+                    let backends = backends.clone();
+                    Box::pin(async move { backends.call(&name, input).await })
                 });
                 js::run(code.to_string(), limits.clone(), names, call).await
             }
             _ => match self.skills.call(name, input.clone()) {
                 Some(result) => result,
-                None => call_tool(self.ha.as_deref(), &self.mcp, name, input).await,
+                None => self.backends.call(name, input).await,
             },
         }
     }
 }
 
-/// A Home Assistant or MCP tool.
-async fn call_tool(
-    ha: Option<&HomeAssistant>,
-    mcp: &Mcp,
-    name: &str,
-    input: Value,
-) -> Result<String, String> {
-    if let Some(result) = mcp.call(name, input.clone()).await {
-        return result;
+fn think_definition() -> ToolDef {
+    ToolDef {
+        name: THINK_TOOL.into(),
+        description: "Hands this request to a slower model that thinks it through before \
+                      answering. Use it when a good answer needs reasoning, planning or facts \
+                      you are not sure of. Don't use it for commands, greetings or anything you \
+                      can answer well at once. The user hears a short phrase while it thinks, \
+                      then its answer, so say nothing yourself before or after calling it."
+            .into(),
+        schema: json!({"type": "object", "properties": {}, "additionalProperties": false}),
     }
-    call_home(ha, name, input).await
 }
 
 async fn call_home(ha: Option<&HomeAssistant>, name: &str, input: Value) -> Result<String, String> {

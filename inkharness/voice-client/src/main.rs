@@ -9,7 +9,7 @@ use clap::Parser;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use voice_proto::{
-    ClientMsg, Frame, FrameDecoder, PROTO_VERSION, ServerMsg, read_frame, write_frame,
+    ClientMsg, DeviceTool, Frame, FrameDecoder, PROTO_VERSION, ServerMsg, read_frame, write_frame,
 };
 
 #[derive(Parser)]
@@ -36,6 +36,11 @@ struct Args {
     /// Send `abort` this many milliseconds after the utterance ends.
     #[arg(long)]
     abort_after_ms: Option<u64>,
+    /// Play a board with tools: a JSON file holding an array of
+    /// `{"name", "description", "input_schema", "answer"}`. Each call is printed and answered
+    /// with its tool's `answer`.
+    #[arg(long, value_name = "FILE")]
+    tools: Option<PathBuf>,
 }
 
 /// What the device sends per frame: 512 samples, 32 ms at 16 kHz.
@@ -50,6 +55,23 @@ async fn main() -> Result<()> {
         (None, None) => bail!("give --wav FILE or --silence SECONDS"),
     };
 
+    // The tools to announce, and what each answers.
+    let mut tools: Vec<DeviceTool> = Vec::new();
+    let mut answers = std::collections::HashMap::new();
+    if let Some(path) = &args.tools {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let list: Vec<serde_json::Value> = serde_json::from_str(&text).context("the tools file")?;
+        for mut item in list {
+            let answer = item["answer"].as_str().unwrap_or("Done.").to_string();
+            item.as_object_mut().map(|o| o.remove("answer"));
+            let tool: DeviceTool =
+                serde_json::from_value(item).context("a tool in the tools file")?;
+            answers.insert(tool.name.clone(), answer);
+            tools.push(tool);
+        }
+    }
+
     let mut stream = TcpStream::connect(&args.addr)
         .await
         .with_context(|| format!("connecting to {}", args.addr))?;
@@ -61,6 +83,7 @@ async fn main() -> Result<()> {
         device: "voice-client".into(),
         token: args.token.clone(),
         mic_rate: rate,
+        tools,
     };
     write_frame(&mut stream, &Frame::control(&hello)?).await?;
     match read_frame(&mut stream, &mut decoder).await? {
@@ -139,6 +162,15 @@ async fn main() -> Result<()> {
                     break;
                 }
                 Ok(ServerMsg::Error { message }) => println!("[{:>5} ms] error: {message}", ms()),
+                Ok(ServerMsg::ToolCall { id, name, input }) => {
+                    println!("[{:>5} ms] tool call: {name} {input}", ms());
+                    let (text, error) = match answers.get(&name) {
+                        Some(answer) => (answer.clone(), false),
+                        None => (format!("no tool named {name}"), true),
+                    };
+                    let result = ClientMsg::ToolResult { id, text, error };
+                    write_frame(&mut stream, &Frame::control(&result)?).await?;
+                }
                 Ok(ServerMsg::Hello { .. }) => {}
                 Err(e) => println!("unknown message {json}: {e}"),
             },

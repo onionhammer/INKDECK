@@ -42,6 +42,10 @@ bool lastKeyRepeat();
 // BackLong and BackLongUp go to the onBackHold() handler too, as a real hold does.
 void inject(Key key, bool fast = false);
 
+// Ends a wait() early, as a timeout would, from any task: work for the UI task has come in
+// (apps/voice_tools.h).
+void wake();
+
 // Push-to-talk: while a handler is set, the wheel press reports its two edges instead of
 // Select / SelectLong. The handler runs at once in the timer task, so a press made while the
 // panel is refreshing isn't late (keep it short: post to a queue), and Key::SelectDown /

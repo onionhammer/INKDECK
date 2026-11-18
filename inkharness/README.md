@@ -130,8 +130,10 @@ Each stage is a trait with swappable backends, chosen in `inkharness.toml`:
 | Model | `anthropic` (Claude), `openai_compat` (any `/chat/completions` server: Ollama, llama.cpp, vLLM; with `input = "audio"` and `output = "audio"` for models that hear and speak), `mock` |
 | Text to speech | `openai_compat` (any `/audio/speech` server that returns PCM), `sherpa_pocket` (in-process), `mock` |
 | Tools | Home Assistant's REST API: `list_speakers`, `play_music`, `media_control` (media players only) |
+| Web search | `web_search` (`[search]`, `search.rs`): [SearXNG](https://docs.searxng.org) (your own instance, no key), [Brave](https://brave.com/search/api/) or [Tavily](https://tavily.com) (keys). Several are tried in order until one answers. The model gets each result's title, snippet, date and link, and Tavily's short answer; `recent` limits it to the last day, week, month or year |
+| Device tools | What the board can do itself, announced in its hello: the INKDECK's are `find_books`, `open_book`, `weather` (its own forecast), `board_status`, `set_volume`, `set_alarm` and `show` (`src/apps/voice_tools.h`). A call goes down the board's connection and waits for its answer (up to 15 s). Each client brings its own; none are built in ([protocol](../docs/voice-protocol.md#device-tools), `device.rs`) |
 | MCP | Any [MCP](https://modelcontextprotocol.io) server's tools (`[[mcp]]`, `.mcp.json`), over stdio or streamable HTTP, through the official Rust SDK (`rmcp`); named `<server>_<tool>`, optionally limited to an allowlist. `examples/mcp_demo.rs` is a small server to try it with |
-| Scripts | `run_js`: JavaScript in a [QuickJS](https://github.com/quickjs-ng/quickjs) sandbox (`rquickjs`), for arithmetic and dates, or to chain the home tools, which it calls as `tools.list_speakers()`; no network, files or timers, with time, memory and tool-call limits (`[js]`) |
+| Scripts | `run_js`: JavaScript in a [QuickJS](https://github.com/quickjs-ng/quickjs) sandbox (`rquickjs`), for arithmetic and dates, or to chain the home and device tools, which it calls as `tools.list_speakers()`; no network, files or timers, with time, memory and tool-call limits (`[js]`) |
 | Skills | [Agent Skills](https://agentskills.io) (`skills/`, `[skills]`): a folder per skill with a `SKILL.md`. The system prompt lists each one's name and description; `load_skill` returns the instructions and `read_skill_file` the skill's other files, read from inside its folder only (16 KB each). Up to 32 skills |
 
 The stages overlap: the reply's first sentence is synthesised and sent while the model is still
@@ -157,7 +159,7 @@ scripts can't call the skill tools.
 | Path | |
 | --- | --- |
 | `voice-proto/` | Framing and messages, shared by the daemon and the test client |
-| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
+| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
 | `voice-client/` | Plays a board's part from a WAV file |
 | `skills/` | Agent Skills, found when inkharness starts in this folder; `goodnight` pauses every speaker that's playing in one `run_js` script |
 | `install.sh` | Installs inkharness from this checkout (`cargo install --path`) |
@@ -178,6 +180,10 @@ say -o command.wav --data-format=LEI16@16000 "What speakers are there?"   # macO
 cargo run --release -p voice-client -- --wav command.wav
 cargo clean
 ```
+
+`voice-client --tools tools.json` plays a board with tools: an array of tools as the hello
+announces them (`name`, `description`, `input_schema`), each with the `answer` to give when it's
+called.
 
 With hosted services: copy `inkharness.toml.example`, fill in the model names, and put the keys it
 names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `HOME_ASSISTANT_TOKEN`) in the environment or `.env`.

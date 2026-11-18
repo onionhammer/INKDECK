@@ -12,10 +12,16 @@
 //
 // Half-duplex: the mic is off while a reply plays. Pressing the talk key during a reply stops
 // it and listens again.
+//
+// The board's own tools (apps/voice_tools.h): the hello announces them, and the model's calls
+// come down the connection (docs/voice-protocol.md, "Device tools"). The voice task hands each
+// to the tool handler; answer() sends back what it gave, from any task.
 #pragma once
 #include <stdint.h>
 
 #include <string>
+
+struct cJSON;
 
 namespace voice {
 
@@ -36,6 +42,7 @@ struct Status {
   std::string error;  // why the session failed, or what the daemon reported for this turn
   float levelDb = -96;  // the mic's level while listening
   bool mic = false;     // the mic is on: listening, or a talk that waits for the session
+  uint32_t turn = 0;    // counts utterances: a tool call belongs to the turn it came in
   uint32_t generation = 0;  // changes with the state and the texts
 };
 
@@ -52,5 +59,14 @@ void talkStop();
 
 Status status();
 bool busy();  // connecting, listening, thinking or speaking: the idle power-off waits
+
+// The tools: `definitions` is the JSON array the hello announces (static: it is kept), and
+// `call` gets each tool_call in the voice task, with the turn it belongs to (keep it short:
+// queue it). `input` is the call's input object, or null; the handler owns it (cJSON_Delete()).
+// Before the first open().
+using ToolCall = void (*)(uint32_t id, const std::string &name, cJSON *input, uint32_t turn);
+void setTools(const char *definitions, ToolCall call);
+// What a call gave, or why it failed (error). Dropped if the session has ended since.
+void answer(uint32_t id, const std::string &text, bool error = false);
 
 }  // namespace voice

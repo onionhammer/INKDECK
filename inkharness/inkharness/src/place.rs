@@ -75,7 +75,9 @@ pub fn load(dir: &Path, explicit: Option<&Path>) -> Result<Place> {
     if layers.is_empty() {
         bail!(
             "no {CONFIG_FILE} here or in {}: `inkharness init` writes a starter one",
-            global.map_or("the global config folder".into(), |g| g.display().to_string())
+            global.map_or("the global config folder".into(), |g| g
+                .display()
+                .to_string())
         );
     }
 
@@ -89,8 +91,8 @@ pub fn load(dir: &Path, explicit: Option<&Path>) -> Result<Place> {
 
     let mut merged = toml::Table::new();
     for layer in &layers {
-        let text =
-            std::fs::read_to_string(layer).with_context(|| format!("reading {}", layer.display()))?;
+        let text = std::fs::read_to_string(layer)
+            .with_context(|| format!("reading {}", layer.display()))?;
         let mut table: toml::Table =
             toml::from_str(&text).with_context(|| format!("parsing {}", layer.display()))?;
         resolve_paths(&mut table, layer.parent().unwrap_or(Path::new(".")));
@@ -109,7 +111,11 @@ pub fn load(dir: &Path, explicit: Option<&Path>) -> Result<Place> {
     }
     let mut config = Config::from_table(merged).with_context(|| format!("in {}", names()))?;
 
-    for file in dirs.iter().map(|d| d.join(MCP_FILE)).filter(|f| f.is_file()) {
+    for file in dirs
+        .iter()
+        .map(|d| d.join(MCP_FILE))
+        .filter(|f| f.is_file())
+    {
         for server in read_mcp_json(&file)? {
             if let Some(i) = config.mcp.iter().position(|s| s.name == server.name) {
                 tracing::info!(server = %server.name, file = %file.display(), "replaces an earlier MCP server of that name");
@@ -122,11 +128,15 @@ pub fn load(dir: &Path, explicit: Option<&Path>) -> Result<Place> {
 
     let mut instructions = Vec::new();
     for d in &dirs {
-        let Some(file) = INSTRUCTION_FILES.iter().map(|n| d.join(n)).find(|f| f.is_file()) else {
+        let Some(file) = INSTRUCTION_FILES
+            .iter()
+            .map(|n| d.join(n))
+            .find(|f| f.is_file())
+        else {
             continue;
         };
-        let mut text =
-            std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?;
+        let mut text = std::fs::read_to_string(&file)
+            .with_context(|| format!("reading {}", file.display()))?;
         if text.len() > MAX_INSTRUCTIONS {
             tracing::warn!(file = %file.display(), "over {} KB; the rest is left out", MAX_INSTRUCTIONS / 1024);
             let mut cut = MAX_INSTRUCTIONS;
@@ -142,7 +152,12 @@ pub fn load(dir: &Path, explicit: Option<&Path>) -> Result<Place> {
     }
 
     let mut skill_dirs: Vec<PathBuf> = config.skills.dirs.iter().map(PathBuf::from).collect();
-    skill_dirs.extend(SKILL_DIRS.iter().map(|s| dir.join(s)).filter(|d| d.is_dir()));
+    skill_dirs.extend(
+        SKILL_DIRS
+            .iter()
+            .map(|s| dir.join(s))
+            .filter(|d| d.is_dir()),
+    );
     if let Some(g) = global.as_ref().filter(|g| !same(g, dir)) {
         skill_dirs.extend(Some(g.join("skills")).filter(|d| d.is_dir()));
     }
@@ -183,7 +198,9 @@ fn merge(into: &mut toml::Table, from: toml::Table) {
     for (key, value) in from {
         match (into.get_mut(&key), value) {
             (Some(toml::Value::Table(old)), toml::Value::Table(new))
-                if new.get("backend").is_none_or(|b| old.get("backend") == Some(b)) =>
+                if new
+                    .get("backend")
+                    .is_none_or(|b| old.get("backend") == Some(b)) =>
             {
                 merge(old, new)
             }
@@ -262,7 +279,8 @@ struct McpJsonServer {
 /// The servers in a .mcp.json. One that can't be used (a variable not set) is logged and left
 /// out; a file that isn't JSON stops the start.
 fn read_mcp_json(file: &Path) -> Result<Vec<McpServer>> {
-    let text = std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+    let text =
+        std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
     let parsed: McpJson =
         serde_json::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
     let mut servers = Vec::new();
@@ -272,7 +290,9 @@ fn read_mcp_json(file: &Path) -> Result<Vec<McpServer>> {
         }
         match mcp_server(&name, server) {
             Ok(server) => servers.push(server),
-            Err(e) => tracing::error!(server = %name, file = %file.display(), "MCP server left out: {e:#}"),
+            Err(e) => {
+                tracing::error!(server = %name, file = %file.display(), "MCP server left out: {e:#}")
+            }
         }
     }
     Ok(servers)
@@ -284,12 +304,18 @@ fn mcp_server(name: &str, s: McpJsonServer) -> Result<McpServer> {
         .as_deref()
         .unwrap_or(if s.url.is_some() { "http" } else { "stdio" });
     let (command, url) = match kind {
-        "stdio" => (Some(expand(s.command.as_deref().context("no command")?)?), None),
+        "stdio" => (
+            Some(expand(s.command.as_deref().context("no command")?)?),
+            None,
+        ),
         "http" | "streamable-http" | "streamableHttp" => {
             (None, Some(expand(s.url.as_deref().context("no url")?)?))
         }
         "sse" => {
-            tracing::warn!(server = name, "SSE isn't supported; trying it as streamable HTTP");
+            tracing::warn!(
+                server = name,
+                "SSE isn't supported; trying it as streamable HTTP"
+            );
             (None, Some(expand(s.url.as_deref().context("no url")?)?))
         }
         other => bail!("type \"{other}\" isn't supported: stdio or http"),
@@ -368,7 +394,9 @@ mod tests {
         );
         assert_eq!(
             into["llm"],
-            toml::Value::Table(table("backend = \"openai_compat\"\nbase_url = \"u\"\nmodel = \"o\"\n"))
+            toml::Value::Table(table(
+                "backend = \"openai_compat\"\nbase_url = \"u\"\nmodel = \"o\"\n"
+            ))
         );
     }
 

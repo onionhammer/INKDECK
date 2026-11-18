@@ -9,7 +9,8 @@
 //   HOLD BOOT  talk again; during a reply it stops the reply and listens
 //   ▲▼         volume
 //   BOOT       close (ends the session and lets Wi-Fi go)
-// It closes by itself 30 s after the last reply. Not over the lock, an off face, the Recorder or
+// It closes by itself 30 s after the last reply, or once a reply has played that opens a screen
+// (a book, a module: apps/voice_tools.h). Not over the lock, an off face, the Recorder or
 // a ringing alarm (ui::nav::talkAllowed()). While music or a podcast plays, HOLD BOOT raises the
 // player sheet instead (apps::openPlayer()): playback comes first. Talking stops a paused track,
 // as the mic needs the codec.

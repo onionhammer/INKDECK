@@ -9,12 +9,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::ServiceExt;
 use rmcp::model::{CallToolRequestParams, CallToolResult, ContentBlock};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
-use reqwest::header::{HeaderName, HeaderValue};
 use serde_json::Value;
 
 use crate::config;
@@ -151,7 +151,12 @@ impl Mcp {
         self.servers
             .iter()
             .enumerate()
-            .map(|(i, s)| (s.name.as_str(), self.tools.iter().filter(|t| t.server == i).count()))
+            .map(|(i, s)| {
+                (
+                    s.name.as_str(),
+                    self.tools.iter().filter(|t| t.server == i).count(),
+                )
+            })
             .collect()
     }
 
@@ -220,7 +225,8 @@ fn headers(
             Ok((
                 HeaderName::from_bytes(name.as_bytes())
                     .with_context(|| format!("header name {name:?}"))?,
-                HeaderValue::from_str(value).with_context(|| format!("the {name} header's value"))?,
+                HeaderValue::from_str(value)
+                    .with_context(|| format!("the {name} header's value"))?,
             ))
         })
         .collect()

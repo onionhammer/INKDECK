@@ -92,6 +92,22 @@ impl FrameDecoder {
     }
 }
 
+/// A tool the device runs itself, announced in its hello: the model can call it like any
+/// other, and the daemon passes the call on (`tool_call`, `tool_result`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceTool {
+    /// Letters, digits, `_` and `-`, up to 64.
+    pub name: String,
+    pub description: String,
+    /// JSON Schema of the input object.
+    #[serde(default = "no_input")]
+    pub input_schema: serde_json::Value,
+}
+
+fn no_input() -> serde_json::Value {
+    serde_json::json!({"type": "object", "properties": {}})
+}
+
 /// Device → daemon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -102,6 +118,9 @@ pub enum ClientMsg {
         #[serde(default)]
         token: String,
         mic_rate: u32,
+        /// What the device can do itself. A daemon from before tools ignores it.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools: Vec<DeviceTool>,
     },
     /// Audio frames that follow are one utterance.
     ListenStart,
@@ -109,6 +128,13 @@ pub enum ClientMsg {
     ListenStop,
     /// Drop the utterance or the reply in progress. The daemon answers `reply_end`.
     Abort,
+    /// The answer to a `tool_call`: what the tool did or found, or why it couldn't.
+    ToolResult {
+        id: u32,
+        text: String,
+        #[serde(default)]
+        error: bool,
+    },
 }
 
 /// Daemon → device.
@@ -133,6 +159,13 @@ pub enum ServerMsg {
     },
     /// The turn is over. May arrive without a `reply_start` (nothing to say, or an abort).
     ReplyEnd,
+    /// The model calls one of the device's tools; the device answers `tool_result` with the
+    /// same id.
+    ToolCall {
+        id: u32,
+        name: String,
+        input: serde_json::Value,
+    },
     Error {
         message: String,
     },
@@ -228,6 +261,7 @@ mod tests {
             device: "inkdeck".into(),
             token: "t".into(),
             mic_rate: 16000,
+            tools: vec![],
         };
         assert_eq!(
             serde_json::to_string(&hello).unwrap(),
@@ -240,6 +274,44 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&ServerMsg::ReplyStart { rate: 24000 }).unwrap(),
             r#"{"type":"reply_start","rate":24000}"#
+        );
+    }
+
+    #[test]
+    fn device_tools() {
+        let hello: ClientMsg = serde_json::from_str(
+            r#"{"type":"hello","proto":1,"device":"inkdeck","mic_rate":16000,
+                "tools":[{"name":"open_book","description":"Opens a book.",
+                          "input_schema":{"type":"object","properties":{"path":{"type":"string"}}}},
+                         {"name":"board_status","description":"How the board is."}]}"#,
+        )
+        .unwrap();
+        let ClientMsg::Hello { tools, token, .. } = hello else {
+            panic!("not a hello")
+        };
+        assert_eq!(token, "");
+        assert_eq!(
+            tools[0].input_schema["properties"]["path"]["type"],
+            "string"
+        );
+        assert_eq!(tools[1].input_schema["type"], "object");
+        assert_eq!(
+            serde_json::to_string(&ServerMsg::ToolCall {
+                id: 3,
+                name: "open_book".into(),
+                input: serde_json::json!({"path": "x"}),
+            })
+            .unwrap(),
+            r#"{"type":"tool_call","id":3,"name":"open_book","input":{"path":"x"}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ClientMsg>(r#"{"type":"tool_result","id":3,"text":"ok"}"#)
+                .unwrap(),
+            ClientMsg::ToolResult {
+                id: 3,
+                text: "ok".into(),
+                error: false
+            }
         );
     }
 }

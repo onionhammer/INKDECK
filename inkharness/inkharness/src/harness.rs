@@ -1,5 +1,6 @@
 //! What every front-end shares, built once from the place: one HTTP client, the tools (Home
-//! Assistant, run_js, MCP servers, skills) and what the system prompt adds to its base.
+//! Assistant, run_js, MCP servers, web search, skills) and what the system prompt adds to its
+//! base.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,6 +10,7 @@ use anyhow::Result;
 use crate::config::{self, Config};
 use crate::mcp::Mcp;
 use crate::place::Place;
+use crate::search::Search;
 use crate::skills::Skills;
 use crate::tools::ToolSet;
 
@@ -36,20 +38,24 @@ impl Harness {
             .build()?;
         let mcp = Mcp::connect(&cfg.mcp, server_logs).await;
         let skills = Arc::new(Skills::load(&place.skill_dirs));
-        let tools = ToolSet::build(
+        let mut tools = ToolSet::build(
             cfg.home_assistant.as_ref(),
             &cfg.js,
             mcp.clone(),
             skills.clone(),
             http.clone(),
         )?;
+        if let Some(search) = Search::new(&cfg.search, http.clone())? {
+            tools = tools.with_search(Arc::new(search));
+        }
 
         let mut additions = String::new();
         if !tools.has_home() {
             // Some models claim to have done what they were asked even with no tool to do it.
             additions.push_str(
-                " Nothing in the home is connected right now, so you can't control any devices; \
-                 if asked to, say that you can't. You can still answer questions.",
+                " Nothing in the home (speakers, lights and the like) is connected right now, so \
+                 you can't control any of it; if asked to, say that you can't. You can still \
+                 answer questions.",
             );
         }
         for (file, text) in &place.instructions {

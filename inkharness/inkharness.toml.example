@@ -115,6 +115,32 @@ api_key_env = "OPENAI_API_KEY"
 # args = []
 # env = { }
 
+# --- Web search ------------------------------------------------------------------------
+# The web_search tool, for what the models don't know or what has changed: news, scores,
+# opening hours. [search] for one backend; [[search]] for several, tried in order until one
+# answers (the next is asked when one fails or finds nothing). results: how many (default 5).
+#
+# SearXNG, a metasearch engine you run yourself: free, no key, nothing leaves your network but
+# the query to its engines. Its settings.yml must allow json (search: formats: [html, json]).
+# [search]
+# backend = "searxng"
+# url = "http://searxng.local:8080"
+# language = "en"            # optional
+# engines = "brave,duckduckgo"   # optional; unset: the instance's defaults
+#
+# Brave's Search API (its own index; a key from api-search.brave.com):
+# [[search]]
+# backend = "brave"
+# api_key_env = "BRAVE_API_KEY"
+# country = "us"             # optional
+#
+# Tavily, a search API for agents: each search comes with a short answer written from the
+# results (a key from tavily.com):
+# [[search]]
+# backend = "tavily"
+# api_key_env = "TAVILY_API_KEY"
+# depth = "basic"            # or "advanced": better snippets, slower, costs more
+
 # --- Skills ----------------------------------------------------------------------------
 # Agent Skills: a folder per skill with a SKILL.md (name and description between --- lines,
 # then instructions). The models see each skill's name and description, and load the

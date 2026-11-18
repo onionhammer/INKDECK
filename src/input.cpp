@@ -23,6 +23,7 @@ constexpr uint32_t kRepeatEveryMs = 200;
 constexpr uint32_t kFastAfterMs = 1700;  // repeats after this page through lists (6 rows first)
 constexpr uint8_t kFastFlag = 0x80;      // or'd into a queued key
 constexpr uint8_t kRepeatFlag = 0x40;    // likewise: an auto-repeat, not the press itself
+constexpr uint8_t kWake = 0x3F;          // queued by wake(): no key
 constexpr uint32_t kPowerMaxMs = 2000;  // a longer PWR hold is heading for the 4 s forced off
 
 struct Button {
@@ -187,7 +188,7 @@ void begin() {
 
 bool wait(Key &key, uint32_t timeoutMs) {
   uint8_t item = 0;
-  if (xQueueReceive(queue, &item, pdMS_TO_TICKS(timeoutMs)) != pdTRUE) {
+  if (xQueueReceive(queue, &item, pdMS_TO_TICKS(timeoutMs)) != pdTRUE || item == kWake) {
     lastFast = lastRepeat = false;
     return false;
   }
@@ -223,6 +224,12 @@ bool anyDown() {
 }
 
 bool pending() { return queue && uxQueueMessagesWaiting(queue) > 0; }
+
+void wake() {
+  if (!queue) return;
+  const uint8_t item = kWake;
+  xQueueSend(queue, &item, 0);
+}
 
 uint32_t idleMs() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000) - lastKeyMs.load();

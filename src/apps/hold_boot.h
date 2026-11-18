@@ -8,7 +8,8 @@
 
 namespace apps {
 
-// From setup(): starts the voice client's task (with voice) and installs the handlers.
+// From setup(): starts the voice client's task and the board's tools for it (with voice), and
+// installs the handlers.
 void beginHoldBoot();
 
 }  // namespace apps

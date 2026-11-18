@@ -10,6 +10,7 @@
 
 mod chat;
 mod config;
+mod device;
 mod harness;
 mod http;
 mod js;
@@ -19,6 +20,7 @@ mod local;
 mod mcp;
 mod meter;
 mod place;
+mod search;
 mod sentence;
 mod serve;
 mod session;
@@ -188,6 +190,12 @@ fallbacks = true
 # token = ""                    # boards send it (voice_token in SD:/inkdeck.ini), HTTP as a bearer
 # listen = "0.0.0.0:7391"       # boards
 # http = "127.0.0.1:7392"       # the HTTP API; "" turns it off
+
+# Web search: a SearXNG of your own, or Brave or Tavily with a key (the repo's
+# inkharness.toml.example has each). [[search]] tables are tried in order.
+# [search]
+# backend = "searxng"
+# url = "http://searxng.local:8080"
 
 # MCP servers also come from a folder's .mcp.json, skills from its skills/ folder, and
 # instructions from its AGENTS.md.

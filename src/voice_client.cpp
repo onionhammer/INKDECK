@@ -38,10 +38,21 @@ constexpr uint32_t kAnswerTimeoutMs = 45000;  // of silence from the daemon in a
 enum class Event : uint8_t { Open, Close, TalkStart, TalkStop };
 
 QueueHandle_t events = nullptr;
-SemaphoreHandle_t lock = nullptr;  // guards `shared`
+SemaphoreHandle_t lock = nullptr;  // guards `shared` and `answers`
 Status shared;
 std::atomic<State> state{State::Off};
 std::atomic<uint32_t> generation{0};
+std::atomic<uint32_t> turns{0};
+
+// The board's tools (setTools()), and the answers waiting to go out (answer()).
+const char *toolDefinitions = nullptr;
+ToolCall toolCall = nullptr;
+struct Answer {
+  uint32_t id;
+  std::string text;
+  bool error;
+};
+std::vector<Answer> answers;
 
 struct Locked {
   Locked() { xSemaphoreTake(lock, portMAX_DELAY); }
@@ -89,6 +100,12 @@ void endAudio() {
   s.capturing = s.draining = s.stream = s.playingOut = false;
 }
 
+// Answers for a session that has ended go nowhere.
+void forgetAnswers() {
+  Locked l;
+  answers.clear();
+}
+
 // The connection is gone (or never came up): back to no session, saying why.
 void drop(const char *why) {
   if (s.fd >= 0) ::close(s.fd);
@@ -97,6 +114,7 @@ void drop(const char *why) {
   s.staleEnds = 0;
   s.rxLen = 0;
   endAudio();
+  forgetAnswers();
   log_w("voice: %s", why);
   setState(State::Error, why);
 }
@@ -228,8 +246,35 @@ void onControl(const uint8_t *payload, size_t len) {
       shared.error = field(json, "message");
       generation++;
     }
+  } else if (type == "tool_call") {
+    // From a turn cut short: inkharness has forgotten it, so it isn't run.
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(json, "id");
+    if (s.staleEnds == 0 && s.turnOpen && cJSON_IsNumber(id)) {
+      const uint32_t callId = static_cast<uint32_t>(id->valuedouble);
+      if (!toolCall) {
+        answer(callId, "this board runs no tools", true);
+      } else {
+        cJSON *input = cJSON_DetachItemFromObjectCaseSensitive(json, "input");
+        toolCall(callId, field(json, "name"), input, turns.load());
+      }
+    }
   }
   cJSON_Delete(json);
+}
+
+// Sends the answers the tools have given since the last call.
+void sendAnswers() {
+  std::vector<Answer> ready;
+  {
+    Locked l;
+    ready.swap(answers);
+  }
+  for (const Answer &a : ready) {
+    const std::string json = "{\"type\":\"tool_result\",\"id\":" + std::to_string(a.id) +
+                             ",\"text\":" + quoted(a.text) +
+                             ",\"error\":" + (a.error ? "true" : "false") + "}";
+    if (!sendControl(json)) return;
+  }
 }
 
 void onAudio(const uint8_t *pcm, size_t len) {
@@ -302,6 +347,7 @@ void connectSession() {
     shared.error.clear();
     shared.heard.clear();
     shared.reply.clear();
+    answers.clear();  // late ones, for a session that has gone
   }
   setState(State::Connecting);
   if (!settings::hasVoice()) {
@@ -338,9 +384,14 @@ void connectSession() {
   if (s.rx.empty()) s.rx.resize(kRxBytes);
   s.rxLen = 0;
   s.hello = false;
-  const std::string hello = "{\"type\":\"hello\",\"proto\":" + std::to_string(kProto) +
-                            ",\"device\":\"inkdeck\",\"token\":" + quoted(settings::voiceToken()) +
-                            ",\"mic_rate\":" + std::to_string(audio::kRecordRate) + "}";
+  std::string hello = "{\"type\":\"hello\",\"proto\":" + std::to_string(kProto) +
+                      ",\"device\":\"inkdeck\",\"token\":" + quoted(settings::voiceToken()) +
+                      ",\"mic_rate\":" + std::to_string(audio::kRecordRate);
+  if (toolDefinitions) {
+    hello += ",\"tools\":";
+    hello += toolDefinitions;
+  }
+  hello += "}";
   if (!sendControl(hello)) return;
   const uint32_t t0 = millis();
   while (s.fd >= 0 && !s.hello && millis() - t0 < 4000) pump(100);
@@ -363,6 +414,7 @@ void closeSession() {
   s.hello = s.turnOpen = false;
   s.staleEnds = 0;
   endAudio();
+  forgetAnswers();
   if (s.wifi) {
     WiFi.setSleep(true);
     wlan::disconnect();
@@ -386,6 +438,7 @@ void talkIntoNewSession() {
     s.capturing = true;
     s.talkStartMs = millis();
   }
+  turns++;
   connectSession();  // blocks; key events wait in the queue
   if (s.fd < 0) {
     if (s.capturing) audio::captureStop();
@@ -408,6 +461,7 @@ void beginTalk() {
     return;
   }
   if (!s.hello || s.capturing) return;
+  turns++;  // whatever happens next, the turn before is over: its screen change is dropped
   // A reply still coming or playing is cut short. The daemon ends that turn when it sees
   // listen_start (or has just ended it itself): either way one reply_end is still to come,
   // and everything before it belongs to the old turn.
@@ -492,6 +546,8 @@ void task(void *) {
     if (s.capturing && millis() - s.talkStartMs > kMaxTalkMs) endTalk();  // a stuck key
     pump(sent || s.capturing ? 0 : 20);
     if (s.fd < 0) continue;
+    sendAnswers();
+    if (s.fd < 0) continue;
     if (s.playingOut && !audio::streaming()) {  // the reply has played out
       s.playingOut = s.stream = false;
       if (state.load() == State::Speaking) setState(State::Ready);
@@ -532,6 +588,7 @@ Status status() {
     out = shared;
   }
   out.generation = generation.load();
+  out.turn = turns.load();
   out.levelDb = audio::captureLevelDb();
   out.mic = audio::capturing();
   return out;
@@ -541,6 +598,17 @@ bool busy() {
   const State now = state.load();
   return now == State::Connecting || now == State::Listening || now == State::Thinking ||
          now == State::Speaking;
+}
+
+void setTools(const char *definitions, ToolCall call) {
+  toolDefinitions = definitions;
+  toolCall = call;
+}
+
+void answer(uint32_t id, const std::string &text, bool error) {
+  if (!lock) return;
+  Locked l;
+  answers.push_back({id, text, error});
 }
 
 }  // namespace voice

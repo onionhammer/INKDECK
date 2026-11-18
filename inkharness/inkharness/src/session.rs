@@ -4,6 +4,9 @@
 //! A model that hears gets the recording instead of a transcript, and speech-to-text, if there
 //! is any, runs alongside it for the display and the history. A model that speaks sends its
 //! own audio, which goes to the device in order with whatever text-to-speech says.
+//!
+//! The tools a device announces in its hello join the session's (device.rs): their calls go
+//! down this connection, and their answers come back up it while the turn waits.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -20,6 +23,7 @@ use voice_proto::{
     ClientMsg, Frame, FrameDecoder, PROTO_VERSION, ServerMsg, read_frame, write_frame,
 };
 
+use crate::device::Device;
 use crate::llm::{self, Llm, Outcome, Piece, Recording, Role, Turn};
 use crate::meter;
 use crate::sentence::Splitter;
@@ -112,6 +116,14 @@ const MAX_UTTERANCE_SECS: usize = 60;
 
 type History = Arc<Mutex<Vec<Turn>>>;
 
+/// The session's tools: the app's, with the device's if it has any.
+struct Tools {
+    /// For the thinking model.
+    tools: ToolSet,
+    /// For the first model.
+    fast_tools: ToolSet,
+}
+
 pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()> {
     stream.set_nodelay(true)?;
     let (mut reader, writer) = stream.into_split();
@@ -121,6 +133,11 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
     let writer = tokio::spawn(write_loop(writer, rx));
 
     let history: History = Arc::default();
+    let mut device: Option<Arc<Device>> = None;
+    let mut tools = Arc::new(Tools {
+        tools: app.tools.clone(),
+        fast_tools: app.fast_tools.clone(),
+    });
     let mut decoder = FrameDecoder::new();
     let mut mic_rate = 0u32; // 0 until hello
     let mut utterance: Option<Utterance> = None;
@@ -162,9 +179,10 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                     match msg {
                         ClientMsg::Hello {
                             proto,
-                            device,
+                            device: device_name,
                             token,
                             mic_rate: rate,
+                            tools: announced,
                         } => {
                             if proto != PROTO_VERSION {
                                 send(
@@ -184,13 +202,30 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                                     },
                                 )
                                 .await;
-                                bail!("wrong token from {device}");
+                                bail!("wrong token from {device_name}");
                             }
                             if !(8000..=48000).contains(&rate) {
                                 bail!("mic rate {rate} is out of range");
                             }
                             mic_rate = rate;
-                            tracing::info!(%device, mic_rate, "hello");
+                            if !announced.is_empty() {
+                                let board = Arc::new(Device::new(
+                                    announced,
+                                    &app.fast_tools.names(),
+                                    tx.clone(),
+                                ));
+                                tools = Arc::new(Tools {
+                                    tools: app.tools.with_device(board.clone()),
+                                    fast_tools: app.fast_tools.with_device(board.clone()),
+                                });
+                                device = Some(board);
+                            }
+                            let names: Vec<&str> = device
+                                .iter()
+                                .flat_map(|d| d.defs())
+                                .map(|d| d.name.as_str())
+                                .collect();
+                            tracing::info!(%device_name, mic_rate, tools = ?names, "hello");
                             send(
                                 &tx,
                                 ServerMsg::Hello {
@@ -212,6 +247,7 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                             };
                             turn = Some(tokio::spawn(run_turn(
                                 app.clone(),
+                                tools.clone(),
                                 heard,
                                 mic_rate,
                                 tx.clone(),
@@ -223,6 +259,12 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                             cancel(&mut turn);
                             send(&tx, ServerMsg::ReplyEnd).await;
                         }
+                        ClientMsg::ToolResult { id, text, error } => match &device {
+                            Some(device) => device.answer(id, text, error),
+                            None => {
+                                tracing::debug!(id, "a tool result from a device with no tools")
+                            }
+                        },
                     }
                 }
             }
@@ -265,12 +307,13 @@ async fn send(tx: &mpsc::Sender<Frame>, msg: ServerMsg) {
 
 async fn run_turn(
     app: Arc<App>,
+    tools: Arc<Tools>,
     heard: Utterance,
     rate: u32,
     tx: mpsc::Sender<Frame>,
     history: History,
 ) {
-    let turn = turn_inner(&app, heard, rate, &tx, &history);
+    let turn = turn_inner(&app, &tools, heard, rate, &tx, &history);
     if let (Err(e), _) = meter::measure(turn).await {
         tracing::warn!("turn failed: {e:#}");
         send(
@@ -351,6 +394,7 @@ fn silent(pcm: &[u8]) -> bool {
 
 async fn turn_inner(
     app: &App,
+    tools: &Tools,
     heard: Utterance,
     rate: u32,
     tx: &mpsc::Sender<Frame>,
@@ -430,7 +474,7 @@ async fn turn_inner(
         let outcome = app
             .llm
             .respond(
-                request(&user, recording.as_deref(), &app.fast_tools),
+                request(&user, recording.as_deref(), &tools.fast_tools),
                 piece_tx.clone(),
             )
             .await?;
@@ -453,7 +497,7 @@ async fn turn_inner(
         }
         think
             .llm
-            .respond(request(&text, recording.as_deref(), &app.tools), piece_tx)
+            .respond(request(&text, recording.as_deref(), &tools.tools), piece_tx)
             .await?;
         Ok(())
     };
@@ -589,10 +633,128 @@ async fn turn_inner(
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+    use serde_json::json;
+    use voice_proto::DeviceTool;
+
+    use super::*;
+    use crate::config;
+
     #[test]
     fn silence_is_near_zero() {
         assert!(super::silent(&[0, 0, 10, 0, 0xf6, 0xff])); // 0, 10, -10
         assert!(!super::silent(&[0, 0, 0x00, 0x01])); // 256
         assert!(!super::silent(&[0x00, 0xff])); // -256
+    }
+
+    /// Hears the recording, opens a book on the board in a script, and says what that gave.
+    struct OpensABook;
+
+    #[async_trait]
+    impl Llm for OpensABook {
+        fn hears(&self) -> bool {
+            true
+        }
+
+        async fn respond(
+            &self,
+            request: llm::Request<'_>,
+            out: mpsc::Sender<Piece>,
+        ) -> Result<Outcome> {
+            let names: Vec<&str> = request
+                .tools
+                .defs()
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect();
+            assert!(names.contains(&"open_book"), "{names:?}");
+            let code = r#"tools.open_book({path: "/sdcard/Books/Dune.epub"})"#;
+            let result = request.tools.call("run_js", json!({"code": code})).await;
+            out.send(Piece::Text(format!("{result:?}"))).await?;
+            Ok(Outcome::Done)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_model_calls_the_boards_tools() {
+        let tools = ToolSet::build(
+            None,
+            &config::Js::default(),
+            Default::default(),
+            Default::default(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        let app = Arc::new(App {
+            token: String::new(),
+            system_prompt: String::new(),
+            stt: None,
+            llm: Box::new(OpensABook),
+            tts: None,
+            fast_tools: tools.clone(),
+            tools,
+            think: None,
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            run(stream, app, "s1".into()).await
+        });
+
+        let mut board = TcpStream::connect(addr).await.unwrap();
+        let mut decoder = FrameDecoder::new();
+        let hello = ClientMsg::Hello {
+            proto: PROTO_VERSION,
+            device: "test".into(),
+            token: String::new(),
+            mic_rate: 16000,
+            tools: vec![DeviceTool {
+                name: "open_book".into(),
+                description: "Opens a book on the board.".into(),
+                input_schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            }],
+        };
+        for msg in [hello, ClientMsg::ListenStart] {
+            write_frame(&mut board, &Frame::control(&msg).unwrap())
+                .await
+                .unwrap();
+        }
+        let speech: Vec<u8> = (0..1600)
+            .flat_map(|i| ((i % 64) as i16 * 100).to_le_bytes())
+            .collect();
+        write_frame(&mut board, &Frame::Audio(speech))
+            .await
+            .unwrap();
+        write_frame(&mut board, &Frame::control(&ClientMsg::ListenStop).unwrap())
+            .await
+            .unwrap();
+
+        let mut said = String::new();
+        loop {
+            let Some(Frame::Control(json)) = read_frame(&mut board, &mut decoder).await.unwrap()
+            else {
+                continue;
+            };
+            match serde_json::from_str::<ServerMsg>(&json).unwrap() {
+                ServerMsg::ToolCall { id, name, input } => {
+                    assert_eq!(name, "open_book");
+                    assert_eq!(input, json!({"path": "/sdcard/Books/Dune.epub"}));
+                    let answer = ClientMsg::ToolResult {
+                        id,
+                        text: "Opening Dune once the reply has played.".into(),
+                        error: false,
+                    };
+                    write_frame(&mut board, &Frame::control(&answer).unwrap())
+                        .await
+                        .unwrap();
+                }
+                ServerMsg::Text { delta } => said.push_str(&delta),
+                ServerMsg::ReplyEnd => break,
+                ServerMsg::Error { message } => panic!("{message}"),
+                _ => {}
+            }
+        }
+        assert_eq!(said, r#"Ok("=> Opening Dune once the reply has played.")"#);
     }
 }
