@@ -13,9 +13,13 @@ pub struct Config {
     pub token: String,
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
-    pub stt: Stt,
+    /// Speech to text. Optional when the model hears the recording itself ([llm] input =
+    /// "audio"); then, if present, it runs alongside the model for the device's display and
+    /// the conversation history.
+    pub stt: Option<Stt>,
     pub llm: Llm,
-    pub tts: Tts,
+    /// Text to speech. Optional when every model speaks its reply itself (output = "audio").
+    pub tts: Option<Tts>,
     pub home_assistant: Option<HomeAssistant>,
     /// A second model the first can hand hard questions to (tools::THINK_TOOL).
     pub think: Option<Think>,
@@ -186,8 +190,80 @@ pub enum Llm {
         /// xhigh. Sent as OpenRouter's `reasoning` parameter; unset sends nothing (the
         /// model's default). Other servers may ignore or reject it.
         reasoning: Option<String>,
+        /// What the model is given of the utterance: the transcript from [stt] ("text"), or
+        /// the recording itself ("audio", as an input_audio part), for a model that hears.
+        #[serde(default)]
+        input: Modality,
+        /// How the reply comes back: text that [tts] speaks, or the model's own speech
+        /// ("audio": modalities text and audio, PCM16, with a transcript for the display).
+        #[serde(default)]
+        output: Modality,
+        /// The model's voice, for output = "audio".
+        voice: Option<String>,
+        /// Sample rate of the model's PCM16, for output = "audio" (OpenAI's is 24000).
+        #[serde(default = "default_tts_rate")]
+        audio_rate: u32,
     },
     Mock,
+}
+
+/// Text or audio, for what a model takes in or gives back.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Modality {
+    #[default]
+    Text,
+    Audio,
+}
+
+impl Llm {
+    pub fn input(&self) -> Modality {
+        match self {
+            Llm::OpenaiCompat { input, .. } => *input,
+            _ => Modality::Text,
+        }
+    }
+
+    pub fn output(&self) -> Modality {
+        match self {
+            Llm::OpenaiCompat { output, .. } => *output,
+            _ => Modality::Text,
+        }
+    }
+}
+
+impl Config {
+    /// The stages a model needs are there: a transcript for a model that reads, speech for
+    /// one that writes.
+    pub fn check(&self) -> Result<()> {
+        let mut models = vec![("[llm]", &self.llm)];
+        if let Some(think) = &self.think {
+            models.push(("[think.llm]", &think.llm));
+        }
+        for (name, llm) in models {
+            if llm.input() == Modality::Text && self.stt.is_none() {
+                anyhow::bail!(
+                    "{name} reads a transcript: add an [stt] section, or set input = \"audio\" \
+                     for a model that hears"
+                );
+            }
+            if llm.output() == Modality::Text && self.tts.is_none() {
+                anyhow::bail!(
+                    "{name} writes its reply: add a [tts] section, or set output = \"audio\" \
+                     for a model that speaks"
+                );
+            }
+            if let Llm::OpenaiCompat {
+                output: Modality::Audio,
+                voice: None,
+                ..
+            } = llm
+            {
+                anyhow::bail!("{name} has output = \"audio\": give it a voice");
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The `reasoning` request parameter for a config value (OpenRouter's format).
@@ -387,6 +463,44 @@ pub fn env_key(var: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    fn check(toml: &str) -> Result<(), String> {
+        let cfg: super::Config = toml::from_str(toml).map_err(|e| e.to_string())?;
+        cfg.check().map_err(|e| e.to_string())
+    }
+
+    const HEARS: &str =
+        "[llm]\nbackend = \"openai_compat\"\nbase_url = \"u\"\nmodel = \"m\"\ninput = \"audio\"\n";
+
+    #[test]
+    fn stages_a_model_needs() {
+        let stt = "[stt]\nbackend = \"mock\"\n";
+        let tts = "[tts]\nbackend = \"mock\"\n";
+        let think = "[think.llm]\nbackend = \"mock\"\n";
+        // The three pipelines: transcript in and speech out, recording in, both.
+        assert!(check(&format!("{stt}[llm]\nbackend = \"mock\"\n{tts}")).is_ok());
+        assert!(check(&format!("{HEARS}{tts}")).is_ok());
+        assert!(check(&format!("{HEARS}output = \"audio\"\nvoice = \"alloy\"\n")).is_ok());
+        // A model that reads needs [stt]; one that writes needs [tts]; one that speaks, a voice.
+        assert!(
+            check(&format!("[llm]\nbackend = \"mock\"\n{tts}"))
+                .unwrap_err()
+                .contains("[stt]")
+        );
+        assert!(check(HEARS).unwrap_err().contains("[tts]"));
+        assert!(
+            check(&format!("{HEARS}output = \"audio\"\n"))
+                .unwrap_err()
+                .contains("voice")
+        );
+        // So does a thinking model.
+        assert!(
+            check(&format!("{HEARS}{tts}{think}"))
+                .unwrap_err()
+                .contains("[think.llm]")
+        );
+        assert!(check(&format!("{stt}{HEARS}{tts}{think}")).is_ok());
+    }
+
     #[test]
     fn dotenv_lines() {
         let parsed =

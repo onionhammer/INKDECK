@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 
 use crate::config;
+use crate::meter;
 
 pub trait Stt: Send + Sync {
     /// Starts an utterance of s16le mono PCM at `rate`.
@@ -102,18 +103,26 @@ impl SttSession for OpenAiSession {
         }
         let response = request.send().await.context("speech-to-text request")?;
         let status = response.status();
+        let id = generation_id(&response);
         let body = response.text().await?;
         if !status.is_success() {
             bail!("speech-to-text returned {status}: {body}");
         }
         let json: serde_json::Value =
             serde_json::from_str(&body).context("speech-to-text response")?;
+        meter::record("stt", id.as_deref(), json["usage"]["cost"].as_f64());
         Ok(json["text"].as_str().unwrap_or_default().trim().to_string())
     }
 }
 
+/// OpenRouter's id for a request (its /api/v1/generation endpoint prices it).
+pub fn generation_id(response: &reqwest::Response) -> Option<String> {
+    let id = response.headers().get("x-generation-id")?.to_str().ok()?;
+    Some(id.to_string())
+}
+
 /// A 16-bit mono WAV file around `pcm`.
-fn wav(pcm: &[u8], rate: u32) -> Vec<u8> {
+pub fn wav(pcm: &[u8], rate: u32) -> Vec<u8> {
     let data_len = (pcm.len() & !1) as u32;
     let mut out = Vec::with_capacity(44 + data_len as usize);
     out.extend_from_slice(b"RIFF");

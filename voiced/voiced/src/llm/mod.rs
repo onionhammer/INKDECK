@@ -6,10 +6,13 @@ mod anthropic;
 mod openai;
 mod tool_loop;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use base64::Engine;
+use bytes::Bytes;
 use tokio::sync::mpsc;
 
 use crate::config;
@@ -27,13 +30,57 @@ pub enum Role {
 pub struct Turn {
     pub role: Role,
     pub text: String,
+    /// A user turn nobody transcribed: the recording, for models that hear. Its `text` is
+    /// empty then.
+    pub audio: Option<Arc<Recording>>,
+}
+
+impl Turn {
+    /// The text for a model that reads: a stand-in for a recording with no transcript.
+    pub fn readable(&self) -> &str {
+        if self.text.is_empty() && self.audio.is_some() {
+            "(something said aloud that wasn't transcribed)"
+        } else {
+            &self.text
+        }
+    }
+}
+
+/// An utterance as a WAV file, base64-encoded once for every request that sends it.
+pub struct Recording {
+    pub wav_base64: String,
+}
+
+impl Recording {
+    /// `pcm`: s16le mono at `rate`.
+    pub fn new(pcm: &[u8], rate: u32) -> Recording {
+        Recording {
+            wav_base64: base64::engine::general_purpose::STANDARD
+                .encode(crate::stt::wav(pcm, rate)),
+        }
+    }
 }
 
 pub struct Request<'a> {
     pub system: &'a str,
     pub history: &'a [Turn],
+    /// What the user said, for a model that reads (empty if it wasn't transcribed).
     pub user: &'a str,
+    /// The recording of it, for a model that hears.
+    pub audio: Option<&'a Recording>,
     pub tools: &'a ToolSet,
+}
+
+/// A piece of the reply as it is generated.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Piece {
+    /// Text to show and to speak.
+    Text(String),
+    /// What the model says in its `Audio` pieces: shown, not spoken again.
+    Transcript(String),
+    /// The model's own speech: s16le mono at [`Llm::speaks`]'s rate. A chunk may end in
+    /// the middle of a sample.
+    Audio(Bytes),
 }
 
 /// How a reply ended.
@@ -49,10 +96,21 @@ pub enum Outcome {
 
 #[async_trait]
 pub trait Llm: Send + Sync {
-    /// Sends the reply's text to `out` as it is generated. Text from separate rounds (before
-    /// and after a tool call) is separated by a newline. A call to the think tool ends the
-    /// reply at once, without running it or any other call from that round.
-    async fn respond(&self, request: Request<'_>, out: mpsc::Sender<String>) -> Result<Outcome>;
+    /// Sends the reply to `out` as it is generated. Text from separate rounds (before and
+    /// after a tool call) is separated by a newline. A call to the think tool ends the reply
+    /// at once, without running it or any other call from that round.
+    async fn respond(&self, request: Request<'_>, out: mpsc::Sender<Piece>) -> Result<Outcome>;
+
+    /// True if the model takes the recording (`Request::audio`) rather than a transcript.
+    fn hears(&self) -> bool {
+        false
+    }
+
+    /// The sample rate of its speech, if it speaks its reply ([`Piece::Audio`]) rather than
+    /// writing it.
+    fn speaks(&self) -> Option<u32> {
+        None
+    }
 }
 
 pub fn build(cfg: &config::Llm, http: reqwest::Client) -> Result<Box<dyn Llm>> {
@@ -79,17 +137,31 @@ pub fn build(cfg: &config::Llm, http: reqwest::Client) -> Result<Box<dyn Llm>> {
             api_key_env,
             max_tokens,
             reasoning,
-        } => Box::new(ToolLoop(openai::OpenAiCompat::new(
-            http,
-            base_url,
-            api_key_env,
-            model,
-            *max_tokens,
-            reasoning
-                .as_deref()
-                .map(config::reasoning_param)
-                .transpose()?,
-        ))),
+            input,
+            output,
+            voice,
+            audio_rate,
+        } => {
+            let mut api = openai::OpenAiCompat::new(
+                http,
+                base_url,
+                api_key_env,
+                model,
+                *max_tokens,
+                reasoning
+                    .as_deref()
+                    .map(config::reasoning_param)
+                    .transpose()?,
+            );
+            api.hears = *input == config::Modality::Audio;
+            if *output == config::Modality::Audio {
+                api.speech = Some(openai::Speech {
+                    voice: voice.clone().unwrap_or_default(),
+                    rate: *audio_rate,
+                });
+            }
+            Box::new(ToolLoop(api))
+        }
         config::Llm::Mock => Box::new(Mock),
     })
 }
@@ -99,14 +171,14 @@ struct Mock;
 
 #[async_trait]
 impl Llm for Mock {
-    async fn respond(&self, request: Request<'_>, out: mpsc::Sender<String>) -> Result<Outcome> {
+    async fn respond(&self, request: Request<'_>, out: mpsc::Sender<Piece>) -> Result<Outcome> {
         let reply = format!(
             "You said: {}. This is a test reply from the mock model.",
             request.user
         );
         for word in reply.split_inclusive(' ') {
             tokio::time::sleep(Duration::from_millis(15)).await;
-            if out.send(word.to_string()).await.is_err() {
+            if out.send(Piece::Text(word.to_string())).await.is_err() {
                 break;
             }
         }
@@ -163,11 +235,21 @@ pub(crate) mod testserver {
         (url, rx)
     }
 
-    /// Runs a backend to the end and returns everything it sent to `out`.
+    /// Runs a backend to the end and returns the text it sent to `out` (transcripts included).
     pub async fn collect(
         llm: &dyn super::Llm,
         user: &str,
     ) -> (anyhow::Result<super::Outcome>, String) {
+        let (result, text, _) = collect_all(llm, user, None).await;
+        (result, text)
+    }
+
+    /// Runs a backend to the end: what it returned, its text, and the audio it sent.
+    pub async fn collect_all(
+        llm: &dyn super::Llm,
+        user: &str,
+        audio: Option<&super::Recording>,
+    ) -> (anyhow::Result<super::Outcome>, String, Vec<u8>) {
         // run_js and the think tool: something real to call, and the hand-off.
         let tools = crate::tools::ToolSet::build(
             None,
@@ -183,15 +265,19 @@ pub(crate) mod testserver {
             system: "sys",
             history: &[],
             user,
+            audio,
             tools: &tools,
         };
-        let (result, text) = tokio::join!(llm.respond(request, tx), async {
-            let mut text = String::new();
+        let (result, (text, pcm)) = tokio::join!(llm.respond(request, tx), async {
+            let (mut text, mut pcm) = (String::new(), Vec::new());
             while let Some(piece) = rx.recv().await {
-                text.push_str(&piece);
+                match piece {
+                    super::Piece::Text(t) | super::Piece::Transcript(t) => text.push_str(&t),
+                    super::Piece::Audio(a) => pcm.extend_from_slice(&a),
+                }
             }
-            text
+            (text, pcm)
         });
-        (result, text)
+        (result, text, pcm)
     }
 }

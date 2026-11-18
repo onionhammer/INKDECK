@@ -115,7 +115,7 @@ impl ChatApi for Anthropic {
                     Role::User => "user",
                     Role::Assistant => "assistant",
                 };
-                json!({"role": role, "content": turn.text})
+                json!({"role": role, "content": turn.readable()})
             })
             .collect();
         messages.push(json!({"role": "user", "content": request.user}));

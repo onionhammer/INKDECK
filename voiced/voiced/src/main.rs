@@ -7,6 +7,7 @@ mod llm;
 #[cfg(feature = "local")]
 mod local;
 mod mcp;
+mod meter;
 mod sentence;
 mod session;
 mod skills;
@@ -32,6 +33,7 @@ async fn main() -> Result<()> {
         .nth(1)
         .unwrap_or_else(|| "voiced.toml".into());
     let cfg = config::load(&path)?;
+    cfg.check()?;
     config::load_dotenv(&path);
     // One client for every stage: connections to each service stay open between turns, so a
     // turn doesn't pay for a TLS handshake.
@@ -76,33 +78,64 @@ async fn main() -> Result<()> {
     } else {
         tools.clone()
     };
-    let mut tts = tts::build(&cfg.tts, http.clone())?;
-    if cfg.cache.tts_entries > 0 {
-        tts = Box::new(tts::Cached::new(tts, cfg.cache.tts_entries));
+    let tts = match &cfg.tts {
+        Some(tts) => {
+            let mut tts = tts::build(tts, http.clone())?;
+            if cfg.cache.tts_entries > 0 {
+                tts = Box::new(tts::Cached::new(tts, cfg.cache.tts_entries));
+            }
+            Some(tts)
+        }
+        None => None,
+    };
+    let llm = llm::build(&cfg.llm, http.clone())?;
+    // One reply_start per turn: every voice in a reply has to play at the same rate.
+    let mut rates: Vec<(&str, u32)> = Vec::new();
+    rates.extend(llm.speaks().map(|r| ("[llm] audio_rate", r)));
+    if let Some(think) = &think {
+        rates.extend(think.llm.speaks().map(|r| ("[think.llm] audio_rate", r)));
+    }
+    if let (Some(tts), false) = (&tts, rates.is_empty()) {
+        rates.push(("[tts]", tts.rate()));
+    }
+    if let Some((name, rate)) = rates.iter().find(|(_, r)| *r != rates[0].1) {
+        anyhow::bail!(
+            "{name} is {rate} Hz but {} is {} Hz: a reply plays at one rate",
+            rates[0].0,
+            rates[0].1
+        );
     }
     let app = Arc::new(session::App {
         token: cfg.token.clone(),
         system_prompt,
-        stt: stt::build(&cfg.stt, http.clone())?,
-        llm: llm::build(&cfg.llm, http.clone())?,
+        stt: cfg
+            .stt
+            .as_ref()
+            .map(|stt| stt::build(stt, http.clone()))
+            .transpose()?,
+        llm,
         tts,
         tools,
         fast_tools,
         think,
     });
+    if app.think.is_some() && app.tts.is_none() {
+        tracing::warn!("no [tts]: the think phrases go unsaid");
+    }
 
     // Synthesise the phrases now, so the first time one is said it comes from the cache.
-    if cfg.cache.tts_entries > 0 {
+    if cfg.cache.tts_entries > 0 && app.tts.is_some() {
         let mut phrases = cfg.cache.phrases.clone();
         if let Some(think) = &cfg.think {
             phrases.extend(think.phrases.iter().cloned());
         }
         let app = app.clone();
         tokio::spawn(async move {
+            let Some(tts) = &app.tts else { return };
             for phrase in phrases {
                 let (tx, mut rx) = tokio::sync::mpsc::channel(8);
                 let drain = async { while rx.recv().await.is_some() {} };
-                let (result, ()) = tokio::join!(app.tts.synth(&phrase, tx), drain);
+                let (result, ()) = tokio::join!(tts.synth(&phrase, tx), drain);
                 if let Err(e) = result {
                     tracing::warn!(phrase, "couldn't synthesise a cached phrase: {e:#}");
                 }
@@ -117,6 +150,10 @@ async fn main() -> Result<()> {
         listen = %cfg.listen,
         tools = app.tools.defs().len(),
         think = app.think.is_some(),
+        stt = app.stt.is_some(),
+        hears = app.llm.hears(),
+        speaks = app.llm.speaks().is_some(),
+        tts = app.tts.is_some(),
         "voiced is up"
     );
     if cfg.token.is_empty() {

@@ -78,6 +78,8 @@ impl Tts for OpenAiCompat {
         }
         let response = request.send().await.context("text-to-speech request")?;
         let status = response.status();
+        // The price isn't in the response; OpenRouter's generation endpoint has it.
+        crate::meter::record("tts", crate::stt::generation_id(&response).as_deref(), None);
         if !status.is_success() {
             bail!(
                 "text-to-speech returned {status}: {}",

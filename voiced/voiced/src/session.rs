@@ -1,5 +1,9 @@
 //! One device connection: collect an utterance, then run speech-to-text → model → speech,
 //! with the stages overlapped so audio starts as soon as the first sentence exists.
+//!
+//! A model that hears gets the recording instead of a transcript, and speech-to-text, if there
+//! is any, runs alongside it for the display and the history. A model that speaks sends its
+//! own audio, which goes to the device in order with whatever text-to-speech says.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -7,6 +11,7 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 use bytes::Bytes;
+use futures_util::FutureExt;
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::{Mutex, mpsc};
@@ -15,7 +20,8 @@ use voice_proto::{
     ClientMsg, Frame, FrameDecoder, PROTO_VERSION, ServerMsg, read_frame, write_frame,
 };
 
-use crate::llm::{self, Llm, Outcome, Role, Turn};
+use crate::llm::{self, Llm, Outcome, Piece, Recording, Role, Turn};
+use crate::meter;
 use crate::sentence::Splitter;
 use crate::stt::{Stt, SttSession};
 use crate::tools::ToolSet;
@@ -24,9 +30,11 @@ use crate::tts::Tts;
 pub struct App {
     pub token: String,
     pub system_prompt: String,
-    pub stt: Box<dyn Stt>,
+    /// None when every model hears the recording itself.
+    pub stt: Option<Box<dyn Stt>>,
     pub llm: Box<dyn Llm>,
-    pub tts: Box<dyn Tts>,
+    /// None when every model speaks its reply itself.
+    pub tts: Option<Box<dyn Tts>>,
     /// The home's tools: what the thinking model gets.
     pub tools: ToolSet,
     /// What the first model gets: the home's tools, plus the think tool if there is a
@@ -52,6 +60,49 @@ impl Thinker {
     }
 }
 
+impl App {
+    /// The sample rate of the reply's audio: the speaking model's or text-to-speech's (main
+    /// checks that they agree).
+    pub fn reply_rate(&self) -> u32 {
+        self.llm
+            .speaks()
+            .or_else(|| self.tts.as_ref().map(|t| t.rate()))
+            .or_else(|| self.think.as_ref().and_then(|t| t.llm.speaks()))
+            .unwrap_or(24000)
+    }
+
+    /// True if a model hears the recording, so the session keeps it.
+    fn records(&self) -> bool {
+        self.llm.hears() || self.think.as_ref().is_some_and(|t| t.llm.hears())
+    }
+}
+
+/// An utterance as it arrives: fed to speech-to-text, and kept for the models that hear.
+struct Utterance {
+    stt: Option<Box<dyn SttSession>>,
+    pcm: Option<Vec<u8>>,
+    bytes: usize,
+}
+
+impl Utterance {
+    fn start(app: &App, rate: u32) -> Utterance {
+        Utterance {
+            stt: app.stt.as_ref().map(|stt| stt.start(rate)),
+            pcm: app.records().then(Vec::new),
+            bytes: 0,
+        }
+    }
+
+    async fn feed(&mut self, pcm: &[u8]) {
+        if let Some(stt) = self.stt.as_mut() {
+            stt.feed(pcm).await;
+        }
+        if let Some(all) = self.pcm.as_mut() {
+            all.extend_from_slice(pcm);
+        }
+    }
+}
+
 /// Audio frame payload sent to the device: 85 ms at 24 kHz.
 const AUDIO_CHUNK: usize = 4096;
 /// Earlier turns kept as context (a user turn and its reply count as two).
@@ -72,19 +123,18 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
     let history: History = Arc::default();
     let mut decoder = FrameDecoder::new();
     let mut mic_rate = 0u32; // 0 until hello
-    let mut utterance: Option<Box<dyn SttSession>> = None;
-    let mut utterance_bytes = 0usize;
+    let mut utterance: Option<Utterance> = None;
     let mut turn: Option<JoinHandle<()>> = None;
 
     let result: Result<()> = async {
         while let Some(frame) = read_frame(&mut reader, &mut decoder).await? {
             match frame {
                 Frame::Audio(pcm) => {
-                    let Some(stt) = utterance.as_mut() else {
+                    let Some(heard) = utterance.as_mut() else {
                         continue;
                     };
-                    utterance_bytes += pcm.len();
-                    if utterance_bytes > MAX_UTTERANCE_SECS * mic_rate as usize * 2 {
+                    heard.bytes += pcm.len();
+                    if heard.bytes > MAX_UTTERANCE_SECS * mic_rate as usize * 2 {
                         utterance = None;
                         send(
                             &tx,
@@ -96,7 +146,7 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                         send(&tx, ServerMsg::ReplyEnd).await;
                         continue;
                     }
-                    stt.feed(&pcm).await;
+                    heard.feed(&pcm).await;
                 }
                 Frame::Control(json) => {
                     let msg = match serde_json::from_str::<ClientMsg>(&json) {
@@ -154,18 +204,16 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                             if cancel(&mut turn) {
                                 send(&tx, ServerMsg::ReplyEnd).await;
                             }
-                            utterance = Some(app.stt.start(mic_rate));
-                            utterance_bytes = 0;
+                            utterance = Some(Utterance::start(&app, mic_rate));
                         }
                         ClientMsg::ListenStop => {
-                            let Some(stt) = utterance.take() else {
+                            let Some(heard) = utterance.take() else {
                                 continue;
                             };
-                            let secs = utterance_bytes as f32 / (mic_rate as f32 * 2.0);
                             turn = Some(tokio::spawn(run_turn(
                                 app.clone(),
-                                stt,
-                                secs,
+                                heard,
+                                mic_rate,
                                 tx.clone(),
                                 history.clone(),
                             )));
@@ -217,12 +265,13 @@ async fn send(tx: &mpsc::Sender<Frame>, msg: ServerMsg) {
 
 async fn run_turn(
     app: Arc<App>,
-    stt: Box<dyn SttSession>,
-    heard_secs: f32,
+    heard: Utterance,
+    rate: u32,
     tx: mpsc::Sender<Frame>,
     history: History,
 ) {
-    if let Err(e) = turn_inner(&app, stt, heard_secs, &tx, &history).await {
+    let turn = turn_inner(&app, heard, rate, &tx, &history);
+    if let (Err(e), _) = meter::measure(turn).await {
         tracing::warn!("turn failed: {e:#}");
         send(
             &tx,
@@ -235,139 +284,280 @@ async fn run_turn(
     send(&tx, ServerMsg::ReplyEnd).await;
 }
 
+/// What goes to the device's speaker, in order.
+enum Say {
+    /// For text-to-speech.
+    Sentence(String),
+    /// The model's own speech.
+    Pcm(Bytes),
+}
+
+/// Reply audio on its way to the device in frames of AUDIO_CHUNK bytes; the first sends
+/// `reply_start`.
+struct AudioOut<'a> {
+    tx: &'a mpsc::Sender<Frame>,
+    rate: u32,
+    pending: Vec<u8>,
+    /// When the first audio went, in ms from the end of speech.
+    first_ms: Option<u64>,
+    bytes: usize,
+}
+
+impl<'a> AudioOut<'a> {
+    fn new(tx: &'a mpsc::Sender<Frame>, rate: u32) -> Self {
+        AudioOut {
+            tx,
+            rate,
+            pending: Vec::with_capacity(AUDIO_CHUNK * 2),
+            first_ms: None,
+            bytes: 0,
+        }
+    }
+
+    async fn push(&mut self, chunk: &[u8], now_ms: u64) {
+        if self.first_ms.is_none() {
+            self.first_ms = Some(now_ms);
+            send(self.tx, ServerMsg::ReplyStart { rate: self.rate }).await;
+        }
+        self.pending.extend_from_slice(chunk);
+        // Whole samples only; a split one waits for its other byte.
+        while self.pending.len() >= AUDIO_CHUNK {
+            let rest = self.pending.split_off(AUDIO_CHUNK);
+            self.bytes += AUDIO_CHUNK;
+            let frame = std::mem::replace(&mut self.pending, rest);
+            let _ = self.tx.send(Frame::Audio(frame)).await;
+        }
+    }
+
+    /// Sends the rest, at the end of a stretch of speech (an odd last byte is dropped).
+    async fn flush(&mut self) {
+        self.pending.truncate(self.pending.len() & !1);
+        if !self.pending.is_empty() {
+            self.bytes += self.pending.len();
+            let frame = std::mem::take(&mut self.pending);
+            let _ = self.tx.send(Frame::Audio(frame)).await;
+        }
+    }
+}
+
+/// Below this peak level (about -54 dBFS) an utterance is taken as silence: a model that
+/// hears isn't asked about it.
+const SILENCE_PEAK: i32 = 64;
+
+fn silent(pcm: &[u8]) -> bool {
+    pcm.chunks_exact(2)
+        .all(|s| (i16::from_le_bytes([s[0], s[1]]) as i32).abs() < SILENCE_PEAK)
+}
+
 async fn turn_inner(
     app: &App,
-    stt: Box<dyn SttSession>,
-    heard_secs: f32,
+    heard: Utterance,
+    rate: u32,
     tx: &mpsc::Sender<Frame>,
     history: &History,
 ) -> Result<()> {
     let started = Instant::now(); // the end of speech: every time below counts from here
     let ms = || started.elapsed().as_millis() as u64;
+    let heard_secs = heard.bytes as f32 / (rate as f32 * 2.0);
 
-    let heard = stt.finish().await?;
-    let stt_ms = ms();
-    send(
-        tx,
-        ServerMsg::Stt {
-            text: heard.clone(),
-        },
-    )
-    .await;
-    if heard.trim().is_empty() {
-        tracing::info!(heard_secs, stt_ms, "heard nothing");
-        return Ok(());
+    // The recording, for the models that hear; none if it is silence.
+    let recording = heard
+        .pcm
+        .as_deref()
+        .filter(|pcm| !silent(pcm))
+        .map(|pcm| Arc::new(Recording::new(pcm, rate)));
+    // The transcript, if there is speech-to-text: the display, a model that reads and the
+    // history can all wait for it. Polled in this task, so its request is metered.
+    let stt = heard.stt;
+    let transcript = async move {
+        match stt {
+            Some(stt) => stt.finish().await.map_err(|e| format!("{e:#}")),
+            None => Ok(String::new()),
+        }
     }
+    .boxed()
+    .shared();
+
+    // A model that reads waits for the transcript; one that hears starts at once.
+    let mut stt_ms = None;
+    let user = if app.llm.hears() {
+        if recording.is_none() {
+            tracing::info!(heard_secs, "heard nothing (silence)");
+            return Ok(());
+        }
+        String::new()
+    } else {
+        let text = transcript.clone().await.map_err(anyhow::Error::msg)?;
+        stt_ms = Some(ms());
+        send(tx, ServerMsg::Stt { text: text.clone() }).await;
+        if text.trim().is_empty() {
+            tracing::info!(heard_secs, stt_ms, "heard nothing");
+            return Ok(());
+        }
+        text
+    };
 
     let past = history.lock().await.clone();
-    let (delta_tx, mut delta_rx) = mpsc::channel::<String>(64);
-    let (sentence_tx, mut sentence_rx) = mpsc::channel::<String>(16);
+    let (piece_tx, mut piece_rx) = mpsc::channel::<Piece>(64);
+    let (say_tx, mut say_rx) = mpsc::channel::<Say>(16);
+
+    // For a model that heard the recording: the transcript goes to the display when it comes.
+    let show = async {
+        if !app.llm.hears() || app.stt.is_none() {
+            return;
+        }
+        match transcript.clone().await {
+            Ok(text) => {
+                stt_ms = Some(ms());
+                send(tx, ServerMsg::Stt { text }).await;
+            }
+            Err(e) => tracing::warn!("speech-to-text failed: {e}"),
+        }
+    };
 
     // The first model answers, or hands the turn to the thinking model: then a phrase covers
     // the wait (unless the first model already said something) and the thinking model's
     // answer follows.
     let mut thought = false;
     let model = async {
-        let request = |tools| llm::Request {
+        let request = |user, audio, tools| llm::Request {
             system: &app.system_prompt,
             history: &past,
-            user: &heard,
+            user,
+            audio,
             tools,
         };
         let outcome = app
             .llm
-            .respond(request(&app.fast_tools), delta_tx.clone())
+            .respond(
+                request(&user, recording.as_deref(), &app.fast_tools),
+                piece_tx.clone(),
+            )
             .await?;
         let (Outcome::Think { spoke }, Some(think)) = (outcome, &app.think) else {
             return anyhow::Ok(());
         };
         thought = true;
         tracing::info!(spoke, "handing the turn to the thinking model");
-        // The newline ends the phrase as a sentence, so it is spoken at once.
-        let phrase = if spoke { "" } else { think.phrase() };
-        let _ = delta_tx.send(format!("{phrase}\n")).await;
-        think.llm.respond(request(&app.tools), delta_tx).await?;
+        // It hears the recording, or reads what was said (waiting for the transcript if the
+        // first model heard it instead).
+        let text = if think.llm.hears() || !app.llm.hears() {
+            user.clone()
+        } else {
+            transcript.clone().await.map_err(anyhow::Error::msg)?
+        };
+        if app.tts.is_some() {
+            // The newline ends the phrase as a sentence, so it is spoken at once.
+            let phrase = if spoke { "" } else { think.phrase() };
+            let _ = piece_tx.send(Piece::Text(format!("{phrase}\n"))).await;
+        }
+        think
+            .llm
+            .respond(request(&text, recording.as_deref(), &app.tools), piece_tx)
+            .await?;
         Ok(())
     };
 
-    // Text goes to the display as it comes, and to speech a sentence at a time.
+    // Text goes to the display as it comes, and to speech a sentence at a time; the model's
+    // own speech goes to the speaker after whatever text came before it.
     let mut first_token_ms = None;
     let split = async {
         let mut splitter = Splitter::new();
         let mut reply = String::new();
-        while let Some(delta) = delta_rx.recv().await {
+        while let Some(piece) = piece_rx.recv().await {
             first_token_ms.get_or_insert_with(ms);
-            send(
-                tx,
-                ServerMsg::Text {
-                    delta: delta.clone(),
-                },
-            )
-            .await;
-            reply.push_str(&delta);
-            for sentence in splitter.push(&delta) {
-                let _ = sentence_tx.send(sentence).await;
+            match piece {
+                Piece::Text(delta) => {
+                    send(
+                        tx,
+                        ServerMsg::Text {
+                            delta: delta.clone(),
+                        },
+                    )
+                    .await;
+                    reply.push_str(&delta);
+                    for sentence in splitter.push(&delta) {
+                        let _ = say_tx.send(Say::Sentence(sentence)).await;
+                    }
+                }
+                Piece::Transcript(delta) => {
+                    send(
+                        tx,
+                        ServerMsg::Text {
+                            delta: delta.clone(),
+                        },
+                    )
+                    .await;
+                    reply.push_str(&delta);
+                }
+                Piece::Audio(pcm) => {
+                    if let Some(rest) = splitter.finish() {
+                        let _ = say_tx.send(Say::Sentence(rest)).await;
+                    }
+                    let _ = say_tx.send(Say::Pcm(pcm)).await;
+                }
             }
         }
         if let Some(rest) = splitter.finish() {
-            let _ = sentence_tx.send(rest).await;
+            let _ = say_tx.send(Say::Sentence(rest)).await;
         }
-        drop(sentence_tx);
+        drop(say_tx);
         reply
     };
 
-    let mut first_audio_ms = None;
-    let mut audio_bytes = 0usize;
     let speak = async {
-        while let Some(sentence) = sentence_rx.recv().await {
-            let (pcm_tx, mut pcm_rx) = mpsc::channel::<Bytes>(8);
-            let synth = app.tts.synth(&sentence, pcm_tx);
-            let forward = async {
-                let mut pending: Vec<u8> = Vec::with_capacity(AUDIO_CHUNK * 2);
-                while let Some(chunk) = pcm_rx.recv().await {
-                    if first_audio_ms.is_none() {
-                        first_audio_ms = Some(ms());
-                        send(
-                            tx,
-                            ServerMsg::ReplyStart {
-                                rate: app.tts.rate(),
-                            },
-                        )
-                        .await;
-                    }
-                    pending.extend_from_slice(&chunk);
-                    // Whole samples only; a split one waits for its other byte.
-                    while pending.len() >= AUDIO_CHUNK {
-                        let rest = pending.split_off(AUDIO_CHUNK);
-                        audio_bytes += AUDIO_CHUNK;
-                        let _ = tx
-                            .send(Frame::Audio(std::mem::replace(&mut pending, rest)))
-                            .await;
-                    }
+        let mut out = AudioOut::new(tx, app.reply_rate());
+        while let Some(say) = say_rx.recv().await {
+            match say {
+                Say::Pcm(pcm) => out.push(&pcm, ms()).await,
+                Say::Sentence(sentence) => {
+                    out.flush().await;
+                    let Some(tts) = &app.tts else {
+                        tracing::warn!(sentence, "no [tts] to say this with");
+                        continue;
+                    };
+                    let (pcm_tx, mut pcm_rx) = mpsc::channel::<Bytes>(8);
+                    let synth = tts.synth(&sentence, pcm_tx);
+                    let forward = async {
+                        while let Some(chunk) = pcm_rx.recv().await {
+                            out.push(&chunk, ms()).await;
+                        }
+                        out.flush().await;
+                    };
+                    let (result, ()) = tokio::join!(synth, forward);
+                    result?;
                 }
-                pending.truncate(pending.len() & !1);
-                if !pending.is_empty() {
-                    audio_bytes += pending.len();
-                    let _ = tx.send(Frame::Audio(pending)).await;
-                }
-            };
-            let (result, ()) = tokio::join!(synth, forward);
-            result?;
+            }
         }
-        anyhow::Ok(())
+        out.flush().await;
+        anyhow::Ok((out.first_ms, out.bytes))
     };
 
-    let (model_result, reply, speak_result) = tokio::join!(model, split, speak);
+    let (model_result, reply, speak_result, ()) = tokio::join!(model, split, speak, show);
     let total_ms = ms();
+    let (first_audio_ms, audio_bytes) = speak_result.as_ref().copied().unwrap_or((None, 0));
+
+    // The history keeps the transcript, or the recording when there is none.
+    let said = if app.llm.hears() {
+        transcript.clone().await.unwrap_or_default()
+    } else {
+        user
+    };
+    let charges = meter::so_far();
+    let (cost, unpriced) = meter::total(&charges);
     tracing::info!(
         heard_secs,
-        stt_ms,
+        stt_ms = stt_ms.unwrap_or(0),
         first_token_ms = first_token_ms.unwrap_or(0),
         first_audio_ms = first_audio_ms.unwrap_or(0),
         total_ms,
         thought,
-        reply_secs = audio_bytes as f32 / (app.tts.rate() as f32 * 2.0),
-        "turn: {heard:?} -> {:?}",
+        reply_secs = audio_bytes as f32 / (app.reply_rate() as f32 * 2.0),
+        cost,
+        unpriced,
+        requests = %meter::ids(&charges),
+        "turn: {:?} -> {:?}",
+        if said.is_empty() { "(heard by the model)" } else { said.as_str() },
         reply.trim()
     );
     model_result?;
@@ -376,12 +566,14 @@ async fn turn_inner(
     let mut history = history.lock().await;
     history.push(Turn {
         role: Role::User,
-        text: heard,
+        audio: if said.is_empty() { recording } else { None },
+        text: said,
     });
     if !reply.trim().is_empty() {
         history.push(Turn {
             role: Role::Assistant,
             text: reply.trim().to_string(),
+            audio: None,
         });
     } else {
         history.pop(); // a user turn with no reply would break the alternation
@@ -389,4 +581,14 @@ async fn turn_inner(
     let extra = history.len().saturating_sub(HISTORY_TURNS);
     history.drain(..extra);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn silence_is_near_zero() {
+        assert!(super::silent(&[0, 0, 10, 0, 0xf6, 0xff])); // 0, 10, -10
+        assert!(!super::silent(&[0, 0, 0x00, 0x01])); // 256
+        assert!(!super::silent(&[0x00, 0xff])); // -256
+    }
 }

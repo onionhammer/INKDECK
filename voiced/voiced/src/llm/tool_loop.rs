@@ -5,11 +5,12 @@
 
 use anyhow::{Result, anyhow, bail};
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures_util::future::join_all;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use super::{Llm, Outcome, Request};
+use super::{Llm, Outcome, Piece, Request};
 use crate::tools::{THINK_TOOL, ToolDef, ToolSet};
 
 /// Tool-call rounds allowed in one turn before giving up.
@@ -26,6 +27,16 @@ pub trait ChatApi: Send + Sync {
 
     /// The conversation at the start of a turn: system prompt, history, the user's words.
     fn start(&self, request: &Request<'_>) -> Self::Conversation;
+
+    /// See [`Llm::hears`].
+    fn hears(&self) -> bool {
+        false
+    }
+
+    /// See [`Llm::speaks`].
+    fn speaks(&self) -> Option<u32> {
+        None
+    }
 
     /// Sends the conversation and streams the model's next round: its text to `speaker` as it
     /// arrives, its tool calls and why it stopped in the result.
@@ -103,16 +114,16 @@ pub struct CallResult {
     pub is_error: bool,
 }
 
-/// Passes the reply's text on as it is generated. Text that follows text from an earlier
-/// round starts on a new line; blank lines a model opens with are dropped.
+/// Passes the reply on as it is generated. Text that follows text from an earlier round
+/// starts on a new line; blank lines a model opens with are dropped.
 pub struct Speaker {
-    out: mpsc::Sender<String>,
+    out: mpsc::Sender<Piece>,
     spoke: bool,
     round_start: bool,
 }
 
 impl Speaker {
-    fn new(out: mpsc::Sender<String>) -> Self {
+    fn new(out: mpsc::Sender<Piece>) -> Self {
         Speaker {
             out,
             spoke: false,
@@ -120,14 +131,41 @@ impl Speaker {
         }
     }
 
+    /// Text to show and speak.
     pub async fn say(&mut self, piece: &str) -> Result<()> {
+        match self.join(piece) {
+            Some(text) => self.send(Piece::Text(text)).await,
+            None => Ok(()),
+        }
+    }
+
+    /// The transcript of what the model says in its audio: shown only.
+    pub async fn transcript(&mut self, piece: &str) -> Result<()> {
+        match self.join(piece) {
+            Some(text) => self.send(Piece::Transcript(text)).await,
+            None => Ok(()),
+        }
+    }
+
+    /// The model's own speech.
+    pub async fn audio(&mut self, pcm: Bytes) -> Result<()> {
+        if pcm.is_empty() {
+            return Ok(());
+        }
+        self.spoke = true;
+        self.send(Piece::Audio(pcm)).await
+    }
+
+    /// The piece as sent: trimmed at a round's start, after a newline if an earlier round
+    /// spoke. None if nothing is left.
+    fn join(&mut self, piece: &str) -> Option<String> {
         let piece = if self.round_start {
             piece.trim_start()
         } else {
             piece
         };
         if piece.is_empty() {
-            return Ok(());
+            return None;
         }
         let text = if self.round_start && self.spoke {
             format!("\n{piece}")
@@ -136,8 +174,12 @@ impl Speaker {
         };
         self.round_start = false;
         self.spoke = true;
+        Some(text)
+    }
+
+    async fn send(&self, piece: Piece) -> Result<()> {
         self.out
-            .send(text)
+            .send(piece)
             .await
             .map_err(|_| anyhow!("the reply was cancelled"))
     }
@@ -152,7 +194,15 @@ pub struct ToolLoop<A>(pub A);
 
 #[async_trait]
 impl<A: ChatApi> Llm for ToolLoop<A> {
-    async fn respond(&self, request: Request<'_>, out: mpsc::Sender<String>) -> Result<Outcome> {
+    fn hears(&self) -> bool {
+        self.0.hears()
+    }
+
+    fn speaks(&self) -> Option<u32> {
+        self.0.speaks()
+    }
+
+    async fn respond(&self, request: Request<'_>, out: mpsc::Sender<Piece>) -> Result<Outcome> {
         let api = &self.0;
         let mut conversation = api.start(&request);
         let mut speaker = Speaker::new(out);

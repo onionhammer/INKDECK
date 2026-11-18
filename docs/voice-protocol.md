@@ -38,7 +38,7 @@ Daemon → device:
 | `type` | Fields | Meaning |
 | --- | --- | --- |
 | `hello` | `proto`, `session` | Answer to the device's hello |
-| `stt` | `text` | What the daemon heard (may be empty) |
+| `stt` | `text` | What the daemon heard (may be empty). When the model hears the recording itself, this comes alongside the reply, or not at all if the daemon has no speech-to-text |
 | `text` | `delta` | The reply's text as it is generated, for the display. Can arrive before `reply_start` |
 | `reply_start` | `rate` (Hz) | Audio frames follow at this sample rate |
 | `reply_end` | | The turn is over |

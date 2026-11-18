@@ -2516,6 +2516,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.23.1",
  "bytes",
  "eventsource-stream",
  "futures-util",

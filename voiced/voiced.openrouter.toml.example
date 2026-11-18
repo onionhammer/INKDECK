@@ -6,6 +6,7 @@
 #   curl "https://openrouter.ai/api/v1/models?output_modalities=transcription"
 #   curl "https://openrouter.ai/api/v1/models?output_modalities=speech"
 #   curl "https://openrouter.ai/api/v1/models?supported_parameters=tools"
+#   curl "https://openrouter.ai/api/v1/models?input_modalities=audio&supported_parameters=tools"   (hear)
 
 listen = "0.0.0.0:7391"
 token = ""
@@ -23,6 +24,12 @@ model = "REPLACE_ME"            # one that supports tools, e.g. a Claude Haiku o
 # reasoning = "off"             # off | minimal | low | medium | high | xhigh; unset: the model's default.
                                 # A model that thinks first answers later; some can't turn it off.
 api_key_env = "OPENROUTER_API_KEY"
+# A model that hears and one that speaks leave out a stage (README: Models that hear or speak).
+# input = "audio"               # it gets the recording: [stt] becomes optional (if kept, it runs
+                                # alongside, for the display and the history)
+# output = "audio"              # it speaks its reply: [tts] becomes optional
+# voice = "alloy"               # with output = "audio"; voices belong to the model
+# audio_rate = 24000            # the rate of its PCM16 (OpenAI's is 24000)
 
 [tts]
 backend = "openai_compat"
