@@ -2,16 +2,16 @@
 
 Enclosure for the Waveshare ESP32-S3-ePaper-3.97, modelled in ScanRuler's Reverse engineer around
 Waveshare's own STEP of the board (`docs/mechanical/*.stp`, imported as reference bodies), so
-every opening and clearance comes from the real part geometry. Printed once (2026-11-14). That
-print had the screw heads standing proud, and a gap above the PCB at the back of the thumbwheel
-notch. Both are fixed in the model now (see **Screws** and **Front bezel**). Since that print the
-seam has also moved down from the glass to just above the PCB, so the bezel's frame is 2.55 mm
-deep and about 6.5 times as stiff (see **Stiffer bezel**), and the caps hold with eight deeper
-hooks instead of four (see **Hooks**). Earlier designs
-(v0.1, a two-part shell with a screwed-on bezel; v0.2, the tray alone with no front) are in git
-history.
+every opening and clearance comes from the real part geometry. The revision is engraved on the
+back of the tray (see **Revision**). v0.3 was printed once (2026-11-14), without the engraving.
+That print had the screw heads standing proud, a gap above the PCB at the back of the thumbwheel
+notch, and a frog that let light through. v0.4 fixes all three (see **Screws**, **Front bezel**
+and **Frog**). It also moves the seam down from the glass to just above the PCB, so the bezel's
+frame is 2.55 mm deep and about 6.5 times as stiff (see **Stiffer bezel**), and the caps hold
+with eight deeper hooks instead of four (see **Hooks**). Earlier designs (v0.1, a two-part shell
+with a screwed-on bezel; v0.2, the tray alone with no front) are in git history.
 
-## v0.3: back tray + snap-on front bezel with corner caps (11.86 mm)
+## v0.4: back tray + snap-on front bezel with corner caps (11.86 mm)
 
 ![assembly](renders/assembly_iso.png)
 
@@ -19,11 +19,12 @@ history.
 
 | File | What |
 | --- | --- |
-| `ereader-enclosure.scanruler` | Parametric source: 106 features (1 suppressed), 107 parameters (4 pinned), board STEP, battery dummy, 1 open note |
+| `ereader-enclosure.scanruler` | Parametric source: 115 features (1 suppressed), 109 parameters (5 pinned), board STEP, battery dummy, 1 open note |
 | `ereader-enclosure.step` | Both parts as solids, `Back tray` and `Bezel` (read back and verified) |
 | `back-tray.stl` | Tray print mesh (0.02 mm chord), the right way up to print |
 | `front-bezel.stl` | Bezel print mesh (0.02 mm chord), as fitted: turn it face-down to print |
-| `renders/*.png` | Assembly, the back with the frog, the tray and the bezel apart, a corner cap, the USB-C / microSD end, the thumbwheel slot, sections through a side hook, an end hook, a button and the wheel |
+| `revision_glyphs.py` | Draws the revision engraving's sketches (`uv run enclosure/revision_glyphs.py OUT_DIR`). Only for a new font, size or place: a revision bump is the parameter `rev` alone (**Revision**) |
+| `renders/*.png` | Assembly, the back with the frog, the revision close up, the tray and the bezel apart, a corner cap, the USB-C / microSD end, the thumbwheel slot, sections through a side hook, an end hook, a button and the wheel |
 
 **Size:** 105.9 × 66.1 mm over the corner caps (the tray alone is 104.3 × 64.5). **11.86 mm**
 from the flat back to the bezel's flat front (v0.1 was 14.85). The seam is 9.31 up from the back
@@ -33,8 +34,8 @@ from the flat back to the bezel's flat front (v0.1 was 14.85). The seam is 9.31 
 bezel was a flat frame 1.2 mm thick over the glass (1.4 over the walls), about 6 mm wide on three
 sides, round a window 87.4 × 52.84: a thin open frame, easy to bend and twist. Making it thicker on the front
 would have made the case thicker, and the back can't give the material up: the back is one flat
-face, and the battery stack sets it (display FPC connector 2.0 under the PCB, 0.3 gap, 4.61 cell,
-0.6 skin, with the frog in that skin). The 1.2 mm floor beside the battery is thicker than it
+face, and the battery stack sets it (display FPC connector 2.0 under the PCB, 0.1 gap, 4.61 cell,
+0.8 skin, with the frog in that skin). The 1.2 mm floor beside the battery is thicker than it
 needs to be, but thinning it doesn't move a flat back. So the bezel grows down into the case
 instead. The walls stop at z 0.2 (`top_z = skirt_pcb_gap`), and the bezel is solid from its front
 down to that plane everywhere except a pocket over the glass (**Front bezel**). It takes the top
@@ -53,11 +54,12 @@ fins stay centred between the back and the seam, so they sit 0.575 lower.
 thick, 42 wide by its name. Centred at x 39.85, y 33.8, it spans x 8.6–71.1, y 12.8–54.8, with
 0.92 mm to the USB-C socket and 0.96 to the thumbwheel. Length is the tight direction: about
 64 mm fits between those two. A cell this size can't miss both the display FPC connector (2.0 mm under the PCB)
-and the MX1.25 headers (3.4 mm), so it passes 0.3 mm under the connector. With a 0.6 mm skin
-below, that sets the back face at z −9.11. The thickness is `bottom_z = min(standoff_z - back_t,
+and the MX1.25 headers (3.4 mm), so it passes 0.1 mm under the connector (`batt_gap`; 0.3 until
+v0.4 gave 0.2 of it to the skin under the frog). With a 0.8 mm skin below (`batt_skin`), that sets
+the back face at z −9.11. The thickness is `bottom_z = min(standoff_z - back_t,
 batt_top - batt_t - batt_skin)`, so a cell 3.7 mm thick or less saves 1.91 mm.
 
-**Inside.** The floor is 1.2 mm (`floor_skin`), and the battery sits in a pocket 0.6 mm deeper.
+**Inside.** The floor is 1.2 mm (`floor_skin`), and the battery sits in a pocket 0.4 mm deeper.
 Four bosses (Ø5.2) carry the standoffs up to their own height, z −5.6.
 
 **Screws.** 4 × M2.5 × 6 countersunk come through the floor and boss (3.51 mm) into the standoffs.
@@ -152,11 +154,47 @@ takes the end hooks out.
 **Frog.** The sleeping frog from the Sleep screen (`kFrog` in `src/apps/sleep.cpp`) is engraved
 in the hatch panel on the back, as a dot matrix of 2 mm cells centred on the battery. Ink cells
 are 1.5 mm squares and the 50 % dither cells 0.8 mm dots. Paper cells are left flat. It's 52 × 32
-mm and 0.2 deep (`frog_d`): one first layer, over the battery, where the skin is 0.6. It reads
-upright with the device turned over side to side, so the thumbwheel side is up (the render above
-upside down). The cells are fixed in the sketch, so they don't follow the battery parameters. That
+mm and 0.2 deep (`frog_d`): one first layer, over the battery, where the skin is 0.8, so 0.6
+(three layers) stays under each cell. The v0.3 print had a 0.6 skin, and the 0.4 left under the
+cells let light through. It reads upright with the device turned over side to side, so the
+thumbwheel side is up (the render above upside down). The cells are fixed in the sketch, so they don't follow the battery parameters. That
 sketch also takes a few minutes to solve after any edit; to turn the frog, rewrite the cells'
 coordinates in a script and send the whole sketch in one `reverse_feature_update`.
+
+**Revision.** `v0.4` is engraved on the back, in the free corner below the vent slots. Its
+reading-left edge lines up with the outer vent slot (x 90.0), and its baseline and digit tops
+with the hazard band (y 0.1–7.1). It reads upright the same way as the frog. It sits on the full
+1.2 mm floor, clear of the battery pocket and 3.8 mm from the countersink. It's cut like the other
+back grooves: 0.4 deep (`line_d`) with 45° walls (`groove_draft`), strokes 1.0 wide at the face
+(the hatch line's width), so 0.8 of floor stays under it and each groove keeps a 0.2 flat at the
+bottom. The glyphs are a small font of their own: digits 3.6 × 7.0 on a seven-segment plan, with
+45° chamfers on the outer corners like the hatch outline and the caps. Like the frog, the text is
+fixed in its sketches, so it doesn't follow the battery parameters the vent slots follow.
+
+![revision, turned to read](renders/back_revision.png)
+
+The revision is one parameter, `rev` (pinned), engraved as v0.`rev`. ScanRuler's sketches have no
+text and its parameters are numbers, so the model picks the digit itself. `Rev digits plan` holds
+a strip of all ten digits, 0 at the engraving and each next one `rev_pitch` (6 mm) further along
++X. `Rev digits` extrudes them as bodies of their own, `Rev digit pick` moves them by −`rev` ×
+`rev_pitch`, `Rev digit` keeps what lands in `Rev window`, and `Cut rev digit` cuts that digit
+from the tray. `Rev prefix` cuts the "v0." straight in. The strip is drawn 0.2 below the back face
+and 0.2 fatter a side, so its 45° walls come to the glyph's size at the face. Every digit 0–9
+builds. `Rev digit pick` names the ten digit bodies by id (141 to 141.0088): if a new font gives
+the strip more or fewer pieces, list them again.
+
+**When it bumps:** in the commit that changes either part's print (`back-tray.stl` or
+`front-bezel.stl`), set `rev` to the next number before exporting. That includes a change no one
+could see from outside, such as a clearance or a hook. v0.3 was the 2026-11-14 print, and the
+changes since (sunk screw heads, the wheel-notch gap closed, the frog turned, the stiffer bezel,
+eight hooks, the thicker skin) make v0.4. Only the tray is marked, so a bezel printed on its own
+carries no revision. One digit runs to v0.9. Past that, cut a second digit window or go to v1.0
+(the "v0." comes from `revision_glyphs.py`).
+
+`revision_glyphs.py` draws `Rev prefix plan`, `Rev digits plan` and the window from its constants
+(font, size, place). Run it only to change those, and send each sketch with
+`reverse_feature_update`, with the region points it writes as the extrudes' `regions`. Not "all":
+that also takes the counters inside 0, 6, 8 and 9 as regions, and cuts them out.
 
 **Thumbwheel slot.** The wheel is clicked by pushing its rim straight in, and the rim stands
 only 0.16 mm past the outer wall. So the notch runs the full height of the case, from the bezel's
@@ -202,7 +240,7 @@ the socket, where the panel's flex cable wraps the board edge (0.72 mm away). Th
 4. Press the bezel straight down over the glass until all eight hooks click (two in each corner).
 
 **Printing the tray:** back face on the bed, no supports. Everything is laid out for that:
-- The back is flat. Its decoration is inward grooves with 45° walls (`groove_draft`), so each layer steps in by at most its own height and nothing bridges. That covers the hatch outline, the hazard stripes and the vent slots.
+- The back is flat. Its decoration is inward grooves with 45° walls (`groove_draft`), so each layer steps in by at most its own height and nothing bridges. That covers the hatch outline, the hazard stripes, the vent slots and the revision.
 - The end fins have flat floors and 45° ceilings.
 - The thumbwheel slot runs straight down to the bed, so its walls are vertical and nothing overhangs.
 - The corner recesses are vertical, and the hook grooves in them have 45° roofs.
@@ -222,7 +260,7 @@ fitted). The glass pocket (1.35 deep) and the pry notch are open pockets on top.
 
 **Checked in ScanRuler** (model only):
 - **Clearances:** button stems to nubs and relief 0.15, PCB to walls 0.24, wheel 0.37, panel to tray 1.59 and to bezel 0.25, USB-C socket shell to its opening 1.16. The MX1.25 headers and ESP32 module are ~3 mm above the floor.
-- **Battery:** sits on the pocket floor, 0.30 under the display FPC connector, 0.96 from the wheel, 0.92 from USB-C. A swelling pouch has only that 0.3 mm above it.
+- **Battery:** sits on the pocket floor, 0.10 under the display FPC connector, 0.96 from the wheel, 0.92 from USB-C. A swelling pouch has only that 0.1 mm above it.
 - **Contact:** the tray touches the board only at the four standoff ends. The bezel touches nothing on the board: its frame is 0.20 above the PCB's top face all round, 0.40 from the PCB's end at the end skirt, 0.25 off the panel glass, 0.66 from the nearest standoff and 2.8 above the wheel. It touches the tray only on the wall tops and the hook retaining faces. The caps and the skirt stand 0.15 off the tray everywhere else.
 - **Solids:** both valid and closed, with no slivers or voids, and the STEP round trip is exact. The only steps between features the check flags are the frog's intended 0.2 mm depth on the tray; the bezel has none.
 
@@ -235,9 +273,10 @@ fingernail recess. Both are split between the tray and the bezel. Flared thumbwh
 - Three fins on the antenna end, centred between the back face and the seam (`fin_*`).
 - On the back: a chamfered hatch outline round the battery (`hatch_*`, `line_*`), five vent slots spanning the hatch's height beside it (`vent_*`), and a band of 45° hazard stripes below it (`haz_*`). All 0.4 mm deep, and they follow the battery parameters.
 - The pixel-art frog inside the hatch outline (`frog_d`).
+- The revision, v0.`rev`, below the vent slots (**Revision**).
 - Chamfers: 0.5 mm on the bezel's front outer edges, 0.5 on the tray's top outer edges (a groove at the seam between the caps; the USB-C end has the 0.15 parting gap instead), 0.6 round the back (cap feet and thumbwheel slot included).
 
-**Pinned parameters:** `batt_t` 4.61, `bump_up` 0, `bump_l` 7.5, `wall_t` 2.0.
+**Pinned parameters:** `rev` 4, `batt_t` 4.61, `bump_up` 0, `bump_l` 7.5, `wall_t` 2.0.
 
 **Open question** (pinned as a note in the project): **screws**. This assumes the standoffs are
 fixed to the PCB. The panel glass covers their holes, so they must be.
