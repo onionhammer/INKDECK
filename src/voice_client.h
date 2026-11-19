@@ -10,6 +10,9 @@
 // kept (the capture ring holds 8 s) and sent once inkharness answers. Its own task owns the socket
 // and the audio streams (audio.h capture*/stream*), so the UI never waits on the network.
 //
+// The connection is encrypted with a key made from voice_token (voice_noise.h): the token
+// itself never crosses the network, and a daemon with another one is reported as such.
+//
 // Half-duplex: the mic is off while a reply plays. Pressing the talk key during a reply stops
 // it and listens again.
 //

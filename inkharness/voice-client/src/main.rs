@@ -1,15 +1,17 @@
 //! voice-client: plays the device's part against inkharness, from a WAV file. Sends the
-//! utterance, prints what comes back with timings, and saves the reply audio.
+//! utterance, prints what comes back with timings, and saves the reply audio. It connects as
+//! a board does: encrypted with the token (protocol 2), or with `--plaintext` as older boards
+//! did (protocol 1).
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use voice_proto::{
-    ClientMsg, DeviceTool, Frame, FrameDecoder, PROTO_VERSION, ServerMsg, read_frame, write_frame,
+    ClientMsg, DeviceTool, Frame, FrameReader, FrameWriter, Initiator, PROTO_PLAINTEXT,
+    PROTO_VERSION, ServerMsg, psk,
 };
 
 #[derive(Parser)]
@@ -18,9 +20,13 @@ struct Args {
     /// The daemon's address.
     #[arg(long, default_value_t = format!("127.0.0.1:{}", voice_proto::DEFAULT_PORT))]
     addr: String,
-    /// The token inkharness.toml asks for.
+    /// The token in inkharness.toml: the key the connection is encrypted with.
     #[arg(long, default_value = "")]
     token: String,
+    /// Speak protocol 1, as boards did before encryption: the token and everything else
+    /// unencrypted. The daemon takes it only with `plaintext = true`.
+    #[arg(long)]
+    plaintext: bool,
     /// The utterance: a 16-bit mono WAV (16 kHz is what the device sends).
     #[arg(long, conflicts_with = "silence")]
     wav: Option<PathBuf>,
@@ -72,39 +78,81 @@ async fn main() -> Result<()> {
         }
     }
 
-    let mut stream = TcpStream::connect(&args.addr)
+    let stream = TcpStream::connect(&args.addr)
         .await
         .with_context(|| format!("connecting to {}", args.addr))?;
     stream.set_nodelay(true)?;
-    let mut decoder = FrameDecoder::new();
+    let (reader, writer) = stream.into_split();
+    let mut reader = FrameReader::new(reader);
+    let mut writer = FrameWriter::new(writer);
 
-    let hello = ClientMsg::Hello {
-        proto: PROTO_VERSION,
-        device: "voice-client".into(),
-        token: args.token.clone(),
-        mic_rate: rate,
-        tools,
+    let opened = Instant::now();
+    let answer = if args.plaintext {
+        let hello = ClientMsg::Hello {
+            proto: PROTO_PLAINTEXT,
+            device: "voice-client".into(),
+            token: args.token.clone(),
+            mic_rate: rate,
+            tools,
+        };
+        writer.write(&Frame::control(&hello)?).await?;
+        match reader.read().await? {
+            Some(Frame::Control(json)) => json,
+            _ => bail!("the daemon closed the connection"),
+        }
+    } else {
+        // The hello rides in the handshake; the token only keys it.
+        let hello = ClientMsg::Hello {
+            proto: PROTO_VERSION,
+            device: "voice-client".into(),
+            token: String::new(),
+            mic_rate: rate,
+            tools,
+        };
+        let mut initiator = Initiator::new(&psk(&args.token));
+        writer.write(&initiator.hello(&hello)?).await?;
+        match reader.read().await? {
+            Some(Frame::Handshake(msg)) => {
+                let (json, keys) = initiator
+                    .finish(&msg)
+                    .context("the daemon's handshake didn't open")?;
+                let (sealer, opener) = keys.split();
+                writer.seal(sealer);
+                reader.seal(opener);
+                json
+            }
+            Some(Frame::Control(json)) => json, // a refusal, unencrypted
+            _ => bail!("the daemon closed the connection"),
+        }
     };
-    write_frame(&mut stream, &Frame::control(&hello)?).await?;
-    match read_frame(&mut stream, &mut decoder).await? {
-        Some(Frame::Control(json)) => match serde_json::from_str::<ServerMsg>(&json)? {
-            ServerMsg::Hello { session, .. } => println!("connected, session {session}"),
-            ServerMsg::Error { message } => bail!("the daemon refused: {message}"),
-            other => bail!("expected hello, got {other:?}"),
-        },
-        _ => bail!("the daemon closed the connection"),
+    match serde_json::from_str::<ServerMsg>(&answer)? {
+        ServerMsg::Hello { session, proto } => println!(
+            "connected in {} ms, session {session}, protocol {proto}{}",
+            opened.elapsed().as_millis(),
+            if proto == PROTO_PLAINTEXT {
+                " (unencrypted)"
+            } else {
+                ""
+            }
+        ),
+        ServerMsg::Error { message } => bail!("the daemon refused: {message}"),
+        other => bail!("expected hello, got {other:?}"),
     }
 
-    write_frame(&mut stream, &Frame::control(&ClientMsg::ListenStart)?).await?;
+    writer
+        .write(&Frame::control(&ClientMsg::ListenStart)?)
+        .await?;
     let frame_time = Duration::from_secs_f64(FRAME_BYTES as f64 / (rate as f64 * 2.0));
     for chunk in pcm.chunks(FRAME_BYTES) {
-        write_frame(&mut stream, &Frame::Audio(chunk.to_vec())).await?;
+        writer.write(&Frame::Audio(chunk.to_vec())).await?;
         if !args.fast {
             tokio::time::sleep(frame_time).await;
         }
     }
-    write_frame(&mut stream, &Frame::control(&ClientMsg::ListenStop)?).await?;
-    stream.flush().await?;
+    writer
+        .write(&Frame::control(&ClientMsg::ListenStop)?)
+        .await?;
+    writer.flush().await?;
     let stopped = Instant::now();
     let ms = || stopped.elapsed().as_millis();
     println!(
@@ -123,16 +171,16 @@ async fn main() -> Result<()> {
         let frame = match abort_at {
             Some(at) => {
                 tokio::select! {
-                    frame = read_frame(&mut stream, &mut decoder) => frame?,
+                    frame = reader.read() => frame?,
                     _ = tokio::time::sleep_until(at.into()) => {
                         abort_at = None;
                         println!("[{:>5} ms] sending abort", ms());
-                        write_frame(&mut stream, &Frame::control(&ClientMsg::Abort)?).await?;
+                        writer.write(&Frame::control(&ClientMsg::Abort)?).await?;
                         continue;
                     }
                 }
             }
-            None => read_frame(&mut stream, &mut decoder).await?,
+            None => reader.read().await?,
         };
         let Some(frame) = frame else {
             bail!("the daemon closed the connection mid-turn")
@@ -145,6 +193,7 @@ async fn main() -> Result<()> {
                 }
                 reply.extend_from_slice(&pcm);
             }
+            Frame::Handshake(_) | Frame::Sealed(_) => bail!("a handshake frame mid-turn"),
             Frame::Control(json) => match serde_json::from_str::<ServerMsg>(&json) {
                 Ok(ServerMsg::Stt { text }) => println!("[{:>5} ms] heard: {text:?}", ms()),
                 Ok(ServerMsg::ReplyStart { rate }) => {
@@ -169,7 +218,7 @@ async fn main() -> Result<()> {
                         None => (format!("no tool named {name}"), true),
                     };
                     let result = ClientMsg::ToolResult { id, text, error };
-                    write_frame(&mut stream, &Frame::control(&result)?).await?;
+                    writer.write(&Frame::control(&result)?).await?;
                 }
                 Ok(ServerMsg::Hello { .. }) => {}
                 Err(e) => println!("unknown message {json}: {e}"),

@@ -18,7 +18,7 @@
 //   [voice]
 //   voice_host = nas.local               ; the machine running inkharness serve (voice_client.h); only the card sets it
 //   voice_port = 7391
-//   voice_token = something-long         ; stays on the card: it only opens the voice daemon
+//   voice_token = something-long         ; stays on the card: it keys the voice link (voice_noise.h)
 //
 // and lists the network shares Files browses (shares.h has the syntax), one line each:
 //

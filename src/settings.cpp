@@ -127,8 +127,9 @@ constexpr const char *kTemplate =
     "\n"
     "[voice]\n"
     "; The machine on your network that runs inkharness, the assistant daemon (a name or an\n"
-    "; address), its port (7391 unless you changed it) and the token its inkharness.toml asks for.\n"
-    "; The token stays in this file.\n"
+    "; address), its port (7391 unless you changed it) and the token in its inkharness.toml. The\n"
+    "; token never leaves this file: it keys the connection's encryption, so make it long and random\n"
+    "; (openssl rand -hex 24).\n"
     "; voice_host = nas.local\n"
     "; voice_port = 7391\n"
     "; voice_token = something-long\n";

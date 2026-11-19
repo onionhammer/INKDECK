@@ -7,20 +7,25 @@
 //!
 //! The tools a device announces in its hello join the session's (device.rs): their calls go
 //! down this connection, and their answers come back up it while the turn waits.
+//!
+//! The connection opens with protocol 2's handshake, which carries the hellos and seals every
+//! frame after it (voice_proto's crypto.rs), or, where `plaintext` allows, protocol 1's
+//! unencrypted hello.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
 use futures_util::FutureExt;
 use tokio::net::TcpStream;
-use tokio::net::tcp::OwnedWriteHalf;
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use voice_proto::{
-    ClientMsg, Frame, FrameDecoder, PROTO_VERSION, ServerMsg, read_frame, write_frame,
+    ClientMsg, DeviceTool, Frame, FrameReader, FrameWriter, PROTO_PLAINTEXT, PROTO_VERSION,
+    Responder, ServerMsg, WRONG_TOKEN,
 };
 
 use crate::device::Device;
@@ -32,7 +37,12 @@ use crate::tools::ToolSet;
 use crate::tts::Tts;
 
 pub struct App {
+    /// For protocol 1, which sends it in the hello.
     pub token: String,
+    /// The key protocol 2's handshake is made with: voice_proto::psk(token).
+    pub psk: [u8; 32],
+    /// Take devices on protocol 1 too.
+    pub plaintext: bool,
     pub system_prompt: String,
     /// None when every model hears the recording itself.
     pub stt: Option<Box<dyn Stt>>,
@@ -126,7 +136,12 @@ struct Tools {
 
 pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()> {
     stream.set_nodelay(true)?;
-    let (mut reader, writer) = stream.into_split();
+    let (reader, writer) = stream.into_split();
+    let mut reader = FrameReader::new(reader);
+    let mut writer = FrameWriter::new(writer);
+    let hello = open(&mut reader, &mut writer, &app, &session).await?;
+    let mic_rate = hello.mic_rate;
+
     // Bounded, so a device that stops reading (its playback buffer is full) holds the
     // pipeline back instead of the daemon buffering the whole reply.
     let (tx, rx) = mpsc::channel::<Frame>(16);
@@ -138,13 +153,32 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
         tools: app.tools.clone(),
         fast_tools: app.fast_tools.clone(),
     });
-    let mut decoder = FrameDecoder::new();
-    let mut mic_rate = 0u32; // 0 until hello
+    if !hello.tools.is_empty() {
+        let board = Arc::new(Device::new(
+            hello.tools,
+            &app.fast_tools.names(),
+            tx.clone(),
+        ));
+        tools = Arc::new(Tools {
+            tools: app.tools.with_device(board.clone()),
+            fast_tools: app.fast_tools.with_device(board.clone()),
+        });
+        device = Some(board);
+    }
+    let names: Vec<&str> = device
+        .iter()
+        .flat_map(|d| d.defs())
+        .map(|d| d.name.as_str())
+        .collect();
+    tracing::info!(device = %hello.device, mic_rate, encrypted = hello.encrypted, tools = ?names, "hello");
+    if !hello.encrypted {
+        tracing::warn!(device = %hello.device, "protocol 1: nothing on this connection is encrypted");
+    }
     let mut utterance: Option<Utterance> = None;
     let mut turn: Option<JoinHandle<()>> = None;
 
     let result: Result<()> = async {
-        while let Some(frame) = read_frame(&mut reader, &mut decoder).await? {
+        while let Some(frame) = reader.read().await? {
             match frame {
                 Frame::Audio(pcm) => {
                     let Some(heard) = utterance.as_mut() else {
@@ -165,6 +199,9 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                     }
                     heard.feed(&pcm).await;
                 }
+                Frame::Handshake(_) | Frame::Sealed(_) => {
+                    bail!("a handshake frame after the hello")
+                }
                 Frame::Control(json) => {
                     let msg = match serde_json::from_str::<ClientMsg>(&json) {
                         Ok(msg) => msg,
@@ -173,68 +210,8 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                             continue;
                         }
                     };
-                    if mic_rate == 0 && !matches!(msg, ClientMsg::Hello { .. }) {
-                        bail!("the device must say hello first");
-                    }
                     match msg {
-                        ClientMsg::Hello {
-                            proto,
-                            device: device_name,
-                            token,
-                            mic_rate: rate,
-                            tools: announced,
-                        } => {
-                            if proto != PROTO_VERSION {
-                                send(
-                                    &tx,
-                                    ServerMsg::Error {
-                                        message: format!("protocol {proto} is not supported"),
-                                    },
-                                )
-                                .await;
-                                bail!("device speaks protocol {proto}");
-                            }
-                            if !app.token.is_empty() && token != app.token {
-                                send(
-                                    &tx,
-                                    ServerMsg::Error {
-                                        message: "wrong token".into(),
-                                    },
-                                )
-                                .await;
-                                bail!("wrong token from {device_name}");
-                            }
-                            if !(8000..=48000).contains(&rate) {
-                                bail!("mic rate {rate} is out of range");
-                            }
-                            mic_rate = rate;
-                            if !announced.is_empty() {
-                                let board = Arc::new(Device::new(
-                                    announced,
-                                    &app.fast_tools.names(),
-                                    tx.clone(),
-                                ));
-                                tools = Arc::new(Tools {
-                                    tools: app.tools.with_device(board.clone()),
-                                    fast_tools: app.fast_tools.with_device(board.clone()),
-                                });
-                                device = Some(board);
-                            }
-                            let names: Vec<&str> = device
-                                .iter()
-                                .flat_map(|d| d.defs())
-                                .map(|d| d.name.as_str())
-                                .collect();
-                            tracing::info!(%device_name, mic_rate, tools = ?names, "hello");
-                            send(
-                                &tx,
-                                ServerMsg::Hello {
-                                    proto: PROTO_VERSION,
-                                    session: session.clone(),
-                                },
-                            )
-                            .await;
-                        }
+                        ClientMsg::Hello { .. } => tracing::debug!("ignoring a second hello"),
                         ClientMsg::ListenStart => {
                             if cancel(&mut turn) {
                                 send(&tx, ServerMsg::ReplyEnd).await;
@@ -279,6 +256,119 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
     result
 }
 
+/// What a device said in its hello, once checked.
+struct Hello {
+    device: String,
+    mic_rate: u32,
+    tools: Vec<DeviceTool>,
+    encrypted: bool,
+}
+
+/// Opens the connection and answers the device's hello: protocol 2's handshake, which seals
+/// both halves, or protocol 1's unencrypted hello where `plaintext` allows it. A device that
+/// can't be taken hears why (an `error`) and the connection ends.
+async fn open(
+    reader: &mut FrameReader<OwnedReadHalf>,
+    writer: &mut FrameWriter<OwnedWriteHalf>,
+    app: &App,
+    session: &str,
+) -> Result<Hello> {
+    let refusal = |message: String| Frame::control(&ServerMsg::Error { message });
+    match reader.read().await? {
+        Some(Frame::Handshake(msg1)) => {
+            let mut responder = Responder::new(&app.psk);
+            let json = match responder.hello(&msg1) {
+                Ok(json) => json,
+                Err(e) => {
+                    // Unencrypted, as there is no key to seal it with. It says only that the
+                    // tokens differ, which the device could tell from the connection closing.
+                    writer.write(&refusal(WRONG_TOKEN.into())?).await?;
+                    bail!("{e}");
+                }
+            };
+            // The answer rides in message 2, so a refusal is encrypted too.
+            let hello = check_hello(&json, PROTO_VERSION);
+            let answer = match &hello {
+                Ok(_) => ServerMsg::Hello {
+                    proto: PROTO_VERSION,
+                    session: session.into(),
+                },
+                Err(e) => ServerMsg::Error {
+                    message: format!("{e:#}"),
+                },
+            };
+            let (msg2, keys) = responder.answer(&answer)?;
+            writer.write(&msg2).await?;
+            let (hello, _) = hello?;
+            let (sealer, opener) = keys.split();
+            writer.seal(sealer);
+            reader.seal(opener);
+            Ok(hello)
+        }
+        Some(Frame::Control(json)) => {
+            let hello = if app.plaintext {
+                check_hello(&json, PROTO_PLAINTEXT).and_then(|(hello, token)| {
+                    if !app.token.is_empty() && token != app.token {
+                        bail!("{WRONG_TOKEN}");
+                    }
+                    Ok(Hello {
+                        encrypted: false,
+                        ..hello
+                    })
+                })
+            } else {
+                Err(anyhow!(
+                    "this daemon takes encrypted connections only (protocol {PROTO_VERSION}): update the device"
+                ))
+            };
+            match hello {
+                Ok(hello) => {
+                    let answer = ServerMsg::Hello {
+                        proto: PROTO_PLAINTEXT,
+                        session: session.into(),
+                    };
+                    writer.write(&Frame::control(&answer)?).await?;
+                    Ok(hello)
+                }
+                Err(e) => {
+                    writer.write(&refusal(format!("{e:#}"))?).await?;
+                    Err(e)
+                }
+            }
+        }
+        Some(_) => bail!("the device must say hello first"),
+        None => bail!("closed before saying hello"),
+    }
+}
+
+/// The hello in `json`, if it is one in protocol `proto` with a mic rate that will do, and
+/// the token it carries (protocol 1's).
+fn check_hello(json: &str, proto: u32) -> Result<(Hello, String)> {
+    let Ok(ClientMsg::Hello {
+        proto: theirs,
+        device,
+        token,
+        mic_rate,
+        tools,
+    }) = serde_json::from_str::<ClientMsg>(json)
+    else {
+        bail!("the device must say hello first");
+    };
+    if theirs != proto {
+        bail!("protocol {theirs} is not supported");
+    }
+    if !(8000..=48000).contains(&mic_rate) {
+        bail!("mic rate {mic_rate} is out of range");
+    }
+    let hello = Hello {
+        device,
+        mic_rate,
+        tools,
+        encrypted: true,
+    };
+    Ok((hello, token))
+}
+
 /// Stops the turn in progress. True if there was one still running.
 fn cancel(turn: &mut Option<JoinHandle<()>>) -> bool {
     match turn.take() {
@@ -290,9 +380,9 @@ fn cancel(turn: &mut Option<JoinHandle<()>>) -> bool {
     }
 }
 
-async fn write_loop(mut writer: OwnedWriteHalf, mut rx: mpsc::Receiver<Frame>) {
+async fn write_loop(mut writer: FrameWriter<OwnedWriteHalf>, mut rx: mpsc::Receiver<Frame>) {
     while let Some(frame) = rx.recv().await {
-        if let Err(e) = write_frame(&mut writer, &frame).await {
+        if let Err(e) = writer.write(&frame).await {
             tracing::debug!("write failed: {e}");
             break;
         }
@@ -635,7 +725,8 @@ async fn turn_inner(
 mod tests {
     use async_trait::async_trait;
     use serde_json::json;
-    use voice_proto::DeviceTool;
+    use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+    use voice_proto::{DeviceTool, Initiator, psk};
 
     use super::*;
     use crate::config;
@@ -675,8 +766,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn the_model_calls_the_boards_tools() {
+    /// A daemon with this token, serving one connection; its address.
+    async fn daemon(token: &str, plaintext: bool) -> std::net::SocketAddr {
         let tools = ToolSet::build(
             None,
             &config::Js::default(),
@@ -686,7 +777,9 @@ mod tests {
         )
         .unwrap();
         let app = Arc::new(App {
-            token: String::new(),
+            token: token.into(),
+            psk: psk(token),
+            plaintext,
             system_prompt: String::new(),
             stt: None,
             llm: Box::new(OpensABook),
@@ -701,39 +794,88 @@ mod tests {
             let (stream, _) = listener.accept().await.unwrap();
             run(stream, app, "s1".into()).await
         });
+        addr
+    }
 
-        let mut board = TcpStream::connect(addr).await.unwrap();
-        let mut decoder = FrameDecoder::new();
-        let hello = ClientMsg::Hello {
-            proto: PROTO_VERSION,
+    fn hello(proto: u32, token: &str, tools: Vec<DeviceTool>) -> ClientMsg {
+        ClientMsg::Hello {
+            proto,
             device: "test".into(),
-            token: String::new(),
+            token: token.into(),
             mic_rate: 16000,
-            tools: vec![DeviceTool {
-                name: "open_book".into(),
-                description: "Opens a book on the board.".into(),
-                input_schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
-            }],
-        };
-        for msg in [hello, ClientMsg::ListenStart] {
-            write_frame(&mut board, &Frame::control(&msg).unwrap())
-                .await
-                .unwrap();
+            tools,
         }
+    }
+
+    type Board = (FrameReader<OwnedReadHalf>, FrameWriter<OwnedWriteHalf>);
+
+    fn halves(stream: TcpStream) -> Board {
+        let (reader, writer) = stream.into_split();
+        (FrameReader::new(reader), FrameWriter::new(writer))
+    }
+
+    /// The daemon's answer to a board's handshake made with `token`: its hello or error, and
+    /// the sealed connection if the handshake went through.
+    async fn handshake(
+        addr: std::net::SocketAddr,
+        token: &str,
+        msg: ClientMsg,
+    ) -> (ServerMsg, Option<Board>) {
+        let (mut reader, mut writer) = halves(TcpStream::connect(addr).await.unwrap());
+        let mut initiator = Initiator::new(&psk(token));
+        writer.write(&initiator.hello(&msg).unwrap()).await.unwrap();
+        match reader.read().await.unwrap() {
+            Some(Frame::Handshake(msg2)) => {
+                let (json, keys) = initiator.finish(&msg2).unwrap();
+                let (sealer, opener) = keys.split();
+                reader.seal(opener);
+                writer.seal(sealer);
+                (serde_json::from_str(&json).unwrap(), Some((reader, writer)))
+            }
+            Some(Frame::Control(json)) => {
+                assert!(
+                    reader.read().await.unwrap().is_none(),
+                    "the daemon hangs up"
+                );
+                (serde_json::from_str(&json).unwrap(), None)
+            }
+            other => panic!("expected a handshake, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_model_calls_the_boards_tools() {
+        let addr = daemon("t", false).await;
+        let tools = vec![DeviceTool {
+            name: "open_book".into(),
+            description: "Opens a book on the board.".into(),
+            input_schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+        }];
+        let (answer, board) = handshake(addr, "t", hello(PROTO_VERSION, "", tools)).await;
+        assert_eq!(
+            answer,
+            ServerMsg::Hello {
+                proto: PROTO_VERSION,
+                session: "s1".into()
+            }
+        );
+        let (mut reader, mut writer) = board.unwrap();
+        writer
+            .write(&Frame::control(&ClientMsg::ListenStart).unwrap())
+            .await
+            .unwrap();
         let speech: Vec<u8> = (0..1600)
             .flat_map(|i| ((i % 64) as i16 * 100).to_le_bytes())
             .collect();
-        write_frame(&mut board, &Frame::Audio(speech))
-            .await
-            .unwrap();
-        write_frame(&mut board, &Frame::control(&ClientMsg::ListenStop).unwrap())
+        writer.write(&Frame::Audio(speech)).await.unwrap();
+        writer
+            .write(&Frame::control(&ClientMsg::ListenStop).unwrap())
             .await
             .unwrap();
 
         let mut said = String::new();
         loop {
-            let Some(Frame::Control(json)) = read_frame(&mut board, &mut decoder).await.unwrap()
-            else {
+            let Some(Frame::Control(json)) = reader.read().await.unwrap() else {
                 continue;
             };
             match serde_json::from_str::<ServerMsg>(&json).unwrap() {
@@ -745,7 +887,8 @@ mod tests {
                         text: "Opening Dune once the reply has played.".into(),
                         error: false,
                     };
-                    write_frame(&mut board, &Frame::control(&answer).unwrap())
+                    writer
+                        .write(&Frame::control(&answer).unwrap())
                         .await
                         .unwrap();
                 }
@@ -756,5 +899,63 @@ mod tests {
             }
         }
         assert_eq!(said, r#"Ok("=> Opening Dune once the reply has played.")"#);
+    }
+
+    #[tokio::test]
+    async fn a_board_with_another_token_hears_so() {
+        let addr = daemon("t", false).await;
+        let (answer, board) = handshake(addr, "not t", hello(PROTO_VERSION, "", vec![])).await;
+        assert_eq!(
+            answer,
+            ServerMsg::Error {
+                message: WRONG_TOKEN.into()
+            }
+        );
+        assert!(board.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_hello_it_cant_take_is_refused_in_message_2() {
+        let addr = daemon("t", false).await;
+        let (answer, _) = handshake(addr, "t", hello(3, "", vec![])).await;
+        assert_eq!(
+            answer,
+            ServerMsg::Error {
+                message: "protocol 3 is not supported".into()
+            }
+        );
+    }
+
+    /// The daemon's answer to a protocol 1 hello.
+    async fn plain_hello(addr: std::net::SocketAddr, token: &str) -> ServerMsg {
+        let (mut reader, mut writer) = halves(TcpStream::connect(addr).await.unwrap());
+        let msg = Frame::control(&hello(PROTO_PLAINTEXT, token, vec![])).unwrap();
+        writer.write(&msg).await.unwrap();
+        let Some(Frame::Control(json)) = reader.read().await.unwrap() else {
+            panic!("no answer")
+        };
+        serde_json::from_str(&json).unwrap()
+    }
+
+    #[tokio::test]
+    async fn protocol_1_only_with_plaintext() {
+        let refused = plain_hello(daemon("t", false).await, "t").await;
+        assert!(
+            matches!(&refused, ServerMsg::Error { message } if message.contains("encrypted")),
+            "{refused:?}"
+        );
+        assert_eq!(
+            plain_hello(daemon("t", true).await, "t").await,
+            ServerMsg::Hello {
+                proto: PROTO_PLAINTEXT,
+                session: "s1".into()
+            }
+        );
+        assert_eq!(
+            plain_hello(daemon("t", true).await, "x").await,
+            ServerMsg::Error {
+                message: WRONG_TOKEN.into()
+            }
+        );
     }
 }

@@ -5,9 +5,12 @@
 
 listen = "0.0.0.0:7391"         # boards connect here
 http = "127.0.0.1:7392"         # the HTTP API (POST /chat); "" turns it off
-# Boards must send this token (voice_token in SD:/inkdeck.ini), and HTTP requests as a bearer
-# token. Empty: no check.
+# Boards encrypt the connection with this token (voice_token in SD:/inkdeck.ini, the same on
+# both ends; it never crosses the network), and HTTP requests send it as a bearer token. Make it
+# long and random: openssl rand -hex 24. Empty: anyone who can reach the ports may use them.
 token = ""
+# plaintext = true      # also take boards on firmware from before encryption (protocol 1),
+                        # which send the token and the audio unencrypted
 # system_prompt = "..."   # replaces the built-in ones (for spoken and for written replies)
 
 # --- Speech to text --------------------------------------------------------------------

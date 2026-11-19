@@ -1,33 +1,62 @@
 //! Wire protocol between the device and the voice daemon (docs/voice-protocol.md).
 //!
 //! One TCP connection. Every frame is `u8 type`, `u16 length` (little-endian), payload.
-//! Type 1 is a UTF-8 JSON control message, type 2 is PCM audio (s16le, mono). Frames of any
-//! other type are skipped, so later versions can add types.
+//! Type 1 is a UTF-8 JSON control message, type 2 is PCM audio (s16le, mono). Protocol 2
+//! opens with a Noise handshake (type 3, crypto.rs) keyed from the shared token, and every
+//! frame after it is sealed (type 4): a control or audio frame encrypted and authenticated
+//! whole. Protocol 1 sends control and audio frames as they are. Frames of any other type are
+//! skipped, so later versions can add types.
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTO_VERSION: u32 = 1;
+mod crypto;
+pub use crypto::{Initiator, Keys, NOISE, Opener, PROLOGUE, Responder, Sealer, psk};
+
+pub const PROTO_VERSION: u32 = 2;
+/// The unencrypted protocol: a daemon takes it only when told to (`plaintext = true`).
+pub const PROTO_PLAINTEXT: u32 = 1;
 pub const DEFAULT_PORT: u16 = 7391;
 pub const MAX_PAYLOAD: usize = u16::MAX as usize;
 pub const HEADER_LEN: usize = 3;
+/// What sealing adds to a frame's payload: its type byte and the 16-byte tag.
+pub const SEAL_OVERHEAD: usize = 1 + 16;
+/// The largest payload a sealed frame can carry.
+pub const MAX_SEALED_PAYLOAD: usize = MAX_PAYLOAD - SEAL_OVERHEAD;
 
 const TYPE_CONTROL: u8 = 1;
 const TYPE_AUDIO: u8 = 2;
+const TYPE_HANDSHAKE: u8 = 3;
+const TYPE_SEALED: u8 = 4;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
     Control(String),
     Audio(Vec<u8>),
+    /// A Noise handshake message: protocol 2's first frame each way.
+    Handshake(Vec<u8>),
+    /// A control or audio frame, encrypted. An `Opener` opens it.
+    Sealed(Vec<u8>),
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtoError {
-    #[error("payload of {0} bytes is over the {MAX_PAYLOAD}-byte frame limit")]
+    #[error("payload of {0} bytes is over the frame limit")]
     TooLong(usize),
     #[error("control frame is not UTF-8")]
     Utf8,
     #[error("control message: {0}")]
     Json(#[from] serde_json::Error),
+    /// The handshake message didn't open: the other side's token is different.
+    #[error("the handshake failed: the tokens don't match")]
+    Handshake,
+    #[error("a sealed frame didn't open: it was changed, replayed or reordered")]
+    Open,
+    #[error("an unencrypted frame after the handshake")]
+    NotSealed,
+    #[error("only control and audio frames can be sealed")]
+    NotSealable,
+    #[error("noise: {0}")]
+    Noise(#[from] snow::Error),
 }
 
 impl Frame {
@@ -35,11 +64,30 @@ impl Frame {
         Ok(Frame::Control(serde_json::to_string(msg)?))
     }
 
-    pub fn encode(&self) -> Result<Vec<u8>, ProtoError> {
-        let (kind, payload) = match self {
+    fn parts(&self) -> (u8, &[u8]) {
+        match self {
             Frame::Control(json) => (TYPE_CONTROL, json.as_bytes()),
-            Frame::Audio(pcm) => (TYPE_AUDIO, pcm.as_slice()),
-        };
+            Frame::Audio(pcm) => (TYPE_AUDIO, pcm),
+            Frame::Handshake(msg) => (TYPE_HANDSHAKE, msg),
+            Frame::Sealed(sealed) => (TYPE_SEALED, sealed),
+        }
+    }
+
+    /// None for a type this version doesn't know.
+    fn from_parts(kind: u8, payload: Vec<u8>) -> Result<Option<Frame>, ProtoError> {
+        Ok(Some(match kind {
+            TYPE_CONTROL => {
+                Frame::Control(String::from_utf8(payload).map_err(|_| ProtoError::Utf8)?)
+            }
+            TYPE_AUDIO => Frame::Audio(payload),
+            TYPE_HANDSHAKE => Frame::Handshake(payload),
+            TYPE_SEALED => Frame::Sealed(payload),
+            _ => return Ok(None),
+        }))
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, ProtoError> {
+        let (kind, payload) = self.parts();
         if payload.len() > MAX_PAYLOAD {
             return Err(ProtoError::TooLong(payload.len()));
         }
@@ -79,15 +127,9 @@ impl FrameDecoder {
             let kind = self.buf[0];
             let payload: Vec<u8> = self.buf[HEADER_LEN..HEADER_LEN + len].to_vec();
             self.buf.drain(..HEADER_LEN + len);
-            match kind {
-                TYPE_CONTROL => {
-                    return String::from_utf8(payload)
-                        .map(|s| Some(Frame::Control(s)))
-                        .map_err(|_| ProtoError::Utf8);
-                }
-                TYPE_AUDIO => return Ok(Some(Frame::Audio(payload))),
-                _ => continue, // a type this version doesn't know
-            }
+            if let Some(frame) = Frame::from_parts(kind, payload)? {
+                return Ok(Some(frame));
+            } // else a type this version doesn't know
         }
     }
 }
@@ -115,7 +157,8 @@ pub enum ClientMsg {
     Hello {
         proto: u32,
         device: String,
-        #[serde(default)]
+        /// Protocol 1 only. Protocol 2 proves the token in the handshake and leaves this out.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
         token: String,
         mic_rate: u32,
         /// What the device can do itself. A daemon from before tools ignores it.
@@ -171,9 +214,12 @@ pub enum ServerMsg {
     },
 }
 
+/// What the daemon answers, unencrypted, to a handshake made with another token.
+pub const WRONG_TOKEN: &str = "wrong token";
+
 #[cfg(feature = "tokio")]
 mod io {
-    use super::{Frame, FrameDecoder};
+    use super::{Frame, FrameDecoder, Opener, ProtoError, Sealer};
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
     /// Reads until a whole frame is in. `None` when the peer closed the connection. Safe to
@@ -202,10 +248,84 @@ mod io {
         let bytes = frame.encode().map_err(std::io::Error::other)?;
         writer.write_all(&bytes).await
     }
+
+    /// The receiving half of a connection. Once sealed (after the handshake) it opens every
+    /// frame and refuses one that isn't sealed.
+    pub struct FrameReader<R> {
+        inner: R,
+        decoder: FrameDecoder,
+        opener: Option<Opener>,
+    }
+
+    impl<R: AsyncRead + Unpin> FrameReader<R> {
+        pub fn new(inner: R) -> Self {
+            FrameReader {
+                inner,
+                decoder: FrameDecoder::new(),
+                opener: None,
+            }
+        }
+
+        pub fn seal(&mut self, opener: Opener) {
+            self.opener = Some(opener);
+        }
+
+        /// The next frame, opened if the connection is sealed. `None` when the peer closed
+        /// the connection. Safe to drop mid-read, like `read_frame`.
+        pub async fn read(&mut self) -> std::io::Result<Option<Frame>> {
+            loop {
+                let Some(frame) = read_frame(&mut self.inner, &mut self.decoder).await? else {
+                    return Ok(None);
+                };
+                let Some(opener) = self.opener.as_mut() else {
+                    return Ok(Some(frame));
+                };
+                let Frame::Sealed(sealed) = frame else {
+                    return Err(std::io::Error::other(ProtoError::NotSealed));
+                };
+                if let Some(frame) = opener.open(&sealed).map_err(std::io::Error::other)? {
+                    return Ok(Some(frame));
+                } // else a type this version doesn't know
+            }
+        }
+    }
+
+    /// The sending half of a connection. Once sealed it seals every frame.
+    pub struct FrameWriter<W> {
+        inner: W,
+        sealer: Option<Sealer>,
+    }
+
+    impl<W: AsyncWrite + Unpin> FrameWriter<W> {
+        pub fn new(inner: W) -> Self {
+            FrameWriter {
+                inner,
+                sealer: None,
+            }
+        }
+
+        pub fn seal(&mut self, sealer: Sealer) {
+            self.sealer = Some(sealer);
+        }
+
+        pub async fn write(&mut self, frame: &Frame) -> std::io::Result<()> {
+            match self.sealer.as_mut() {
+                Some(sealer) => {
+                    let sealed = sealer.seal(frame).map_err(std::io::Error::other)?;
+                    write_frame(&mut self.inner, &sealed).await
+                }
+                None => write_frame(&mut self.inner, frame).await,
+            }
+        }
+
+        pub async fn flush(&mut self) -> std::io::Result<()> {
+            self.inner.flush().await
+        }
+    }
 }
 
 #[cfg(feature = "tokio")]
-pub use io::{read_frame, write_frame};
+pub use io::{FrameReader, FrameWriter, read_frame, write_frame};
 
 #[cfg(test)]
 mod tests {
@@ -217,6 +337,8 @@ mod tests {
             Frame::control(&ClientMsg::ListenStart).unwrap(),
             Frame::Audio(vec![1, 2, 3, 4]),
             Frame::Audio(vec![]),
+            Frame::Handshake(vec![5; 48]),
+            Frame::Sealed(vec![6; 17]),
             Frame::control(&ServerMsg::Text {
                 delta: "héllo".into(),
             })
@@ -257,6 +379,17 @@ mod tests {
     #[test]
     fn message_json_shape() {
         let hello = ClientMsg::Hello {
+            proto: 2,
+            device: "inkdeck".into(),
+            token: String::new(),
+            mic_rate: 16000,
+            tools: vec![],
+        };
+        assert_eq!(
+            serde_json::to_string(&hello).unwrap(),
+            r#"{"type":"hello","proto":2,"device":"inkdeck","mic_rate":16000}"#
+        );
+        let hello = ClientMsg::Hello {
             proto: 1,
             device: "inkdeck".into(),
             token: "t".into(),
@@ -280,7 +413,7 @@ mod tests {
     #[test]
     fn device_tools() {
         let hello: ClientMsg = serde_json::from_str(
-            r#"{"type":"hello","proto":1,"device":"inkdeck","mic_rate":16000,
+            r#"{"type":"hello","proto":2,"device":"inkdeck","mic_rate":16000,
                 "tools":[{"name":"open_book","description":"Opens a book.",
                           "input_schema":{"type":"object","properties":{"path":{"type":"string"}}}},
                          {"name":"board_status","description":"How the board is."}]}"#,

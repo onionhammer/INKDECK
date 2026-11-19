@@ -13,10 +13,15 @@ pub struct Config {
     /// Where `serve` answers HTTP (http.rs). Empty: no HTTP.
     #[serde(default = "default_http")]
     pub http: String,
-    /// Devices must send this in `hello`, and HTTP requests as a bearer token. Empty: anyone
-    /// who can reach the ports may use them.
+    /// The key devices encrypt the connection with (they prove they have it without sending
+    /// it), and HTTP requests' bearer token. Empty: anyone who can reach the ports may use
+    /// them.
     #[serde(default)]
     pub token: String,
+    /// Also take devices on protocol 1, which sends the token, the audio and everything else
+    /// unencrypted: older board firmware, while it waits for an update.
+    #[serde(default)]
+    pub plaintext: bool,
     /// Replaces the built-in prompt, for speech and text alike. Unset: one written for replies
     /// that are spoken (devices) or read (the terminal, HTTP).
     pub system_prompt: Option<String>,
