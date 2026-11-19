@@ -80,7 +80,7 @@ constexpr Module kModules[] = {
     {"VOICE", "NET", "Hold BOOT on any screen and talk to the assistant on your network. It speaks back.",
      "Wi-Fi \xC2\xB7 ES8311 \xC2\xB7 inkharness", Kind::Voice},
 #endif
-    {"SENSORS", "I2C", "Live readouts from every chip on the shared I2C bus.",
+    {"SENSORS", "I2C", "Live readouts from every chip on the I2C bus, and Wi-Fi and Bluetooth LE scans.",
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},
     {"LEVEL", "IMU", "Bubble level for surfaces, a vial for edges, and a tone when it's level.",
      "QMI8658A @ 0x6B", Kind::Level},

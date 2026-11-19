@@ -37,6 +37,13 @@ void disconnect();  // this user is done; the radio goes off after the last one
 // Radio off now, whoever is using it, without waiting for them (the board is powering off).
 void forceOff();
 
-bool radioOn();  // connecting or connected (the status bar shows WIFI)
+bool radioOn();  // connecting, connected or held (the status bar shows WIFI)
+
+// The radio on in station mode without joining anything, for scanning (wifi_survey.h): it
+// stays on until the matching releaseRadio(), whatever connect() and disconnect() users do
+// meanwhile, and goes off at the release if nobody is connected. May wait for a connect in
+// progress, so call from a background task.
+void holdRadio();
+void releaseRadio();
 
 }  // namespace wlan
