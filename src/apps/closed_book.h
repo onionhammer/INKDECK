@@ -1,6 +1,6 @@
 // The closed book: the last frame before the power-off that ends a reading session nobody is at.
 // Portrait, no chrome: the book's cover across the whole panel (covers::full(); a book without
-// one gets its title in type), over an inverted band, "HOLD [PWR] 1 s TO RESUME" and how far
+// one gets its title in type), over an inverted band, "HOLD [PWR] TO RESUME" and how far
 // through the book it is.
 //
 // On battery, 15 minutes without a key under the Reader close the book (power::idleBook(),

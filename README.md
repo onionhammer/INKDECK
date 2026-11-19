@@ -43,7 +43,7 @@ the same way round in both. Phone photos come out upright (EXIF orientation), an
   and runs at 80 MHz once the face is drawn.
 - Reading (a text file or a picture) and music don't time out until the battery is low.
 - A book left open on battery closes after 15 minutes without a key, or at once on PWR: the
-  panel shows its cover across the whole screen with HOLD PWR 1 s TO RESUME, and the board
+  panel shows its cover across the whole screen with HOLD PWR TO RESUME, and the board
   powers off completely. PWR opens the book again at its page (so does an alarm's wake, under
   the Clock, and plugging in USB). A book without a cover picture gets its title in type. Not on
   USB, where the page stays (PWR shows the clock face), and the timeout not while music plays.

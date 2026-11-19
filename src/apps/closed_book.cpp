@@ -25,7 +25,7 @@ using ui::Rect;
 using ui::TextStyle;
 
 constexpr int kBandH = 44;  // the Sleep screen's bottom strip, including its 3 px rule
-constexpr TextStyle kBand{&ui::fonts::kMono14Bold, 1};       // Sleep's "HOLD [PWR] 1 s TO BOOT"
+constexpr TextStyle kBand{&ui::fonts::kMono14Bold, 1};       // Sleep's "HOLD [PWR] TO BOOT"
 constexpr TextStyle kBandCap{&ui::fonts::kMono14ExtraBold, 0};
 constexpr int kCapH = 24;
 // A book without a cover picture: its title, set like one.
@@ -86,7 +86,7 @@ class ClosedBookScreen : public ui::Screen {
   }
 
  private:
-  // "HOLD [PWR] 1 s TO RESUME" on ink, and the place in the book on the right.
+  // "HOLD [PWR] TO RESUME" on ink, and the place in the book on the right.
   void drawBand(ui::Canvas &c, const Rect &band) const {
     using namespace ui;
     // A paper rule first, so a dark cover doesn't run into the band.
@@ -99,7 +99,7 @@ class ClosedBookScreen : public ui::Screen {
     frame(c, {x, line.y, capW, line.h}, 2, kPaper);
     drawText(c, x + 9, baselineCentered(kBandCap, line.y, line.h), "PWR", kBandCap, kPaper);
     x += capW + 8;
-    x = drawText(c, x, base, "1 s TO RESUME", kBand, kPaper);
+    x = drawText(c, x, base, "TO RESUME", kBand, kPaper);
     if (percent_ >= 0) {
       drawText(c, {x + 10, line.y, line.right() - x - 10, line.h}, std::to_string(percent_) + "%",
                kBand, Align::Right, kPaper);

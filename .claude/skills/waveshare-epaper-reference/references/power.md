@@ -139,7 +139,7 @@ differs from what Waveshare writes, the vendor value applies only while their `a
 | Battery detection | `0x68` | on | on | |
 
 **What our firmware writes** (`pmic::configure()`, every boot, read-modify-write of only these fields, verified by
-read-back on hardware): `0x27` → `12` (1 s on, 4 s off), `0x30` bits 2–3 on (VBUS, VSYS; read 4.87 V and 4.84 V on
+read-back on hardware): `0x27` → `11` (512 ms on, 4 s off), `0x30` bits 2–3 on (VBUS, VSYS; read 4.87 V and 4.84 V on
 USB, so 1 mV/LSB for both), `0x61` → 50 mA, `0x62` → 500 mA (the 1500 mAh cell), `0x63` → 25 mA with termination on.
 Everything else keeps the defaults in the table above.
 
