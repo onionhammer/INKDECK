@@ -23,6 +23,7 @@
 #include "apps/clock.h"
 #include "apps/files.h"
 #include "apps/music.h"
+#include "apps/note.h"
 #include "apps/podcasts.h"
 #include "apps/reader.h"
 #include "apps/sensors.h"
@@ -51,7 +52,9 @@ constexpr const char *kDefinitions = R"json([
 {"name":"board_status","description":"The board now: local date and time, battery, the room's temperature and humidity, volume, what's on screen, what's playing, its three alarms and the last book read.","input_schema":{"type":"object","properties":{}}},
 {"name":"set_volume","description":"Sets the board's speaker volume.","input_schema":{"type":"object","properties":{"volume":{"type":"integer","minimum":0,"maximum":100}},"required":["volume"]}},
 {"name":"set_alarm","description":"Sets one of the board's three alarms, or turns one off (on: false, with its slot or time). Without a slot it takes the one already at that time, else one that's off. board_status lists them.","input_schema":{"type":"object","properties":{"time":{"type":"string","description":"Local time, 24-hour HH:MM"},"repeat":{"type":"string","enum":["once","weekdays","weekend","every_day"],"description":"Default once"},"on":{"type":"boolean","description":"Default true"},"slot":{"type":"integer","minimum":1,"maximum":3}}}},
-{"name":"show","description":"Opens a screen on the board once your reply has finished playing (the voice sheet closes): home, clock, weather (the forecast), music (the player), podcasts, sensors (temperature and humidity history), or reader (the last book, where it was left). Only when the user asks to see or open one: to answer a question, use the tool that reads the answer (weather, board_status) and say it.","input_schema":{"type":"object","properties":{"screen":{"type":"string","enum":["home","clock","weather","music","podcasts","sensors","reader"]}},"required":["screen"]}}
+{"name":"show","description":"Opens a screen on the board once your reply has finished playing (the voice sheet closes): home, clock, weather (the forecast), music (the player), podcasts, sensors (temperature and humidity history), reader (the last book, where it was left), or note (the last note show_note put up, where it was left). Only when the user asks to see or open one: to answer a question, use the tool that reads the answer (weather, board_status) and say it.","input_schema":{"type":"object","properties":{"screen":{"type":"string","enum":["home","clock","weather","music","podcasts","sensors","reader","note"]}},"required":["screen"]}},
+{"name":"show_note","description":"Puts text on the board's screen for the user to read and page through, once your reply has finished playing (the voice sheet closes), and keeps it in the board's notes. Use it when the user asks to see something, or when the answer is a recipe, the steps of a how-to, a list or anything else too long to follow by ear: put the whole answer here, and say only a sentence or two of it and that it's on the screen. Otherwise just answer aloud.","input_schema":{"type":"object","properties":{"title":{"type":"string","description":"Short, e.g. \"Banana bread\". A note with the same title is replaced"},"text":{"type":"string","description":"The whole answer in Markdown, without the title: # headings, - bullets, 1. numbered steps, - [ ] checklist items, **bold**, *italic*. Tables, links and images come out as plain text. Up to 16 KB; more is cut off"}},"required":["title","text"]}},
+{"name":"read_note","description":"The note on the board's screen, or the last one shown: its title and text. Use it when the user asks about what's on the screen (\"double it\", \"what's step 4?\") and it isn't in this conversation.","input_schema":{"type":"object","properties":{}}}
 ])json";
 
 constexpr int kMaxDepth = 3;         // folders below the books folder
@@ -278,7 +281,9 @@ Result boardStatus() {
     out += "\n";
   }
 
-  if (const ui::Screen *screen = ui::nav::base()) {
+  if (const Note *note = noteOnScreen()) {
+    out += "On screen: the note \"" + note->title + "\" (read_note has its text)\n";
+  } else if (const ui::Screen *screen = ui::nav::base()) {
     const std::string context = screen->context();
     out += "On screen: " + screen->tag() + (context.empty() ? "" : " - " + context) + "\n";
   }
@@ -433,6 +438,7 @@ Result setAlarm(const cJSON *in) {
 
 Result show(const cJSON *in, uint32_t turn) {
   const std::string screen = text(in, "screen");
+  std::string what = "The " + screen + " screen";
   std::function<void()> open;
   if (screen == "home") {
     open = [] {};
@@ -451,11 +457,62 @@ Result show(const cJSON *in, uint32_t turn) {
     readstate::Position pos;
     if (!readstate::last(path, title, pos)) return fail("no book has been read yet");
     open = [] { push(resumeLastBook()); };
+  } else if (screen == "note") {
+    Note note;
+    if (!lastNote(note)) return fail("no note has been put up yet (show_note does that)");
+    what = "The note \"" + note.title + "\"";
+    open = [] {
+      Note last;
+      if (lastNote(last)) push(makeNote(std::move(last), false, false));
+    };
   } else {
-    return fail("screen is one of home, clock, weather, music, podcasts, sensors, reader");
+    return fail("screen is one of home, clock, weather, music, podcasts, sensors, reader, note");
   }
   later(turn, std::move(open));
-  return {"The " + screen + " screen opens when your reply has finished playing."};
+  return {what + " opens when your reply has finished playing."};
+}
+
+// --- show_note, read_note --------------------------------------------------------------------
+
+Result showNote(const cJSON *in, uint32_t turn) {
+  Note note;
+  note.title = text(in, "title");
+  note.text = text(in, "text");
+  if (note.text.find_first_not_of(" \t\r\n") == std::string::npos) {
+    return fail("text is required: the whole answer, in Markdown");
+  }
+  std::string err;
+  const bool kept = saveNote(note, err);  // cuts it to 16 KB first
+  if (!kept) log_w("voice: a note not kept: %s", err.c_str());
+  std::string out = "\"" + note.title + "\" goes on the screen when your reply has finished playing";
+  out += kept ? ", and is kept in the board's notes." : ". It couldn't be kept: " + err + ".";
+  if (note.cut) out += " It was longer than 16 KB, so it's cut off there.";
+  later(turn, [note = std::move(note)] { push(makeNote(note, false, true)); });
+  return {out};
+}
+
+Result readNoteTool() {
+  Note last;
+  const Note *note = noteOnScreen();
+  if (!note) {
+    if (!lastNote(last)) return fail("there's no note: none has been put up yet");
+    note = &last;
+  }
+  std::string out = "Note \"" + note->title + "\"";
+  tm made;
+  localtime_r(&note->made, &made);
+  if (made.tm_year + 1900 >= 2024) out += ", made " + localTime(note->made, "%a %d %b %H:%M");
+  out += noteOnScreen() ? ", on the screen now" : ", not on the screen now";
+  out += ":\n\n";
+  // A note from the card can be longer than an answer may be (a frame holds 64 KB).
+  if (note->text.size() > kMaxNoteBytes) {
+    size_t at = kMaxNoteBytes;
+    while (at > 0 && (static_cast<uint8_t>(note->text[at]) & 0xC0) == 0x80) --at;
+    out += note->text.substr(0, at) + "\n\n[... the rest is cut off here]";
+  } else {
+    out += note->text;
+  }
+  return {out};
 }
 
 Result run(const Call &call) {
@@ -479,6 +536,10 @@ Result run(const Call &call) {
     r = setAlarm(in);
   } else if (call.name == "show") {
     r = show(in, call.turn);
+  } else if (call.name == "show_note") {
+    r = showNote(in, call.turn);
+  } else if (call.name == "read_note") {
+    r = readNoteTool();
   } else {
     r = fail("this board has no tool named " + call.name);
   }
