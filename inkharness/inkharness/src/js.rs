@@ -197,16 +197,30 @@ fn show<'js>(ctx: &Ctx<'js>, value: Value<'js>) -> String {
     format!("{value:?}")
 }
 
+/// What the model sees when a script hits the memory limit.
+const OUT_OF_MEMORY: &str = "the script ran out of memory";
+
 fn error_message(error: &CaughtError<'_>) -> String {
     match error {
-        // With no memory left QuickJS can't make an error object and throws null.
-        CaughtError::Value(v) if v.is_null() => "the script ran out of memory".into(),
+        // At the memory limit QuickJS throws an InternalError "out of memory", or null when
+        // there isn't room left even for that error object (`JS_ThrowOutOfMemory`). Which one
+        // depends on what the failed allocation left free, so it varies by platform: both
+        // read the same to the model.
+        CaughtError::Value(v) if v.is_null() => OUT_OF_MEMORY.into(),
+        CaughtError::Exception(e) if is_out_of_memory(e) => OUT_OF_MEMORY.into(),
         CaughtError::Exception(e) => match (e.message(), e.stack()) {
             (Some(m), _) if !m.is_empty() => m,
             _ => error.to_string().trim().to_string(),
         },
         _ => error.to_string().trim().to_string(),
     }
+}
+
+/// QuickJS's own out-of-memory error, not a script's `new Error('out of memory')`.
+fn is_out_of_memory(e: &Exception<'_>) -> bool {
+    e.message().as_deref() == Some("out of memory")
+        && e.get::<_, String>("name")
+            .is_ok_and(|n| n == "InternalError")
 }
 
 fn cut(mut text: String) -> String {
@@ -289,6 +303,13 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err, "Error: the script ran out of memory");
+        // Both of QuickJS's out-of-memory throws, whichever one the platform hit above.
+        for thrown in ["throw new InternalError('out of memory')", "throw null"] {
+            let err = js(thrown).await.unwrap_err();
+            assert_eq!(err, "Error: the script ran out of memory", "{thrown}");
+        }
+        let err = js("throw new Error('out of memory')").await.unwrap_err();
+        assert_eq!(err, "Error: out of memory");
         let err = js("function f() { return f() } f()").await.unwrap_err();
         assert!(err.contains("stack"), "{err}");
         for missing in ["require", "fetch", "setTimeout", "std", "os", "process"] {
