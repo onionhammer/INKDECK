@@ -17,18 +17,23 @@
 #include <string.h>
 
 #include <atomic>
+#include <memory>
 #include <vector>
 
 #include "audio.h"
 #include "settings.h"
+#include "voice_noise.h"
 #include "wlan.h"
 
 namespace voice {
 namespace {
 
-constexpr int kProto = 1;
-constexpr uint8_t kControl = 1, kAudio = 2;  // frame types
+constexpr int kProto = 2;  // encrypted (voice_noise.h)
+constexpr uint8_t kControl = 1, kAudio = 2, kHandshake = 3, kSealed = 4;  // frame types
 constexpr size_t kHeader = 3;
+// A sealed frame: the header, then the type and payload of the frame inside, then the tag.
+constexpr size_t kSealedPayload = kHeader + 1;
+constexpr size_t kMaxSealed = 65535 - 1 - noise::kTag;  // the largest payload one can carry
 constexpr size_t kMicFrame = 1024;                    // 32 ms of the mic per frame
 constexpr size_t kRxBytes = kHeader + 65535 + 4096;   // the largest frame, and some of the next
 constexpr size_t kMaxText = 1500;                     // of the reply kept for the screen
@@ -65,6 +70,12 @@ struct Session {
   bool wanted = false;     // open() was called and close() wasn't
   bool wifi = false;       // we hold a wlan::connect()
   bool hello = false;      // the daemon answered ours
+  bool sealed = false;     // the handshake is done: every frame is sealed both ways
+  std::unique_ptr<noise::Initiator> handshake;  // between message 1 and message 2
+  std::string refusal;     // why the daemon turned the session down, before hanging up
+  noise::Cipher sendKey, recvKey;
+  uint32_t cryptoUs = 0;     // spent sealing and opening since the last turn ended
+  uint32_t cryptoBytes = 0;  // what that sealed and opened
   bool capturing = false;  // the mic is on
   bool draining = false;   // the mic is off; the utterance's tail is still in the ring
   bool turnOpen = false;   // listen_stop sent, reply_end not seen yet
@@ -106,6 +117,13 @@ void forgetAnswers() {
   answers.clear();
 }
 
+void forgetKeys() {
+  s.sealed = false;
+  s.handshake.reset();
+  s.sendKey.wipe();
+  s.recvKey.wipe();
+}
+
 // The connection is gone (or never came up): back to no session, saying why.
 void drop(const char *why) {
   if (s.fd >= 0) ::close(s.fd);
@@ -113,6 +131,7 @@ void drop(const char *why) {
   s.hello = s.turnOpen = false;
   s.staleEnds = 0;
   s.rxLen = 0;
+  forgetKeys();
   endAudio();
   forgetAnswers();
   log_w("voice: %s", why);
@@ -132,14 +151,31 @@ bool sendAll(const uint8_t *data, size_t len) {
   return true;
 }
 
+// Seals a control or audio frame and sends it. `frame` holds the `len` bytes of payload at
+// kSealedPayload, with noise::kTag bytes of room after them.
+bool sendSealed(uint8_t *frame, uint8_t type, size_t len) {
+  if (s.fd < 0 || !s.sealed) return false;
+  const size_t sealedLen = 1 + len + noise::kTag;
+  frame[0] = kSealed;
+  frame[1] = sealedLen & 0xFF;
+  frame[2] = sealedLen >> 8;
+  frame[3] = type;
+  const uint32_t t0 = micros();
+  s.sendKey.seal(frame + kHeader, 1 + len);
+  s.cryptoUs += micros() - t0;
+  s.cryptoBytes += len;
+  return sendAll(frame, kHeader + sealedLen);
+}
+
 bool sendControl(const std::string &json) {
   if (s.fd < 0) return false;
-  std::vector<uint8_t> frame(kHeader + json.size());
-  frame[0] = kControl;
-  frame[1] = json.size() & 0xFF;
-  frame[2] = json.size() >> 8;
-  memcpy(frame.data() + kHeader, json.data(), json.size());
-  return sendAll(frame.data(), frame.size());
+  if (json.size() > kMaxSealed) {
+    log_w("voice: a %u-byte message is too long to send", json.size());
+    return true;
+  }
+  std::vector<uint8_t> frame(kSealedPayload + json.size() + noise::kTag);
+  memcpy(frame.data() + kSealedPayload, json.data(), json.size());
+  return sendSealed(frame.data(), kControl, json.size());
 }
 
 // A JSON string literal, quotes included.
@@ -229,6 +265,9 @@ void onControl(const uint8_t *payload, size_t len) {
       if (s.stream) setState(State::Speaking);
     }
   } else if (type == "reply_end") {
+    log_i("voice: sealing and opening %u KB took %u ms", s.cryptoBytes / 1024,
+          s.cryptoUs / 1000);
+    s.cryptoUs = s.cryptoBytes = 0;
     if (s.staleEnds > 0) {
       --s.staleEnds;  // the end of a turn cut short; a new utterance is already under way
     } else if (s.turnOpen) {
@@ -291,6 +330,60 @@ void onAudio(const uint8_t *pcm, size_t len) {
   }
 }
 
+// Message 2: the daemon's answer to the hello (its own, or why not), and the keys for the
+// rest of the session.
+void onHandshake(const uint8_t *msg, size_t len) {
+  if (!s.handshake) return;  // not waiting for one
+  std::string answer;
+  const bool ok = s.handshake->finish(msg, len, answer, s.sendKey, s.recvKey);
+  s.handshake.reset();
+  if (!ok) {  // the daemon had the token (it opened message 1), so this didn't come from it
+    drop("HANDSHAKE FAILED");
+    return;
+  }
+  s.sealed = true;
+  cJSON *json = cJSON_ParseWithLength(answer.data(), answer.size());
+  const std::string type = field(json, "type");
+  if (type == "hello") {
+    s.hello = true;
+    s.refusal.clear();
+  } else if (type == "error") {
+    s.refusal = field(json, "message");
+  }
+  cJSON_Delete(json);
+}
+
+// Unencrypted, before the handshake: the daemon turning the session down (it couldn't open
+// message 1: the tokens differ), just before it hangs up. Only shown.
+void onRefusal(const uint8_t *payload, size_t len) {
+  cJSON *json = cJSON_ParseWithLength(reinterpret_cast<const char *>(payload), len);
+  if (field(json, "type") == "error") s.refusal = field(json, "message");
+  cJSON_Delete(json);
+}
+
+// Opens a sealed frame in place and handles the frame inside. False if it doesn't open: it
+// was changed, replayed or reordered on the way, and the session can't go on.
+bool openSealed(uint8_t *payload, size_t len) {
+  if (len < 1 + noise::kTag) return false;
+  const uint32_t t0 = micros();
+  const bool ok = s.recvKey.open(payload, len);
+  s.cryptoUs += micros() - t0;
+  if (!ok) return false;
+  const size_t n = len - 1 - noise::kTag;
+  s.cryptoBytes += n;
+  if (payload[0] == kControl) {
+    onControl(payload + 1, n);
+  } else if (payload[0] == kAudio) {
+    onAudio(payload + 1, n);
+  }  // any other type: a later protocol version's, skipped
+  return true;
+}
+
+// The board's way of saying why the daemon refused it.
+std::string refusalText(const std::string &message) {
+  return message == "wrong token" ? "WRONG VOICE TOKEN" : "INKHARNESS: " + message;
+}
+
 // Reads what the socket has (waiting up to timeoutMs for it) and handles the whole frames.
 // True if anything arrived.
 bool pump(uint32_t timeoutMs) {
@@ -312,11 +405,16 @@ bool pump(uint32_t timeoutMs) {
     const size_t len = s.rx[pos + 1] | s.rx[pos + 2] << 8;
     if (s.rxLen - pos < kHeader + len) break;
     const uint8_t type = s.rx[pos];
-    const uint8_t *payload = s.rx.data() + pos + kHeader;
-    if (type == kControl) {
-      onControl(payload, len);
-    } else if (type == kAudio) {
-      onAudio(payload, len);
+    uint8_t *payload = s.rx.data() + pos + kHeader;
+    if (s.sealed) {  // nothing else is taken once the handshake is done
+      if (type != kSealed || !openSealed(payload, len)) {
+        drop("BAD FRAME FROM INKHARNESS");
+        break;
+      }
+    } else if (type == kHandshake) {
+      onHandshake(payload, len);
+    } else if (type == kControl) {
+      onRefusal(payload, len);
     }  // any other type: a later protocol version's, skipped
     pos += kHeader + len;
   }
@@ -384,27 +482,46 @@ void connectSession() {
   if (s.rx.empty()) s.rx.resize(kRxBytes);
   s.rxLen = 0;
   s.hello = false;
+  s.refusal.clear();
+  forgetKeys();
+  // The hello rides in the handshake's first message, sealed with a key made from the token;
+  // the token itself stays here. The daemon's answer comes back in the second.
   std::string hello = "{\"type\":\"hello\",\"proto\":" + std::to_string(kProto) +
-                      ",\"device\":\"inkdeck\",\"token\":" + quoted(settings::voiceToken()) +
-                      ",\"mic_rate\":" + std::to_string(audio::kRecordRate);
+                      ",\"device\":\"inkdeck\",\"mic_rate\":" +
+                      std::to_string(audio::kRecordRate);
   if (toolDefinitions) {
     hello += ",\"tools\":";
     hello += toolDefinitions;
   }
   hello += "}";
-  if (!sendControl(hello)) return;
   const uint32_t t0 = millis();
+  s.handshake.reset(new noise::Initiator(settings::voiceToken()));
+  const std::vector<uint8_t> msg1 = s.handshake->hello(hello);
+  const uint32_t keyMs = millis() - t0;
+  if (msg1.empty() || msg1.size() > 65535) {
+    drop(msg1.empty() ? "NO VOICE KEY (MBEDTLS)" : "TOO MANY VOICE TOOLS");
+    return;
+  }
+  uint8_t header[kHeader] = {kHandshake, static_cast<uint8_t>(msg1.size() & 0xFF),
+                             static_cast<uint8_t>(msg1.size() >> 8)};
+  if (!sendAll(header, kHeader) || !sendAll(msg1.data(), msg1.size())) return;
   while (s.fd >= 0 && !s.hello && millis() - t0 < 4000) pump(100);
-  if (s.fd < 0) {  // closed on us: a wrong token ends this way, after an error message
-    Locked l;
-    if (shared.error == "DISCONNECTED") shared.error = "INKHARNESS REFUSED (TOKEN?)";
+  s.handshake.reset();
+  if (s.fd < 0) {  // hung up on us: after saying why, unless it was something else
+    if (!s.refusal.empty()) setState(State::Error, refusalText(s.refusal).c_str());
     return;
   }
   if (!s.hello) {
-    drop("INKHARNESS DIDN'T SAY HELLO");
+    if (!s.refusal.empty()) {
+      drop(refusalText(s.refusal).c_str());
+    } else {
+      // A daemon from before encryption skips the handshake and waits for a plain hello.
+      drop(s.sealed ? "INKHARNESS DIDN'T SAY HELLO" : "NO HANDSHAKE (OLD INKHARNESS?)");
+    }
     return;
   }
-  log_i("voice: connected to %s:%d", host.c_str(), settings::voicePort());
+  log_i("voice: connected to %s:%d, encrypted (handshake %u ms, %u of them for keys)",
+        host.c_str(), settings::voicePort(), millis() - t0, keyMs);
   setState(State::Ready);
 }
 
@@ -413,6 +530,7 @@ void closeSession() {
   s.fd = -1;
   s.hello = s.turnOpen = false;
   s.staleEnds = 0;
+  forgetKeys();
   endAudio();
   forgetAnswers();
   if (s.wifi) {
@@ -496,15 +614,9 @@ void endTalk() {
 
 // Moves mic audio from the capture ring to the daemon. True if it sent any.
 bool sendMic() {
-  uint8_t frame[kHeader + kMicFrame];
-  const size_t n = audio::captureRead(frame + kHeader, kMicFrame, s.capturing ? 20 : 0);
-  if (n > 0) {
-    frame[0] = kAudio;
-    frame[1] = n & 0xFF;
-    frame[2] = n >> 8;
-    if (!sendAll(frame, kHeader + n)) return false;
-    return true;
-  }
+  uint8_t frame[kSealedPayload + kMicFrame + noise::kTag];
+  const size_t n = audio::captureRead(frame + kSealedPayload, kMicFrame, s.capturing ? 20 : 0);
+  if (n > 0) return sendSealed(frame, kAudio, n);
   if (s.draining) {
     s.draining = false;
     if (!sendControl("{\"type\":\"listen_stop\"}")) return false;

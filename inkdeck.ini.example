@@ -72,8 +72,9 @@ nfs = nfs://nas.local/volume1/books
 
 [voice]
 ; The machine on your network that runs inkharness, the assistant daemon (a name or an
-; address), its port (7391 unless you changed it) and the token its inkharness.toml asks for.
-; The token stays in this file.
+; address), its port (7391 unless you changed it) and the token in its inkharness.toml. The
+; token never leaves this file: it keys the connection's encryption, so make it long and random
+; (openssl rand -hex 24).
 ; voice_host = nas.local
 ; voice_port = 7391
 ; voice_token = something-long

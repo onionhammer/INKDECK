@@ -187,7 +187,7 @@ fallbacks = true
 
 # For boards (inkharness serve): speech to text and text to speech, or a model that hears and
 # speaks. inkharness.toml.example in the repo has every section; setup_openrouter.py writes one.
-# token = ""                    # boards send it (voice_token in SD:/inkdeck.ini), HTTP as a bearer
+# token = ""                    # boards encrypt with it (voice_token in SD:/inkdeck.ini), HTTP as a bearer
 # listen = "0.0.0.0:7391"       # boards
 # http = "127.0.0.1:7392"       # the HTTP API; "" turns it off
 

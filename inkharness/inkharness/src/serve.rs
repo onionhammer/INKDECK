@@ -1,5 +1,5 @@
-//! `inkharness serve`: the daemon. Devices connect over TCP (docs/voice-protocol.md), send an
-//! utterance and get the spoken reply back; programs send text over HTTP (http.rs). A config
+//! `inkharness serve`: the daemon. Devices connect over TCP (docs/voice-protocol.md), encrypted
+//! with the token, send an utterance and get the spoken reply back; programs send text over HTTP (http.rs). A config
 //! that can't serve devices (no speech in or out for its model) still serves HTTP.
 
 use std::sync::Arc;
@@ -25,6 +25,11 @@ pub async fn run(place: Place, harness: Harness) -> Result<()> {
     };
     if cfg.token.is_empty() {
         tracing::warn!("no token set: anyone who can reach the ports can use them");
+    }
+    if cfg.plaintext && devices.is_some() {
+        tracing::warn!(
+            "plaintext = true: devices on protocol 1 send the token and the audio unencrypted"
+        );
     }
 
     let api = if cfg.http.is_empty() {
@@ -130,6 +135,8 @@ fn device_app(place: &Place, harness: &Harness) -> Result<Arc<session::App>> {
     }
     let app = Arc::new(session::App {
         token: cfg.token.clone(),
+        psk: voice_proto::psk(&cfg.token),
+        plaintext: cfg.plaintext,
         system_prompt: harness.prompt(cfg, true),
         stt: cfg
             .stt

@@ -90,10 +90,14 @@ cheaper and quicker.
 ## Serve
 
 `inkharness serve` listens for boards on `listen` (`0.0.0.0:7391`) and answers HTTP on `http`
-(`127.0.0.1:7392`; `""` turns it off). `--listen` and `--http` override them. With a `token`, boards
-send it in `hello` (`voice_token` in `SD:/inkdeck.ini`), and HTTP requests as
-`Authorization: Bearer <token>`. A config with no speech in or out for its model serves HTTP
-only, with a warning.
+(`127.0.0.1:7392`; `""` turns it off). `--listen` and `--http` override them. Boards encrypt the
+connection with the `token` (`voice_token` in `SD:/inkdeck.ini`, the same on both ends): each
+side proves it has it without sending it, and every frame after the handshake is sealed
+([docs/voice-protocol.md](../docs/voice-protocol.md#encryption)). Make it long and random
+(`openssl rand -hex 24`). HTTP requests send it as `Authorization: Bearer <token>`. Boards on
+firmware from before encryption speak protocol 1, which sends the token unencrypted: the daemon
+refuses them unless `plaintext = true`. A config with no speech in or out for its model serves
+HTTP only, with a warning.
 
 ```sh
 curl -s localhost:7392/chat -d '{"text": "what speakers are there?"}' -H 'content-type: application/json'
