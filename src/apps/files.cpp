@@ -11,6 +11,7 @@
 #include "apps/home.h"
 #include "apps/lock.h"
 #include "apps/music.h"
+#include "apps/note.h"
 #include "apps/reader.h"
 #include "apps/textview.h"
 #include "apps/viewer.h"
@@ -493,6 +494,15 @@ class FilesScreen : public ui::Screen {
       std::string err;
       if (auto reader = makeReader(list_.pathOf(i), err)) {
         ui::nav::push(std::move(reader));
+      } else {
+        log_w("open failed: %s", err.c_str());
+        notice_ = "CAN'T OPEN: " + ui::upper(err);
+      }
+    } else if (isNotePath(list_.pathOf(i))) {
+      std::string err;
+      Note note;
+      if (readNote(list_.pathOf(i), note, err)) {
+        ui::nav::push(makeNote(std::move(note), true, false));
       } else {
         log_w("open failed: %s", err.c_str());
         notice_ = "CAN'T OPEN: " + ui::upper(err);

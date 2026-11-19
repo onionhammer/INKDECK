@@ -10,13 +10,19 @@
 //                             playing, the alarms, the last book
 //   set_volume {volume}       0-100
 //   set_alarm {time, repeat, on, slot}
-//   show {screen}             home, clock, weather, music, podcasts, sensors, reader
+//   show {screen}             home, clock, weather, music, podcasts, sensors, reader, note (the
+//                             last note, where it was left)
+//   show_note {title, text}   a long answer (a recipe, steps, a list) on the Note screen, paged
+//                             (apps/note.h), kept as SD:/Notes/<title>.md. Markdown subset:
+//                             notedoc.h. Text over 16 KB is cut off, and the answer says so
+//   read_note {}              the note on screen, or the last one: for a follow-up about it in
+//                             a later session ("double it"); board_status names it
 //
-// Tools that change the screen (open_book, show) wait until the reply has been said. The call
-// answers at once that it will happen. When the reply has finished playing, the voice sheet (or
-// the Voice screen) closes, and the screen opens from Home. A turn cut short drops the change:
-// talking again, closing the sheet, or a lost connection. Only in a build with INKDECK_VOICE
-// (features.h).
+// Tools that change the screen (open_book, show, show_note) wait until the reply has been said.
+// The call answers at once that it will happen. When the reply has finished playing, the voice
+// sheet (or the Voice screen) closes, and the screen opens from Home. A turn cut short drops the
+// change (a note is kept all the same): talking again, closing the sheet, or a lost connection.
+// Only in a build with INKDECK_VOICE (features.h).
 #pragma once
 
 namespace apps {
