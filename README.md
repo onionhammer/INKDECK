@@ -109,11 +109,14 @@ card's takes longer than macOS waits.)
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
 Wi-Fi network, time zone and location without a rebuild, sets the lock and lists network shares
 (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
-the card has none, it writes one with every line commented out. **Passwords don't stay on the
-card**, since a card is easy to lift: the board keeps the Wi-Fi password and each SMB share's in
-its flash (NVS) and rewrites their lines without them. To change one, write it in again. The
-flash isn't encrypted, so someone with the board and a USB cable can read them, as they can the
-`.env` values built into the firmware. `INKDECK_FAHRENHEIT` in `platformio.ini` switches between
+the card has none, it writes one with every line commented out. It can list up to 8 Wi-Fi
+networks, each `ssid` line with its `password` under it: the board tries the one it last joined
+first, then the others in the file's order, moving on as soon as one is out of range (about
+3 s). **Passwords don't stay on the card**, since a card is easy to lift: the board keeps each
+Wi-Fi password and each SMB share's in its flash (NVS) and rewrites their lines without them. To
+change one, write it in again. The flash isn't encrypted, so someone with the board and a USB
+cable can read them, as they can the `.env` values built into the firmware.
+`INKDECK_FAHRENHEIT` in `platformio.ini` switches between
 US and metric units, and `INKDECK_VOICE` builds the voice assistant in (`1`, as set) or leaves
 it out (`0`): no VOICE on Home, and HOLD BOOT only raises the player sheet.
 
@@ -121,6 +124,8 @@ it out (`0`): no VOICE on Home, and HOLD BOOT only raises the player sheet.
 [wifi]
 ssid = HomeNet
 password = secret                     ; the board keeps it and replaces the line with a note
+ssid = Phone hotspot                  ; tried next if HomeNet is out of range
+password = another-secret
 [clock]
 timezone = GMT0BST,M3.5.0/1,M10.5.0   ; a POSIX TZ string, daylight saving rule included
 [location]

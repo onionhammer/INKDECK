@@ -26,8 +26,8 @@ struct Values {
   bool location = false;
   double lat = 0;
   double lon = 0;
-  std::string wifiSsid;
-  std::vector<ShareLine> shares;  // passwords taken out
+  std::vector<std::string> wifiSsids;  // in the file's order
+  std::vector<ShareLine> shares;       // passwords taken out
   int lockMinutes = 0;
   std::string voiceHost;
   int voicePort = 0;  // 0: the default
@@ -35,16 +35,18 @@ struct Values {
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
-           wifiSsid == o.wifiSsid && shares == o.shares && lockMinutes == o.lockMinutes &&
+           wifiSsids == o.wifiSsids && shares == o.shares && lockMinutes == o.lockMinutes &&
            voiceHost == o.voiceHost && voicePort == o.voicePort && voiceToken == o.voiceToken;
   }
 };
 
+// Passwords by what they open: an ssid, or an SMB share's credentialId.
+using Secrets = std::vector<std::pair<std::string, std::string>>;
+
 // Passwords the card gave at this boot, which the board keeps and takes off the card.
 struct CardSecrets {
-  bool wifiPasswordLine = false;  // the file has a password line
-  std::string wifiPassword;
-  std::vector<std::pair<std::string, std::string>> smb;  // credentialId, password
+  Secrets wifi;  // one per ssid, for the networks with a password line
+  Secrets smb;
 };
 
 // The card's pin line. Not in Values: a file without one keeps the board's PIN (settings.h).
@@ -77,10 +79,14 @@ constexpr const char *kTemplate =
     "; Passwords don't stay here: the board keeps them and rewrites their lines.\n"
     "\n"
     "[wifi]\n"
-    "; The Wi-Fi network to join, instead of the one built into the firmware. The board keeps\n"
-    "; the password and replaces its line with a note. No password line: an open network.\n"
+    "; The Wi-Fi networks to join, instead of the one built into the firmware: up to 8 ssid\n"
+    "; lines, each with its password on the line under it (none: an open network). The board\n"
+    "; tries the network it last joined first, then the others in this order. It keeps the\n"
+    "; passwords and replaces their lines with a note.\n"
     "; ssid = HomeNet\n"
     "; password = correct horse battery staple\n"
+    "; ssid = Phone\n"
+    "; password = another passphrase\n"
     "\n"
     "[clock]\n"
     "; The time zone as a POSIX TZ string, which includes the daylight saving rule:\n"
@@ -146,6 +152,15 @@ std::string joinLines(const std::vector<std::string> &lines) {
   return out;
 }
 
+// The same with no '\n' after the last line, for the Wi-Fi ssids and passwords: one network is
+// then stored exactly as it was before there could be several, so a firmware from before that
+// (after an OTA rollback) still reads it.
+std::string joinRecords(const std::vector<std::string> &lines) {
+  std::string out;
+  for (const std::string &l : lines) out += (out.empty() ? "" : "\n") + l;
+  return out;
+}
+
 // "smb <url>" / "nfs <url>", for NVS.
 std::vector<std::string> shareRecords(const std::vector<ShareLine> &shares) {
   std::vector<std::string> out;
@@ -180,7 +195,7 @@ void loadNvs() {
   card.location = prefs.getBool("loc", false);
   card.lat = prefs.getDouble("lat", 0);
   card.lon = prefs.getDouble("lon", 0);
-  card.wifiSsid = nvsString(prefs, "wssid");
+  card.wifiSsids = splitLines(nvsString(prefs, "wssid"));
   card.shares = sharesFromRecords(splitLines(nvsString(prefs, "shares")));
   card.lockMinutes = prefs.getInt("lockmin", 0);
   card.voiceHost = nvsString(prefs, "vhost");
@@ -198,7 +213,7 @@ void saveNvs() {
   prefs.putBool("loc", card.location);
   prefs.putDouble("lat", card.lat);
   prefs.putDouble("lon", card.lon);
-  prefs.putString("wssid", card.wifiSsid.c_str());
+  prefs.putString("wssid", joinRecords(card.wifiSsids).c_str());
   prefs.putString("shares", joinLines(shareRecords(card.shares)).c_str());
   prefs.putInt("lockmin", card.lockMinutes);
   prefs.putString("vhost", card.voiceHost.c_str());
@@ -337,6 +352,53 @@ bool validPin(const std::string &s) {
   return true;
 }
 
+// 1 to 32 bytes (UTF-8 is fine). No control characters: NVS keeps an ssid on a line of its own,
+// before a tab.
+bool validSsid(const std::string &s) {
+  if (s.empty() || s.size() > 32) return false;
+  return std::none_of(s.begin(), s.end(), [](char c) {
+    return static_cast<unsigned char>(c) < 0x20 || c == 0x7F;
+  });
+}
+
+// Empty (an open network), a WPA passphrase of 8 to 63 bytes or a 64-hex-digit key, as
+// scripts/gen_secrets.py takes for .env. No control characters, as for an ssid.
+bool validWifiPassword(const std::string &s) {
+  if (s.empty()) return true;
+  if (std::any_of(s.begin(), s.end(), [](char c) {
+        return static_cast<unsigned char>(c) < 0x20 || c == 0x7F;
+      })) {
+    return false;
+  }
+  if (s.size() >= 8 && s.size() <= 63) return true;
+  return s.size() == 64 && std::all_of(s.begin(), s.end(), [](char c) {
+           return isxdigit(static_cast<unsigned char>(c));
+         });
+}
+
+bool isSsidKey(const std::string &key) { return key == "ssid" || key == "wifi_ssid"; }
+bool isWifiPasswordKey(const std::string &key) {
+  return key == "password" || key == "wifi_password";
+}
+
+// Sets id's password in a list of them, replacing one it had.
+void setSecret(Secrets &secrets, const std::string &id, const std::string &password) {
+  for (auto &[known, value] : secrets) {
+    if (known == id) {
+      value = password;
+      return;
+    }
+  }
+  secrets.push_back({id, password});
+}
+
+const std::string *findSecret(const Secrets &secrets, const std::string &id) {
+  for (const auto &[known, value] : secrets) {
+    if (known == id) return &value;
+  }
+  return nullptr;
+}
+
 bool isOff(std::string s) {
   for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
   return s == "off";
@@ -356,6 +418,7 @@ Values parse(const std::string &text, CardPin &cardPin, CardSecrets &secrets) {
   secrets = {};
   bool hasLat = false, hasLon = false;
   double lat = 0, lon = 0;
+  int wifiNet = -1;  // the network in v.wifiSsids a password line belongs to; -1: none
   size_t pos = 0;
   int lineNo = 0;
   while (pos < text.size()) {
@@ -397,11 +460,32 @@ Values parse(const std::string &text, CardPin &cardPin, CardSecrets &secrets) {
         v.shares.push_back({kind, kind == ::shares::Kind::Smb ? shown : value});
         if (!password.empty()) secrets.smb.push_back({share.credentialId(), password});
       }
-    } else if (key == "ssid" || key == "wifi_ssid") {
-      v.wifiSsid = value;
-    } else if (key == "password" || key == "wifi_password") {
-      secrets.wifiPasswordLine = true;
-      secrets.wifiPassword = value;
+    } else if (isSsidKey(key)) {
+      wifiNet = -1;
+      const auto known = std::find(v.wifiSsids.begin(), v.wifiSsids.end(), value);
+      if (!validSsid(value)) {
+        log_w("settings: %s: line %d: an ssid must be 1 to 32 bytes", kFile, lineNo);
+      } else if (known != v.wifiSsids.end()) {
+        log_w("settings: %s: ssid %s is listed twice; it keeps its first place", kFile,
+              value.c_str());
+        wifiNet = static_cast<int>(known - v.wifiSsids.begin());
+      } else if (static_cast<int>(v.wifiSsids.size()) >= kMaxWifiNetworks) {
+        log_w("settings: %s: only %d Wi-Fi networks; %s left out", kFile, kMaxWifiNetworks,
+              value.c_str());
+      } else {
+        v.wifiSsids.push_back(value);
+        wifiNet = static_cast<int>(v.wifiSsids.size()) - 1;
+      }
+    } else if (isWifiPasswordKey(key)) {
+      if (wifiNet < 0) {
+        log_w("settings: %s: line %d: a Wi-Fi password with no ssid line above it", kFile, lineNo);
+      } else if (!validWifiPassword(value)) {
+        log_w("settings: %s: the password for %s must be empty, 8 to 63 characters or 64 hex "
+              "digits; left on the card",
+              kFile, v.wifiSsids[wifiNet].c_str());
+      } else {
+        setSecret(secrets.wifi, v.wifiSsids[wifiNet], value);
+      }
     } else if (key == "pin") {
       if (isOff(value)) {
         cardPin = {CardPin::Off, {}};
@@ -495,28 +579,16 @@ void hidePinLines() {
 
 // --- Passwords kept on the board -------------------------------------------------------------
 
-// NVS: "wpass" is "<ssid>\t<password>"; "smbpw" is a "<credentialId>\t<password>" line per share.
-std::string storedWifi(std::string *ssid) {
+// NVS: "wpass" is a "<ssid>\t<password>" line per Wi-Fi network (one, with no '\n', before there
+// could be several), "smbpw" a "<credentialId>\t<password>" line per share.
+Secrets storedSecrets(const char *key) {
   Preferences prefs;
   std::string v;
   if (prefs.begin(kNamespace, true)) {
-    v = nvsString(prefs, "wpass");
+    v = nvsString(prefs, key);
     prefs.end();
   }
-  const size_t tab = v.find('\t');
-  if (tab == std::string::npos) return {};
-  if (ssid) *ssid = v.substr(0, tab);
-  return v.substr(tab + 1);
-}
-
-std::vector<std::pair<std::string, std::string>> storedSmb() {
-  Preferences prefs;
-  std::string v;
-  if (prefs.begin(kNamespace, true)) {
-    v = nvsString(prefs, "smbpw");
-    prefs.end();
-  }
-  std::vector<std::pair<std::string, std::string>> out;
+  Secrets out;
   for (const std::string &line : splitLines(v)) {
     const size_t tab = line.find('\t');
     if (tab != std::string::npos) out.push_back({line.substr(0, tab), line.substr(tab + 1)});
@@ -524,30 +596,46 @@ std::vector<std::pair<std::string, std::string>> storedSmb() {
   return out;
 }
 
-// Keeps the passwords the card gave (and drops ones nothing names any more), then takes them
-// off the card: the Wi-Fi password line becomes a note, an smb URL loses its :password.
-void applyCardSecrets(const CardSecrets &s) {
-  Preferences prefs;
-  if (!prefs.begin(kNamespace, false)) return;
-
-  // Wi-Fi: a password belongs to the ssid it came with.
-  std::string ssid;
-  const std::string stored = storedWifi(&ssid);
-  bool hideWifi = false;
-  if (card.wifiSsid.empty()) {
-    if (prefs.isKey("wpass")) prefs.remove("wpass");
-    if (s.wifiPasswordLine) log_w("settings: %s: a Wi-Fi password without an ssid", kFile);
-  } else if (s.wifiPasswordLine) {
-    if (ssid != card.wifiSsid || stored != s.wifiPassword) {
-      prefs.putString("wpass", (card.wifiSsid + "\t" + s.wifiPassword).c_str());
-      log_i("settings: Wi-Fi password for %s kept on the board", card.wifiSsid.c_str());
+// The "<id>\t<password>" records to keep: the card's, and the stored ones the card didn't
+// replace whose id it still names.
+std::vector<std::string> keptSecrets(const Secrets &stored, const Secrets &fromCard,
+                                     const std::vector<std::string> &inUse) {
+  std::vector<std::string> keep;
+  for (const auto &[id, password] : stored) {
+    if (!findSecret(fromCard, id) && std::find(inUse.begin(), inUse.end(), id) != inUse.end()) {
+      keep.push_back(id + "\t" + password);
     }
-    hideWifi = true;
-  } else if (ssid != card.wifiSsid && prefs.isKey("wpass")) {
-    prefs.remove("wpass");  // a password for another network
-    log_i("settings: no Wi-Fi password for %s; joining it as an open network",
-          card.wifiSsid.c_str());
   }
+  for (const auto &[id, password] : fromCard) keep.push_back(id + "\t" + password);
+  return keep;
+}
+
+void putOrRemove(Preferences &prefs, const char *key, const std::string &value) {
+  if (value == nvsString(prefs, key)) return;
+  if (value.empty()) {
+    prefs.remove(key);
+  } else {
+    prefs.putString(key, value.c_str());
+  }
+}
+
+// Keeps the passwords the card gave (and drops ones nothing names any more), then takes them
+// off the card: a Wi-Fi password line becomes a note, an smb URL loses its :password.
+void applyCardSecrets(const CardSecrets &s) {
+  // Wi-Fi: each password belongs to the ssid line above it.
+  const Secrets storedWifi = storedSecrets("wpass");
+  for (const auto &[ssid, password] : s.wifi) {
+    const std::string *had = findSecret(storedWifi, ssid);
+    if (!had || *had != password) {
+      log_i("settings: Wi-Fi password for %s kept on the board", ssid.c_str());
+    }
+  }
+  for (const std::string &ssid : card.wifiSsids) {
+    if (!findSecret(s.wifi, ssid) && !findSecret(storedWifi, ssid)) {
+      log_i("settings: no Wi-Fi password for %s; joining it as an open network", ssid.c_str());
+    }
+  }
+  const std::string wifi = joinRecords(keptSecrets(storedWifi, s.wifi, card.wifiSsids));
 
   // SMB: the card's passwords, and the stored ones the card's shares still name.
   std::vector<std::string> inUse;
@@ -559,29 +647,25 @@ void applyCardSecrets(const CardSecrets &s) {
       inUse.push_back(share.credentialId());
     }
   }
-  std::vector<std::string> keep;
-  for (const auto &[id, password] : storedSmb()) {
-    const bool replaced = std::any_of(s.smb.begin(), s.smb.end(),
-                                      [&](const auto &c) { return c.first == id; });
-    if (!replaced && std::find(inUse.begin(), inUse.end(), id) != inUse.end()) {
-      keep.push_back(id + "\t" + password);
-    }
-  }
-  for (const auto &[id, password] : s.smb) keep.push_back(id + "\t" + password);
-  const std::string next = joinLines(keep);
-  if (next != nvsString(prefs, "smbpw")) {
-    if (next.empty()) {
-      prefs.remove("smbpw");
-    } else {
-      prefs.putString("smbpw", next.c_str());
-    }
-  }
+  const std::string smb = joinLines(keptSecrets(storedSecrets("smbpw"), s.smb, inUse));
+
+  Preferences prefs;
+  if (!prefs.begin(kNamespace, false)) return;
+  putOrRemove(prefs, "wpass", wifi);
+  putOrRemove(prefs, "smbpw", smb);
   prefs.end();
 
-  if (!hideWifi && s.smb.empty()) return;
+  if (s.wifi.empty() && s.smb.empty()) return;
+  bool wifiListed = false;  // the password lines here belong to a network the card lists
   rewriteCardLines("passwords", [&](const std::string &key, const std::string &value,
                                     std::string &out) {
-    if (hideWifi && (key == "password" || key == "wifi_password")) {
+    // The same pairing as parse(): only a password line it took is hidden.
+    if (isSsidKey(key)) {
+      wifiListed = std::find(card.wifiSsids.begin(), card.wifiSsids.end(), value) !=
+                   card.wifiSsids.end();
+      return false;
+    }
+    if (isWifiPasswordKey(key) && wifiListed && validWifiPassword(value)) {
       out = kWifiPasswordNote;
       return true;
     }
@@ -660,8 +744,10 @@ void loadCard() {
     log_w("settings: %s: lock_minutes does nothing without a pin", kFile);
   }
   applyTimezone();
-  log_i("settings: Wi-Fi %s, time zone %s, location %s, %u shares",
-        card.wifiSsid.empty() ? "built in" : "from the card",
+  const std::string wifi = card.wifiSsids.empty()
+                               ? std::string("built in")
+                               : std::to_string(card.wifiSsids.size()) + " from the card";
+  log_i("settings: Wi-Fi %s, time zone %s, location %s, %u shares", wifi.c_str(),
         card.tz.empty() ? "built in" : "from the card",
         card.location ? "from the card" : hasLocation() ? "built in" : "not set",
         static_cast<unsigned>(card.shares.size()));
@@ -699,25 +785,34 @@ Source locationSource() {
 
 bool hasWifi() {
   loadNvs();
-  return !card.wifiSsid.empty() || WIFI_CONFIGURED;
+  return !card.wifiSsids.empty() || WIFI_CONFIGURED;
 }
 
-std::string wifiSsid() {
+std::vector<WifiNetwork> wifiNetworks() {
   loadNvs();
-  return card.wifiSsid.empty() ? std::string(WIFI_SSID) : card.wifiSsid;
+  if (card.wifiSsids.empty()) {
+    if (!WIFI_CONFIGURED) return {};
+    return {{WIFI_SSID, WIFI_PASSWORD}};
+  }
+  const Secrets stored = storedSecrets("wpass");
+  std::vector<WifiNetwork> out;
+  for (const std::string &ssid : card.wifiSsids) {
+    const std::string *password = findSecret(stored, ssid);
+    out.push_back({ssid, password ? *password : std::string()});
+  }
+  return out;
 }
 
-std::string wifiPassword() {
+std::vector<std::string> wifiSsids() {
   loadNvs();
-  if (card.wifiSsid.empty()) return WIFI_PASSWORD;
-  std::string ssid;
-  const std::string password = storedWifi(&ssid);
-  return ssid == card.wifiSsid ? password : std::string();
+  if (!card.wifiSsids.empty()) return card.wifiSsids;
+  if (!WIFI_CONFIGURED) return {};
+  return {WIFI_SSID};
 }
 
 Source wifiSource() {
   loadNvs();
-  return card.wifiSsid.empty() ? Source::Built : Source::Card;
+  return card.wifiSsids.empty() ? Source::Built : Source::Card;
 }
 
 std::vector<ShareLine> shareLines() {
@@ -726,10 +821,9 @@ std::vector<ShareLine> shareLines() {
 }
 
 std::string sharePassword(const std::string &credentialId) {
-  for (const auto &[id, password] : storedSmb()) {
-    if (id == credentialId) return password;
-  }
-  return {};
+  const Secrets stored = storedSecrets("smbpw");
+  const std::string *password = findSecret(stored, credentialId);
+  return password ? *password : std::string();
 }
 
 bool hasPin() {
