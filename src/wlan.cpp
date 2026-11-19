@@ -21,6 +21,8 @@ std::atomic<int> rssi{0};
 
 std::mutex usersMutex;  // held through a connect, so a second caller waits for it
 int users = 0;          // successful connects not yet matched by a disconnect
+int holders = 0;        // holdRadio() calls not yet matched by a releaseRadio()
+std::atomic<bool> held{false};  // holders > 0, for radioOn() without the mutex
 
 // With several networks, how long one gets before the next one's turn, unless the driver says
 // sooner that it isn't in range or it fails twice. Joining a network in range takes 1 to 5 s.
@@ -132,6 +134,19 @@ void radioOff() {
   current.clear();
 }
 
+// Under usersMutex: the last connected user is done. The radio goes off, unless a scanner holds
+// it, which keeps station mode without the connection.
+void dropConnection() {
+  if (holders == 0) {
+    radioOff();
+    return;
+  }
+  WiFi.disconnect(false);
+  state = State::Off;
+  std::lock_guard<std::mutex> lock(infoMutex);
+  current.clear();
+}
+
 }  // namespace
 
 bool configured() { return settings::hasWifi(); }
@@ -218,7 +233,7 @@ bool connect(uint32_t timeoutMs, std::string &error) {
     log_w("wlan: no network joined in %lu ms (%s)", static_cast<unsigned long>(timeoutMs),
           error.c_str());
     // Another user's connection dropped too, if there was one; it finds out on its own.
-    radioOff();
+    dropConnection();
     users = 0;
     return false;
   }
@@ -232,16 +247,33 @@ bool connect(uint32_t timeoutMs, std::string &error) {
   return true;
 }
 
-bool radioOn() { return state.load() != State::Off; }
+bool radioOn() { return state.load() != State::Off || held.load(); }
 
 void disconnect() {
   std::lock_guard<std::mutex> lock(usersMutex);
   if (users > 0) --users;
-  if (users == 0) radioOff();
+  if (users == 0) dropConnection();
 }
 
 void forceOff() {
   if (radioOn()) radioOff();
+}
+
+void holdRadio() {
+  std::lock_guard<std::mutex> lock(usersMutex);
+  if (holders++ == 0) held = true;
+  if (WiFi.getMode() == WIFI_OFF) {
+    WiFi.persistent(false);
+    WiFi.mode(WIFI_STA);
+  }
+}
+
+void releaseRadio() {
+  std::lock_guard<std::mutex> lock(usersMutex);
+  if (holders == 0) return;
+  if (--holders > 0) return;
+  held = false;
+  if (users == 0 && state.load() == State::Off) radioOff();
 }
 
 }  // namespace wlan

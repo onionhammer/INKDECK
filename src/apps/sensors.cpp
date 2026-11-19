@@ -7,14 +7,25 @@
 #include <algorithm>
 
 #include "apps/home.h"
+#include "apps/radio_ui.h"
+#include "apps/wifi_networks.h"
 #include "board_pins.h"
+#include "features.h"
 #include "pmic.h"
 #include "sensor_hub.h"
+#include "ui/menu.h"
 #include "units.h"
+#include "wifi_survey.h"
+#if INKDECK_BLE
+#include "apps/ble_devices.h"
+#include "ble_adv.h"
+#include "ble_survey.h"
+#endif
 
 namespace apps {
 namespace {
 
+using ui::Align;
 using ui::Key;
 using ui::Rect;
 using ui::TextStyle;
@@ -22,15 +33,20 @@ using ui::TextStyle;
 // Sizes and weights from the Sensors artboard.
 constexpr TextStyle kUnit{&ui::fonts::kMono18Bold, 0};           // °C, % RH
 constexpr TextStyle kAxis{&ui::fonts::kMono15ExtraBold, 0};      // X Y Z
-constexpr TextStyle kAxisValue{&ui::fonts::kMono15Bold, 0};      // +0.01
+constexpr TextStyle kAxisValue{&ui::fonts::kMono15Bold, 0};      // +0.01; scan panel rows
+constexpr TextStyle kAddress{&ui::fonts::kMono15Medium, 0};      // a BLE device without a name
 constexpr TextStyle kCellValue{&ui::fonts::kMono17ExtraBold, 0};  // PMIC cells
 constexpr TextStyle kGrid{&ui::fonts::kMono13Medium, 0};         // "--"
 constexpr TextStyle kGridBold{&ui::fonts::kMono13ExtraBold, 0};  // column heads, hits
 
-enum Panel : uint8_t { kEnv, kImu, kPmic, kBus, kPanelCount };
+// The dial's stops. The last three share the bottom panel, which shows the last of them focused.
+// A build without INKDECK_BLE (features.h) stops short of kBle.
+enum Panel : uint8_t { kEnv, kImu, kPmic, kI2c, kWifi, kBle, kPanelCount };
+constexpr int kStops = INKDECK_BLE ? kPanelCount : kBle;
 
-// How often a panel re-reads: live when focused, otherwise once a minute.
-constexpr uint32_t kLiveMs[kPanelCount] = {5000, 1000, 5000, 5000};
+// How often a panel re-reads: live when focused, otherwise once a minute (the radios not at all:
+// they scan only while focused).
+constexpr uint32_t kLiveMs[kPanelCount] = {5000, 1000, 5000, 5000, 1000, 5000};
 constexpr uint32_t kIdleMs = 60000;
 
 // Panel heights (each includes its top rule except the first, which sits under the status bar).
@@ -38,12 +54,19 @@ constexpr int kEnvH = 174;
 constexpr int kImuH = ui::kRule + ui::kSectionH + 154;
 constexpr int kPmicH = ui::kRule + ui::kSectionH + 56;
 constexpr int kBubble = 118;
+constexpr int kScanRows = 7;  // networks or devices the scan panel lists
 
 // IMU changes smaller than these don't redraw (sensor noise would refresh it every second).
 constexpr float kAccDeadband = 0.02f;   // g
 constexpr float kGyroDeadband = 1.5f;   // °/s
 constexpr float kTiltDeadband = 0.5f;   // degrees
 constexpr float kBubbleFullScale = 10;  // degrees of tilt that put the bubble at the rim
+
+// The menu's counts: a Wi-Fi scan older than this isn't worth quoting.
+constexpr uint32_t kWifiCountMs = 5 * 60 * 1000;
+// A radio starts once the dial has rested on its stop this long, so rolling past BLE on the way
+// to WI-FI doesn't start the Bluetooth stack.
+constexpr uint32_t kSettleMs = 800;
 
 std::string fixed(float v, int decimals) {
   char buf[16];
@@ -80,8 +103,14 @@ std::string chargeState(const pmic::Detail &d) {
   return d.charger == pmic::Charger::Done ? "FULL" : "IDLE";
 }
 
+std::string seen(int n) { return n > 0 ? std::to_string(n) + " SEEN" : ""; }
+
+enum class Radio : uint8_t { None, Wifi, Ble };
+
 class SensorsScreen : public ui::Screen {
  public:
+  ~SensorsScreen() override { setRadio(Radio::None); }
+
   std::string tag() const override { return moduleTag("SENSORS"); }
   std::string context() const override {
     // "I2C · 5/5 ACK" as on the canvas; flags replace the "I2C ·" so they fit.
@@ -98,33 +127,35 @@ class SensorsScreen : public ui::Screen {
   }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kDial, "PANEL"};
-    out[1] = {ui::glyph::kPress, held_ ? "RESUME" : "HOLD"};
+    out[1] = {ui::glyph::kPress, "MENU"};
     out[2] = {ui::glyph::kHoldPress, sensors::logging() ? "LOG OFF" : "LOG"};
     out[3] = {"BOOT", "BACK"};
     return 4;
   }
 
   void onEnter() override {
+    onTop_ = true;
+    syncRadio();
     for (int p = 0; p < kPanelCount; ++p) refresh(static_cast<Panel>(p), true);
+  }
+  void onLeave() override {
+    onTop_ = false;
+    syncRadio();
   }
 
   bool onKey(Key key) override {
     switch (key) {
       case Key::Up:
       case Key::Down:
-        focus_ = static_cast<Panel>((focus_ + (key == Key::Up ? kPanelCount - 1 : 1)) %
-                                    kPanelCount);
+        focus_ = static_cast<Panel>((focus_ + (key == Key::Up ? kStops - 1 : 1)) % kStops);
+        if (focus_ >= kI2c) scan_ = focus_;
+        focusedAt_ = millis();
+        // Off at once when the focus leaves a radio; on from onTick() once it has settled.
+        if (wantedRadio() != radio_) setRadio(Radio::None);
         refresh(focus_, true);
         return true;
-      case Key::Select:
-        held_ = !held_;
-        if (!held_) {
-          for (int p = 0; p < kPanelCount; ++p) refresh(static_cast<Panel>(p), true);
-        }
-        return true;
-      case Key::SelectLong:
-        logFailed_ = !sensors::setLogging(!sensors::logging());
-        return true;
+      case Key::Select: openMenu(); return true;
+      case Key::SelectLong: toggleLog(); return true;
       default: return false;
     }
   }
@@ -133,8 +164,11 @@ class SensorsScreen : public ui::Screen {
     if (held_) return false;
     bool changed = false;
     const uint32_t now = millis();
+    if (wantedRadio() != radio_ && now - focusedAt_ >= kSettleMs) syncRadio();
     for (int i = 0; i < kPanelCount; ++i) {
       const Panel p = static_cast<Panel>(i);
+      const bool radio = p == kWifi || p == kBle;
+      if (radio && p != focus_) continue;
       const uint32_t every = p == focus_ ? kLiveMs[p] : kIdleMs;
       if (now - refreshedAt_[p] >= every) changed |= refresh(p, false);
     }
@@ -146,10 +180,88 @@ class SensorsScreen : public ui::Screen {
     drawEnv(c, r.takeTop(kEnvH));
     drawImu(c, r.takeTop(kImuH));
     drawPmic(c, r.takeTop(kPmicH));
-    drawBus(c, r);
+    drawScan(c, r);
   }
 
  private:
+  // The survey this screen keeps running: the focused radio's, while the screen is on top and
+  // the readings aren't held.
+  Radio wantedRadio() const {
+    if (!onTop_ || held_) return Radio::None;
+    if (focus_ == kWifi) return Radio::Wifi;
+    if (focus_ == kBle) return Radio::Ble;
+    return Radio::None;
+  }
+  void syncRadio() { setRadio(wantedRadio()); }
+
+  void setRadio(Radio want) {
+    if (want == radio_) return;
+    if (radio_ == Radio::Wifi) wifisurvey::end();
+#if INKDECK_BLE
+    if (radio_ == Radio::Ble) blesurvey::end();
+#endif
+    radio_ = want;
+    if (radio_ == Radio::Wifi) wifisurvey::begin();
+#if INKDECK_BLE
+    if (radio_ == Radio::Ble) blesurvey::begin();
+#endif
+  }
+
+  void toggleHold() {
+    held_ = !held_;
+    syncRadio();
+    if (!held_) {
+      for (int p = 0; p < kPanelCount; ++p) refresh(static_cast<Panel>(p), true);
+    }
+  }
+
+  void toggleLog() { logFailed_ = !sensors::setLogging(!sensors::logging()); }
+
+  // ● : the // SENSORS menu sheet. It opens on the focused radio's row, else on the item last run.
+  enum class MenuRow : uint8_t { Wifi, Ble, Hold, Log };
+  void openMenu() {
+    std::vector<ui::MenuItem> items;
+    std::vector<MenuRow> rows;
+    items.push_back({"WI-FI NETWORKS",
+                     [] {
+                       const uint32_t at = wifisurvey::lastScanMs();
+                       if (at == 0 || millis() - at > kWifiCountMs) return std::string();
+                       return seen(static_cast<int>(wifisurvey::networks().size()));
+                     },
+                     [this] {
+                       menuLast_ = MenuRow::Wifi;
+                       ui::nav::replace(makeWifiNetworks());
+                     }});
+    rows.push_back(MenuRow::Wifi);
+#if INKDECK_BLE
+    items.push_back({"BLUETOOTH LE", [] { return seen(blesurvey::count()); },
+                     [this] {
+                       menuLast_ = MenuRow::Ble;
+                       ui::nav::replace(makeBleDevices());
+                     }});
+    rows.push_back(MenuRow::Ble);
+#endif
+    items.push_back({"HOLD READINGS", [this] { return std::string(held_ ? "ON" : "OFF"); },
+                     [this] {
+                       menuLast_ = MenuRow::Hold;
+                       toggleHold();
+                     }});
+    rows.push_back(MenuRow::Hold);
+    items.push_back({"LOG TO SD",
+                     [this] {
+                       return std::string(logFailed_ ? "NO SD" : sensors::logging() ? "ON" : "OFF");
+                     },
+                     [this] {
+                       menuLast_ = MenuRow::Log;
+                       toggleLog();
+                     }});
+    rows.push_back(MenuRow::Log);
+    const MenuRow want = focus_ == kWifi ? MenuRow::Wifi : focus_ == kBle ? MenuRow::Ble : menuLast_;
+    const int cursor = static_cast<int>(std::find(rows.begin(), rows.end(), want) - rows.begin());
+    ui::nav::push(std::make_unique<ui::MenuScreen>("SENSORS", std::move(items),
+                                                   cursor < static_cast<int>(rows.size()) ? cursor : 0));
+  }
+
   // Re-reads a panel's data. Returns true if what it shows changed (always stores on force).
   bool refresh(Panel p, bool force) {
     refreshedAt_[p] = millis();
@@ -194,20 +306,68 @@ class SensorsScreen : public ui::Screen {
         if (changed) pmic_ = d;
         return changed;
       }
-      case kBus: {
+      case kI2c: {
         const std::vector<uint8_t> s = sensors::scanBus();
-        const bool changed = force || s != scan_;
-        scan_ = s;
+        const bool changed = force || s != scan_i2c_;
+        scan_i2c_ = s;
         return changed;
+      }
+      case kWifi: {
+        const uint32_t g = wifisurvey::generation();
+        std::vector<wifisurvey::Network> nets = wifisurvey::networks();
+        const std::string state = wifiState(nets);
+        const bool changed = force || g != wifiGen_ || state != wifiStateShown_;
+        if (changed) {
+          wifiGen_ = g;
+          wifiStateShown_ = state;
+          nets_ = std::move(nets);
+        }
+        return changed;
+      }
+      case kBle: {
+#if INKDECK_BLE
+        std::vector<blesurvey::Device> d = blesurvey::devices();
+        const std::string sig = bleSignature(d) + bleState();
+        const bool changed = force || sig != bleShown_;
+        if (changed) {
+          bleShown_ = sig;
+          devs_ = std::move(d);
+        }
+        return changed;
+#else
+        return false;
+#endif
       }
       case kPanelCount: break;
     }
     return false;
   }
 
+  static std::string wifiState(const std::vector<wifisurvey::Network> &nets) {
+    if (!wifisurvey::error().empty() && nets.empty()) return wifisurvey::error();
+    return wifisurvey::lastScanMs() == 0 ? "SCANNING" : "";
+  }
+
+#if INKDECK_BLE
+  std::string bleState() const {
+    if (!blesurvey::error().empty()) return blesurvey::error();
+    return blesurvey::running() ? "" : "STARTING";
+  }
+
+  // What the BLE rows would show: if it hasn't changed, the panel doesn't redraw.
+  static std::string bleSignature(const std::vector<blesurvey::Device> &d) {
+    std::string s = std::to_string(d.size());
+    for (size_t i = 0; i < d.size() && i < static_cast<size_t>(kScanRows); ++i) {
+      s += blesurvey::addressText(d[i]) + std::to_string(d[i].rssi) +
+           std::to_string(d[i].advLen) + std::to_string(d[i].rspLen);
+    }
+    return s;
+  }
+#endif
+
   int knownInScan() const {
     int n = 0;
-    for (const uint8_t a : scan_) n += sensors::deviceName(a) != nullptr;
+    for (const uint8_t a : scan_i2c_) n += sensors::deviceName(a) != nullptr;
     return n;
   }
 
@@ -357,12 +517,51 @@ class SensorsScreen : public ui::Screen {
     }
   }
 
-  void drawBus(ui::Canvas &c, Rect r) const {
+  // The bottom panel: the i2cdetect grid, the Wi-Fi scan or the BLE scan, whichever of the
+  // three the dial was last on. Its header has the command on the left and the three as tabs.
+  void drawScan(ui::Canvas &c, Rect r) const {
     using namespace ui;
     hrule(c, r.x, r.y, r.w);
     r.takeTop(kRule);
-    drawSectionHeader(c, r.takeTop(kSectionH), "$ i2cdetect -y 0",
-                      std::to_string(scan_.size()) + " FOUND", {focus_ == kBus, false});
+    const Rect head = r.takeTop(kSectionH);
+    const bool focused = focus_ == scan_;
+    const char *command = scan_ == kWifi  ? "$ iw wlan0 scan"
+                          : scan_ == kBle ? "$ hcitool lescan"
+                                          : "$ i2cdetect -y 0";
+    drawSectionHeader(c, head, command, "", {focused, false});
+    drawTabs(c, head, focused);
+    switch (scan_) {
+      case kWifi: drawWifi(c, r); break;
+#if INKDECK_BLE
+      case kBle: drawBle(c, r); break;
+#endif
+      default: drawBus(c, r); break;
+    }
+  }
+
+  void drawTabs(ui::Canvas &c, const Rect &head, bool focused) const {
+    using namespace ui;
+    static const char *const kTabs[3] = {"I2C", "WI-FI", "BLE"};
+    constexpr int kPad = 3;
+    constexpr int kGap = 4;
+    const uint16_t ink = focused ? kPaper : kInk;
+    const int cy = head.y + (kSectionH - kRule) / 2;
+    int x = head.right() - kPadX;
+    for (int i = kStops - kI2c - 1; i >= 0; --i) {
+      const int w = tagWidth(kTabs[i], style::kSection, kPad);
+      x -= w;
+      if (kI2c + i == scan_) {
+        drawTag(c, x, cy, 19, kTabs[i], style::kSection, TagKind::Inverted, kPad, ink);
+      } else {
+        drawText(c, x + kPad + 2, baselineCentered(style::kSection, cy - 9, 19), kTabs[i],
+                 style::kSection, ink);
+      }
+      x -= kGap;
+    }
+  }
+
+  void drawBus(ui::Canvas &c, const Rect &r) const {
+    using namespace ui;
     const Rect p{r.x + kPadX, r.y + 8, r.w - 2 * kPadX, r.h - 8};
     constexpr int kLabelW = 30;
     const float cellW = (p.w - kLabelW) / 16.0f;
@@ -382,7 +581,7 @@ class SensorsScreen : public ui::Screen {
         const int a = row * 16 + col;
         if (a < 0x03 || a > 0x77) continue;
         const Rect cell = cellRect(col, y, 17);
-        if (std::find(scan_.begin(), scan_.end(), a) != scan_.end()) {
+        if (std::find(scan_i2c_.begin(), scan_i2c_.end(), a) != scan_i2c_.end()) {
           fill(c, cell, kInk);
           drawText(c, cell, hex2(a), kGridBold, Align::Center, kPaper);
         } else {
@@ -393,7 +592,7 @@ class SensorsScreen : public ui::Screen {
 
     // What answered, by name, at the bottom of the panel.
     std::string names;
-    for (const uint8_t a : scan_) {
+    for (const uint8_t a : scan_i2c_) {
       const char *name = sensors::deviceName(a);
       if (!names.empty()) names += " \xC2\xB7 ";
       names += ui::upper(hex2(a)) + " " + (name ? name : "?");
@@ -407,16 +606,138 @@ class SensorsScreen : public ui::Screen {
     }
   }
 
+  // The scan panel's table: a head row with a 2 px rule under it, then up to kScanRows rows of
+  // 25 px, then a footer line at the bottom; a message in their place while there's nothing.
+  struct Columns {
+    int bars, name, a, b, dbm;  // left edges; a and b are the middle columns
+    int aW, bW, dbmW, right;
+  };
+
+  void drawTableHead(ui::Canvas &c, const Rect &p, const Columns &k, const char *name,
+                     const char *a, const char *b) const {
+    using namespace ui;
+    drawText(c, {k.name, p.y, k.a - k.name, 24}, name, style::kKey);
+    drawText(c, {k.a, p.y, k.aW, 24}, a, style::kKey);
+    if (b) drawText(c, {k.b, p.y, k.bW, 24}, b, style::kKey, Align::Right);
+    drawText(c, {k.dbm, p.y, k.dbmW, 24}, "dBm", style::kKey, Align::Right);
+    fill(c, {p.x, p.y + 22, p.w, 2}, kInk);
+  }
+
+  void drawFooter(ui::Canvas &c, const Rect &p, const std::string &left,
+                  const std::string &right) const {
+    using namespace ui;
+    const Rect line{p.x, p.bottom() - 10 - 17, p.w, 17};
+    drawText(c, line, left, style::kLabel);
+    drawText(c, line, right, style::kLabel, Align::Right);
+  }
+
+  void drawMessage(ui::Canvas &c, const Rect &p, const std::string &text) const {
+    ui::drawText(c, {p.x, p.y + 24, p.w, 120}, text, ui::style::kLabel, Align::Center);
+  }
+
+  void drawWifi(ui::Canvas &c, const Rect &r) const {
+    using namespace ui;
+    const Rect p{r.x + kPadX, r.y + 8, r.w - 2 * kPadX, r.h - 8};
+    Columns k;
+    k.bars = p.x;
+    k.name = p.x + 28;
+    k.dbmW = 44;
+    k.dbm = p.right() - k.dbmW;
+    k.bW = 34;
+    k.b = k.dbm - k.bW;
+    k.aW = 60;
+    k.a = k.b - k.aW;
+    drawTableHead(c, p, k, "SSID", "SEC", "CH");
+    if (nets_.empty()) {
+      const std::string state = wifiStateShown_;
+      drawMessage(c, p, state == "SCANNING" ? "SCANNING\xE2\x80\xA6"
+                        : !state.empty()    ? "! " + state
+                        : focus_ == kWifi   ? "NO NETWORKS IN RANGE"
+                                            : "NOT SCANNING");
+      return;
+    }
+    int y = p.y + 24;
+    for (size_t i = 0; i < nets_.size() && i < static_cast<size_t>(kScanRows); ++i, y += 25) {
+      const wifisurvey::Network &n = nets_[i];
+      radio::drawBars(c, k.bars, y + 12 + 7, n.rssi);
+      drawText(c, {k.name, y, k.a - k.name - 8, 25}, n.ssid.empty() ? "(hidden)" : n.ssid,
+               kAxisValue);
+      drawText(c, {k.a, y, k.aW, 25}, wifisurvey::securityShort(n.auth), style::kKey);
+      drawText(c, {k.b, y, k.bW, 25}, std::to_string(n.channel), kAxisValue, Align::Right);
+      drawText(c, {k.dbm, y, k.dbmW, 25}, radio::dbm(n.rssi), kAxisValue, Align::Right);
+      dashedH(c, p.x, y + 24, p.w);
+    }
+    const int more = static_cast<int>(nets_.size()) - kScanRows;
+    const std::string count = std::to_string(nets_.size()) + (nets_.size() == 1 ? " NETWORK" : " NETWORKS");
+    int first, last;
+    wifisurvey::channelRange(first, last);
+    drawFooter(c, p, more > 0 ? "+" + std::to_string(more) + " MORE \xC2\xB7 " + count : count,
+               "2.4 GHz \xC2\xB7 CH " + std::to_string(first) + "\xE2\x80\x93" + std::to_string(last));
+  }
+
+#if INKDECK_BLE
+  void drawBle(ui::Canvas &c, const Rect &r) const {
+    using namespace ui;
+    const Rect p{r.x + kPadX, r.y + 8, r.w - 2 * kPadX, r.h - 8};
+    Columns k;
+    k.bars = p.x;
+    k.name = p.x + 28;
+    k.dbmW = 44;
+    k.dbm = p.right() - k.dbmW;
+    k.bW = 0;
+    k.b = k.dbm;
+    k.aW = 72;
+    k.a = k.dbm - k.aW;
+    drawTableHead(c, p, k, "DEVICE", "KIND", nullptr);
+    if (devs_.empty()) {
+      const std::string state = bleState();
+      drawMessage(c, p, state == "STARTING" ? (focus_ == kBle ? "STARTING BLUETOOTH\xE2\x80\xA6"
+                                                              : "NOT SCANNING")
+                        : !state.empty()    ? "! " + state
+                                            : "LISTENING\xE2\x80\xA6");
+      return;
+    }
+    int y = p.y + 24;
+    for (size_t i = 0; i < devs_.size() && i < static_cast<size_t>(kScanRows); ++i, y += 25) {
+      const blesurvey::Device &d = devs_[i];
+      const bleadv::Info info = bleadv::decode(d.adv, d.advLen, d.rsp, d.rspLen);
+      radio::drawBars(c, k.bars, y + 12 + 7, d.rssi);
+      const bool named = !info.name.empty();
+      drawText(c, {k.name, y, k.a - k.name - 8, 25}, named ? info.name : blesurvey::addressText(d),
+               named ? kAxisValue : kAddress);
+      drawText(c, {k.a, y, k.aW, 25}, info.kind, style::kKey);
+      drawText(c, {k.dbm, y, k.dbmW, 25}, radio::dbm(d.rssi), kAxisValue, Align::Right);
+      dashedH(c, p.x, y + 24, p.w);
+    }
+    const int more = static_cast<int>(devs_.size()) - kScanRows;
+    const std::string count = std::to_string(devs_.size()) + (devs_.size() == 1 ? " DEVICE" : " DEVICES");
+    drawFooter(c, p, more > 0 ? "+" + std::to_string(more) + " MORE \xC2\xB7 " + count : count,
+               "LE \xC2\xB7 ACTIVE SCAN");
+  }
+#endif
+
   Panel focus_ = kEnv;
+  Panel scan_ = kI2c;  // which of I2C, WI-FI and BLE the bottom panel shows
   bool held_ = false;
   bool logFailed_ = false;
+  bool onTop_ = false;
+  MenuRow menuLast_ = MenuRow::Wifi;
+  Radio radio_ = Radio::None;
+  uint32_t focusedAt_ = 0;
   uint32_t refreshedAt_[kPanelCount] = {};
   shtc3::Reading env_;
   std::vector<float> history_;
   qmi8658::Reading imu_;
   float pitch_ = 0, roll_ = 0;
   pmic::Detail pmic_;
-  std::vector<uint8_t> scan_;
+  std::vector<uint8_t> scan_i2c_;
+  std::vector<wifisurvey::Network> nets_;
+  uint32_t wifiGen_ = 0;
+  std::string wifiStateShown_;
+#if INKDECK_BLE
+  std::vector<blesurvey::Device> devs_;
+  std::string bleShown_;
+#endif
 };
 
 }  // namespace
