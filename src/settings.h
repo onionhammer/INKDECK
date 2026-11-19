@@ -5,6 +5,8 @@
 //   [wifi]
 //   ssid = HomeNet
 //   password = secret                    ; the board keeps it and replaces the line with a note
+//   ssid = Phone                         ; more networks, up to 8, in the order to try them
+//   password = another-secret            ; each password goes under its ssid
 //   [clock]
 //   timezone = CST6CDT,M3.2.0,M11.1.0   ; a POSIX TZ string, daylight saving rule included
 //   [location]
@@ -32,12 +34,17 @@
 // without the card keep using them; a card whose file doesn't set a value puts the built-in one
 // back.
 //
-// Passwords don't stay on the card, which is easy to lift. The board keeps a Wi-Fi password
-// (with the ssid it belongs to) and each SMB share's (by its user, server and share) in NVS, and
-// rewrites their lines without them: the password line becomes a note, and an smb line loses
-// the :password part of its URL. To change one, write it in again. An ssid with no password
-// line joins its network with the stored password if it's the same network, else as an open
-// one. Without an ssid line, the built-in network and no stored password. NVS isn't encrypted:
+// Each ssid line names a network wlan.h may join, and the password line after it (before the
+// next ssid) is that network's. wlan.h tries the network it last joined first, then the others
+// in the file's order. The card's networks replace the built-in one; without an ssid line, the
+// built-in network.
+//
+// Passwords don't stay on the card, which is easy to lift. The board keeps each Wi-Fi password
+// (by the ssid it belongs to) and each SMB share's (by its user, server and share) in NVS, and
+// rewrites their lines without them: a password line becomes a note, and an smb line loses the
+// :password part of its URL. To change one, write it in again. An ssid with no password line
+// joins its network with the password the board kept for that ssid, else as an open one. A
+// password the board kept for an ssid the file no longer lists is dropped. NVS isn't encrypted:
 // anyone with the board and a USB cable can read it, as they can the firmware's .env values.
 //
 // The PIN is the exception: a card is easy to lift, so the board keeps it in NVS (System's PIN
@@ -72,10 +79,16 @@ double latitude();
 double longitude();
 Source locationSource();
 
-// The Wi-Fi network wlan.h joins: the card's ([wifi] ssid), else .env's.
+// The Wi-Fi networks wlan.h may join: the card's ([wifi] ssid lines, in the file's order), else
+// .env's one.
+constexpr int kMaxWifiNetworks = 8;
+struct WifiNetwork {
+  std::string ssid;
+  std::string password;  // "" for an open network
+};
 bool hasWifi();  // either names a network
-std::string wifiSsid();
-std::string wifiPassword();  // "" for an open network
+std::vector<WifiNetwork> wifiNetworks();  // reads the passwords from NVS
+std::vector<std::string> wifiSsids();     // the names alone, from RAM
 Source wifiSource();
 
 // The file's `smb =` and `nfs =` lines, in order, SMB passwords taken out (shares.h reads them).

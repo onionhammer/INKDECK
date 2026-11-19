@@ -8,11 +8,15 @@
 ; Parser and rules: src/settings.h.
 
 [wifi]
-; The Wi-Fi network to join, instead of the one built into the firmware from .env. With no
-; password line, an open network (or the password the board kept for this same network).
-; Remove the ssid line to go back to the built-in network.
+; The Wi-Fi networks to join, instead of the one built into the firmware from .env: up to 8,
+; each an ssid line with its password line under it. The board tries the network it last
+; joined first, then the others in the order listed here. With no password line, an open
+; network (or the password the board kept for that ssid). Remove the ssid lines to go back to
+; the built-in network.
 ssid = HomeNet
 password = correct horse battery staple
+ssid = Phone hotspot
+password = another passphrase
 
 [clock]
 ; The time zone as a POSIX TZ string, which includes the daylight saving rule. The ESP32 can't
