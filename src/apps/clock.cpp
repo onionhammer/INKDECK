@@ -601,7 +601,7 @@ void drawOffFace(ui::Canvas &c, const Face &f, const std::string &context, const
 }
 
 void drawStandbyFace(ui::Canvas &c, const Face &f) {
-  drawOffFace(c, f, "STANDBY \xC2\xB7 " + syncText(f), {"PWR", "HOLD 1 S TO WAKE"});
+  drawOffFace(c, f, "STANDBY \xC2\xB7 " + syncText(f), {"PWR", "HOLD TO WAKE"});
 }
 
 // The desk face's status context: when the forecast it shows was fetched.

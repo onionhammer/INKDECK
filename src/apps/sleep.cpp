@@ -251,7 +251,7 @@ class SleepScreen : public ui::Screen {
       y += 18 + 10;
     }
 
-    // HOLD [PWR] 1 s TO BOOT, at the bottom.
+    // HOLD [PWR] TO BOOT, at the bottom.
     const Rect line{p.x, p.bottom() - 24, p.w, 24};
     const int base = baselineCentered(kBoot, line.y, line.h);
     int x = drawText(c, p.x, base, "HOLD", kBoot, kPaper) + 8;
@@ -259,7 +259,7 @@ class SleepScreen : public ui::Screen {
     frame(c, {x, line.y, capW, line.h}, 2, kPaper);
     drawText(c, x + 9, baselineCentered(kBootCap, line.y, line.h), "PWR", kBootCap, kPaper);
     x += capW + 8;
-    drawText(c, x, base, "1 s TO BOOT", kBoot, kPaper);
+    drawText(c, x, base, "TO BOOT", kBoot, kPaper);
   }
 
   time_t now_ = 0;
