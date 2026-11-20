@@ -64,11 +64,19 @@ pub struct SessionTools {
 #[async_trait]
 impl Extra for SessionTools {
     fn defs(&self) -> Vec<ToolDef> {
-        vec![plan_definition(), ask_definition()]
+        let mut defs = vec![plan_definition(), ask_definition()];
+        if self.agent.herdr.get().is_some_and(|h| h.runs()) {
+            defs.push(run_definition());
+        }
+        defs
     }
 
     async fn call(&self, name: &str, input: &Value) -> Option<Result<String, String>> {
         Some(match name {
+            super::herdr::RUN_TOOL => match self.agent.herdr.get().filter(|h| h.runs()) {
+                Some(herdr) => herdr.run_tool(&self.agent, &self.id, input).await,
+                None => return None,
+            },
             ASK_TOOL => self.ask(input).await,
             PLAN_TOOL => self.plan(input),
             _ => return None,
@@ -216,6 +224,28 @@ fn plan_definition() -> ToolDef {
                 "title": {"type": "string", "description": "A short title for the task"}
             },
             "required": ["steps"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn run_definition() -> ToolDef {
+    ToolDef {
+        name: super::herdr::RUN_TOOL.into(),
+        description: "Starts a program in a new herdr terminal, here or on another herdr \
+            machine, and gives it a task: a coding agent (Claude Code, Codex) or any command. \
+            It runs on its own as a session of its own, which the user follows on their board; \
+            this returns its id at once, so say where it started and finish."
+            .into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "program": {"type": "string", "description": "A template name from [herdr] templates (such as claude or codex), or a command line"},
+                "task": {"type": "string", "description": "What it should do, typed into it once it is ready"},
+                "machine": {"type": "string", "description": "The herdr machine to start it on; leave it out for this one"},
+                "dir": {"type": "string", "description": "The folder to start it in"}
+            },
+            "required": ["program", "task"],
             "additionalProperties": false
         }),
     }

@@ -322,7 +322,37 @@ pub enum State {
     Fail,
     /// Stopped by the user.
     Stopped,
+    /// Ready for more, with nothing to do (a herdr session whose program waits for input).
+    Idle,
     /// A state this version doesn't know (later ones add `watch`, `scheduled`).
+    #[serde(other)]
+    Unknown,
+}
+
+/// Who runs a session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Via {
+    /// inkharness itself (the api and claude backends). What an absent `via` means.
+    #[default]
+    Inkharness,
+    /// A program in a herdr terminal, which inkharness follows and talks to.
+    Herdr,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a session runs on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Backend {
+    /// A model through its provider's API, with inkharness's tools.
+    #[default]
+    Api,
+    /// A headless Claude Code run.
+    Claude,
+    /// A program in a herdr terminal.
+    Herdr,
     #[serde(other)]
     Unknown,
 }
@@ -353,9 +383,13 @@ pub struct SessionList {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Counts {
     pub ask: usize,
+    /// Working, of every kind.
     pub running: usize,
     pub planned: usize,
     pub unread: usize,
+    /// Ready for more (herdr sessions whose program waits for input).
+    #[serde(default)]
+    pub idle: usize,
 }
 
 /// A session in the list.
@@ -365,6 +399,12 @@ pub struct SessionRow {
     pub title: String,
     pub state: State,
     pub place: String,
+    /// Who runs it.
+    #[serde(default)]
+    pub via: Via,
+    /// What runs it, lowercase ("claude code", "codex", "bash"); null for the api backend.
+    #[serde(default)]
+    pub program: Option<String>,
     /// One line: the question, the step or last tool call, or the result's first line.
     pub sub: String,
     /// The plan's current step, from 1.
@@ -383,6 +423,12 @@ pub struct SessionView {
     pub title: String,
     pub state: State,
     pub place: String,
+    #[serde(default)]
+    pub via: Via,
+    #[serde(default)]
+    pub program: Option<String>,
+    #[serde(default)]
+    pub backend: Backend,
     pub prompt: String,
     pub started: u64,
     pub updated: u64,
@@ -394,6 +440,9 @@ pub struct SessionView {
     /// Markdown, for a finished session.
     pub result: Option<String>,
     pub ask: Option<AskView>,
+    /// A herdr session's last lines of screen, plain text; null for the others.
+    #[serde(default)]
+    pub screen: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -826,10 +875,11 @@ mod tests {
         );
         round_trip(
             r#"{"type":"sessions","locked":false,
-                "counts":{"ask":2,"running":4,"planned":0,"unread":1},
+                "counts":{"ask":2,"running":4,"planned":0,"unread":1,"idle":1},
                 "check_at":null,"older":0,
                 "sessions":[{"id":"k7q2","title":"Plumber · kitchen leak","state":"ask",
-                             "place":"ONIONSERVE","sub":"Which plumber should I book?",
+                             "place":"ONIONSERVE","via":"inkharness","program":null,
+                             "sub":"Which plumber should I book?",
                              "step":null,"steps":null,"progress":null,
                              "updated":1795190000,"unread":true}]}"#,
             ServerMsg::Sessions(SessionList {
@@ -839,6 +889,7 @@ mod tests {
                     running: 4,
                     planned: 0,
                     unread: 1,
+                    idle: 1,
                 },
                 check_at: None,
                 older: 0,
@@ -847,6 +898,8 @@ mod tests {
                     title: "Plumber · kitchen leak".into(),
                     state: State::Ask,
                     place: "ONIONSERVE".into(),
+                    via: Via::Inkharness,
+                    program: None,
                     sub: "Which plumber should I book?".into(),
                     step: None,
                     steps: None,
@@ -858,18 +911,22 @@ mod tests {
         );
         round_trip(
             r#"{"type":"session","id":"k7q2","title":"Plumber · kitchen leak","state":"working",
-                "place":"ONIONSERVE","prompt":"Find a plumber for the kitchen leak this week",
+                "place":"ONIONSERVE","via":"inkharness","program":null,"backend":"api",
+                "prompt":"Find a plumber for the kitchen leak this week",
                 "started":1795189000,"updated":1795190000,"step":2,"steps":3,
                 "plan":[{"text":"Find plumbers near home","state":"done"},
                         {"text":"Check reviews and prices","state":"now"},
                         {"text":"Ask which to book","state":"todo"}],
                 "log":[{"at":1795190000,"text":"web_search plumbers open Saturday"}],
-                "result":null,"ask":null}"#,
+                "result":null,"ask":null,"screen":null}"#,
             ServerMsg::Session(Box::new(SessionView {
                 id: "k7q2".into(),
                 title: "Plumber · kitchen leak".into(),
                 state: State::Working,
                 place: "ONIONSERVE".into(),
+                via: Via::Inkharness,
+                program: None,
+                backend: Backend::Api,
                 prompt: "Find a plumber for the kitchen leak this week".into(),
                 started: 1795189000,
                 updated: 1795190000,
@@ -895,6 +952,7 @@ mod tests {
                 }],
                 result: None,
                 ask: None,
+                screen: None,
             })),
         );
         round_trip(
@@ -959,5 +1017,54 @@ mod tests {
             State::Unknown
         );
         assert!(State::Stopped.finished() && !State::Ask.finished());
+    }
+
+    #[test]
+    fn herdr_sessions() {
+        let row = r#"{"id":"h3kq9","title":"Fix the build","state":"idle","place":"DESKTOP",
+                      "via":"herdr","program":"codex","sub":"Ready","step":null,"steps":null,
+                      "progress":null,"updated":1,"unread":false}"#;
+        let parsed: SessionRow = serde_json::from_str(row).unwrap();
+        assert_eq!(
+            (parsed.state, parsed.via, parsed.program.as_deref()),
+            (State::Idle, Via::Herdr, Some("codex"))
+        );
+        assert!(!State::Idle.finished());
+        let written = serde_json::to_value(&parsed).unwrap();
+        assert_eq!(
+            written,
+            serde_json::from_str::<serde_json::Value>(row).unwrap()
+        );
+        // From a daemon before backends: inkharness, the api, no screen, no idle count.
+        let old: SessionView = serde_json::from_str(
+            r#"{"id":"k7q2","title":"t","state":"done","place":"P","prompt":"p","started":1,
+                "updated":2,"step":null,"steps":null,"plan":null,"log":[],"result":"r","ask":null}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (old.via, old.program, old.backend, old.screen),
+            (Via::Inkharness, None, Backend::Api, None)
+        );
+        let counts: Counts =
+            serde_json::from_str(r#"{"ask":0,"running":1,"planned":0,"unread":0}"#).unwrap();
+        assert_eq!(counts.idle, 0);
+        let screen = SessionView {
+            via: Via::Herdr,
+            program: Some("claude code".into()),
+            backend: Backend::Herdr,
+            screen: Some(vec![
+                "> fix the build".into(),
+                "  Running cargo build…".into(),
+            ]),
+            ..old
+        };
+        let json = serde_json::to_value(ServerMsg::Session(Box::new(screen))).unwrap();
+        assert_eq!(json["via"], "herdr");
+        assert_eq!(json["backend"], "herdr");
+        assert_eq!(json["screen"][1], "  Running cargo build…");
+        assert_eq!(
+            serde_json::from_str::<Backend>(r#""later""#).unwrap(),
+            Backend::Unknown
+        );
     }
 }

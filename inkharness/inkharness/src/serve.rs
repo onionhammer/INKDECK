@@ -17,7 +17,7 @@ use crate::{llm, session, stt, tts};
 
 pub async fn run(place: Place, harness: Harness) -> Result<()> {
     let cfg = &place.config;
-    let agent = agent::start(cfg, &harness)?;
+    let agent = agent::start(cfg, &harness).await?;
     let devices = match cfg.check() {
         Ok(()) => Some(device_app(&place, &harness, agent.clone())?),
         Err(e) if !cfg.http.is_empty() => {

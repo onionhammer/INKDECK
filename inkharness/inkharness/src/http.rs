@@ -25,6 +25,7 @@
 //! POST   /sessions/{id}/say {"text"}    talks into it (an answer in words, if it is asking)
 //! POST   /sessions/{id}/answer {"ask", "choice"}
 //! POST   /sessions/{id}/stop
+//! POST   /sessions/{id}/kill            a herdr session: end its program ([herdr] kill)
 //! DELETE /sessions/{id}
 //! ```
 
@@ -138,6 +139,7 @@ pub async fn serve(listener: TcpListener, api: Arc<Api>) -> Result<()> {
         .route("/sessions/{id}/say", post(say_session))
         .route("/sessions/{id}/answer", post(answer_session))
         .route("/sessions/{id}/stop", post(stop_session))
+        .route("/sessions/{id}/kill", post(kill_session))
         .with_state(api);
     axum::serve(listener, app).await?;
     Ok(())
@@ -262,7 +264,12 @@ fn refused(refusal: Refusal) -> Response {
     let status = match refusal {
         Refusal::NoSuchSession => StatusCode::NOT_FOUND,
         Refusal::NoSuchChoice => StatusCode::BAD_REQUEST,
-        Refusal::AlreadyAnswered | Refusal::NotRunning => StatusCode::CONFLICT,
+        Refusal::AlreadyAnswered | Refusal::NotRunning | Refusal::NotWaiting | Refusal::Busy => {
+            StatusCode::CONFLICT
+        }
+        Refusal::NotAllowed => StatusCode::FORBIDDEN,
+        Refusal::Unreachable => StatusCode::BAD_GATEWAY,
+        Refusal::Other(_) => StatusCode::UNPROCESSABLE_ENTITY,
     };
     error(status, refusal.to_string())
 }
@@ -318,7 +325,10 @@ async fn start_session(
     if request.text.trim().is_empty() {
         return error(StatusCode::BAD_REQUEST, "no text".into());
     }
-    Json(json!({"session": agent.start(&request.text)})).into_response()
+    match agent.start(&request.text).await {
+        Ok(id) => Json(json!({"session": id})).into_response(),
+        Err(refusal) => refused(refusal),
+    }
 }
 
 async fn say_session(
@@ -334,7 +344,7 @@ async fn say_session(
     if request.text.trim().is_empty() {
         return error(StatusCode::BAD_REQUEST, "no text".into());
     }
-    done(agent.say(&id, &request.text).map(|_| ()))
+    done(agent.say(&id, &request.text).await.map(|_| ()))
 }
 
 async fn answer_session(
@@ -344,7 +354,7 @@ async fn answer_session(
     Json(request): Json<AnswerRequest>,
 ) -> Response {
     match sessions(&api, &headers) {
-        Ok(agent) => done(agent.answer(&id, &request.ask, request.choice)),
+        Ok(agent) => done(agent.answer(&id, &request.ask, request.choice).await),
         Err(response) => *response,
     }
 }
@@ -355,7 +365,18 @@ async fn stop_session(
     Path(id): Path<String>,
 ) -> Response {
     match sessions(&api, &headers) {
-        Ok(agent) => done(agent.stop(&id)),
+        Ok(agent) => done(agent.stop(&id).await),
+        Err(response) => *response,
+    }
+}
+
+async fn kill_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => done(agent.kill(&id).await),
         Err(response) => *response,
     }
 }
@@ -366,7 +387,7 @@ async fn delete_session(
     Path(id): Path<String>,
 ) -> Response {
     match sessions(&api, &headers) {
-        Ok(agent) => done(agent.delete(&id)),
+        Ok(agent) => done(agent.delete(&id).await),
         Err(response) => *response,
     }
 }
@@ -513,6 +534,7 @@ mod tests {
             harness.tools.clone(),
             crate::agent::prompt(),
             "test",
+            Default::default(),
         )
         .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -16,7 +16,7 @@ use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use voice_proto::{
     ClientMsg, DeviceTool, Frame, FrameReader, FrameWriter, Initiator, Mode, PROTO_PLAINTEXT,
-    PROTO_VERSION, ServerMsg, StepState, psk,
+    PROTO_VERSION, ServerMsg, StepState, Via, psk,
 };
 
 #[derive(Parser)]
@@ -514,10 +514,11 @@ impl Printer {
             ServerMsg::Sessions(list) => {
                 let c = &list.counts;
                 println!(
-                    "{at} sessions{}: {} ask, {} running, {} planned, {} unread{}",
+                    "{at} sessions{}: {} ask, {} running, {} idle, {} planned, {} unread{}",
                     if list.locked { " (locked)" } else { "" },
                     c.ask,
                     c.running,
+                    c.idle,
                     c.planned,
                     c.unread,
                     if list.older > 0 {
@@ -532,11 +533,12 @@ impl Printer {
                         _ => String::new(),
                     };
                     println!(
-                        "    {} {:?}{step} {}{} · {}",
+                        "    {} {:?}{step} {}{} · {} · {}",
                         s.id,
                         s.state,
                         s.title,
                         if s.unread { " (unread)" } else { "" },
+                        where_(s.via, &s.place, s.program.as_deref(), s.progress),
                         s.sub
                     );
                 }
@@ -547,6 +549,11 @@ impl Printer {
                     _ => String::new(),
                 };
                 println!("{at} session {} {:?}{step}: {}", s.id, s.state, s.title);
+                println!(
+                    "    {} · backend {:?}",
+                    where_(s.via, &s.place, s.program.as_deref(), None),
+                    s.backend
+                );
                 println!("    prompt: {}", s.prompt);
                 for item in s.plan.iter().flatten() {
                     let mark = match item.state {
@@ -566,6 +573,9 @@ impl Printer {
                 }
                 if let Some(ask) = &s.ask {
                     println!("    asking {}: {}", ask.id, ask.question);
+                }
+                for line in s.screen.iter().flatten() {
+                    println!("    screen │ {line}");
                 }
             }
             ServerMsg::Ask(ask) => {
@@ -624,6 +634,22 @@ impl Printer {
             other => println!("{at} {other:?}"),
         }
     }
+}
+
+/// Where a session runs, as the board shows it: `[hc] DESKTOP · CODEX · 40%`.
+fn where_(via: Via, place: &str, program: Option<&str>, progress: Option<u8>) -> String {
+    let mut out = String::new();
+    if via == Via::Herdr {
+        out.push_str("[hc] ");
+    }
+    out.push_str(place);
+    if let Some(program) = program {
+        out.push_str(&format!(" · {}", program.to_uppercase()));
+    }
+    if let Some(progress) = progress {
+        out.push_str(&format!(" · {progress}%"));
+    }
+    out
 }
 
 fn read_wav(path: &PathBuf) -> Result<(Vec<u8>, u32)> {

@@ -7,8 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use voice_proto::{
-    AskOption, AskView, Counts, LogLine, PlanItem, SessionList, SessionRow, SessionView, State,
-    StepState,
+    AskOption, AskView, Backend, Counts, LogLine, PlanItem, SessionList, SessionRow, SessionView,
+    State, StepState, Via,
 };
 
 /// Sessions listed; the rest are counted in `older`.
@@ -57,6 +57,43 @@ pub struct Session {
     /// Questions asked so far: the next one's id is `a<asked + 1>`.
     #[serde(default)]
     pub asked: u32,
+    /// What it runs on.
+    #[serde(default)]
+    pub backend: Backend,
+    /// What runs it, lowercase ("claude code", "codex"); None for the api backend.
+    #[serde(default)]
+    pub program: Option<String>,
+    /// Where it runs, when not where the daemon is (a herdr machine).
+    #[serde(default)]
+    pub place: Option<String>,
+    /// The progress (0–100) its program last reported.
+    #[serde(default)]
+    pub progress: Option<u8>,
+    /// The claude backend: Claude Code's own session id, to resume it with.
+    #[serde(default)]
+    pub claude: Option<String>,
+    /// The herdr backend: its terminal, and what the pending question's choices send.
+    #[serde(default)]
+    pub herdr: Option<HerdrSide>,
+}
+
+/// What a herdr session keeps of its terminal.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HerdrSide {
+    /// `t7` here, `desktop/t7` on another machine.
+    pub address: String,
+    /// The terminal's turn when its question was put: an answer after it moved on is stale.
+    #[serde(default)]
+    pub turn: u64,
+    /// What blocked it: permission, question or auth (the program's word).
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// For each of the pending question's options, the keys it presses.
+    #[serde(default)]
+    pub keys: Vec<Vec<String>>,
+    /// Whether its program reports a status (a plain shell doesn't).
+    #[serde(default)]
+    pub reports: bool,
 }
 
 /// The checklist the model keeps with the `plan` tool.
@@ -116,6 +153,12 @@ impl Session {
             conversation: Vec::new(),
             inbox: vec![prompt.trim().to_string()],
             asked: 0,
+            backend: Backend::Api,
+            program: None,
+            place: None,
+            progress: None,
+            claude: None,
+            herdr: None,
         }
     }
 
@@ -169,6 +212,10 @@ impl Session {
                 }
                 _ => last_log(),
             },
+            State::Idle => match self.log.last() {
+                Some(line) => line.text.clone(),
+                None => "Ready".into(),
+            },
             _ => match &self.result {
                 Some(result) => plain(&first_line(result)),
                 None => last_log(),
@@ -177,23 +224,39 @@ impl Session {
         one_line(&text, SUB_CHARS)
     }
 
+    /// Who runs it.
+    pub fn via(&self) -> Via {
+        match self.backend {
+            Backend::Herdr => Via::Herdr,
+            _ => Via::Inkharness,
+        }
+    }
+
+    /// Where it runs: its own place (a herdr machine), else the daemon's.
+    fn place_or<'a>(&'a self, place: &'a str) -> &'a str {
+        self.place.as_deref().unwrap_or(place)
+    }
+
     pub fn row(&self, place: &str) -> SessionRow {
         let step = self.step();
         SessionRow {
             id: self.id.clone(),
             title: self.title.clone(),
             state: self.state,
-            place: place.to_string(),
+            place: self.place_or(place).to_string(),
+            via: self.via(),
+            program: self.program.clone(),
             sub: self.sub(),
             step: step.map(|s| s.0),
             steps: step.map(|s| s.1),
-            progress: None,
+            progress: self.progress,
             updated: self.updated,
             unread: self.unread,
         }
     }
 
-    pub fn view(&self, place: &str) -> SessionView {
+    /// The session in full; `screen`: a herdr session's last lines of screen.
+    pub fn view(&self, place: &str, screen: Option<Vec<String>>) -> SessionView {
         let step = self.step();
         let plan = self.plan.as_ref().filter(|p| !p.steps.is_empty()).map(|p| {
             let finished = matches!(self.state, State::Done | State::Note);
@@ -215,7 +278,10 @@ impl Session {
             id: self.id.clone(),
             title: self.title.clone(),
             state: self.state,
-            place: place.to_string(),
+            place: self.place_or(place).to_string(),
+            via: self.via(),
+            program: self.program.clone(),
+            backend: self.backend,
             prompt: cut(&self.prompt, PROMPT_CHARS),
             started: self.started,
             updated: self.updated,
@@ -225,6 +291,7 @@ impl Session {
             log: self.log.iter().rev().take(LOG_SHOWN).cloned().collect(),
             result: self.result.clone(),
             ask: self.question(),
+            screen,
         }
     }
 
@@ -245,8 +312,8 @@ impl Session {
 }
 
 /// The list as a board gets it: asking first (the oldest question first), then working (the
-/// most recently active first), then the rest, newest first; LISTED of them, the rest counted
-/// in `older`. Locked, it is the counts alone.
+/// most recently active first), then idle, then the rest, newest first; LISTED of them, the
+/// rest counted in `older`. Locked, it is the counts alone.
 pub fn list<'a>(
     sessions: impl Iterator<Item = &'a Session>,
     place: &str,
@@ -258,6 +325,7 @@ pub fn list<'a>(
         match s.state {
             State::Ask => counts.ask += 1,
             State::Working => counts.running += 1,
+            State::Idle => counts.idle += 1,
             _ => {}
         }
         counts.unread += s.unread as usize;
@@ -274,7 +342,8 @@ pub fn list<'a>(
     let group = |s: &Session| match s.state {
         State::Ask => 0,
         State::Working => 1,
-        _ => 2,
+        State::Idle => 2,
+        _ => 3,
     };
     all.sort_by(|a, b| {
         group(a).cmp(&group(b)).then_with(|| match a.state {
@@ -505,17 +574,43 @@ pub(crate) mod tests {
         });
         sessions[0].unread = true;
         sessions[4].unread = true;
+        // A program in a herdr terminal on another machine, waiting for something to do.
+        let mut idle = session("idle1", State::Idle, 500);
+        idle.backend = Backend::Herdr;
+        idle.place = Some("DESKTOP".into());
+        idle.program = Some("codex".into());
+        idle.progress = Some(40);
+        let sessions: Vec<Session> = sessions.into_iter().chain([idle]).collect();
         let list = list(sessions.iter(), "HOME", false);
         let ids: Vec<&str> = list.sessions.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["ask1", "ask2", "work2", "work1", "done2", "done1"]);
+        assert_eq!(
+            ids,
+            ["ask1", "ask2", "work2", "work1", "idle1", "done2", "done1"]
+        );
         assert_eq!(
             (
                 list.counts.ask,
                 list.counts.running,
                 list.counts.planned,
-                list.counts.unread
+                list.counts.unread,
+                list.counts.idle
             ),
-            (2, 2, 0, 2)
+            (2, 2, 0, 2, 1)
+        );
+        let herdr = &list.sessions[4];
+        assert_eq!(
+            (
+                herdr.place.as_str(),
+                herdr.via,
+                herdr.program.as_deref(),
+                herdr.progress
+            ),
+            ("DESKTOP", Via::Herdr, Some("codex"), Some(40))
+        );
+        assert_eq!(herdr.sub, "Ready");
+        assert_eq!(
+            (list.sessions[0].via, list.sessions[0].program.as_deref()),
+            (Via::Inkharness, None)
         );
         assert_eq!(list.older, 0);
         let sub = &list.sessions[0].sub;
@@ -531,7 +626,7 @@ pub(crate) mod tests {
         assert_eq!(locked.counts, list.counts);
         assert_eq!(
             serde_json::to_value(&locked).unwrap(),
-            serde_json::json!({"locked": true, "counts": {"ask": 2, "running": 2, "planned": 0, "unread": 2},
+            serde_json::json!({"locked": true, "counts": {"ask": 2, "running": 2, "planned": 0, "unread": 2, "idle": 1},
                                "check_at": null, "sessions": [], "older": 0})
         );
     }
@@ -558,7 +653,7 @@ pub(crate) mod tests {
         });
         assert_eq!(s.sub(), "Compare");
         assert_eq!(s.step(), Some((2, 3)));
-        let view = s.view("HOME");
+        let view = s.view("HOME", None);
         let states: Vec<StepState> = view.plan.unwrap().iter().map(|p| p.state).collect();
         assert_eq!(states, [StepState::Done, StepState::Now, StepState::Todo]);
         // Done: every step is.
@@ -566,7 +661,7 @@ pub(crate) mod tests {
         s.result = Some("## Booked\n\nRiverside, Thursday 08:00.".into());
         assert_eq!(s.sub(), "Booked");
         let states: Vec<StepState> = s
-            .view("HOME")
+            .view("HOME", None)
             .plan
             .unwrap()
             .iter()
@@ -577,7 +672,7 @@ pub(crate) mod tests {
         for i in 0..30 {
             s.add_log(&format!("line {i}"), 10 + i);
         }
-        let view = s.view("HOME");
+        let view = s.view("HOME", None);
         assert_eq!(view.log.len(), LOG_SHOWN);
         assert_eq!(view.log[0].text, "line 29");
     }
