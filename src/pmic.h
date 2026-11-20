@@ -19,7 +19,7 @@ struct Status {
 // Writes the settings agreed for this board (references/power.md §2 compares them with the
 // chip's defaults and Waveshare's axp_init()). Only the fields named here change; voltages,
 // cut-off voltage, input limits and everything else stay at the chip's defaults:
-//   PWR key: 512 ms press powers on, 4 s hold forces off   (0x27, chip default 128 ms / 6 s)
+//   PWR key: 128 ms press powers on, 4 s hold forces off   (0x27, chip default 128 ms / 6 s)
 //   ADC: USB (VBUS) and system (VSYS) voltage channels on  (0x30, chip default battery only)
 //   charging, for the 1500 mAh cell: precharge 50 mA, constant current 500 mA,
 //   stop at 25 mA                                          (0x61-0x63, default 125/200/125 mA)
