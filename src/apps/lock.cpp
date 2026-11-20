@@ -91,9 +91,15 @@ void dashedFrame(ui::Canvas &c, const Rect &r) {
 
 std::string digitText(int d) { return std::string(1, static_cast<char>('0' + (d + 10) % 10)); }
 
-// What the wheels are for: opening the lock, opening a module (openGuarded()), or one step of a
-// PinTask.
-enum class Step : uint8_t { Unlock, Gate, Current, New, Confirm };
+// What the wheels are for: opening the lock, opening a module (openGuarded()), one step of a
+// PinTask, or digits checked elsewhere (makePinEntry()).
+enum class Step : uint8_t { Unlock, Gate, Current, New, Confirm, Entry };
+
+void (*pinListener)(const std::string &) = nullptr;  // onPinEntered()
+
+void pinEntered(const std::string &pin) {
+  if (pinListener) pinListener(pin);
+}
 
 // --- Wrong PINs: a growing wait after a few in a row --------------------------------------
 
@@ -150,16 +156,28 @@ struct Guard {
   bool open = false;
   uint32_t ms = 0;
 };
-Guard guards[2];  // by Guarded
+Guard guards[3];  // by Guarded
 int onTop = -1;   // the Guarded module whose screen is on top, or -1
 
 Guard &guardOf(Guarded m) { return guards[static_cast<int>(m)]; }
-const char *labelOf(Guarded m) { return m == Guarded::Settings ? "SYSTEM" : "FILES"; }
+const char *labelOf(Guarded m) {
+  switch (m) {
+    case Guarded::Settings: return "SYSTEM";
+    case Guarded::Files: return "FILES";
+    case Guarded::Agent: return "AGENT";
+  }
+  return "";
+}
 
 // The build asks for the PIN at this module, and one is set.
 bool applies(Guarded m) {
-  return settings::hasPin() &&
-         pinplaces::asks(m == Guarded::Settings ? pinplaces::kSettings : pinplaces::kFiles);
+  pinplaces::Place place = pinplaces::kFiles;
+  switch (m) {
+    case Guarded::Settings: place = pinplaces::kSettings; break;
+    case Guarded::Files: place = pinplaces::kFiles; break;
+    case Guarded::Agent: place = pinplaces::kAgent; break;
+  }
+  return settings::hasPin() && pinplaces::asks(place);
 }
 bool fresh(Guarded m) {
   const Guard &g = guardOf(m);
@@ -179,11 +197,15 @@ class PinScreen : public ui::Screen {
   // (guardedOnTop()), and the right PIN goes back to it.
   PinScreen(Guarded module, std::function<std::unique_ptr<ui::Screen>()> open)
       : step_(Step::Gate), module_(module), open_(std::move(open)) {}
+  // Digits for someone else to check (makePinEntry()).
+  PinScreen(std::string tag, std::function<void(const std::string &)> entered)
+      : step_(Step::Entry), done_(std::move(entered)), tag_(std::move(tag)) {}
 
   std::string tag() const override {
     switch (step_) {
       case Step::Unlock: return "LOCKED";
       case Step::Gate: return moduleTag(labelOf(module_));
+      case Step::Entry: return tag_;
       default: return moduleTag("SYSTEM");
     }
   }
@@ -195,6 +217,7 @@ class PinScreen : public ui::Screen {
       case Step::Current: return "CURRENT PIN";
       case Step::New: return "NEW PIN";
       case Step::Confirm: return "NEW PIN AGAIN";
+      case Step::Entry: return "INKHARNESS PIN";
     }
     switch (settings::pendingPin()) {
       case settings::PinChange::New: return "NEW PIN ON UNLOCK";
@@ -211,7 +234,7 @@ class PinScreen : public ui::Screen {
       return n;
     }
     out[n++] = {ui::glyph::kDial, "DIGIT"};
-    if (step_ == Step::New) {
+    if (step_ == Step::New || step_ == Step::Entry) {
       const bool lastWheel = cursor_ == kMaxDigits - 1;
       out[n++] = {ui::glyph::kPress, lastWheel ? "DONE" : "NEXT"};
       if (cursor_ >= kMinDigits - 1 && !lastWheel) out[n++] = {ui::glyph::kHoldPress, "DONE"};
@@ -232,7 +255,7 @@ class PinScreen : public ui::Screen {
   bool onKey(Key key) override {
     if (checksPin() && waitLeftMs() > 0 && key != Key::Back) return false;  // after misses
     if (key == Key::SelectLong) {  // a new PIN of fewer than eight digits
-      if (step_ != Step::New || cursor_ < kMinDigits - 1) return false;
+      if ((step_ != Step::New && step_ != Step::Entry) || cursor_ < kMinDigits - 1) return false;
       notice_.clear();
       chooseNew(cursor_ + 1);
       return true;
@@ -243,7 +266,7 @@ class PinScreen : public ui::Screen {
       case Key::Up: digits_[cursor_] = (digits_[cursor_] + 9) % 10; return true;
       case Key::Down: digits_[cursor_] = (digits_[cursor_] + 1) % 10; return true;
       case Key::Select:
-        if (step_ == Step::New) {
+        if (step_ == Step::New || step_ == Step::Entry) {
           if (cursor_ == kMaxDigits - 1) {
             chooseNew(kMaxDigits);
           } else {
@@ -284,7 +307,7 @@ class PinScreen : public ui::Screen {
     r.takeTop(kRule);
     const std::string digit = "DIGIT " + std::to_string(cursor_ + 1);
     drawSectionHeader(c, r.takeTop(kSectionH), "PIN",
-                      step_ == Step::New
+                      step_ == Step::New || step_ == Step::Entry
                           ? digit + " \xC2\xB7 " + std::to_string(kMinDigits) + " TO " +
                                 std::to_string(kMaxDigits)
                           : digit + "/" + std::to_string(n));
@@ -330,12 +353,15 @@ class PinScreen : public ui::Screen {
   // Wheels drawn, and how many of them the PIN needs.
   int count() const {
     switch (step_) {
-      case Step::New: return kMaxDigits;
+      case Step::New:
+      case Step::Entry: return kMaxDigits;
       case Step::Confirm: return static_cast<int>(newPin_.size());
       default: return std::min(kMaxDigits, std::max(1, settings::pinLength()));
     }
   }
-  int required() const { return step_ == Step::New ? kMinDigits : count(); }
+  int required() const {
+    return step_ == Step::New || step_ == Step::Entry ? kMinDigits : count();
+  }
   // These wheels are checked against the PIN (so misses count and waits apply).
   bool checksPin() const {
     return step_ == Step::Unlock || step_ == Step::Gate || step_ == Step::Current;
@@ -347,7 +373,7 @@ class PinScreen : public ui::Screen {
       case Step::Current: return task_ == PinTask::Clear ? "CLEAR" : "OK";
       case Step::Confirm: return "SAVE";
       case Step::Gate: return "OPEN";
-      default: return "UNLOCK";
+      default: return "UNLOCK";  // the lock, and Entry
     }
   }
 
@@ -373,6 +399,10 @@ class PinScreen : public ui::Screen {
   }
 
   void chooseNew(int length) {
+    if (step_ == Step::Entry) {  // someone else checks it
+      finish(entered(length));
+      return;
+    }
     newPin_ = entered(length);
     step_ = Step::Confirm;
     reset();
@@ -393,6 +423,8 @@ class PinScreen : public ui::Screen {
           settings::unlocked();
           openUp(Guarded::Settings);  // the lock is the PIN for the guarded modules too
           openUp(Guarded::Files);
+          openUp(Guarded::Agent);
+          pinEntered(pin);
           ui::nav::pop();
           return;
         }
@@ -403,6 +435,7 @@ class PinScreen : public ui::Screen {
           matched();
           settings::unlocked();
           openUp(module_);
+          if (module_ == Guarded::Agent) pinEntered(pin);
           if (open_) {
             ui::nav::replace(open_());
           } else {
@@ -436,7 +469,8 @@ class PinScreen : public ui::Screen {
           notice_ = "THE TWO DIDN'T MATCH: AGAIN";
         }
         return;
-      case Step::New: return;  // chooseNew()
+      case Step::New:
+      case Step::Entry: return;  // chooseNew()
     }
     missed();
     reset();
@@ -448,6 +482,7 @@ class PinScreen : public ui::Screen {
   std::function<void(const std::string &)> done_;
   Guarded module_ = Guarded::Files;                    // Gate: whose tag
   std::function<std::unique_ptr<ui::Screen>()> open_;  // Gate: its screen; empty: in front of it
+  std::string tag_;     // Entry: whose tag
   std::string newPin_;  // NEW PIN's digits, waiting for NEW PIN AGAIN
   int digits_[kMaxDigits] = {};
   int cursor_ = 0;
@@ -485,6 +520,13 @@ void pollLock() {
   }
 }
 
+void onPinEntered(void (*listener)(const std::string &pin)) { pinListener = listener; }
+
+std::unique_ptr<ui::Screen> makePinEntry(std::string tag,
+                                         std::function<void(const std::string &)> entered) {
+  return std::make_unique<PinScreen>(std::move(tag), std::move(entered));
+}
+
 std::unique_ptr<ui::Screen> makePinTask(PinTask task,
                                         std::function<void(const std::string &)> done) {
   return std::make_unique<PinScreen>(task, std::move(done));
@@ -514,6 +556,8 @@ void guardedOnTop(Guarded module) {
     regate(module);
   }
 }
+
+void forgetGuard(Guarded module) { guardOf(module).open = false; }
 
 void guardedInUse(Guarded module) {
   if (guardOf(module).open) guardOf(module).ms = millis();

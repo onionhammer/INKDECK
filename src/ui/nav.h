@@ -36,6 +36,13 @@ using input::Key;
 
 enum class Refresh : uint8_t { None, Partial, Full };
 
+// Where HOLD BOOT's words go (issue #52, "Security: talk and agent"). Talk is the default: the
+// limited assistant, which sees no sessions. The agent is only reached from the Agent's screens.
+struct TalkTo {
+  bool agent = false;
+  std::string session;  // with agent: the session to talk into; empty starts a new one
+};
+
 class Screen {
  public:
   virtual ~Screen() = default;
@@ -89,6 +96,9 @@ class Screen {
   // true for the lock screen (apps/lock.h): nothing under it can be reached until it pops
   // itself, and HOLD BOOT doesn't talk while it's on the stack.
   virtual bool locks() const { return false; }
+  // Where HOLD BOOT's words go while this is the top screen that isn't a sheet (nav::base()):
+  // a talk turn, by default, or the agent (the Agent's screens, apps/agent.h).
+  virtual TalkTo talkTo() const { return {}; }
 
   // Called when the screen becomes the top of the stack (pushed, or uncovered by a pop) and
   // when it stops being the top (popped, or covered by a push).
@@ -134,6 +144,9 @@ bool locked();   // a screen that locks() is on the stack
 // top, and the top screen and the one under it allowsTalk(). Any task may ask (input::onBackHold()
 // handlers do, in the timer task); it changes only with the stack.
 bool talkAllowed();
+// What nav::base() says HOLD BOOT talks to (Screen::talkTo()). Any task may ask; it changes
+// only with the stack.
+TalkTo talkTarget();
 
 // What a PWR press does (input::Key::Power; screens never see it).
 void onPowerKey(void (*handler)());

@@ -9,6 +9,7 @@
 
 #include "apps/clock.h"
 #include "apps/closed_book.h"
+#include "apps/lock.h"
 #include "apps/sleep.h"
 #include "audio.h"
 #include "file_copy.h"
@@ -141,6 +142,7 @@ void pollPower() {
 
 void powerKey() {
   if (wakeDesk() || reopenBook()) return;
+  forgetGuard(Guarded::Agent);  // back from the desk face, the Agent asks for the PIN again
   const pmic::Status p = pmic::status();
   const ui::Screen *base = ui::nav::base();
   if (p.ok && p.vbus) {

@@ -10,15 +10,17 @@
 // PIN LOCK (makePinTask()).
 //
 // Where the PIN is asked is chosen at build time (INKDECK_PIN_ON, pin_places.h): power_on,
-// settings, files, or any mix of them.
+// settings, files, agent, or any mix of them.
 //
 // power_on, the lock: every boot that reaches the UI, under each off screen (Sleep, Standby and
 // the desk face, so waking the desk face or cancelling a power-off lands on it), and after
 // lock_minutes without a key. While locked, alarms still ring over it (stopping and snoozing need
 // no PIN), PWR works as usual, and HOLD BOOT doesn't talk (ui/nav.h).
 //
-// settings and files: the same wheels in front of System or Files as Home opens them
-// (openGuarded()), unless that module was on screen in the last minute. Under the module's tag
+// settings, files and agent: the same wheels in front of System, Files or the Agent as Home
+// opens them (openGuarded()), unless that module was on screen in the last minute. A start
+// never counts as recent use, so the Agent asks again after every power-off (its off face's
+// HOLD PWR included). Under the module's tag
 // with ● OPEN on the last wheel. That isn't a lock: BOOT on the first wheel goes back as usual,
 // and HOLD BOOT talks. Opening either with the PIN applies a PIN change waiting on the card, as
 // unlocking does, and so does unlocking the lock for both.
@@ -55,8 +57,19 @@ enum class PinTask : uint8_t { Set, Clear };
 std::unique_ptr<ui::Screen> makePinTask(PinTask task,
                                         std::function<void(const std::string &)> done);
 
-// The modules the PIN can guard (INKDECK_PIN_ON's settings and files).
-enum class Guarded : uint8_t { Settings, Files };
+// The modules the PIN can guard (INKDECK_PIN_ON's settings, files and agent).
+enum class Guarded : uint8_t { Settings, Files, Agent };
+
+// Called in the UI task with the PIN whenever it is entered right at the lock or in front of the
+// Agent, so the Agent can unlock inkharness with the same digits (apps/agent.h). One listener.
+void onPinEntered(void (*listener)(const std::string &pin));
+
+// Wheels whose digits are checked somewhere else: inkharness's own PIN, when the board has none
+// in front of the Agent or the two differ (apps/agent.h). Under `tag`, context INKHARNESS PIN,
+// eight wheels of which the last four may be left out (HOLD ● done), as NEW PIN has. ● on the
+// last wheel or HOLD ● hands the digits to `entered` and pops; BOOT on the first wheel cancels.
+std::unique_ptr<ui::Screen> makePinEntry(std::string tag,
+                                         std::function<void(const std::string &)> entered);
 
 // Home opens them through this. Pushes open()'s screen (or puts it in place of the top screen,
 // with replace), behind the PIN wheels when the build asks for the PIN there, a PIN is set, and
@@ -64,6 +77,11 @@ enum class Guarded : uint8_t { Settings, Files };
 // replaces the wheels with open()'s screen.
 void openGuarded(Guarded module, std::function<std::unique_ptr<ui::Screen>()> open,
                  bool replace = false);
+
+// The module's wheels come up the next time one of its screens is on top, however recently it
+// was in use: PWR forgets the Agent's (apps::powerKey()), so the desk face on USB asks again as a
+// power-off does.
+void forgetGuard(Guarded module);
 
 // The module's screens call these: guardedOnTop() from onEnter() (it may push the wheels in front
 // of the screen, see above), guardedInUse() from onKey(), guardedLeft() from onLeave(). A screen

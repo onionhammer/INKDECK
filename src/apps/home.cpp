@@ -18,7 +18,8 @@
 #include "apps/system.h"
 #include "features.h"
 #if INKDECK_VOICE
-#include "apps/voice.h"
+#include "apps/agent.h"
+#include "voice_client.h"
 #endif
 #include "apps/weather.h"
 #include "audio.h"
@@ -48,7 +49,7 @@ using ui::Rect;
 enum class Kind : uint8_t {
   Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder,
 #if INKDECK_VOICE
-  Voice,
+  Agent,
 #endif
 };
 
@@ -61,26 +62,27 @@ struct Module {
 };
 
 // Copy from the design canvas, trimmed to what the firmware does today. The order is the
-// user's (2026-11-13): what's used most first, related modules together. Screen tags follow it
-// through moduleTag().
+// user's (2026-11-13; AGENT up to 03 and MUSIC down to 07 on 2026-11-20, issue #52): what's
+// used most first, related modules together. Screen tags follow it through moduleTag().
 // The \xC2\xB7 escapes in these strings are the middle dot (UTF-8 U+00B7).
 constexpr Module kModules[] = {
     {"READER", "SD", "EPUB books from microSD. Opens where you left off.",
      "microSD \xC2\xB7 SDMMC 4-bit", Kind::Reader},
     {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
      "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts},
-    {"MUSIC", "I2S", "MP3 files from microSD through the onboard codec and speaker.",
-     "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music},
+#if INKDECK_VOICE
+    {"AGENT", "NET",
+     "Long jobs inkharness runs while the board sleeps. It asks here when you need to choose.",
+     "Wi-Fi \xC2\xB7 ES8311 \xC2\xB7 inkharness", Kind::Agent},
+#endif
     {"WEATHER", "NET", "Now, hourly and 6-day forecast over Wi-Fi, every half hour on USB.",
      "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
      "PCF85063A @ 0x51", Kind::Clock},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
      "ES8311 ADC \xC2\xB7 ALDO2", Kind::Recorder},
-#if INKDECK_VOICE
-    {"VOICE", "NET", "Hold BOOT on any screen and talk to the assistant on your network. It speaks back.",
-     "Wi-Fi \xC2\xB7 ES8311 \xC2\xB7 inkharness", Kind::Voice},
-#endif
+    {"MUSIC", "I2S", "MP3 files from microSD through the onboard codec and speaker.",
+     "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music},
     {"SENSORS", "I2C", "Live readouts from every chip on the I2C bus, and Wi-Fi and Bluetooth LE scans.",
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},
     {"LEVEL", "IMU", "Bubble level for surfaces, a vial for edges, and a tone when it's level.",
@@ -321,10 +323,15 @@ int statsFor(const Module &m, Stat out[4]) {
       return 4;
     }
 #if INKDECK_VOICE
-    case Kind::Voice: {
-      out[0] = {"DAEMON", settings::hasVoice() ? settings::voiceHost() : "NOT SET"};
-      out[1] = {"PORT", std::to_string(settings::voicePort())};
-      out[2] = {"WI-FI", wlan::configured() ? wlan::network() : "NOT SET"};
+    case Kind::Agent: {
+      // What the last connection said (a locked one says only the counts); until then, where.
+      const voice::Agent a = voice::agent();
+      const bool known = a.synced || !a.rows.empty();
+      out[0] = {"NEEDS YOU", known ? std::to_string(a.asks) : "--"};
+      out[1] = {"RUNNING", known ? std::to_string(a.running) : "--"};
+      out[2] = {"HOST", !a.place.empty()    ? a.place
+                        : settings::hasVoice() ? settings::voiceHost()
+                                               : "NOT SET"};
       out[3] = {"TALK", "HOLD BOOT"};
       return 4;
     }
@@ -421,7 +428,7 @@ class HomeScreen : public ui::Screen {
       case Kind::Level: ui::nav::push(makeLevel()); break;
       case Kind::Recorder: ui::nav::push(makeRecorder()); break;
 #if INKDECK_VOICE
-      case Kind::Voice: ui::nav::push(makeVoice()); break;
+      case Kind::Agent: openGuarded(Guarded::Agent, makeAgent); break;
 #endif
     }
   }

@@ -194,7 +194,7 @@ class NoteScreen : public ui::Screen {
 
   const Note &note() const { return note_; }
 
-  std::string tag() const override { return moduleTag(fromFiles_ ? "FILES" : "VOICE"); }
+  std::string tag() const override { return moduleTag(fromFiles_ ? "FILES" : "AGENT"); }
   std::string context() const override { return ui::upper(note_.title); }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kUp, "PREV"};

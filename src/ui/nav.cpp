@@ -4,6 +4,7 @@
 #include <time.h>
 
 #include <atomic>
+#include <mutex>
 #include <vector>
 
 #include "audio.h"
@@ -26,6 +27,8 @@ void (*powerKeyHandler)() = nullptr;
 void (*talkKeyHandler)(bool) = nullptr;
 bool dialSwapped = false;  // the swap orientDial() chose at the dial's press, kept for its repeats
 std::atomic<bool> talkOk{false};  // talkAllowed(), worked out when the stack changes
+std::mutex talkToLock;            // guards talkTo
+TalkTo talkTo;                    // talkTarget(), worked out with talkOk
 
 void request(Refresh r) {
   if (r > pending) pending = r;
@@ -45,6 +48,15 @@ void stackChanged() {
     ok = !t.offFace() && t.allowsTalk() && (!under || under->allowsTalk());
   }
   talkOk = ok;
+  TalkTo to;
+  for (size_t i = stack.size(); i-- > 0;) {
+    if (!stack[i]->overlay()) {
+      to = stack[i]->talkTo();
+      break;
+    }
+  }
+  std::lock_guard<std::mutex> l(talkToLock);
+  talkTo = std::move(to);
 }
 
 StatusInfo statusFor(const Screen &s) {
@@ -263,6 +275,11 @@ bool locked() {
 }
 
 bool talkAllowed() { return talkOk.load(); }
+
+TalkTo talkTarget() {
+  std::lock_guard<std::mutex> l(talkToLock);
+  return talkTo;
+}
 
 void onPowerKey(void (*handler)()) { powerKeyHandler = handler; }
 

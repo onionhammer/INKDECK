@@ -7,6 +7,7 @@
 #include "ui/nav.h"
 
 #if INKDECK_VOICE
+#include "apps/agent.h"
 #include "apps/voice.h"
 #include "apps/voice_tools.h"
 #include "audio.h"
@@ -61,6 +62,7 @@ void beginHoldBoot() {
 #if INKDECK_VOICE
   beginVoiceTools();
   voice::begin();
+  beginAgent();  // what a hold talks to: the agent on its screens, else a talk turn
   input::onBackHold(edge);
 #endif
   ui::nav::onTalkKey(key);

@@ -1,20 +1,27 @@
 // Where the PIN (apps/lock.h) is asked, chosen at build time. Set in platformio.ini:
-//   -DINKDECK_PIN_ON=power_on,settings,files    any of the three, comma-separated
+//   -DINKDECK_PIN_ON=power_on,settings,files,agent    any of the four, comma-separated
 //     power_on  the lock: every start, waking the desk face or cancelling a power-off, and
 //               after lock_minutes without a key (SD:/inkdeck.ini)
 //     settings  opening System from Home, unless it was on screen in the last minute
 //     files     opening Files from Home, the same way
-// Unset: all three. Empty: nowhere (System's PIN LOCK still asks before a change). Any other
+//     agent     opening the Agent from Home, the same way; every start asks again, the Agent
+//               face's HOLD PWR included (apps/agent.h)
+// Unset: all four. Empty: nowhere (System's PIN LOCK still asks before a change). Any other
 // word stops the build. With no PIN set, nothing asks.
 #pragma once
 
 #ifndef INKDECK_PIN_ON
-#define INKDECK_PIN_ON power_on, settings, files
+#define INKDECK_PIN_ON power_on, settings, files, agent
 #endif
 
 namespace pinplaces {
 
-enum Place : unsigned { kPowerOn = 1u << 0, kSettings = 1u << 1, kFiles = 1u << 2 };
+enum Place : unsigned {
+  kPowerOn = 1u << 0,
+  kSettings = 1u << 1,
+  kFiles = 1u << 2,
+  kAgent = 1u << 3,
+};
 
 namespace detail {
 
@@ -53,6 +60,8 @@ constexpr unsigned parse(const char *s) {
       places |= kSettings;
     } else if (wordIs(s, n, "files")) {
       places |= kFiles;
+    } else if (wordIs(s, n, "agent")) {
+      places |= kAgent;
     } else {
       places |= kUnknown;
     }
@@ -63,7 +72,7 @@ constexpr unsigned parse(const char *s) {
 
 inline constexpr unsigned kPlaces = parse(kSpec);
 static_assert(!(kPlaces & kUnknown),
-              "INKDECK_PIN_ON: list any of power_on, settings, files, comma-separated");
+              "INKDECK_PIN_ON: list any of power_on, settings, files, agent, comma-separated");
 
 }  // namespace detail
 
