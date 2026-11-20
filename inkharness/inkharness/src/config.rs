@@ -78,6 +78,9 @@ pub struct Agent {
     /// Model rounds per run before a session fails with "too many steps".
     #[serde(default = "default_max_rounds")]
     pub max_rounds: usize,
+    /// [agent.llm]: the model sessions run on, any [llm] backend. Unset: [chat.llm], else
+    /// [llm] (Config::agent_model).
+    pub llm: Option<Llm>,
 }
 
 /// [talk]: what a talk turn (HOLD BOOT outside the Agent) may use.
@@ -406,6 +409,18 @@ impl Llm {
 }
 
 impl Config {
+    /// The model agent sessions run on, and the table it comes from: [agent.llm], else
+    /// [chat.llm], else [llm].
+    pub fn agent_model(&self) -> (&'static str, &Llm) {
+        if let Some(llm) = self.agent.as_ref().and_then(|a| a.llm.as_ref()) {
+            return ("[agent.llm]", llm);
+        }
+        match &self.chat {
+            Some(chat) => ("[chat.llm]", &chat.llm),
+            None => ("[llm]", &self.llm),
+        }
+    }
+
     /// The stages a model needs are there: a transcript for a model that reads, speech for
     /// one that writes.
     pub fn check(&self) -> Result<()> {
@@ -692,6 +707,30 @@ mod tests {
                 .contains("[think.llm]")
         );
         assert!(check(&format!("{stt}{HEARS}{tts}{think}")).is_ok());
+    }
+
+    #[test]
+    fn sessions_use_agent_llm_then_chat_llm_then_llm() {
+        let cfg = |toml: &str| -> super::Config { toml::from_str(toml).unwrap() };
+        let llm = "[llm]\nbackend = \"mock\"\n";
+        let chat = "[chat.llm]\nbackend = \"openai_compat\"\nbase_url = \"u\"\nmodel = \"chat\"\n";
+        let agent = "[agent]\n[agent.llm]\nbackend = \"openai_compat\"\nbase_url = \"u\"\nmodel = \"anthropic/claude-haiku-5.5\"\nreasoning = \"low\"\n";
+        let names = |c: &super::Config| {
+            let (table, model) = c.agent_model();
+            (table, model.name().to_string())
+        };
+        assert_eq!(
+            names(&cfg(&format!("{llm}{chat}{agent}"))),
+            ("[agent.llm]", "anthropic/claude-haiku-5.5".into())
+        );
+        assert_eq!(
+            names(&cfg(&format!("{llm}{chat}[agent]\n"))),
+            ("[chat.llm]", "chat".into())
+        );
+        assert_eq!(
+            names(&cfg(&format!("{llm}[agent]\n"))),
+            ("[llm]", "mock".into())
+        );
     }
 
     #[test]

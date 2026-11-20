@@ -29,6 +29,7 @@ use tokio::task::AbortHandle;
 use voice_proto::{AgentHello, AskView, SessionList, SessionView, State};
 
 use crate::config;
+use crate::harness::Harness;
 use crate::llm::{self, Llm, Piece, Role, TooManyRounds, Turn};
 use crate::meter;
 use crate::tools::ToolSet;
@@ -138,6 +139,33 @@ pub fn model(cfg: &config::Llm, http: reqwest::Client) -> Result<Box<dyn Llm>> {
     })
 }
 
+/// The agent sessions `cfg` asks for, if it has an [agent] table: on [agent.llm] (else
+/// [chat.llm], else [llm]), with the daemon's tools and their own (none of a device's).
+pub fn start(cfg: &config::Config, harness: &Harness) -> Result<Option<Arc<Agent>>> {
+    let Some(agent_cfg) = &cfg.agent else {
+        return Ok(None);
+    };
+    let (table, chosen) = cfg.agent_model();
+    if let config::Llm::OpenaiCompat {
+        output: config::Modality::Audio,
+        voice,
+        ..
+    } = chosen
+    {
+        if voice.is_none() {
+            anyhow::bail!("{table} has output = \"audio\": give it a voice");
+        }
+        tracing::warn!(
+            "sessions run on {table}, which speaks: they pay for audio nobody hears (a text \
+             model in [agent.llm] is cheaper)"
+        );
+    }
+    let llm = model(chosen, harness.http.clone()).context(table)?;
+    let system = harness.prompt_from(prompt());
+    let name = format!("{} {table}", chosen.name());
+    Agent::open(agent_cfg, llm, harness.tools.clone(), system, &name).map(Some)
+}
+
 /// The base of a session's system prompt (the instructions files and skills follow it).
 pub fn prompt() -> String {
     "You are an agent working through a task on your own, on a home server, for someone who \
@@ -197,12 +225,14 @@ struct Written {
 
 impl Agent {
     /// Opens the sessions in `[agent] dir`: deletes the ones past `keep_days`, starts the
-    /// working ones again, and leaves the asking ones waiting.
+    /// working ones again, and leaves the asking ones waiting. They run on `llm`, which the log
+    /// calls `model`.
     pub fn open(
         cfg: &config::Agent,
         llm: Box<dyn Llm>,
         tools: ToolSet,
         system: String,
+        model: &str,
     ) -> Result<Arc<Agent>> {
         let dir = PathBuf::from(&cfg.dir);
         std::fs::create_dir_all(&dir).with_context(|| format!("making {}", dir.display()))?;
@@ -253,6 +283,7 @@ impl Agent {
             tracing::info!(
                 dir = %agent.dir.display(),
                 place = %agent.place,
+                model,
                 sessions = sessions.len(),
                 resumed,
                 pin = agent.lock.has_pin(),
@@ -925,6 +956,7 @@ pub(crate) mod tests {
             ticket_minutes: 60,
             keep_days: 30,
             max_rounds: 40,
+            llm: None,
         }
     }
 
@@ -940,7 +972,14 @@ pub(crate) mod tests {
     }
 
     fn mock(dir: &Path) -> Arc<Agent> {
-        Agent::open(&cfg(dir), Box::new(mock::MockAgent), tools(), prompt()).unwrap()
+        Agent::open(
+            &cfg(dir),
+            Box::new(mock::MockAgent),
+            tools(),
+            prompt(),
+            "test",
+        )
+        .unwrap()
     }
 
     /// The session once it is in `state`.
@@ -1102,8 +1141,14 @@ pub(crate) mod tests {
     async fn talking_into_a_session_working_or_finished() {
         let dir = crate::skills::tests::scratch("agent-say");
         let gate = Arc::new(Semaphore::new(0));
-        let agent =
-            Agent::open(&cfg(&dir), Box::new(Gated(gate.clone())), tools(), prompt()).unwrap();
+        let agent = Agent::open(
+            &cfg(&dir),
+            Box::new(Gated(gate.clone())),
+            tools(),
+            prompt(),
+            "test",
+        )
+        .unwrap();
         let id = agent.start("find a plumber");
         tokio::task::yield_now().await;
         let said = agent.say(&id, "make it Saturday").unwrap();
@@ -1156,8 +1201,14 @@ pub(crate) mod tests {
     async fn stop_and_delete() {
         let dir = crate::skills::tests::scratch("agent-stop");
         let gate = Arc::new(Semaphore::new(0));
-        let agent =
-            Agent::open(&cfg(&dir), Box::new(Gated(gate.clone())), tools(), prompt()).unwrap();
+        let agent = Agent::open(
+            &cfg(&dir),
+            Box::new(Gated(gate.clone())),
+            tools(),
+            prompt(),
+            "test",
+        )
+        .unwrap();
         let id = agent.start("find a plumber");
         tokio::task::yield_now().await;
         agent.stop(&id).unwrap();
@@ -1210,7 +1261,7 @@ pub(crate) mod tests {
             gate: gate.clone(),
             panics: false.into(),
         };
-        let agent = Agent::open(&cfg(&dir), Box::new(llm), tools(), prompt()).unwrap();
+        let agent = Agent::open(&cfg(&dir), Box::new(llm), tools(), prompt(), "test").unwrap();
         let id = agent.start("pick one");
         tokio::task::yield_now().await;
         // Stopped while the run, about to ask, can't be cancelled at once.
@@ -1240,7 +1291,7 @@ pub(crate) mod tests {
             gate: Arc::new(Semaphore::new(0)),
             panics: true.into(),
         };
-        let agent = Agent::open(&cfg(&dir), Box::new(llm), tools(), prompt()).unwrap();
+        let agent = Agent::open(&cfg(&dir), Box::new(llm), tools(), prompt(), "test").unwrap();
         let id = agent.start("pick one");
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(agent.view(&id).unwrap().state, State::Working);
@@ -1260,9 +1311,65 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn sessions_run_on_agent_llm_when_it_is_set() {
+        let reply = format!(
+            "data: {}\n\ndata: [DONE]\n\n",
+            serde_json::json!({"choices": [{"delta": {"content": "Booked Riverside."}}]})
+        );
+        let (url, mut bodies) = crate::llm::testserver::serve(vec![reply]).await;
+        let dir = crate::skills::tests::scratch("agent-own-model");
+        // [llm] is the mock, which would play its own session through.
+        let toml = format!(
+            "[llm]\nbackend = \"mock\"\n[agent]\ndir = \"{}\"\n[agent.llm]\n\
+             backend = \"openai_compat\"\nbase_url = \"{url}\"\n\
+             model = \"anthropic/claude-haiku-5.5\"\napi_key_env = \"INKHARNESS_TEST_NO_KEY\"\n",
+            dir.display()
+        );
+        let place = crate::place::Place {
+            config: config::Config::from_table(toml::from_str(&toml).unwrap()).unwrap(),
+            read: vec![],
+            instructions: vec![],
+            skill_dirs: vec![],
+        };
+        let harness = Harness::build(&place, false).await.unwrap();
+        let agent = start(&place.config, &harness).unwrap().unwrap();
+        let id = agent.start("book a plumber");
+        let view = until(&agent, &id, State::Done).await;
+        assert_eq!(view.result.as_deref(), Some("Booked Riverside."));
+        let body = bodies.recv().await.unwrap();
+        assert_eq!(body["model"], "anthropic/claude-haiku-5.5");
+        let tools: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["function"]["name"].as_str())
+            .collect();
+        assert!(
+            tools.contains(&"ask_choice") && tools.contains(&"plan"),
+            "{tools:?}"
+        );
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("You are an agent")
+        );
+
+        // A model that speaks has to have a voice, as anywhere else.
+        let toml = format!(
+            "[llm]\nbackend = \"mock\"\n[agent]\ndir = \"{}\"\n[agent.llm]\n\
+             backend = \"openai_compat\"\nbase_url = \"u\"\nmodel = \"m\"\noutput = \"audio\"\n",
+            dir.display()
+        );
+        let cfg = config::Config::from_table(toml::from_str(&toml).unwrap()).unwrap();
+        let err = start(&cfg, &harness).err().unwrap().to_string();
+        assert!(err.contains("[agent.llm] has output = \"audio\""), "{err}");
+    }
+
+    #[tokio::test]
     async fn too_many_steps_fail() {
         let dir = crate::skills::tests::scratch("agent-endless");
-        let agent = Agent::open(&cfg(&dir), Box::new(Endless), tools(), prompt()).unwrap();
+        let agent = Agent::open(&cfg(&dir), Box::new(Endless), tools(), prompt(), "test").unwrap();
         let id = agent.start("count forever");
         let view = until(&agent, &id, State::Fail).await;
         assert_eq!(

@@ -17,16 +17,7 @@ use crate::{llm, session, stt, tts};
 
 pub async fn run(place: Place, harness: Harness) -> Result<()> {
     let cfg = &place.config;
-    // Sessions use the text model, with the daemon's tools and their own (no device's).
-    let agent = match &cfg.agent {
-        Some(agent_cfg) => {
-            let model = cfg.chat.as_ref().map_or(&cfg.llm, |chat| &chat.llm);
-            let llm = agent::model(model, harness.http.clone())?;
-            let system = harness.prompt_from(agent::prompt());
-            Some(Agent::open(agent_cfg, llm, harness.tools.clone(), system)?)
-        }
-        None => None,
-    };
+    let agent = agent::start(cfg, &harness)?;
     let devices = match cfg.check() {
         Ok(()) => Some(device_app(&place, &harness, agent.clone())?),
         Err(e) if !cfg.http.is_empty() => {

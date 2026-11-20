@@ -507,7 +507,14 @@ mod tests {
         let mut cfg = crate::agent::tests::cfg(&dir);
         cfg.pin_sha256 = Some(crate::agent::sha256_hex("1234"));
         let llm = crate::agent::model(&crate::config::Llm::Mock, harness.http.clone()).unwrap();
-        let agent = Agent::open(&cfg, llm, harness.tools.clone(), crate::agent::prompt()).unwrap();
+        let agent = Agent::open(
+            &cfg,
+            llm,
+            harness.tools.clone(),
+            crate::agent::prompt(),
+            "test",
+        )
+        .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let api = Arc::new(Api::new(chat, "s3cret".into(), vec![]).with_agent(Some(agent)));

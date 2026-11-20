@@ -1481,6 +1481,7 @@ mod tests {
             agent::model(&config::Llm::Mock, http.clone()).unwrap(),
             tools.clone(),
             agent::prompt(),
+            "test",
         )
         .unwrap();
         let app = Arc::new(App {
@@ -1840,6 +1841,7 @@ mod tests {
             agent::model(&config::Llm::Mock, reqwest::Client::new()).unwrap(),
             tools.clone(),
             agent::prompt(),
+            "test",
         )
         .unwrap();
         let app = Arc::new(App {

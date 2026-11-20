@@ -137,12 +137,20 @@ ticket_minutes = 60     # how long an unlock lets a board's new connections back
 keep_days = 30          # finished sessions older than this are deleted
 max_rounds = 40         # model rounds per run before a session fails with "too many steps"
 
+[agent.llm]             # optional: the model sessions run on; unset: [chat.llm], else [llm]
+backend = "openai_compat"
+base_url = "https://openrouter.ai/api/v1"
+model = "anthropic/claude-haiku-5.5"
+api_key_env = "OPENROUTER_API_KEY"
+
 [talk]                  # what HOLD BOOT outside the Agent may use; unset: every tool
 tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixes ending in *; the board's own always stay
 ```
 
-- A session runs on the text model (`[chat.llm]`, or `[llm]`) with the daemon's tools (home,
-  MCP, web search, run_js, skills) and two of its own: `plan`, a checklist the board shows as a
+- A session runs on `[agent.llm]` if there is one, else on `[chat.llm]`, else on `[llm]`: any
+  backend `[llm]` takes, checked at startup like the others, and named on the log's
+  `agent sessions` line. A text model suits it; one that speaks would pay for audio nobody
+  hears. It gets the daemon's tools (home, MCP, web search, run_js, skills) and two of its own: `plan`, a checklist the board shows as a
   meter, and `ask_choice`, which puts a question with 2 to 6 options to the user and waits,
   minutes or days, for the answer. The board's tools stay out: it may be off. The prompt tells
   the model it works alone for someone who reads results on a small e-paper screen: plan first,
