@@ -136,6 +136,7 @@ pin_sha256 = "…"        # optional: printf %s 1234 | sha256sum. Boards unlock 
 ticket_minutes = 60     # how long an unlock lets a board's new connections back in without the PIN
 keep_days = 30          # finished sessions older than this are deleted
 max_rounds = 40         # model rounds per run before a session fails with "too many steps"
+reply = "spoken"        # an agent turn's reply: "spoken" (a short one), or "none" (the words go to the session, nothing said)
 
 [agent.llm]             # optional: the model sessions run on; unset: [chat.llm], else [llm]
 backend = "openai_compat"
@@ -156,6 +157,12 @@ tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixe
   the model it works alone for someone who reads results on a small e-paper screen: plan first,
   keep the log terse, ask only when the choice is the user's, end with a short Markdown result,
   and open it with a heading when it is meant to be kept (the session is then a note).
+- An agent turn (HOLD BOOT on the Agent's screens) starts a session or talks into one, and
+  gets a short spoken reply while the session works on. With `reply = "none"` it gets none:
+  the words are written down ([stt], or one request to a model that hears) and handed to the
+  session, and the board hears only which session took them. That saves a model request and
+  the speech per turn. The log has a line for each (`agent turn (no reply)`: the words, the
+  session, how long speech-to-text took).
 - What it writes between tool calls and the calls themselves go to its log. Talking into a
   working session reaches the model at its next round; into an asking one, it answers in words;
   into a finished one, it starts again. Each run logs what it cost, as turns do.

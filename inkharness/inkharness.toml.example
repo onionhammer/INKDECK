@@ -169,6 +169,9 @@ api_key_env = "OPENAI_API_KEY"
 # ticket_minutes = 60         # how long an unlock lets the board's new connections back in
 # keep_days = 30              # finished sessions older than this are deleted
 # max_rounds = 40             # model rounds per run before a session fails ("too many steps")
+# reply = "spoken"            # an agent turn's reply: "spoken", a sentence or two; "none", no
+#                             # reply (the words are written down and go to the session, the
+#                             # board hears which session took them)
 #
 # The model sessions run on, any [llm] backend: a text model that is good with tools, as a
 # session works through many steps on its own. Through OpenRouter:

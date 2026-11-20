@@ -1127,7 +1127,9 @@ async fn run_agent_turn(
 }
 
 /// An agent turn: what was said starts a session or goes into the one named, the device hears
-/// which (`started`), and then a short spoken reply while the session works on.
+/// which (`started`), and then a short spoken reply while the session works on. With `[agent]
+/// reply = "none"` there is no reply: only the words written down (one request at most) and
+/// handed to the session.
 async fn agent_turn(
     app: &App,
     agent: &Arc<Agent>,
@@ -1160,6 +1162,10 @@ async fn agent_turn(
         },
     )
     .await;
+    if !agent.speaks() {
+        tracing::info!(session = %id, stt_ms, "agent turn (no reply): {text:?}");
+        return Ok(());
+    }
 
     let request = agent::voice_request(text, said.as_ref());
     let no_tools = app.tools.only(&[]);
@@ -1483,6 +1489,22 @@ mod tests {
     /// A daemon with agent sessions behind the PIN 1234, whose speech-to-text always hears
     /// `heard`; its address and the agent.
     async fn agent_daemon(name: &str, heard: &str) -> (std::net::SocketAddr, Arc<Agent>) {
+        let http = reqwest::Client::new();
+        let llm = llm::build(&config::Llm::Mock, http).unwrap();
+        agent_daemon_with(name, Some(heard), llm, |cfg| {
+            cfg.pin_sha256 = Some(agent::sha256_hex("1234"));
+        })
+        .await
+    }
+
+    /// A daemon with agent sessions as `edit` sets them, speech-to-text that hears `heard`
+    /// (None: none), and `llm` for its turns.
+    async fn agent_daemon_with(
+        name: &str,
+        heard: Option<&str>,
+        llm: Box<dyn Llm>,
+        edit: impl FnOnce(&mut config::Agent),
+    ) -> (std::net::SocketAddr, Arc<Agent>) {
         let dir = crate::skills::tests::scratch(name);
         let tools = ToolSet::build(
             None,
@@ -1493,7 +1515,7 @@ mod tests {
         )
         .unwrap();
         let mut cfg = crate::agent::tests::cfg(&dir);
-        cfg.pin_sha256 = Some(agent::sha256_hex("1234"));
+        edit(&mut cfg);
         let http = reqwest::Client::new();
         let agent = Agent::open(
             &cfg,
@@ -1509,10 +1531,10 @@ mod tests {
             psk: psk("t"),
             plaintext: false,
             system_prompt: String::new(),
-            stt: Some(
-                crate::stt::build(&config::Stt::Mock { text: heard.into() }, http.clone()).unwrap(),
-            ),
-            llm: llm::build(&config::Llm::Mock, http.clone()).unwrap(),
+            stt: heard.map(|heard| {
+                crate::stt::build(&config::Stt::Mock { text: heard.into() }, http.clone()).unwrap()
+            }),
+            llm,
             tts: Some(crate::tts::build(&config::Tts::Mock, http).unwrap()),
             fast_tools: tools.clone(),
             tools,
@@ -1976,6 +1998,153 @@ mod tests {
             (view.via, view.backend),
             (voice_proto::Via::Herdr, voice_proto::Backend::Herdr)
         );
+    }
+
+    /// Every frame of a turn, up to its reply_end: control messages, and "audio" for audio.
+    async fn whole_turn(reader: &mut FrameReader<OwnedReadHalf>) -> Vec<String> {
+        let mut frames = Vec::new();
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(10), reader.read())
+                .await
+                .expect("the daemon went quiet")
+                .unwrap()
+                .expect("the daemon hung up");
+            match frame {
+                Frame::Audio(_) => frames.push("audio".to_string()),
+                Frame::Control(json) => {
+                    let msg: ServerMsg = serde_json::from_str(&json).unwrap();
+                    // What the session does meanwhile comes too; the turn's own are kept.
+                    if matches!(
+                        msg,
+                        ServerMsg::Sessions(_) | ServerMsg::Session(_) | ServerMsg::Ask(_)
+                    ) {
+                        continue;
+                    }
+                    let end = msg == ServerMsg::ReplyEnd;
+                    frames.push(json);
+                    if end {
+                        return frames;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn quiet(cfg: &mut config::Agent) {
+        cfg.reply = config::Reply::None;
+    }
+
+    #[tokio::test]
+    async fn with_no_reply_an_agent_turn_only_hands_over_the_words() {
+        let http = reqwest::Client::new();
+        let llm = llm::build(&config::Llm::Mock, http).unwrap();
+        let (addr, agent) = agent_daemon_with(
+            "conn-quiet",
+            Some("find a plumber and ask me which"),
+            llm,
+            quiet,
+        )
+        .await;
+        let (_, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        let (mut reader, mut writer) = board.unwrap();
+        utter(&mut writer, Some(Mode::Agent), None).await;
+        let turn = whole_turn(&mut reader).await;
+        assert_eq!(turn.len(), 3, "{turn:?}");
+        assert_eq!(
+            turn[0],
+            r#"{"type":"stt","text":"find a plumber and ask me which"}"#
+        );
+        let ServerMsg::Started { session: id } = serde_json::from_str(&turn[1]).unwrap() else {
+            panic!("{turn:?}")
+        };
+        assert_eq!(turn[2], r#"{"type":"reply_end"}"#);
+        assert_eq!(
+            agent.view(&id).unwrap().prompt,
+            "find a plumber and ask me which"
+        );
+
+        // The session asks; the next turn into it is the answer, again without a reply.
+        crate::agent::tests::until(&agent, &id, State::Ask).await;
+        utter(&mut writer, Some(Mode::Agent), Some(&id)).await;
+        let turn = whole_turn(&mut reader).await;
+        assert_eq!(turn.len(), 3, "{turn:?}");
+        assert_eq!(turn[1], format!(r#"{{"type":"started","session":"{id}"}}"#));
+        let view = crate::agent::tests::until(&agent, &id, State::Done).await;
+        assert!(
+            view.log
+                .iter()
+                .any(|l| l.text == "answered: find a plumber and ask me which")
+        );
+        assert!(
+            view.result
+                .unwrap()
+                .contains(r#"{"text":"find a plumber and ask me which"}"#)
+        );
+
+        // Errors are as ever.
+        utter(&mut writer, Some(Mode::Agent), Some("nope")).await;
+        let turn = whole_turn(&mut reader).await;
+        assert!(
+            turn.iter().any(|f| f.contains("no such session")),
+            "{turn:?}"
+        );
+        // Talk turns still answer aloud.
+        utter(&mut writer, None, None).await;
+        let turn = whole_turn(&mut reader).await;
+        assert!(turn.iter().any(|f| f.contains("reply_start")), "{turn:?}");
+        assert!(turn.iter().any(|f| f == "audio"));
+    }
+
+    /// Hears the recording, and only writes it down: anything else it is asked fails the test.
+    struct OnlyWritesDown(Arc<std::sync::atomic::AtomicUsize>);
+
+    #[async_trait]
+    impl Llm for OnlyWritesDown {
+        fn hears(&self) -> bool {
+            true
+        }
+
+        async fn respond(
+            &self,
+            request: llm::Request<'_>,
+            out: mpsc::Sender<Piece>,
+        ) -> Result<Outcome> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            assert!(
+                request.system.starts_with("Write down"),
+                "asked for more: {}",
+                request.system
+            );
+            assert!(request.audio.is_some() && request.tools.defs().is_empty());
+            out.send(Piece::Transcript("Tidy the notes.".into()))
+                .await?;
+            Ok(Outcome::Done)
+        }
+    }
+
+    #[tokio::test]
+    async fn with_no_reply_the_hearing_model_only_writes_it_down() {
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (addr, agent) = agent_daemon_with(
+            "conn-quiet-hears",
+            None,
+            Box::new(OnlyWritesDown(asked.clone())),
+            quiet,
+        )
+        .await;
+        let (_, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        let (mut reader, mut writer) = board.unwrap();
+        utter(&mut writer, Some(Mode::Agent), None).await;
+        let turn = whole_turn(&mut reader).await;
+        assert_eq!(turn[0], r#"{"type":"stt","text":"Tidy the notes."}"#);
+        assert!(
+            turn[1].contains(r#""type":"started""#) && turn.len() == 3,
+            "{turn:?}"
+        );
+        assert_eq!(asked.load(Ordering::Relaxed), 1, "exactly one request");
+        let id = agent.list(false).sessions[0].id.clone();
+        assert_eq!(agent.view(&id).unwrap().prompt, "Tidy the notes.");
     }
 
     #[tokio::test]

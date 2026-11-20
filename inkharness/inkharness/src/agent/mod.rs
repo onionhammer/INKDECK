@@ -69,6 +69,8 @@ pub struct Agent {
     events: broadcast::Sender<Event>,
     /// What new sessions run on.
     backend: Backend,
+    /// Whether an agent turn gets a spoken reply.
+    reply: config::Reply,
     /// The claude backend, when it is on.
     claude: Option<Claude>,
     /// Where claude runs reach ask_choice and plan.
@@ -373,6 +375,7 @@ impl Agent {
             sessions: Mutex::new(sessions),
             events: broadcast::channel(256).0,
             backend: backends.default,
+            reply: cfg.reply,
             claude: backends.claude,
             bridge: OnceLock::new(),
             herdr: OnceLock::new(),
@@ -427,6 +430,11 @@ impl Agent {
 
     pub fn has_pin(&self) -> bool {
         self.lock.has_pin()
+    }
+
+    /// Whether an agent turn answers with a spoken reply (`[agent] reply`).
+    pub fn speaks(&self) -> bool {
+        self.reply == config::Reply::Spoken
     }
 
     pub fn unlock_pin(&self, pin: &str) -> Unlock {
@@ -1177,6 +1185,7 @@ pub(crate) mod tests {
             llm: None,
             backend: Default::default(),
             claude: None,
+            reply: Default::default(),
         }
     }
 

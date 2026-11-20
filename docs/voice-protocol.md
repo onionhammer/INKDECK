@@ -377,6 +377,18 @@ device                                   daemon
   finished session starts it again with them, and the reply answers from its result if it can.
 - Without speech-to-text on the daemon, the model that hears the recording writes the words
   down first: a session needs them as text.
+- **No reply**: with `[agent] reply = "none"` in the daemon's config, an agent turn has no
+  reply at all. The words are written down (speech-to-text, or that one request to the model
+  that hears) and handed to the session as above, and the turn is `stt {text}`, `started
+  {session}`, `reply_end`: no `text`, no `reply_start`, no audio. Refusals are as above
+  (`error {message}`, then `reply_end`). Talk turns still answer aloud.
+
+  ```
+  listen_start {mode: "agent"}, audio …, listen_stop   →
+                                 ←       stt {text}
+                                 ←       started {session: "k7q2"}
+                                 ←       reply_end
+  ```
 
 ### Backends
 

@@ -86,8 +86,23 @@ pub struct Agent {
     /// What new sessions run on.
     #[serde(default)]
     pub backend: BackendName,
+    /// What an agent turn answers with: a short spoken reply, or none (the words only go to
+    /// the session).
+    #[serde(default)]
+    pub reply: Reply,
     /// [agent.claude]: the claude backend, headless Claude Code.
     pub claude: Option<Claude>,
+}
+
+/// `[agent] reply`: what an agent turn answers with.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reply {
+    /// A sentence or two, spoken: what the session will do, or an acknowledgement.
+    #[default]
+    Spoken,
+    /// Nothing: the words are written down and handed to the session, and the turn ends.
+    None,
 }
 
 /// What a session runs on, as `[agent] backend` names it.
@@ -891,6 +906,10 @@ mod tests {
         .unwrap();
         let agent = cfg.agent.unwrap();
         assert_eq!(agent.backend, super::BackendName::Claude);
+        assert_eq!(agent.reply, super::Reply::Spoken);
+        let quiet: super::Config =
+            toml::from_str("[llm]\nbackend = \"mock\"\n[agent]\nreply = \"none\"\n").unwrap();
+        assert_eq!(quiet.agent.unwrap().reply, super::Reply::None);
         let claude = agent.claude.unwrap();
         assert_eq!(
             (claude.command.as_slice(), claude.model.as_str()),
