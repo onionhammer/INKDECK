@@ -353,7 +353,8 @@ class SessionScreen : public ui::Screen {
     drawText(c, x, baseline, text, style::kLabel);
   }
 
-  // A herdr agent's last screen lines, paper on ink, as on its terminal.
+  // A herdr agent's last screen lines, in a framed box: ink on paper like the rest of the panel
+  // (an inverted block would read as selected, and ghosts most when it refreshes every 2 s).
   void drawScreen(ui::Canvas &c, Rect &r, const std::vector<std::string> &screen, int maxLines) {
     using namespace ui;
     const int n = std::min(static_cast<int>(screen.size()), maxLines);
@@ -362,11 +363,10 @@ class SessionScreen : public ui::Screen {
     r.takeTop(kRule);
     drawSectionHeader(c, r.takeTop(kSectionH), "ITS SCREEN", "LAST " + std::to_string(n) + " LINES");
     const Rect box = r.takeTop(n * kScreenLineH + 20).inset(kPadX, 6);
-    fill(c, box, kInk);
+    frame(c, box, 2);
     int y = box.y + 4;
     for (int i = static_cast<int>(screen.size()) - n; i < static_cast<int>(screen.size()); ++i) {
-      drawText(c, {box.x + 10, y, box.w - 20, kScreenLineH}, screen[i], style::kKey, Align::Left,
-               kPaper);
+      drawText(c, {box.x + 10, y, box.w - 20, kScreenLineH}, screen[i], style::kKey);
       y += kScreenLineH;
     }
     r.takeTop(4);
