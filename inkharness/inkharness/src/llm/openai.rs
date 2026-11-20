@@ -88,13 +88,21 @@ impl OpenAiCompat {
         body
     }
 
-    /// A user message's content: the recording for a model that hears, else the text.
+    /// A user message's content: the recording for a model that hears (after the text, if
+    /// there is any: what to do with it), else the text.
     fn user_content(&self, text: &str, audio: Option<&Recording>) -> Value {
         match audio {
-            Some(recording) if self.hears => json!([{
-                "type": "input_audio",
-                "input_audio": {"data": recording.wav_base64, "format": "wav"},
-            }]),
+            Some(recording) if self.hears => {
+                let audio = json!({
+                    "type": "input_audio",
+                    "input_audio": {"data": recording.wav_base64, "format": "wav"},
+                });
+                if text.trim().is_empty() {
+                    json!([audio])
+                } else {
+                    json!([{"type": "text", "text": text}, audio])
+                }
+            }
             _ => json!(text),
         }
     }
@@ -290,6 +298,32 @@ impl Drop for Record {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_recording_with_what_to_do_with_it() {
+        let mut api = OpenAiCompat::new(
+            reqwest::Client::new(),
+            "http://unused",
+            "INKHARNESS_TEST_NO_KEY",
+            "m",
+            100,
+            None,
+        );
+        api.hears = true;
+        let recording = Recording::new(&[0, 1, 0, 1], 16000);
+        let content = api.user_content("Transcribe this.", Some(&recording));
+        assert_eq!(
+            content[0],
+            json!({"type": "text", "text": "Transcribe this."})
+        );
+        assert_eq!(content[1]["type"], "input_audio");
+        // A turn's recording goes alone, as before.
+        let content = api.user_content("", Some(&recording));
+        assert_eq!(content.as_array().unwrap().len(), 1);
+        assert_eq!(content[0]["type"], "input_audio");
+        api.hears = false;
+        assert_eq!(api.user_content("hi", Some(&recording)), json!("hi"));
+    }
+
     use super::super::Outcome;
     use super::super::testserver::{collect, collect_all, serve};
     use super::super::tool_loop::ToolLoop;

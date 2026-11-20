@@ -208,6 +208,8 @@ The daemon's `hello` gains `agent` when it has sessions:
 | `answer` | `session`, `ask` (the question's id), `choice` (an index into its `options`) | Answers a question. The session carries on |
 | `stop` | `session` | Stops a working or asking session (state `stopped`) |
 | `delete` | `session` | Deletes a session for good |
+| `send_draft` | `session`, `draft` (the `draft` message's `id`) | Types a herdr session's draft into its program ([Drafts](#drafts)) |
+| `drop_draft` | `session`, `draft` | Throws a draft away |
 
 ### Daemon → device
 
@@ -217,8 +219,9 @@ The daemon's `hello` gains `agent` when it has sessions:
 | `session` | one session in full | [Below](#session) |
 | `ask` | a question | A new question appeared, for the board's ask sheet ([below](#ask)). Also inside `session` |
 | `started` | `session` | During an agent turn: the session the utterance went to (new or existing), once the daemon knows, before `reply_start` |
+| `draft` | `session`, `id`, `text` | During an agent turn into a herdr session, in place of `started` and the reply: the words, waiting for the board to send them ([Drafts](#drafts)) |
 | `unlocked` | `ok`, `ticket` (when ok), `ttl_s` (when ok), `wait_s` (when further tries are refused for a while) | The answer to `unlock` ([Unlock](#unlock)) |
-| `refused` | `request` (the refused message's `type`), `session` (if it named one), `message` | A request that isn't a turn and can't be done. `message` is one of `locked`, `no such session`, `already answered`, `no such choice`, `not running`, `no sessions on this daemon`, and for herdr sessions `not waiting any more`, `it's busy`, `not allowed by [herdr]`, `herdr is not reachable`, or a sentence |
+| `refused` | `request` (the refused message's `type`), `session` (if it named one), `message` | A request that isn't a turn and can't be done. `message` is one of `locked`, `no such session`, `already answered`, `no such choice`, `not running`, `no sessions on this daemon`, and for herdr sessions `not waiting any more`, `it's busy`, `not allowed by [herdr]`, `herdr is not reachable`, `no such draft`, `the draft has expired`, or a sentence |
 
 `sessions`, `session` and `ask` come whenever something changes, so they can arrive at any
 time: between turns, and in the middle of one (between a reply's `text` and its audio frames).
@@ -376,7 +379,11 @@ device                                   daemon
   them. Talking into an asking session answers its question with the words. Talking into a
   finished session starts it again with them, and the reply answers from its result if it can.
 - Without speech-to-text on the daemon, the model that hears the recording writes the words
-  down first: a session needs them as text.
+  down first: a session needs them as text. It is told to transcribe only, in its system prompt
+  and beside the recording. A transcript with more words than the recording could hold (over
+  4.5 a second, plus 3) is an answer, not a transcript: the turn fails with `error {message:
+  "couldn't make out what was said"}` and `reply_end`, and the words reach no session.
+- Into a herdr session, the turn ends with a `draft` instead ([Drafts](#drafts)).
 - **No reply**: with `[agent] reply = "none"` in the daemon's config, an agent turn has no
   reply at all. The words are written down (speech-to-text, or that one request to the model
   that hears) and handed to the session as above, and the turn is `stt {text}`, `started
@@ -432,9 +439,10 @@ is `hc`); inkharness follows them through its API (`hc connect`).
   {message: "not waiting any more"}`. A question that isn't for permission can be answered in
   words (typed in). A question with no choices on screen has none (the board's "something
   else" still works).
-- **Talking into it**: an agent turn with its `session` types the words into the program when
-  it is `idle`, `done`, or asking a question; while it works the turn gets `error {message:
-  "it's busy"}`. The spoken reply says it was typed in.
+- **Talking into it**: words are never typed straight away. An agent turn with its `session`
+  ends with a `draft` ([Drafts](#drafts)); `send_draft` types it into the program when it is
+  `idle`, `done`, or asking a question (not one for permission), and while it works it is
+  refused, `it's busy`, and kept to send again.
 - **Stop** presses its stop key (when `[herdr] interrupt` allows; refused otherwise, `not
   allowed by [herdr]`). Each action checks its `[herdr]` policy: answering, typing, stopping.
 - **Starting one**: api and claude sessions get a `herdr_run` tool (when `[herdr] run`
@@ -444,6 +452,38 @@ is `hc`); inkharness follows them through its API (`hc connect`).
   as its task, and `started` names the new terminal's session.
 - If herdr can't be reached, its sessions keep their last state, and actions on them get
   `herdr is not reachable` until it is back.
+
+### Drafts
+
+A program in a terminal does what it is typed, so words said into a herdr session wait for
+the board to confirm them. (Words for inkharness's own sessions, api and claude, still go to
+them at once.)
+
+```
+device                                   daemon
+  listen_start {mode: "agent", session: "hb2c75bf"}, audio …, listen_stop   →
+                                 ←       stt {text}
+                                 ←       draft {session: "hb2c75bf", id: "d7", text: "run the tests again"}
+                                 ←       reply_end
+  send_draft {session: "hb2c75bf", draft: "d7"}   →   (typed into its program)
+     or drop_draft {session: "hb2c75bf", draft: "d7"}
+```
+
+- The turn into a herdr session is `stt {text}`, `draft {session, id, text}`, `reply_end`: no
+  `started`, no spoken reply, whatever `[agent] reply` says. Nothing is typed.
+- The daemon keeps a draft for 2 minutes. `send_draft` types it, as the session's state and
+  `[herdr] send` allow. Refused (`it's busy`, `not waiting any more`, `not allowed by [herdr]`,
+  `herdr is not reachable`), it gets `refused {request: "send_draft", session, message}` and the
+  draft is kept, to send again while it lasts; sent, it is gone, and the session's `log` shows
+  the words (`you: …` or `answered: …`). A draft that was sent, dropped or never made gets
+  `no such draft`; one older than 2 minutes, `the draft has expired`.
+- `drop_draft` throws it away and gets no answer.
+- The turn itself is refused as before (`locked`, `no such session`, …), and at once with `not
+  allowed by [herdr]` when `[herdr] send` is `deny`: no draft is made that couldn't be sent.
+- While locked, `send_draft` and `drop_draft` get `refused {message: "locked"}`.
+- Over HTTP, `POST /sessions/{id}/say` on a herdr session answers `{"draft": {session, id,
+  text}}` the same way, unless it says `"confirm": true`; `POST /sessions/{id}/send_draft` and
+  `/drop_draft` take `{"draft"}`.
 
 ### Over HTTP
 
@@ -475,8 +515,9 @@ gives the token (the mock config has none); `--plaintext` speaks protocol 1, as 
 them and answers each call with its tool's `answer`.
 
 It drives agent sessions too: `--unlock PIN` or `--ticket T` first, `--sync` and `--open ID` to
-follow, `--answer SESSION:ASK:N`, `--stop ID`, `--delete ID`, and `--mode agent` (with
-`--session ID` to talk into one) for an agent turn; `--wait SECS` goes on printing what comes,
+follow, `--answer SESSION:ASK:N`, `--stop ID`, `--delete ID`, `--send-draft SESSION:DRAFT` and
+`--drop-draft SESSION:DRAFT` (or `--send-drafts`, which sends each draft as it comes), and
+`--mode agent` (with `--session ID` to talk into one) for an agent turn; `--wait SECS` goes on printing what comes,
 and `--json` prints each message as it was sent. With `[llm] backend = "mock"`, sessions play
 through a scripted run instead of a model: a plan of three steps, a tool call, then a result;
 "ask" in the task makes it ask which of two plumbers to book, "slow" takes 3 s a step, "note"

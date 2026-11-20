@@ -84,6 +84,15 @@ struct Args {
     /// Delete a session.
     #[arg(long, value_name = "ID")]
     delete: Option<String>,
+    /// Type a herdr session's draft (from a `draft` message) into it.
+    #[arg(long, value_name = "SESSION:DRAFT")]
+    send_draft: Option<String>,
+    /// Throw a draft away.
+    #[arg(long, value_name = "SESSION:DRAFT")]
+    drop_draft: Option<String>,
+    /// Send each draft as it comes (as a board would once you confirm it).
+    #[arg(long)]
+    send_drafts: bool,
     /// After everything else, go on printing what comes for this many seconds (with --sync or
     /// --open, 5 unless given).
     #[arg(long, value_name = "SECS")]
@@ -113,13 +122,17 @@ async fn main() -> Result<()> {
         || args.open.is_some()
         || args.answer.is_some()
         || args.stop.is_some()
-        || args.delete.is_some();
+        || args.delete.is_some()
+        || args.send_draft.is_some()
+        || args.drop_draft.is_some();
     if utterance.is_none() && !requests {
         bail!(
             "give --wav FILE or --silence SECONDS, or a session request (--sync, --open, \
-             --answer, --stop, --delete, --unlock, --ticket)"
+             --answer, --stop, --delete, --send-draft, --drop-draft, --unlock, --ticket)"
         );
     }
+    let send_draft = args.send_draft.as_deref().map(parse_draft).transpose()?;
+    let drop_draft = args.drop_draft.as_deref().map(parse_draft).transpose()?;
     let answer = args.answer.as_deref().map(parse_answer).transpose()?;
     let rate = utterance.as_ref().map_or(16000, |(_, rate)| *rate);
 
@@ -282,6 +295,12 @@ async fn main() -> Result<()> {
         )
         .await?;
     }
+    if let Some((session, draft)) = send_draft {
+        put(&mut writer, &ClientMsg::SendDraft { session, draft }).await?;
+    }
+    if let Some((session, draft)) = drop_draft {
+        put(&mut writer, &ClientMsg::DropDraft { session, draft }).await?;
+    }
 
     if let Some((pcm, rate)) = utterance {
         let mode = match args.mode.as_deref() {
@@ -425,6 +444,13 @@ async fn turn(
                         put(writer, &result).await?;
                     }
                     ServerMsg::Hello { .. } => {}
+                    ServerMsg::Draft { session, id, text } if args.send_drafts => {
+                        println!(
+                            "[{:>5} ms] draft {id} for {session}: {text:?}; sending it",
+                            ms()
+                        );
+                        put(writer, &ClientMsg::SendDraft { session, draft: id }).await?;
+                    }
                     other if !args.json => out.show(&other),
                     _ => {}
                 }
@@ -490,6 +516,16 @@ async fn next(reader: &mut Reader, out: &mut Printer) -> Result<ServerMsg> {
 }
 
 /// `SESSION:ASK:N`.
+/// `SESSION:DRAFT`.
+fn parse_draft(text: &str) -> Result<(String, String)> {
+    match text.split_once(':') {
+        Some((session, draft)) if !session.is_empty() && !draft.is_empty() => {
+            Ok((session.to_string(), draft.to_string()))
+        }
+        _ => bail!("give SESSION:DRAFT, such as hb2c75bf:d1"),
+    }
+}
+
 fn parse_answer(text: &str) -> Result<(String, String, usize)> {
     let parts: Vec<&str> = text.split(':').collect();
     let [session, ask, choice] = parts[..] else {
@@ -605,6 +641,12 @@ impl Printer {
                 println!("    answer: --answer {}:{}:N", ask.session, ask.id);
             }
             ServerMsg::Started { session } => println!("{at} started: session {session}"),
+            ServerMsg::Draft { session, id, text } => {
+                println!("{at} draft {id} for {session}: {text:?}");
+                println!(
+                    "    send it: --send-draft {session}:{id} (or drop it: --drop-draft {session}:{id})"
+                );
+            }
             ServerMsg::Unlocked {
                 ok,
                 ticket,
@@ -683,6 +725,11 @@ mod tests {
             ("k7q2".into(), "a1".into(), 2)
         );
         assert!(super::parse_answer("k7q2:a1").is_err());
+        assert_eq!(
+            super::parse_draft("hb2c75bf:d1").unwrap(),
+            ("hb2c75bf".into(), "d1".into())
+        );
+        assert!(super::parse_draft("hb2c75bf").is_err());
         assert!(super::parse_answer("k7q2:a1:x").is_err());
     }
 }

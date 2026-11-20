@@ -213,6 +213,10 @@ pub enum ClientMsg {
     Stop { session: String },
     /// Deletes a session for good.
     Delete { session: String },
+    /// Types a draft (`draft` from the daemon) into its herdr session.
+    SendDraft { session: String, draft: String },
+    /// Throws a draft away.
+    DropDraft { session: String, draft: String },
 }
 
 /// What kind of turn an utterance is.
@@ -272,6 +276,13 @@ pub enum ServerMsg {
     /// During an agent turn: the session the utterance went to, before `reply_start`.
     Started {
         session: String,
+    },
+    /// During an agent turn into a herdr session: the words, kept for a while, waiting for the
+    /// board to send them (`send_draft`) or drop them. Nothing is typed until then.
+    Draft {
+        session: String,
+        id: String,
+        text: String,
     },
     /// The answer to `unlock`.
     Unlocked {
@@ -1065,6 +1076,32 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Backend>(r#""later""#).unwrap(),
             Backend::Unknown
+        );
+    }
+
+    #[test]
+    fn drafts() {
+        round_trip(
+            r#"{"type":"draft","session":"hb2c75bf","id":"d1","text":"run the tests again"}"#,
+            ServerMsg::Draft {
+                session: "hb2c75bf".into(),
+                id: "d1".into(),
+                text: "run the tests again".into(),
+            },
+        );
+        round_trip(
+            r#"{"type":"send_draft","session":"hb2c75bf","draft":"d1"}"#,
+            ClientMsg::SendDraft {
+                session: "hb2c75bf".into(),
+                draft: "d1".into(),
+            },
+        );
+        round_trip(
+            r#"{"type":"drop_draft","session":"hb2c75bf","draft":"d1"}"#,
+            ClientMsg::DropDraft {
+                session: "hb2c75bf".into(),
+                draft: "d1".into(),
+            },
         );
     }
 }

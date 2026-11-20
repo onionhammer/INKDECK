@@ -101,6 +101,11 @@ impl Herdr {
         self.allows(self.cfg.run)
     }
 
+    /// Whether words may be typed into its programs.
+    pub fn sends(&self) -> bool {
+        self.allows(self.cfg.send)
+    }
+
     fn check(&self, policy: Policy) -> Result<(), Refusal> {
         if self.allows(policy) {
             Ok(())

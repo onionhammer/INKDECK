@@ -157,6 +157,10 @@ tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixe
   the model it works alone for someone who reads results on a small e-paper screen: plan first,
   keep the log terse, ask only when the choice is the user's, end with a short Markdown result,
   and open it with a heading when it is meant to be kept (the session is then a note).
+- Without [stt], the model that hears writes the words down, told to transcribe only (in its
+  system prompt and beside the recording). A transcript with more words than the recording
+  could hold (over 4.5 a second, plus 3) is taken for an answer and dropped: the turn fails with
+  "couldn't make out what was said".
 - An agent turn (HOLD BOOT on the Agent's screens) starts a session or talks into one, and
   gets a short spoken reply while the session works on. With `reply = "none"` it gets none:
   the words are written down ([stt], or one request to a model that hears) and handed to the
@@ -185,7 +189,9 @@ with a wrong one, 429 while wrong ones back off):
 | `GET /sessions` | The list, as a board gets it unlocked |
 | `GET /sessions/{id}` | One session in full |
 | `POST /sessions` | `{"text"}` starts one: `{"session": "k7q2"}` |
-| `POST /sessions/{id}/say` | `{"text"}` talks into it (answers its question in words) |
+| `POST /sessions/{id}/say` | `{"text"}` talks into it (answers its question in words). A herdr session: answers `{"draft": {session, id, text}}` and types nothing, unless `"confirm": true` |
+| `POST /sessions/{id}/send_draft` | `{"draft"}` types a herdr session's draft (kept 2 minutes) |
+| `POST /sessions/{id}/drop_draft` | `{"draft"}` throws it away |
 | `POST /sessions/{id}/answer` | `{"ask": "a1", "choice": 0}` |
 | `POST /sessions/{id}/stop` | Stops a working or asking one (a herdr session: its stop key) |
 | `POST /sessions/{id}/kill` | A herdr session: ends its program (`[herdr] kill`) |
@@ -264,8 +270,10 @@ default_machine = ""         # where; empty: this machine
   board, each choice saying what it presses (`KEY 1`); the session model reads the screen if
   there is one (one short request a question), else the numbered choices are taken by rule. An
   answer presses the keys only if the program still waits on that question.
-- Words said into a herdr session are typed into it when it is idle, done or asking; while it
-  works they are refused (`it's busy`). Stop presses its stop key, kill ends it; each only as
+- Words said into a herdr session are never typed straight away: the turn ends with a draft
+  the board shows, and only its `send_draft` types them (within 2 minutes), when the program is
+  idle, done or asking; while it works they are refused (`it's busy`) and kept. HTTP's /say
+  makes a draft too, unless it says `"confirm": true`. Stop presses its stop key, kill ends it; each only as
   its policy allows. Deleting one takes it off the list until it does something new.
 - api and claude sessions get `herdr_run` (`{machine?, program, task, dir?}`), which starts a
   program in a new terminal and types the task once it is ready: "start Codex on the desktop to

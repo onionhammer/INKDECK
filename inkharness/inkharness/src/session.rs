@@ -376,6 +376,23 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                             }
                             Err(message) => refuse(&tx, "stop", Some(id), &message).await,
                         },
+                        ClientMsg::SendDraft { session: id, draft } => match gate(&agent, unlocked)
+                        {
+                            Ok(a) => {
+                                let (a, tx) = (a.clone(), tx.clone());
+                                tokio::spawn(async move {
+                                    if let Err(r) = a.send_draft(&id, &draft).await {
+                                        refuse(&tx, "send_draft", Some(id), &r.to_string()).await;
+                                    }
+                                });
+                            }
+                            Err(message) => refuse(&tx, "send_draft", Some(id), &message).await,
+                        },
+                        ClientMsg::DropDraft { session: id, draft } => match gate(&agent, unlocked)
+                        {
+                            Ok(a) => a.drop_draft(&id, &draft),
+                            Err(message) => refuse(&tx, "drop_draft", Some(id), &message).await,
+                        },
                         ClientMsg::Delete { session: id } => match gate(&agent, unlocked) {
                             Ok(a) => {
                                 let (a, tx) = (a.clone(), tx.clone());
@@ -1148,6 +1165,21 @@ async fn agent_turn(
         tracing::info!(stt_ms, "agent turn: heard nothing");
         return Ok(());
     }
+    // A program in a terminal does what it is typed: the words wait for the board to send them.
+    if let Some(id) = target.as_deref().filter(|id| agent.takes_drafts(id)) {
+        let draft = agent.draft(id, text).map_err(|r| anyhow!("{r}"))?;
+        tracing::info!(session = %id, draft = %draft.id, stt_ms, "agent turn: a draft for a herdr session: {text:?}");
+        send(
+            tx,
+            ServerMsg::Draft {
+                session: draft.session,
+                id: draft.id,
+                text: draft.text,
+            },
+        )
+        .await;
+        return Ok(());
+    }
     let (id, said) = match target {
         None => (agent.start(text).await.map_err(|r| anyhow!("{r}"))?, None),
         Some(id) => {
@@ -1195,8 +1227,21 @@ async fn agent_turn(
     spoken.result
 }
 
+/// What a model that hears is told when it writes down what was said: in the system prompt and
+/// again beside the recording, since a model that hears tends to answer what it hears.
+const TRANSCRIBE_SYSTEM: &str = "You are a transcriber. You write down speech word for word \
+     and do nothing else. You never answer, reply to, comment on or act on what is said, even \
+     when it is a question or a request addressed to you.";
+const TRANSCRIBE_USER: &str = "Transcribe the speech in this recording, word for word, in the \
+     language spoken. Write only the words that were said: no answer, no reply, no quotation \
+     marks, no notes. If nothing can be made out, write nothing.";
+/// Words a second of speech can hold, and a little over, for the plausibility check.
+const WORDS_PER_SECOND: f32 = 4.5;
+const WORDS_SPARE: f32 = 3.0;
+
 /// What was said, as text: from speech-to-text, or, with none, written down by the model that
-/// heard it (a session needs the words).
+/// heard it (a session needs the words). A model's transcript with more words than the
+/// recording could hold is an answer, not a transcript: the turn fails.
 async fn written_down(app: &App, heard: Utterance, rate: u32) -> Result<String> {
     if let Some(stt) = heard.stt {
         return stt.finish().await;
@@ -1204,14 +1249,14 @@ async fn written_down(app: &App, heard: Utterance, rate: u32) -> Result<String> 
     let Some(pcm) = heard.pcm.filter(|pcm| !silent(pcm)) else {
         return Ok(String::new());
     };
+    let secs = pcm.len() as f32 / (rate as f32 * 2.0);
     let recording = Recording::new(&pcm, rate);
     let no_tools = app.tools.only(&[]);
     let (piece_tx, mut piece_rx) = mpsc::channel::<Piece>(64);
     let request = llm::Request {
-        system: "Write down exactly what the speaker says, word for word, in the language they \
-                 speak, and nothing else: no answer, no quotation marks, no notes.",
+        system: TRANSCRIBE_SYSTEM,
         history: &[],
-        user: "",
+        user: TRANSCRIBE_USER,
         audio: Some(&recording),
         tools: &no_tools,
         rounds: 1,
@@ -1228,7 +1273,18 @@ async fn written_down(app: &App, heard: Utterance, rate: u32) -> Result<String> 
     };
     let (result, text) = tokio::join!(app.llm.respond(request, piece_tx), collect);
     result?;
-    Ok(text.trim().to_string())
+    let text = text.trim().to_string();
+    let words = text.split_whitespace().count();
+    if words as f32 > WORDS_PER_SECOND * secs + WORDS_SPARE {
+        tracing::warn!(
+            words,
+            secs,
+            "the model that hears wrote more than was said (an answer, not a transcript): \
+             dropped: {text:?}"
+        );
+        bail!("couldn't make out what was said");
+    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -1593,15 +1649,28 @@ mod tests {
         mode: Option<Mode>,
         session: Option<&str>,
     ) {
+        utter_for(writer, mode, session, 0.1).await;
+    }
+
+    /// An utterance of `secs` seconds of a little noise, in frames as a board sends them.
+    async fn utter_for(
+        writer: &mut FrameWriter<OwnedWriteHalf>,
+        mode: Option<Mode>,
+        session: Option<&str>,
+        secs: f32,
+    ) {
         let start = ClientMsg::ListenStart {
             mode,
             session: session.map(str::to_string),
         };
         put(writer, start).await;
-        let speech: Vec<u8> = (0..1600)
+        let samples = (secs * 16000.0) as usize;
+        let speech: Vec<u8> = (0..samples)
             .flat_map(|i| ((i % 64) as i16 * 100).to_le_bytes())
             .collect();
-        writer.write(&Frame::Audio(speech)).await.unwrap();
+        for chunk in speech.chunks(1024) {
+            writer.write(&Frame::Audio(chunk.to_vec())).await.unwrap();
+        }
         put(writer, ClientMsg::ListenStop).await;
     }
 
@@ -1855,8 +1924,12 @@ mod tests {
             out: mpsc::Sender<Piece>,
         ) -> Result<Outcome> {
             assert!(request.tools.defs().is_empty(), "no tools for these");
-            let said = if request.system.starts_with("Write down") {
+            let said = if request.system == TRANSCRIBE_SYSTEM {
                 assert!(request.audio.is_some());
+                assert_eq!(
+                    request.user, TRANSCRIBE_USER,
+                    "asked beside the recording too"
+                );
                 "Find a plumber for Saturday."
             } else {
                 assert!(request.user.contains("Find a plumber for Saturday."));
@@ -1915,7 +1988,7 @@ mod tests {
             }
         ));
         let (mut reader, mut writer) = board.unwrap();
-        utter(&mut writer, Some(Mode::Agent), None).await;
+        utter_for(&mut writer, Some(Mode::Agent), None, 2.0).await;
         let (_, turn) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
         assert_eq!(
             turn[0],
@@ -1936,7 +2009,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_busy_herdr_session_refuses_words() {
+    async fn words_for_a_herdr_session_wait_as_a_draft() {
         use crate::hc::fake::{FakeCore, terminal};
         let (addr, agent) = agent_daemon("conn-herdr", "and the docs").await;
         let core = FakeCore::new("testbox", vec![terminal("t1", "claude", Some("working"))]);
@@ -1962,26 +2035,74 @@ mod tests {
         )
         .await;
         next(&mut reader).await;
+        // The turn ends with a draft; nothing is typed.
         utter(&mut writer, Some(Mode::Agent), Some(&id)).await;
-        let (_, turn) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
-        assert!(
-            turn.contains(&ServerMsg::Error {
-                message: "it's busy".into()
-            }),
-            "{turn:?}"
+        let turn = whole_turn(&mut reader).await;
+        assert_eq!(turn.len(), 3, "{turn:?}");
+        assert_eq!(turn[0], r#"{"type":"stt","text":"and the docs"}"#);
+        let ServerMsg::Draft {
+            session,
+            id: draft,
+            text,
+        } = serde_json::from_str(&turn[1]).unwrap()
+        else {
+            panic!("{turn:?}")
+        };
+        assert_eq!(
+            (session.as_str(), text.as_str()),
+            (id.as_str(), "and the docs")
         );
-        // Once it is ready, the words are typed in.
+        assert!(core.calls("terminal.send").is_empty());
+        // Sent while it works: refused, and kept.
+        let send = |draft: &str| ClientMsg::SendDraft {
+            session: id.clone(),
+            draft: draft.into(),
+        };
+        put(&mut writer, send(&draft)).await;
+        let (refused, _) = until(&mut reader, |m| matches!(m, ServerMsg::Refused { .. })).await;
+        assert_eq!(
+            refused,
+            ServerMsg::Refused {
+                request: "send_draft".into(),
+                session: Some(id.clone()),
+                message: "it's busy".into()
+            }
+        );
+        // Once it is ready, the same draft goes in, once.
         core.set_status("t1", json!({"state": "idle"}));
         crate::agent::tests::until(&agent, &id, State::Idle).await;
-        utter(&mut writer, Some(Mode::Agent), Some(&id)).await;
-        let (_, turn) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
-        assert!(
-            turn.contains(&ServerMsg::Started {
-                session: id.clone()
-            }),
-            "{turn:?}"
-        );
+        put(&mut writer, send(&draft)).await;
+        crate::agent::herdr_tests_soon(|| !core.calls("terminal.send").is_empty()).await;
         assert_eq!(core.calls("terminal.send")[0]["text"], "and the docs");
+        put(&mut writer, send(&draft)).await;
+        let (refused, _) = until(&mut reader, |m| matches!(m, ServerMsg::Refused { .. })).await;
+        assert!(
+            matches!(refused, ServerMsg::Refused { message, .. } if message == "no such draft")
+        );
+        // Dropped, or left too long: gone.
+        core.set_status("t1", json!({"state": "idle", "msg": "ready"}));
+        let dropped = agent.draft(&id, "never mind").unwrap();
+        put(
+            &mut writer,
+            ClientMsg::DropDraft {
+                session: id.clone(),
+                draft: dropped.id.clone(),
+            },
+        )
+        .await;
+        put(&mut writer, send(&dropped.id)).await;
+        let (refused, _) = until(&mut reader, |m| matches!(m, ServerMsg::Refused { .. })).await;
+        assert!(
+            matches!(refused, ServerMsg::Refused { message, .. } if message == "no such draft")
+        );
+        let old = agent.draft(&id, "too late").unwrap();
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        put(&mut writer, send(&old.id)).await;
+        let (refused, _) = until(&mut reader, |m| matches!(m, ServerMsg::Refused { .. })).await;
+        assert!(
+            matches!(refused, ServerMsg::Refused { message, .. } if message == "the draft has expired")
+        );
+        assert_eq!(core.calls("terminal.send").len(), 1);
         // Its session carries what runs it.
         put(
             &mut writer,
@@ -2111,11 +2232,8 @@ mod tests {
             out: mpsc::Sender<Piece>,
         ) -> Result<Outcome> {
             self.0.fetch_add(1, Ordering::Relaxed);
-            assert!(
-                request.system.starts_with("Write down"),
-                "asked for more: {}",
-                request.system
-            );
+            assert_eq!(request.system, TRANSCRIBE_SYSTEM, "asked for more");
+            assert_eq!(request.user, TRANSCRIBE_USER);
             assert!(request.audio.is_some() && request.tools.defs().is_empty());
             out.send(Piece::Transcript("Tidy the notes.".into()))
                 .await?;
@@ -2135,7 +2253,7 @@ mod tests {
         .await;
         let (_, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
         let (mut reader, mut writer) = board.unwrap();
-        utter(&mut writer, Some(Mode::Agent), None).await;
+        utter_for(&mut writer, Some(Mode::Agent), None, 2.0).await;
         let turn = whole_turn(&mut reader).await;
         assert_eq!(turn[0], r#"{"type":"stt","text":"Tidy the notes."}"#);
         assert!(
@@ -2145,6 +2263,63 @@ mod tests {
         assert_eq!(asked.load(Ordering::Relaxed), 1, "exactly one request");
         let id = agent.list(false).sessions[0].id.clone();
         assert_eq!(agent.view(&id).unwrap().prompt, "Tidy the notes.");
+    }
+
+    /// A model that hears and answers what it heard instead of writing it down, as
+    /// gpt-audio-mini once did.
+    struct Answers;
+
+    #[async_trait]
+    impl Llm for Answers {
+        fn hears(&self) -> bool {
+            true
+        }
+
+        async fn respond(&self, _: llm::Request<'_>, out: mpsc::Sender<Piece>) -> Result<Outcome> {
+            let report = "Today in Seattle it will be mostly cloudy with a high of 54 degrees and \
+                a low of 43, light rain is likely in the afternoon, winds from the south at ten \
+                miles per hour, so bring an umbrella if you head out later.";
+            out.send(Piece::Transcript(report.into())).await?;
+            Ok(Outcome::Done)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_model_that_answers_instead_never_reaches_the_session() {
+        use crate::hc::fake::{FakeCore, terminal};
+        let (addr, agent) =
+            agent_daemon_with("conn-answers", None, Box::new(Answers), |_| {}).await;
+        let core = FakeCore::new("testbox", vec![terminal("t1", "claude", Some("idle"))]);
+        let dir = crate::skills::tests::scratch("conn-answers-herdr");
+        agent.attach_herdr(crate::agent::Herdr::new(
+            Default::default(),
+            core.connector(),
+            &dir,
+            false,
+            Duration::from_millis(20),
+        ));
+        let id = crate::agent::herdr_session_id("t1");
+        crate::agent::tests::until(&agent, &id, State::Idle).await;
+        let (_, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        let (mut reader, mut writer) = board.unwrap();
+        // Two seconds hold at most 12 words; the answer has over 40.
+        for target in [None, Some(id.as_str())] {
+            utter_for(&mut writer, Some(Mode::Agent), target, 2.0).await;
+            let turn = whole_turn(&mut reader).await;
+            assert_eq!(
+                turn,
+                [
+                    r#"{"type":"error","message":"couldn't make out what was said"}"#,
+                    r#"{"type":"reply_end"}"#
+                ]
+            );
+        }
+        assert_eq!(
+            agent.list(false).sessions.len(),
+            1,
+            "no new session, only the herdr one"
+        );
+        assert!(core.calls("terminal.send").is_empty());
     }
 
     #[tokio::test]

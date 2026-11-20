@@ -22,7 +22,10 @@
 //! GET    /sessions                      the `sessions` message, unlocked
 //! GET    /sessions/{id}                 the `session` message
 //! POST   /sessions          {"text"}    starts one: {"session": "k7q2"}
-//! POST   /sessions/{id}/say {"text"}    talks into it (an answer in words, if it is asking)
+//! POST   /sessions/{id}/say {"text"}    talks into it (an answer in words, if it is asking);
+//!                                       a herdr session: a draft, unless "confirm": true
+//! POST   /sessions/{id}/send_draft {"draft"}   types a herdr session's draft
+//! POST   /sessions/{id}/drop_draft {"draft"}
 //! POST   /sessions/{id}/answer {"ask", "choice"}
 //! POST   /sessions/{id}/stop
 //! POST   /sessions/{id}/kill            a herdr session: end its program ([herdr] kill)
@@ -140,6 +143,8 @@ pub async fn serve(listener: TcpListener, api: Arc<Api>) -> Result<()> {
         .route("/sessions/{id}/answer", post(answer_session))
         .route("/sessions/{id}/stop", post(stop_session))
         .route("/sessions/{id}/kill", post(kill_session))
+        .route("/sessions/{id}/send_draft", post(send_draft))
+        .route("/sessions/{id}/drop_draft", post(drop_draft))
         .with_state(api);
     axum::serve(listener, app).await?;
     Ok(())
@@ -262,7 +267,8 @@ fn sessions<'a>(api: &'a Api, headers: &HeaderMap) -> Result<&'a Arc<Agent>, Box
 
 fn refused(refusal: Refusal) -> Response {
     let status = match refusal {
-        Refusal::NoSuchSession => StatusCode::NOT_FOUND,
+        Refusal::NoSuchSession | Refusal::NoSuchDraft => StatusCode::NOT_FOUND,
+        Refusal::DraftExpired => StatusCode::GONE,
         Refusal::NoSuchChoice => StatusCode::BAD_REQUEST,
         Refusal::AlreadyAnswered | Refusal::NotRunning | Refusal::NotWaiting | Refusal::Busy => {
             StatusCode::CONFLICT
@@ -284,6 +290,14 @@ fn done(result: Result<(), Refusal>) -> Response {
 #[derive(Deserialize)]
 struct Text {
     text: String,
+    /// /say on a herdr session: type the words now instead of making a draft.
+    #[serde(default)]
+    confirm: bool,
+}
+
+#[derive(Deserialize)]
+struct DraftRequest {
+    draft: String,
 }
 
 #[derive(Deserialize)]
@@ -344,6 +358,16 @@ async fn say_session(
     if request.text.trim().is_empty() {
         return error(StatusCode::BAD_REQUEST, "no text".into());
     }
+    // A herdr session's words wait for a confirmation, as a board's do.
+    if agent.takes_drafts(&id) && !request.confirm {
+        return match agent.draft(&id, &request.text) {
+            Ok(draft) => Json(
+                json!({"draft": {"session": draft.session, "id": draft.id, "text": draft.text}}),
+            )
+            .into_response(),
+            Err(refusal) => refused(refusal),
+        };
+    }
     done(agent.say(&id, &request.text).await.map(|_| ()))
 }
 
@@ -366,6 +390,33 @@ async fn stop_session(
 ) -> Response {
     match sessions(&api, &headers) {
         Ok(agent) => done(agent.stop(&id).await),
+        Err(response) => *response,
+    }
+}
+
+async fn send_draft(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<DraftRequest>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => done(agent.send_draft(&id, &request.draft).await.map(|_| ())),
+        Err(response) => *response,
+    }
+}
+
+async fn drop_draft(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<DraftRequest>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => {
+            agent.drop_draft(&id, &request.draft);
+            Json(json!({"ok": true})).into_response()
+        }
         Err(response) => *response,
     }
 }
@@ -515,6 +566,10 @@ mod tests {
 
     /// An API with agent sessions (the mock session model) behind the token and the PIN 1234.
     async fn start_agent(name: &str) -> String {
+        start_agent_with(name).await.0
+    }
+
+    async fn start_agent_with(name: &str) -> (String, Arc<Agent>) {
         let place = Place {
             config: Config::from_table(toml::from_str("[llm]\nbackend = \"mock\"\n").unwrap())
                 .unwrap(),
@@ -539,9 +594,78 @@ mod tests {
         .unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
-        let api = Arc::new(Api::new(chat, "s3cret".into(), vec![]).with_agent(Some(agent)));
+        let api = Arc::new(Api::new(chat, "s3cret".into(), vec![]).with_agent(Some(agent.clone())));
         tokio::spawn(serve(listener, api));
-        url
+        (url, agent)
+    }
+
+    #[tokio::test]
+    async fn words_for_a_herdr_session_over_http() {
+        use crate::hc::fake::{FakeCore, terminal};
+        let (url, agent) = start_agent_with("http-herdr").await;
+        let core = FakeCore::new("testbox", vec![terminal("t1", "claude", Some("idle"))]);
+        let dir = crate::skills::tests::scratch("http-herdr-forgotten");
+        agent.attach_herdr(crate::agent::Herdr::new(
+            Default::default(),
+            core.connector(),
+            &dir,
+            false,
+            std::time::Duration::from_millis(20),
+        ));
+        let id = crate::agent::herdr_session_id("t1");
+        crate::agent::tests::until(&agent, &id, voice_proto::State::Idle).await;
+        let http = reqwest::Client::new();
+        let post = |path: String, body: Value| {
+            http.post(format!("{url}{path}"))
+                .bearer_auth("s3cret")
+                .header("X-Inkharness-Pin", "1234")
+                .json(&body)
+                .send()
+        };
+        // Without confirm: a draft, nothing typed.
+        let reply: Value = post(
+            format!("/sessions/{id}/say"),
+            json!({"text": "run the tests"}),
+        )
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(reply["draft"]["session"], json!(id));
+        assert_eq!(reply["draft"]["text"], "run the tests");
+        assert!(core.calls("terminal.send").is_empty());
+        let draft = reply["draft"]["id"].as_str().unwrap().to_string();
+        let sent = post(
+            format!("/sessions/{id}/send_draft"),
+            json!({"draft": draft}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(sent.status(), 200);
+        assert_eq!(core.calls("terminal.send")[0]["text"], "run the tests");
+        let again = post(
+            format!("/sessions/{id}/send_draft"),
+            json!({"draft": draft}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(again.status(), 404);
+        // With confirm: typed at once.
+        core.set_status("t1", json!({"state": "idle", "msg": "ready"}));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let typed = post(
+            format!("/sessions/{id}/say"),
+            json!({"text": "and the docs", "confirm": true}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(typed.status(), 200);
+        assert_eq!(core.calls("terminal.send")[1]["text"], "and the docs");
+        let dropped = post(format!("/sessions/{id}/drop_draft"), json!({"draft": "d9"}))
+            .await
+            .unwrap();
+        assert_eq!(dropped.status(), 200);
     }
 
     #[tokio::test]

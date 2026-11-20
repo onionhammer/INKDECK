@@ -45,6 +45,8 @@ pub use claude::Claude;
 pub use herdr::Herdr;
 #[cfg(test)]
 pub use herdr::session_id as herdr_session_id;
+#[cfg(test)]
+pub use herdr::tests_soon as herdr_tests_soon;
 pub use lock::Unlock;
 #[cfg(test)]
 pub use lock::sha256_hex;
@@ -54,6 +56,21 @@ use tools::SessionTools;
 
 /// How often finished sessions past `keep_days` are looked for.
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
+/// How long words for a herdr session wait for the board to send them.
+#[cfg(not(test))]
+const DRAFT_TTL: Duration = Duration::from_secs(120);
+#[cfg(test)]
+const DRAFT_TTL: Duration = Duration::from_millis(300);
+
+/// Words said into a herdr session, kept until the board sends them (`send_draft`) or drops
+/// them, or DRAFT_TTL passes. A program in a terminal does what it is typed, so nothing heard
+/// goes in unseen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Draft {
+    pub id: String,
+    pub session: String,
+    pub text: String,
+}
 
 pub struct Agent {
     place: String,
@@ -77,6 +94,9 @@ pub struct Agent {
     bridge: OnceLock<Arc<bridge::Bridge>>,
     /// herdr, when there is a [herdr] table (attach_herdr).
     herdr: OnceLock<Arc<Herdr>>,
+    /// Drafts by id, and when each was made.
+    drafts: Mutex<HashMap<String, (Draft, std::time::Instant)>>,
+    next_draft: std::sync::atomic::AtomicU64,
 }
 
 /// What sessions can run on besides the api backend, built at startup (agent::start).
@@ -146,6 +166,10 @@ pub enum Refusal {
     NotWaiting,
     /// A herdr program at work: words wait until it is ready.
     Busy,
+    /// No draft by that id for that session (sent, dropped, or never made).
+    NoSuchDraft,
+    /// The draft waited longer than DRAFT_TTL.
+    DraftExpired,
     /// A [herdr] policy says no.
     NotAllowed,
     /// herdr doesn't answer.
@@ -163,6 +187,8 @@ impl std::fmt::Display for Refusal {
             Refusal::NotRunning => "not running",
             Refusal::NotWaiting => "not waiting any more",
             Refusal::Busy => "it's busy",
+            Refusal::NoSuchDraft => "no such draft",
+            Refusal::DraftExpired => "the draft has expired",
             Refusal::NotAllowed => "not allowed by [herdr]",
             Refusal::Unreachable => "herdr is not reachable",
             Refusal::Other(message) => message,
@@ -379,6 +405,8 @@ impl Agent {
             claude: backends.claude,
             bridge: OnceLock::new(),
             herdr: OnceLock::new(),
+            drafts: Mutex::default(),
+            next_draft: Default::default(),
         });
         if agent.claude.is_some() {
             let bridge = bridge::Bridge::start(Arc::downgrade(&agent))?;
@@ -602,6 +630,66 @@ impl Agent {
         self.save(&live.session);
         self.notify(id, false);
         Ok(said)
+    }
+
+    /// Whether words for this session go through a draft (a herdr session's do).
+    pub fn takes_drafts(&self, id: &str) -> bool {
+        self.backend_of(id) == Some(Backend::Herdr)
+    }
+
+    /// Keeps words for a herdr session until the board sends them: the draft to show it.
+    /// Refused at once if `[herdr] send` would refuse them anyway.
+    pub fn draft(&self, id: &str, text: &str) -> Result<Draft, Refusal> {
+        match self.backend_of(id) {
+            None => return Err(Refusal::NoSuchSession),
+            Some(Backend::Herdr) => {}
+            Some(_) => return Err(Refusal::Other("only herdr sessions take drafts".into())),
+        }
+        let herdr = self.herdr.get().ok_or_else(no_herdr)?;
+        if !herdr.sends() {
+            return Err(Refusal::NotAllowed);
+        }
+        let n = self
+            .next_draft
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let draft = Draft {
+            id: format!("d{n}"),
+            session: id.to_string(),
+            text: text.trim().to_string(),
+        };
+        let now = std::time::Instant::now();
+        let mut drafts = self.drafts.lock().unwrap();
+        drafts.retain(|_, (_, at)| now.duration_since(*at) < DRAFT_TTL);
+        drafts.insert(draft.id.clone(), (draft.clone(), now));
+        Ok(draft)
+    }
+
+    /// Types a draft into its herdr session (`[herdr] send` and the session's state decide, as
+    /// for any words). A refused one is kept, to send again while it lasts.
+    pub async fn send_draft(self: &Arc<Self>, session: &str, draft: &str) -> Result<Said, Refusal> {
+        let text = {
+            let mut drafts = self.drafts.lock().unwrap();
+            let Some((kept, at)) = drafts.get(draft).filter(|(d, _)| d.session == session) else {
+                return Err(Refusal::NoSuchDraft);
+            };
+            if at.elapsed() >= DRAFT_TTL {
+                drafts.remove(draft);
+                return Err(Refusal::DraftExpired);
+            }
+            kept.text.clone()
+        };
+        let said = self.say(session, &text).await?;
+        self.drafts.lock().unwrap().remove(draft);
+        Ok(said)
+    }
+
+    /// Throws a draft away.
+    pub fn drop_draft(&self, session: &str, draft: &str) {
+        let mut drafts = self.drafts.lock().unwrap();
+        if drafts.get(draft).is_some_and(|(d, _)| d.session == session) {
+            drafts.remove(draft);
+        }
     }
 
     /// Answers a session's question `ask` with its option `choice`. For a herdr session, that
