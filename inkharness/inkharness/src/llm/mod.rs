@@ -69,7 +69,32 @@ pub struct Request<'a> {
     /// The recording of it, for a model that hears.
     pub audio: Option<&'a Recording>,
     pub tools: &'a ToolSet,
+    /// Model rounds allowed before the reply fails with [`TooManyRounds`]: [`MAX_ROUNDS`] for
+    /// a turn someone waits on, more for an agent session.
+    pub rounds: usize,
+    /// What the user said while the reply was being worked on (an agent session that is
+    /// talked into): asked after each round's tool results, and whatever it returns joins the
+    /// conversation for the next round.
+    pub steer: Option<&'a Steer<'a>>,
 }
+
+/// See [`Request::steer`].
+pub type Steer<'a> = dyn Fn() -> Vec<String> + Send + Sync + 'a;
+
+/// Model rounds in a turn someone is waiting on, before giving up.
+pub const MAX_ROUNDS: usize = 6;
+
+/// The model was still calling tools after the rounds a request allows.
+#[derive(Debug)]
+pub struct TooManyRounds(pub usize);
+
+impl std::fmt::Display for TooManyRounds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the model kept calling tools ({} rounds)", self.0)
+    }
+}
+
+impl std::error::Error for TooManyRounds {}
 
 /// A piece of the reply as it is generated.
 #[derive(Debug, Clone, PartialEq)]
@@ -269,6 +294,8 @@ pub(crate) mod testserver {
             user,
             audio,
             tools: &tools,
+            rounds: super::MAX_ROUNDS,
+            steer: None,
         };
         let (result, (text, pcm)) = tokio::join!(llm.respond(request, tx), async {
             let (mut text, mut pcm) = (String::new(), Vec::new());

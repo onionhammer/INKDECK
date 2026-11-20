@@ -269,6 +269,10 @@ impl ChatApi for OpenAiCompat {
             messages.push(json!({"role": "tool", "tool_call_id": call.id, "content": content}));
         }
     }
+
+    fn add_user(&self, messages: &mut Vec<Value>, text: &str) {
+        messages.push(json!({"role": "user", "content": text}));
+    }
 }
 
 /// A round's request, recorded with the turn's charges when the round ends, however it ends.

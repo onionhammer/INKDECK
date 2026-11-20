@@ -72,6 +72,8 @@ impl Chat {
                 user,
                 audio: None,
                 tools,
+                rounds: llm::MAX_ROUNDS,
+                steer: None,
             };
             let outcome = self.llm.respond(request(&self.tools), tx.clone()).await?;
             if let (Outcome::Think { .. }, Some((think, tools))) = (outcome, &self.think) {

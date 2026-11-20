@@ -212,7 +212,7 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                     };
                     match msg {
                         ClientMsg::Hello { .. } => tracing::debug!("ignoring a second hello"),
-                        ClientMsg::ListenStart => {
+                        ClientMsg::ListenStart { .. } => {
                             if cancel(&mut turn) {
                                 send(&tx, ServerMsg::ReplyEnd).await;
                             }
@@ -242,6 +242,7 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                                 tracing::debug!(id, "a tool result from a device with no tools")
                             }
                         },
+                        _ => {}
                     }
                 }
             }
@@ -292,6 +293,7 @@ async fn open(
                 Ok(_) => ServerMsg::Hello {
                     proto: PROTO_VERSION,
                     session: session.into(),
+                    agent: None,
                 },
                 Err(e) => ServerMsg::Error {
                     message: format!("{e:#}"),
@@ -326,6 +328,7 @@ async fn open(
                     let answer = ServerMsg::Hello {
                         proto: PROTO_PLAINTEXT,
                         session: session.into(),
+                        agent: None,
                     };
                     writer.write(&Frame::control(&answer)?).await?;
                     Ok(hello)
@@ -560,6 +563,8 @@ async fn turn_inner(
             user,
             audio,
             tools,
+            rounds: llm::MAX_ROUNDS,
+            steer: None,
         };
         let outcome = app
             .llm
@@ -856,12 +861,19 @@ mod tests {
             answer,
             ServerMsg::Hello {
                 proto: PROTO_VERSION,
-                session: "s1".into()
+                session: "s1".into(),
+                agent: None,
             }
         );
         let (mut reader, mut writer) = board.unwrap();
         writer
-            .write(&Frame::control(&ClientMsg::ListenStart).unwrap())
+            .write(
+                &Frame::control(&ClientMsg::ListenStart {
+                    mode: None,
+                    session: None,
+                })
+                .unwrap(),
+            )
             .await
             .unwrap();
         let speech: Vec<u8> = (0..1600)
@@ -948,7 +960,8 @@ mod tests {
             plain_hello(daemon("t", true).await, "t").await,
             ServerMsg::Hello {
                 proto: PROTO_PLAINTEXT,
-                session: "s1".into()
+                session: "s1".into(),
+                agent: None,
             }
         );
         assert_eq!(
