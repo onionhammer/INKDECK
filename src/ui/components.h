@@ -79,6 +79,7 @@ struct Row {
   std::string index;     // "01", drawn after the marker column; optional
   std::string title;
   std::string subtitle;  // optional second line (use kRowTallH)
+  std::string subtitleMark;  // optional small outlined tag before the subtitle ("hc": a herdr agent)
   std::string tag;       // optional boxed tag, right-aligned ("SD", "DIR")
   std::string trailing;  // optional plain text, right-aligned ("3:05")
 };

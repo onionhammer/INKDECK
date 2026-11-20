@@ -94,8 +94,10 @@ void setTarget(Target (*source)());
 struct AgentRow {
   std::string id;
   std::string title;
-  std::string state;  // working, ask, done, note, fail, stopped (later: watch, scheduled)
-  std::string place;  // where it runs: the daemon's machine
+  std::string state;  // working, ask, idle (herdr: ready), done, note, fail, stopped
+  std::string place;  // where it runs: the daemon's machine, or the herdr machine
+  bool herdr = false;   // runs in a herdr terminal (`via`): the [hc] mark before the place
+  std::string program;  // what runs it: "claude code", "codex"; empty for the daemon's own
   std::string sub;    // the question, the step or tool call under way, the result's first line
   int step = -1, steps = -1;  // the plan's progress: step `step` (from 1) of `steps`
   int progress = -1;          // 0-100
@@ -127,6 +129,10 @@ struct LogLine {
 // One session in full (the daemon's `session`).
 struct AgentSession {
   std::string id, title, state, place, prompt;
+  bool herdr = false;
+  std::string program;
+  std::string backend;              // api, claude or herdr
+  std::vector<std::string> screen;  // herdr: the last lines of its terminal
   std::string result;  // Markdown, once it has finished
   uint32_t started = 0, updated = 0;
   int step = -1, steps = -1;
@@ -147,13 +153,15 @@ struct Agent {
   bool connected = false;  // the connection is up now
   bool synced = false;     // a list has arrived on it
   bool locked = false;     // that list was the locked form: counts only
-  int asks = 0, running = 0, planned = 0, unread = 0, older = 0;
+  int asks = 0, running = 0, idle = 0, planned = 0, unread = 0, older = 0;
   std::vector<AgentRow> rows;  // the last list (kept after the connection ends)
   bool hasOpen = false;        // `open` holds the session agentOpen() asked for
   AgentSession open;
   std::string started;       // the session the last agent turn went to
   uint32_t startedTurn = 0;  // that turn (Status::turn)
-  std::string refusal;       // the daemon's last `refused` message
+  std::string refusal;          // the daemon's last `refused` message
+  std::string refusalSession;   // the session it named, if any
+  uint32_t refusals = 0;        // counts them, so a screen can tell a new one
   uint32_t generation = 0;   // changes with any of the above
 };
 

@@ -5,8 +5,12 @@
 //
 // The list: three counts (ASKS, inverted while any wait; RUNNING; PLANNED), then NEEDS YOU
 // (inverted header), RUNNING and DONE, a two-line row per session: its title, then where it runs
-// and what it's doing, and a tag (ASK; 4/7, 41% or RUN; DONE, NOTE, FAIL or STOP). A finished
-// one not opened yet says NEW. Pages flip whole.
+// and what it's doing, and a tag (ASK; 4/7, 41%, RUN or READY; DONE, NOTE, FAIL or STOP). A
+// finished one not opened yet says NEW. Pages flip whole. Agents in herdr terminals (Claude Code,
+// Codex, anything else hc sees, on any machine) are sessions like the rest: the only sign is an
+// outlined [hc] mark before the machine's name, and the program after it ("[hc] DESKTOP · CLAUDE
+// CODE · APPROVE PLAN"). Their session screen shows the last lines of their terminal, and their
+// questions are the prompts they're blocked on, each choice saying which keys it sends.
 //   ▲▼ move   ● open   HOLD ● stop / delete   HOLD BOOT a new session   BOOT back
 //
 // A session: its title and state, then its question with the choices while it asks; else the

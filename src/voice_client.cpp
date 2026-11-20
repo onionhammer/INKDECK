@@ -343,7 +343,7 @@ bool sameRows(const std::vector<AgentRow> &a, const std::vector<AgentRow> &b) {
     const AgentRow &x = a[i], &y = b[i];
     if (x.id != y.id || x.title != y.title || x.state != y.state || x.place != y.place ||
         x.sub != y.sub || x.step != y.step || x.steps != y.steps || x.progress != y.progress ||
-        x.unread != y.unread) {
+        x.unread != y.unread || x.herdr != y.herdr || x.program != y.program) {
       return false;
     }
   }
@@ -359,6 +359,8 @@ void onSessions(const cJSON *json) {
     r.title = field(item, "title");
     r.state = field(item, "state");
     r.place = field(item, "place");
+    r.herdr = field(item, "via") == "herdr";
+    r.program = field(item, "program");
     r.sub = field(item, "sub");
     r.step = intField(item, "step");
     r.steps = intField(item, "steps");
@@ -371,6 +373,7 @@ void onSessions(const cJSON *json) {
   const bool locked = flag(json, "locked");
   const int asks = std::max(0, intField(counts, "ask", 0));
   const int running = std::max(0, intField(counts, "running", 0));
+  const int idle = std::max(0, intField(counts, "idle", 0));
   const int planned = std::max(0, intField(counts, "planned", 0));
   const int unread = std::max(0, intField(counts, "unread", 0));
   const int older = std::max(0, intField(json, "older", 0));
@@ -379,6 +382,7 @@ void onSessions(const cJSON *json) {
   // what the board shows counts as a change here, so the panel redraws only for that.
   const bool same = agentShared.synced && agentShared.locked == locked &&
                     agentShared.asks == asks && agentShared.running == running &&
+                    agentShared.idle == idle &&
                     agentShared.planned == planned && agentShared.unread == unread &&
                     agentShared.older == older && sameRows(agentShared.rows, rows);
   if (same) return;
@@ -386,6 +390,7 @@ void onSessions(const cJSON *json) {
   agentShared.locked = locked;
   agentShared.asks = asks;
   agentShared.running = running;
+  agentShared.idle = idle;
   agentShared.planned = planned;
   agentShared.unread = unread;
   agentShared.older = older;
@@ -399,6 +404,9 @@ void onSession(const cJSON *json) {
   a.title = field(json, "title");
   a.state = field(json, "state");
   a.place = field(json, "place");
+  a.herdr = field(json, "via") == "herdr";
+  a.program = field(json, "program");
+  a.backend = field(json, "backend");
   a.prompt = field(json, "prompt");
   a.result = field(json, "result");
   a.started = timeField(json, "started");
@@ -412,6 +420,9 @@ void onSession(const cJSON *json) {
   }
   cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(json, "log")) {
     a.log.push_back({timeField(item, "at"), field(item, "text")});
+  }
+  cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(json, "screen")) {
+    if (cJSON_IsString(item) && item->valuestring) a.screen.push_back(item->valuestring);
   }
   const cJSON *ask = cJSON_GetObjectItemCaseSensitive(json, "ask");
   a.asking = cJSON_IsObject(ask);
@@ -464,6 +475,8 @@ void onRefused(const cJSON *json) {
   if (message == "locked") s.agentUnlocked = false;
   Locked l;
   agentShared.refusal = message;
+  agentShared.refusalSession = field(json, "session");
+  agentShared.refusals++;
   if (message == "locked") agentShared.unlocked = false;
   agentChanged();
 }

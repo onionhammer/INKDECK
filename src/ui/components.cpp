@@ -235,8 +235,15 @@ void drawRow(Canvas &c, const Rect &r, const Row &row, bool selected) {
   const int block = capHeight(s) + kLineGap + capHeight(kSubtitle);
   const int titleBase = band.y + (band.h - block) / 2 + capHeight(s);
   drawText(c, x, titleBase, ellipsize(s, row.title, titleW), s, ink);
-  drawText(c, x, titleBase + kLineGap + capHeight(kSubtitle),
-           ellipsize(kSubtitle, row.subtitle, titleW), kSubtitle, ink);
+  int subX = x;
+  const int subBase = titleBase + kLineGap + capHeight(kSubtitle);
+  if (!row.subtitleMark.empty()) {
+    const int markW = drawTag(c, subX, subBase - capHeight(kSubtitle) / 2, 15, row.subtitleMark,
+                              style::kTag, TagKind::Outlined, 3, ink);
+    subX += markW + 5;
+  }
+  drawText(c, subX, subBase, ellipsize(kSubtitle, row.subtitle, titleW - (subX - x)), kSubtitle,
+           ink);
 }
 
 void ListCursor::reset(int count, int cursor) {

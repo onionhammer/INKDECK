@@ -31,6 +31,8 @@ constexpr int kPlanRowH = 26;     // a line of the plan's checklist
 constexpr int kLogRowH = 24;      // a line of the log
 constexpr int kMeterH = 10;       // the plan's segment meter
 constexpr int kMaxPlanRows = 7;   // of the checklist; the rest are counted
+constexpr int kScreenLineH = 18;  // a line of a herdr agent's screen
+constexpr int kMaxScreenAsk = 8;  // its lines under a question
 
 constexpr const char *kSetUpHelp =
     "Name the machine that runs inkharness in SD:/inkdeck.ini: voice_host, and voice_token if it "
@@ -48,11 +50,14 @@ const std::string kDot = ui::glyph::kDot;
 
 // Done, note, fail, stopped, and any state a later inkharness adds that this board doesn't know
 // (docs/voice-protocol.md says to take those as finished).
-bool finished(const std::string &state) { return state != "working" && state != "ask"; }
+bool finished(const std::string &state) {
+  return state != "working" && state != "ask" && state != "idle";
+}
 
 std::string stateWord(const std::string &state) {
   if (state == "ask") return "ASKING";
   if (state == "working") return "WORKING";
+  if (state == "idle") return "READY";
   if (state == "done") return "DONE";
   if (state == "note") return "NOTE";
   if (state == "fail") return "FAILED";
@@ -67,6 +72,7 @@ std::string tagFor(const voice::AgentRow &r) {
     if (r.step > 0 && r.steps > 0) return std::to_string(r.step) + "/" + std::to_string(r.steps);
     return "RUN";
   }
+  if (r.state == "idle") return "READY";
   if (r.state == "done") return "DONE";
   if (r.state == "note") return "NOTE";
   if (r.state == "fail") return "FAIL";
@@ -194,6 +200,7 @@ class SessionScreen : public ui::Screen {
 
   bool onKey(Key key) override {
     guardedInUse(Guarded::Agent);
+    notice_.clear();
     const voice::Agent a = voice::agent();
     if (asking(a)) {
       const int choices = static_cast<int>(a.open.ask.options.size()) + 1;  // + something else
@@ -238,6 +245,16 @@ class SessionScreen : public ui::Screen {
     const voice::Agent a = voice::agent();
     const voice::Status st = voice::status();
     if (a.hasOpen && !a.open.title.empty()) title_ = a.open.title;
+    // inkharness turned something down for this session (a stale answer, a busy agent, a
+    // [herdr] policy): say so until the next key, and let the answer be sent again.
+    if (a.refusals != refusalsSeen_) {
+      refusalsSeen_ = a.refusals;
+      if (a.refusalSession == id_) {
+        notice_ = ui::upper(a.refusal);
+        sent_.clear();
+        return true;
+      }
+    }
     // A new question: start at the recommended choice.
     if (asking(a) && a.open.ask.id != askSeen_) {
       askSeen_ = a.open.ask.id;
@@ -262,12 +279,12 @@ class SessionScreen : public ui::Screen {
       drawNotice(c, head, note);
     } else if (!a.unlocked) {
       drawNotice(c, head, "LOCKED BY INKHARNESS");
+    } else if (!notice_.empty()) {
+      drawNotice(c, head, notice_);
     } else {
-      const voice::AgentSession &s = a.open;
-      std::string right = a.hasOpen ? upper(s.place) : std::string();
-      const std::string since = a.hasOpen ? clockText(s.started) : std::string();
-      if (!since.empty()) right += (right.empty() ? "" : " " + kDot + " ") + "SINCE " + since;
-      drawSectionHeader(c, head, asking(a) ? "QUESTION" : "SESSION", right, {asking(a)});
+      const std::string since = a.hasOpen ? clockText(a.open.started) : std::string();
+      drawSectionHeader(c, head, asking(a) ? "QUESTION" : "SESSION",
+                        since.empty() ? std::string() : "SINCE " + since, {asking(a)});
     }
     if (!a.hasOpen) {
       paragraph(c, r, r.y + 16, a.unlocked ? "Loading the session" + std::string(glyph::kEllipsis)
@@ -283,6 +300,9 @@ class SessionScreen : public ui::Screen {
       drawText(c, r.x + kPadX, y + capHeight(style::kRowSelected), line, style::kRowSelected);
       y += lineHeight(style::kRowSelected);
     }
+    y += 2;
+    drawWhere(c, r.x + kPadX, y + capHeight(style::kLabel), s.herdr, s.place, s.program);
+    y += lineHeight(style::kLabel) + 2;
     std::string state = stateWord(s.state);
     if (s.state == "working" && s.step > 0 && s.steps > 0) {
       state += " " + kDot + " STEP " + std::to_string(s.step) + "/" + std::to_string(s.steps);
@@ -294,7 +314,7 @@ class SessionScreen : public ui::Screen {
     r.takeTop(y - r.y);
 
     if (asking(a)) {
-      drawAsk(c, r, s.ask);
+      drawAsk(c, r, s.ask, s.screen);
       return;
     }
     more_ = false;
@@ -303,6 +323,8 @@ class SessionScreen : public ui::Screen {
       drawResult(c, r, s.result);
       return;
     }
+    // A herdr agent: what its terminal shows says more than a log.
+    if (!s.screen.empty()) drawScreen(c, r, s.screen, (r.h - kSectionH - 40) / kScreenLineH);
     drawLog(c, r, s);
   }
 
@@ -311,16 +333,55 @@ class SessionScreen : public ui::Screen {
     return a.unlocked && a.hasOpen && a.open.asking && !a.open.ask.options.empty();
   }
 
-  void drawAsk(ui::Canvas &c, Rect &r, const voice::Ask &ask) {
+  // "[hc] DESKTOP · CLAUDE CODE": where a session runs, and on what.
+  static void drawWhere(ui::Canvas &c, int x, int baseline, bool herdr, const std::string &place,
+                        const std::string &program) {
+    using namespace ui;
+    if (herdr) {
+      x += drawTag(c, x, baseline - capHeight(style::kLabel) / 2, 15, "hc", style::kTag,
+                   TagKind::Outlined, 3) +
+           5;
+    }
+    std::string text = upper(place);
+    if (!program.empty()) text += (text.empty() ? "" : " " + kDot + " ") + upper(program);
+    drawText(c, x, baseline, text, style::kLabel);
+  }
+
+  // A herdr agent's last screen lines, paper on ink, as on its terminal.
+  void drawScreen(ui::Canvas &c, Rect &r, const std::vector<std::string> &screen, int maxLines) {
+    using namespace ui;
+    const int n = std::min(static_cast<int>(screen.size()), maxLines);
+    if (n <= 0) return;
+    hrule(c, r.x, r.y, r.w);
+    r.takeTop(kRule);
+    drawSectionHeader(c, r.takeTop(kSectionH), "ITS SCREEN", "LAST " + std::to_string(n) + " LINES");
+    const Rect box = r.takeTop(n * kScreenLineH + 20).inset(kPadX, 6);
+    fill(c, box, kInk);
+    int y = box.y + 4;
+    for (int i = static_cast<int>(screen.size()) - n; i < static_cast<int>(screen.size()); ++i) {
+      drawText(c, {box.x + 10, y, box.w - 20, kScreenLineH}, screen[i], style::kKey, Align::Left,
+               kPaper);
+      y += kScreenLineH;
+    }
+    r.takeTop(4);
+  }
+
+  void drawAsk(ui::Canvas &c, Rect &r, const voice::Ask &ask,
+               const std::vector<std::string> &screen) {
     using namespace ui;
     int y = r.y + 4;
-    for (const std::string &line :
-         wrap(style::kReading, upper(text::toAscii(ask.question)), r.w - 2 * kPadX, 3)) {
+    // With its screen to show (a herdr agent), the question gets two lines and no detail.
+    const int questionLines = screen.empty() ? 3 : 2;
+    for (const std::string &line : wrap(style::kReading, upper(text::toAscii(ask.question)),
+                                        r.w - 2 * kPadX, questionLines)) {
       drawText(c, r.x + kPadX, y + capHeight(style::kReading), line, style::kReading);
       y += lineHeight(style::kReading);
     }
-    if (!ask.detail.empty()) y = paragraph(c, r, y + 6, ask.detail, style::kBody, 3);
+    if (!ask.detail.empty() && screen.empty()) {
+      y = paragraph(c, r, y + 6, ask.detail, style::kBody, 3);
+    }
     r.takeTop(y + 10 - r.y);
+    if (!screen.empty()) drawScreen(c, r, screen, kMaxScreenAsk);
 
     const int choices = static_cast<int>(ask.options.size()) + 1;
     hrule(c, r.x, r.y, r.w);
@@ -458,6 +519,8 @@ class SessionScreen : public ui::Screen {
   std::string sentTitle_;
   int page_ = 0;           // of the result or the log
   bool more_ = false;      // a page after this one
+  std::string notice_;     // a refusal for this session, until the next key
+  uint32_t refusalsSeen_ = voice::agent().refusals;
   uint32_t drawnAgent_ = 0;
   uint32_t drawnStatus_ = 0;
 };
@@ -654,8 +717,10 @@ class AgentList : public ui::Screen {
         Row line;
         line.title = upper(row.title);
         std::string sub = upper(row.place);
+        if (!row.program.empty()) sub += (sub.empty() ? "" : " " + kDot + " ") + upper(row.program);
         if (!row.sub.empty()) sub += (sub.empty() ? "" : " " + kDot + " ") + row.sub;
         line.subtitle = sub;
+        if (row.herdr) line.subtitleMark = "hc";
         line.tag = tagFor(row);
         if (row.unread && finished(row.state)) line.trailing = "NEW";
         drawRow(c, {r.x, y, r.w, kRowTallH}, line, it.row == sel);
