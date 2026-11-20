@@ -1914,6 +1914,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_busy_herdr_session_refuses_words() {
+        use crate::hc::fake::{FakeCore, terminal};
+        let (addr, agent) = agent_daemon("conn-herdr", "and the docs").await;
+        let core = FakeCore::new("testbox", vec![terminal("t1", "claude", Some("working"))]);
+        let dir = crate::skills::tests::scratch("conn-herdr-forgotten");
+        let herdr = crate::agent::Herdr::new(
+            Default::default(),
+            core.connector(),
+            &dir,
+            false,
+            Duration::from_millis(20),
+        );
+        agent.attach_herdr(herdr);
+        let id = crate::agent::herdr_session_id("t1");
+        crate::agent::tests::until(&agent, &id, State::Working).await;
+        let (_, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        let (mut reader, mut writer) = board.unwrap();
+        put(
+            &mut writer,
+            ClientMsg::Unlock {
+                pin: Some("1234".into()),
+                ticket: None,
+            },
+        )
+        .await;
+        next(&mut reader).await;
+        utter(&mut writer, Some(Mode::Agent), Some(&id)).await;
+        let (_, turn) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
+        assert!(
+            turn.contains(&ServerMsg::Error {
+                message: "it's busy".into()
+            }),
+            "{turn:?}"
+        );
+        // Once it is ready, the words are typed in.
+        core.set_status("t1", json!({"state": "idle"}));
+        crate::agent::tests::until(&agent, &id, State::Idle).await;
+        utter(&mut writer, Some(Mode::Agent), Some(&id)).await;
+        let (_, turn) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
+        assert!(
+            turn.contains(&ServerMsg::Started {
+                session: id.clone()
+            }),
+            "{turn:?}"
+        );
+        assert_eq!(core.calls("terminal.send")[0]["text"], "and the docs");
+        // Its session carries what runs it.
+        put(
+            &mut writer,
+            ClientMsg::Open {
+                session: id.clone(),
+            },
+        )
+        .await;
+        let (session, _) = until(&mut reader, |m| matches!(m, ServerMsg::Session(_))).await;
+        let ServerMsg::Session(view) = session else {
+            unreachable!()
+        };
+        assert_eq!(
+            (view.via, view.backend),
+            (voice_proto::Via::Herdr, voice_proto::Backend::Herdr)
+        );
+    }
+
+    #[tokio::test]
     async fn without_agent_sessions_the_requests_are_refused() {
         let addr = daemon("t", false).await;
         let (answer, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;

@@ -884,6 +884,54 @@ mod tests {
     }
 
     #[test]
+    fn backends_and_their_defaults() {
+        let cfg: super::Config = toml::from_str(
+            "[llm]\nbackend = \"mock\"\n[agent]\nbackend = \"claude\"\n[agent.claude]\nmodel = \"haiku\"\n[herdr]\nmachines = [\"desktop\"]\n",
+        )
+        .unwrap();
+        let agent = cfg.agent.unwrap();
+        assert_eq!(agent.backend, super::BackendName::Claude);
+        let claude = agent.claude.unwrap();
+        assert_eq!(
+            (claude.command.as_slice(), claude.model.as_str()),
+            (["claude".to_string()].as_slice(), "haiku")
+        );
+        assert_eq!(
+            (
+                claude.permission_mode.as_str(),
+                claude.max_turns,
+                claude.dir.as_str()
+            ),
+            ("default", 40, "work")
+        );
+        assert_eq!(
+            claude.allowed_tools,
+            ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]
+        );
+        let herdr = cfg.herdr.unwrap();
+        assert_eq!(herdr.command, ["hc"]);
+        assert_eq!(herdr.machines, ["desktop"]);
+        use super::Policy::{Allow, Deny};
+        assert_eq!(
+            (
+                herdr.run,
+                herdr.answer,
+                herdr.send,
+                herdr.interrupt,
+                herdr.kill
+            ),
+            (Allow, Allow, Allow, Deny, Deny)
+        );
+        assert_eq!(herdr.default_program, "claude");
+        let bad: Result<super::Config, _> =
+            toml::from_str("[llm]\nbackend = \"mock\"\n[agent]\nbackend = \"codex\"\n");
+        assert!(bad.is_err());
+        let bad: Result<super::Config, _> =
+            toml::from_str("[llm]\nbackend = \"mock\"\n[herdr]\nrun = \"maybe\"\n");
+        assert!(bad.is_err());
+    }
+
+    #[test]
     fn dotenv_lines() {
         let parsed =
             super::parse_dotenv("# note\nA=1\nexport B = \"two words\"\n\nC='x=y'\nnot a pair\n");

@@ -432,6 +432,9 @@ mod tests {
         let mut t = table("[agent]\nplace = \"HOME\"\n");
         resolve_paths(&mut t, Path::new("/base"));
         assert_eq!(t["agent"]["dir"].as_str(), Some("/base/sessions"));
+        let mut t = table("[agent]\n[agent.claude]\nmodel = \"haiku\"\n");
+        resolve_paths(&mut t, Path::new("/base"));
+        assert_eq!(t["agent"]["claude"]["dir"].as_str(), Some("/base/work"));
         let mut t = table("[agent]\ndir = \"~/s\"\n");
         resolve_paths(&mut t, Path::new("/base"));
         assert!(!t["agent"]["dir"].as_str().unwrap().starts_with("/base"));

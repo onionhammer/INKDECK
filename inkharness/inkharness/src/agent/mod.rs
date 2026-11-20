@@ -43,6 +43,8 @@ use crate::meter;
 use crate::tools::ToolSet;
 pub use claude::Claude;
 pub use herdr::Herdr;
+#[cfg(test)]
+pub use herdr::session_id as herdr_session_id;
 pub use lock::Unlock;
 #[cfg(test)]
 pub use lock::sha256_hex;
