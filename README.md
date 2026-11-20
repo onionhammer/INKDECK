@@ -35,7 +35,9 @@ the same way round in both. Phone photos come out upright (EXIF orientation), an
 
 **Power**
 - PWR shows a sleep screen and powers the board off completely. The e-paper keeps its image,
-  and the RTC wakes the board for the next alarm. With a book open, PWR closes it instead (below).
+  and the RTC wakes the board for the next alarm. The sleep screen shows the cover of the book
+  you're reading, small, with its title and progress. With a book open, PWR closes it instead
+  (below).
 - After 10 idle minutes on battery, the board goes to standby: a clock face that the RTC
   redraws every minute, with the room temperature and humidity and the outside weather from
   the saved forecast. `INKDECK_STANDBY_WEATHER_HOURS` in `platformio.ini` has it fetch a new
