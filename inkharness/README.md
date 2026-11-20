@@ -116,8 +116,74 @@ curl -sN localhost:7392/chat -H 'content-type: application/json' \
 | --- | --- |
 | `GET /health` | `{"ok": true, "model": …}`, and with the token (or none set) the tools and skills |
 | `POST /chat` | `{"text", "conversation"?, "stream"?}`. Without `conversation`, a new one starts and its id comes back; send it again to go on (the last 100 are kept, in memory). The answer is `{"reply", "conversation", "tools"}`; with `"stream": true`, server-sent events: `{"text"}` as it's written, `{"tool"}` as a call starts, then `{"done": true, "reply", "conversation"}` or `{"error"}` |
+| `/sessions` | The agent sessions, with an `[agent]` table ([Agent sessions](#agent-sessions)) |
 
 HTTP turns get the same model, tools, skills and instructions as the chat.
+
+## Agent sessions
+
+With an `[agent]` table, the daemon keeps **sessions**: tasks that live on the daemon, are kept
+on disk, and go on working with no board connected (issue #52). A board starts one by talking
+on its Agent screen (an agent turn), follows the list and each session's plan and log, answers
+the questions sessions ask, and talks into them; programs do the same over HTTP. Without the
+table there are none, and boards talk as they always did.
+
+```toml
+[agent]
+dir = "sessions"        # where sessions are kept; relative to the file this is in
+place = "ONIONSERVE"    # the name boards show for where they run; default: the host's name, uppercased
+pin_sha256 = "…"        # optional: printf %s 1234 | sha256sum. Boards unlock with the PIN, HTTP sends it
+ticket_minutes = 60     # how long an unlock lets a board's new connections back in without the PIN
+keep_days = 30          # finished sessions older than this are deleted
+max_rounds = 40         # model rounds per run before a session fails with "too many steps"
+
+[talk]                  # what HOLD BOOT outside the Agent may use; unset: every tool
+tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixes ending in *; the board's own always stay
+```
+
+- A session runs on the text model (`[chat.llm]`, or `[llm]`) with the daemon's tools (home,
+  MCP, web search, run_js, skills) and two of its own: `plan`, a checklist the board shows as a
+  meter, and `ask_choice`, which puts a question with 2 to 6 options to the user and waits,
+  minutes or days, for the answer. The board's tools stay out: it may be off. The prompt tells
+  the model it works alone for someone who reads results on a small e-paper screen: plan first,
+  keep the log terse, ask only when the choice is the user's, end with a short Markdown result,
+  and open it with a heading when it is meant to be kept (the session is then a note).
+- What it writes between tool calls and the calls themselves go to its log. Talking into a
+  working session reaches the model at its next round; into an asking one, it answers in words;
+  into a finished one, it starts again. Each run logs what it cost, as turns do.
+- Sessions are JSON files in `dir`. After a restart, the working ones start again, told their
+  plan and what they had done (the results of earlier tool calls are gone), and the asking ones
+  wait on; an answer then starts them the same way.
+- **Talk and agent stay apart.** A talk turn (`HOLD BOOT` outside the Agent, and every board from
+  before sessions) keeps its own short conversation and the tools `[talk]` leaves it, and never
+  sees a session. The token is on the board's SD card, so `pin_sha256` keeps a lost board or a
+  copied card from reaching the agent: until a connection unlocks, it gets talk turns and the
+  sessions' counts only. Wrong PINs back off after 3 (30 s, doubling to 30 min), and the count
+  survives a restart.
+
+The protocol is in [docs/voice-protocol.md](../docs/voice-protocol.md#agent-sessions). Over
+HTTP, with the token, and with `X-Inkharness-Pin: <pin>` when a PIN is set (403 without it or
+with a wrong one, 429 while wrong ones back off):
+
+| Request | |
+| --- | --- |
+| `GET /sessions` | The list, as a board gets it unlocked |
+| `GET /sessions/{id}` | One session in full |
+| `POST /sessions` | `{"text"}` starts one: `{"session": "k7q2"}` |
+| `POST /sessions/{id}/say` | `{"text"}` talks into it (answers its question in words) |
+| `POST /sessions/{id}/answer` | `{"ask": "a1", "choice": 0}` |
+| `POST /sessions/{id}/stop` | Stops a working or asking one |
+| `DELETE /sessions/{id}` | Deletes it |
+
+```sh
+pin=(-H "Authorization: Bearer $TOKEN" -H "X-Inkharness-Pin: 1234" -H 'content-type: application/json')
+curl -s "${pin[@]}" localhost:7392/sessions -d '{"text": "find a plumber for the kitchen leak this week"}'
+curl -s "${pin[@]}" localhost:7392/sessions/k7q2/answer -d '{"ask": "a1", "choice": 0}'
+```
+
+With `[llm] backend = "mock"`, sessions play through a scripted run instead (`agent/mock.rs`): a
+plan of three steps, a tool call and a result; "ask" in the task asks which of two plumbers to
+book, "slow" takes 3 s a step, "note" makes it a note, "fail" fails it.
 
 ## A spoken turn
 
@@ -168,7 +234,7 @@ scripts can't call the skill tools.
 | Path | |
 | --- | --- |
 | `voice-proto/` | Framing and messages, shared by the daemon and the test client |
-| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
+| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice` and `plan`, `mock.rs` a scripted session model), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
 | `voice-client/` | Plays a board's part from a WAV file |
 | `skills/` | Agent Skills, found when inkharness starts in this folder; `goodnight` pauses every speaker that's playing in one `run_js` script |
 | `install.sh` | Installs inkharness from this checkout (`cargo install --path`) |
@@ -193,6 +259,32 @@ cargo clean
 `voice-client --tools tools.json` plays a board with tools: an array of tools as the hello
 announces them (`name`, `description`, `input_schema`), each with the `answer` to give when it's
 called.
+
+It plays a board's part in agent sessions too: `--unlock PIN` (or `--ticket T`), `--sync`,
+`--open ID`, `--answer SESSION:ASK:N`, `--stop ID`, `--delete ID`, `--mode agent` (and
+`--session ID`) for an agent turn, `--wait SECS` to go on printing, `--json` for the messages as
+sent. A test daemon with sessions, every stage mocked and the PIN 1234, on ports of its own and
+without the global config:
+
+```sh
+mkdir -p /tmp/ink-test && cat > /tmp/ink-test/inkharness.toml <<'TOML'
+listen = "127.0.0.1:7491"
+http = "127.0.0.1:7492"
+token = "test"
+[stt]
+backend = "mock"
+text = "find a plumber this week and ask me which"
+[llm]
+backend = "mock"
+[tts]
+backend = "mock"
+[agent]
+place = "TESTBOX"
+pin_sha256 = "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4"
+TOML
+INKHARNESS_HOME=/tmp/ink-test cargo run -p inkharness -- serve -C /tmp/ink-test
+cargo run -p voice-client -- --addr 127.0.0.1:7491 --token test --unlock 1234 --sync --mode agent --silence 1 --wait 5
+```
 
 With hosted services: copy `inkharness.toml.example`, fill in the model names, and put the keys it
 names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `HOME_ASSISTANT_TOKEN`) in the environment or `.env`.

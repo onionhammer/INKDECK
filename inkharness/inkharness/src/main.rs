@@ -8,6 +8,7 @@
 //! What it uses comes from the folder it starts in and the global config folder (place.rs):
 //! `inkharness.toml`, `AGENTS.md`, skills folders, `.mcp.json`, `.env`.
 
+mod agent;
 mod chat;
 mod config;
 mod device;

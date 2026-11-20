@@ -153,3 +153,26 @@ api_key_env = "OPENAI_API_KEY"
 # dirs adds others.
 # [skills]
 # dirs = ["../shared-skills"]   # relative to this file
+
+# --- Agent sessions --------------------------------------------------------------------
+# Tasks that live on the daemon, are kept on disk and go on working with no board connected:
+# a board starts one by talking on its Agent screen, follows its plan and log, and answers its
+# questions; programs do the same over HTTP (/sessions). Sessions use the text model ([chat.llm]
+# if set, else [llm]) with the tools above, plus plan and ask_choice. Without this section there
+# are none, and boards talk as before.
+# [agent]
+# dir = "sessions"            # where they are kept, relative to this file
+# place = "ONIONSERVE"        # the name boards show for where they run; default: the host's name
+# pin_sha256 = "..."          # optional: printf %s 1234 | sha256sum. A board must unlock with the
+#                             # PIN (HTTP sends X-Inkharness-Pin) before it sees or does anything
+#                             # with sessions; the token alone is on the board's card
+# ticket_minutes = 60         # how long an unlock lets the board's new connections back in
+# keep_days = 30              # finished sessions older than this are deleted
+# max_rounds = 40             # model rounds per run before a session fails ("too many steps")
+
+# --- Talk ------------------------------------------------------------------------------
+# What a talk turn (HOLD BOOT outside the Agent, and every board from before sessions) may
+# use: tool names, or prefixes ending in *. The board's own tools always stay. Unset: every
+# tool. Talk turns never see the sessions, whatever this says.
+# [talk]
+# tools = ["run_js", "web_search", "think_harder", "home_*"]

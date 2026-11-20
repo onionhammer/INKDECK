@@ -50,6 +50,56 @@ pub struct Config {
     /// order until one answers.
     #[serde(default, deserialize_with = "one_or_more")]
     pub search: Vec<Search>,
+    /// Agent sessions (agent/): without this table there are none, and only talk turns work.
+    pub agent: Option<Agent>,
+    #[serde(default)]
+    pub talk: Talk,
+}
+
+/// [agent]: sessions that live on the daemon and work with no board connected (issue #52).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Agent {
+    /// Where sessions are kept, relative to the config file it is in (place.rs makes it
+    /// absolute).
+    #[serde(default = "default_agent_dir")]
+    pub dir: String,
+    /// The name the board shows for where sessions run. Unset: the hostname, uppercased.
+    pub place: Option<String>,
+    /// The SHA-256 of the PIN, in hex. With it, a connection must unlock before it sees or
+    /// does anything with sessions, and HTTP requests send the PIN.
+    pub pin_sha256: Option<String>,
+    /// How long an unlock ticket lets a new connection back in without the PIN.
+    #[serde(default = "default_ticket_minutes")]
+    pub ticket_minutes: u64,
+    /// Finished sessions older than this are deleted.
+    #[serde(default = "default_keep_days")]
+    pub keep_days: u64,
+    /// Model rounds per run before a session fails with "too many steps".
+    #[serde(default = "default_max_rounds")]
+    pub max_rounds: usize,
+}
+
+/// [talk]: what a talk turn (HOLD BOOT outside the Agent) may use.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Talk {
+    /// Tool names, or prefixes ending in `*`. The device's tools always stay. Unset: every
+    /// tool.
+    pub tools: Option<Vec<String>>,
+}
+
+pub(crate) fn default_agent_dir() -> String {
+    "sessions".into()
+}
+fn default_ticket_minutes() -> u64 {
+    60
+}
+fn default_keep_days() -> u64 {
+    30
+}
+fn default_max_rounds() -> usize {
+    40
 }
 
 /// A table, or an array of them.

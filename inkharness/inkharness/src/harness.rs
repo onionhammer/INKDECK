@@ -81,6 +81,11 @@ impl Harness {
                 config::written_prompt()
             }
         });
+        self.prompt_from(base)
+    }
+
+    /// `base` with what follows every prompt: an agent session's own base, for one.
+    pub fn prompt_from(&self, base: String) -> String {
         base + &self.additions
     }
 }

@@ -165,8 +165,15 @@ pub enum ClientMsg {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tools: Vec<DeviceTool>,
     },
-    /// Audio frames that follow are one utterance.
-    ListenStart,
+    /// Audio frames that follow are one utterance. `mode` says what kind of turn it is (talk
+    /// when absent, as on boards from before agent sessions); an agent turn may name the
+    /// `session` it talks into.
+    ListenStart {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<Mode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+    },
     /// The utterance is complete; the daemon answers.
     ListenStop,
     /// Drop the utterance or the reply in progress. The daemon answers `reply_end`.
@@ -178,6 +185,47 @@ pub enum ClientMsg {
         #[serde(default)]
         error: bool,
     },
+    /// Unlocks the connection's agent sessions with the PIN (digits) or a ticket from an earlier
+    /// unlock. Answered with `unlocked`.
+    Unlock {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pin: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<String>,
+    },
+    /// Send `sessions` now and whenever the list changes, and `ask` for each new question, for
+    /// as long as the connection lasts.
+    Sync {},
+    /// Send `session` for this one now and whenever it changes, until another `open` or a
+    /// `close`. Marks it seen.
+    Open { session: String },
+    /// Stop sending `session` updates.
+    Close {},
+    /// Answers a session's pending question with one of its options.
+    Answer {
+        session: String,
+        /// The question's id.
+        ask: String,
+        /// An index into its options.
+        choice: usize,
+    },
+    /// Stops a working or asking session.
+    Stop { session: String },
+    /// Deletes a session for good.
+    Delete { session: String },
+}
+
+/// What kind of turn an utterance is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// Today's voice: its own short conversation and the talk tools, never the sessions.
+    Talk,
+    /// Starts a session, or talks into one.
+    Agent,
+    /// A mode this version doesn't know.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Daemon → device.
@@ -187,6 +235,9 @@ pub enum ServerMsg {
     Hello {
         proto: u32,
         session: String,
+        /// Present when the daemon has agent sessions.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<AgentHello>,
     },
     /// What the daemon heard.
     Stt {
@@ -212,6 +263,182 @@ pub enum ServerMsg {
     Error {
         message: String,
     },
+    /// The list of agent sessions (docs/voice-protocol.md, "Agent sessions").
+    Sessions(SessionList),
+    /// One session in full (boxed: it is by far the largest message).
+    Session(Box<SessionView>),
+    /// A new question from a session.
+    Ask(AskView),
+    /// During an agent turn: the session the utterance went to, before `reply_start`.
+    Started {
+        session: String,
+    },
+    /// The answer to `unlock`.
+    Unlocked {
+        ok: bool,
+        /// When ok: lets a later connection unlock without the PIN.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<String>,
+        /// When ok: how long the ticket lasts, in seconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ttl_s: Option<u64>,
+        /// When further tries are refused for this many seconds (too many wrong PINs).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait_s: Option<u64>,
+    },
+    /// A request that isn't a turn and can't be done.
+    Refused {
+        /// The refused message's `type`.
+        request: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        message: String,
+    },
+}
+
+/// The `agent` field of the daemon's hello.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentHello {
+    /// Where the sessions run, as the board shows it.
+    pub place: String,
+    /// Whether a PIN guards the sessions.
+    pub pin: bool,
+    /// Whether this connection may use them now.
+    pub unlocked: bool,
+}
+
+/// What a session is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum State {
+    Working,
+    /// Waiting on an answer to its question.
+    Ask,
+    /// Finished with a result.
+    Done,
+    /// Finished; the result is meant to be read as a note.
+    Note,
+    /// Gave up or failed; the result says why.
+    Fail,
+    /// Stopped by the user.
+    Stopped,
+    /// A state this version doesn't know (later ones add `watch`, `scheduled`).
+    #[serde(other)]
+    Unknown,
+}
+
+impl State {
+    /// Done, note, fail or stopped.
+    pub fn finished(self) -> bool {
+        matches!(
+            self,
+            State::Done | State::Note | State::Fail | State::Stopped
+        )
+    }
+}
+
+/// The `sessions` message.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionList {
+    /// Locked: only the counts and `check_at`, no sessions.
+    pub locked: bool,
+    pub counts: Counts,
+    /// When the board should check in next (Unix seconds), if the daemon wants it to.
+    pub check_at: Option<u64>,
+    pub sessions: Vec<SessionRow>,
+    /// Sessions past the ones listed.
+    pub older: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Counts {
+    pub ask: usize,
+    pub running: usize,
+    pub planned: usize,
+    pub unread: usize,
+}
+
+/// A session in the list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionRow {
+    pub id: String,
+    pub title: String,
+    pub state: State,
+    pub place: String,
+    /// One line: the question, the step or last tool call, or the result's first line.
+    pub sub: String,
+    /// The plan's current step, from 1.
+    pub step: Option<usize>,
+    pub steps: Option<usize>,
+    /// 0 to 100, when known.
+    pub progress: Option<u8>,
+    pub updated: u64,
+    pub unread: bool,
+}
+
+/// The `session` message: one session in full.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionView {
+    pub id: String,
+    pub title: String,
+    pub state: State,
+    pub place: String,
+    pub prompt: String,
+    pub started: u64,
+    pub updated: u64,
+    pub step: Option<usize>,
+    pub steps: Option<usize>,
+    pub plan: Option<Vec<PlanItem>>,
+    /// Newest first.
+    pub log: Vec<LogLine>,
+    /// Markdown, for a finished session.
+    pub result: Option<String>,
+    pub ask: Option<AskView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlanItem {
+    pub text: String,
+    pub state: StepState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepState {
+    Done,
+    Now,
+    Todo,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogLine {
+    pub at: u64,
+    pub text: String,
+}
+
+/// A session's question: the `ask` message, and a `session`'s `ask` field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AskView {
+    pub session: String,
+    pub id: String,
+    /// The session's title.
+    pub title: String,
+    pub question: String,
+    pub detail: Option<String>,
+    pub options: Vec<AskOption>,
+    /// The option the session recommends.
+    pub recommend: Option<usize>,
+    pub at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AskOption {
+    pub title: String,
+    /// A short value shown at the right: a price, a time.
+    #[serde(default)]
+    pub right: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// What the daemon answers, unencrypted, to a handshake made with another token.
@@ -334,7 +561,11 @@ mod tests {
     #[test]
     fn frames_survive_any_split() {
         let frames = vec![
-            Frame::control(&ClientMsg::ListenStart).unwrap(),
+            Frame::control(&ClientMsg::ListenStart {
+                mode: None,
+                session: None,
+            })
+            .unwrap(),
             Frame::Audio(vec![1, 2, 3, 4]),
             Frame::Audio(vec![]),
             Frame::Handshake(vec![5; 48]),
@@ -446,5 +677,287 @@ mod tests {
                 error: false
             }
         );
+    }
+
+    /// Parses `json` as `T`, checks it against `expect`, and that it writes back as `json`.
+    fn round_trip<T>(json: &str, expect: T)
+    where
+        T: Serialize + for<'de> Deserialize<'de> + PartialEq + std::fmt::Debug,
+    {
+        let parsed: T = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed, expect);
+        let written: serde_json::Value = serde_json::to_value(&parsed).unwrap();
+        let given: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(written, given, "{json}");
+    }
+
+    #[test]
+    fn listen_start_modes() {
+        // A board from before agent sessions: a talk turn.
+        round_trip(
+            r#"{"type":"listen_start"}"#,
+            ClientMsg::ListenStart {
+                mode: None,
+                session: None,
+            },
+        );
+        round_trip(
+            r#"{"type":"listen_start","mode":"agent","session":"k7q2"}"#,
+            ClientMsg::ListenStart {
+                mode: Some(Mode::Agent),
+                session: Some("k7q2".into()),
+            },
+        );
+        round_trip(
+            r#"{"type":"listen_start","mode":"talk"}"#,
+            ClientMsg::ListenStart {
+                mode: Some(Mode::Talk),
+                session: None,
+            },
+        );
+        // A mode from a later version still parses, so the turn can be answered.
+        assert_eq!(
+            serde_json::from_str::<ClientMsg>(r#"{"type":"listen_start","mode":"later"}"#).unwrap(),
+            ClientMsg::ListenStart {
+                mode: Some(Mode::Unknown),
+                session: None,
+            }
+        );
+    }
+
+    #[test]
+    fn session_requests() {
+        round_trip(
+            r#"{"type":"unlock","pin":"1234"}"#,
+            ClientMsg::Unlock {
+                pin: Some("1234".into()),
+                ticket: None,
+            },
+        );
+        round_trip(
+            r#"{"type":"unlock","ticket":"abcd"}"#,
+            ClientMsg::Unlock {
+                pin: None,
+                ticket: Some("abcd".into()),
+            },
+        );
+        round_trip(r#"{"type":"sync"}"#, ClientMsg::Sync {});
+        // Fields this version doesn't know are ignored.
+        assert_eq!(
+            serde_json::from_str::<ClientMsg>(r#"{"type":"sync","since":1795190000}"#).unwrap(),
+            ClientMsg::Sync {}
+        );
+        round_trip(
+            r#"{"type":"open","session":"k7q2"}"#,
+            ClientMsg::Open {
+                session: "k7q2".into(),
+            },
+        );
+        round_trip(r#"{"type":"close"}"#, ClientMsg::Close {});
+        round_trip(
+            r#"{"type":"answer","session":"k7q2","ask":"a1","choice":1}"#,
+            ClientMsg::Answer {
+                session: "k7q2".into(),
+                ask: "a1".into(),
+                choice: 1,
+            },
+        );
+        round_trip(
+            r#"{"type":"stop","session":"k7q2"}"#,
+            ClientMsg::Stop {
+                session: "k7q2".into(),
+            },
+        );
+        round_trip(
+            r#"{"type":"delete","session":"k7q2"}"#,
+            ClientMsg::Delete {
+                session: "k7q2".into(),
+            },
+        );
+    }
+
+    fn plumber_ask() -> AskView {
+        AskView {
+            session: "k7q2".into(),
+            id: "a1".into(),
+            title: "Plumber · kitchen leak".into(),
+            question: "Which plumber should I book?".into(),
+            detail: Some("Three can come before the weekend.".into()),
+            options: vec![
+                AskOption {
+                    title: "Riverside · Thu 08:00".into(),
+                    right: Some("$145".into()),
+                    detail: Some("4.8 ★ (212)…".into()),
+                },
+                AskOption {
+                    title: "Northgate · Wed 13:00".into(),
+                    right: Some("$120".into()),
+                    detail: None,
+                },
+            ],
+            recommend: Some(0),
+            at: 1795190000,
+        }
+    }
+
+    #[test]
+    fn session_messages() {
+        round_trip(
+            r#"{"type":"hello","proto":2,"session":"s1",
+                "agent":{"place":"ONIONSERVE","pin":true,"unlocked":false}}"#,
+            ServerMsg::Hello {
+                proto: 2,
+                session: "s1".into(),
+                agent: Some(AgentHello {
+                    place: "ONIONSERVE".into(),
+                    pin: true,
+                    unlocked: false,
+                }),
+            },
+        );
+        // No agent field: no sessions on this daemon.
+        round_trip(
+            r#"{"type":"hello","proto":2,"session":"s1"}"#,
+            ServerMsg::Hello {
+                proto: 2,
+                session: "s1".into(),
+                agent: None,
+            },
+        );
+        round_trip(
+            r#"{"type":"sessions","locked":false,
+                "counts":{"ask":2,"running":4,"planned":0,"unread":1},
+                "check_at":null,"older":0,
+                "sessions":[{"id":"k7q2","title":"Plumber · kitchen leak","state":"ask",
+                             "place":"ONIONSERVE","sub":"Which plumber should I book?",
+                             "step":null,"steps":null,"progress":null,
+                             "updated":1795190000,"unread":true}]}"#,
+            ServerMsg::Sessions(SessionList {
+                locked: false,
+                counts: Counts {
+                    ask: 2,
+                    running: 4,
+                    planned: 0,
+                    unread: 1,
+                },
+                check_at: None,
+                older: 0,
+                sessions: vec![SessionRow {
+                    id: "k7q2".into(),
+                    title: "Plumber · kitchen leak".into(),
+                    state: State::Ask,
+                    place: "ONIONSERVE".into(),
+                    sub: "Which plumber should I book?".into(),
+                    step: None,
+                    steps: None,
+                    progress: None,
+                    updated: 1795190000,
+                    unread: true,
+                }],
+            }),
+        );
+        round_trip(
+            r#"{"type":"session","id":"k7q2","title":"Plumber · kitchen leak","state":"working",
+                "place":"ONIONSERVE","prompt":"Find a plumber for the kitchen leak this week",
+                "started":1795189000,"updated":1795190000,"step":2,"steps":3,
+                "plan":[{"text":"Find plumbers near home","state":"done"},
+                        {"text":"Check reviews and prices","state":"now"},
+                        {"text":"Ask which to book","state":"todo"}],
+                "log":[{"at":1795190000,"text":"web_search plumbers open Saturday"}],
+                "result":null,"ask":null}"#,
+            ServerMsg::Session(Box::new(SessionView {
+                id: "k7q2".into(),
+                title: "Plumber · kitchen leak".into(),
+                state: State::Working,
+                place: "ONIONSERVE".into(),
+                prompt: "Find a plumber for the kitchen leak this week".into(),
+                started: 1795189000,
+                updated: 1795190000,
+                step: Some(2),
+                steps: Some(3),
+                plan: Some(vec![
+                    PlanItem {
+                        text: "Find plumbers near home".into(),
+                        state: StepState::Done,
+                    },
+                    PlanItem {
+                        text: "Check reviews and prices".into(),
+                        state: StepState::Now,
+                    },
+                    PlanItem {
+                        text: "Ask which to book".into(),
+                        state: StepState::Todo,
+                    },
+                ]),
+                log: vec![LogLine {
+                    at: 1795190000,
+                    text: "web_search plumbers open Saturday".into(),
+                }],
+                result: None,
+                ask: None,
+            })),
+        );
+        round_trip(
+            r#"{"type":"ask","session":"k7q2","id":"a1","title":"Plumber · kitchen leak",
+                "question":"Which plumber should I book?",
+                "detail":"Three can come before the weekend.",
+                "options":[{"title":"Riverside · Thu 08:00","right":"$145","detail":"4.8 ★ (212)…"},
+                           {"title":"Northgate · Wed 13:00","right":"$120","detail":null}],
+                "recommend":0,"at":1795190000}"#,
+            ServerMsg::Ask(plumber_ask()),
+        );
+        round_trip(
+            r#"{"type":"started","session":"k7q2"}"#,
+            ServerMsg::Started {
+                session: "k7q2".into(),
+            },
+        );
+        round_trip(
+            r#"{"type":"unlocked","ok":true,"ticket":"t","ttl_s":3600}"#,
+            ServerMsg::Unlocked {
+                ok: true,
+                ticket: Some("t".into()),
+                ttl_s: Some(3600),
+                wait_s: None,
+            },
+        );
+        round_trip(
+            r#"{"type":"unlocked","ok":false,"wait_s":30}"#,
+            ServerMsg::Unlocked {
+                ok: false,
+                ticket: None,
+                ttl_s: None,
+                wait_s: Some(30),
+            },
+        );
+        round_trip(
+            r#"{"type":"refused","request":"answer","session":"k7q2","message":"locked"}"#,
+            ServerMsg::Refused {
+                request: "answer".into(),
+                session: Some("k7q2".into()),
+                message: "locked".into(),
+            },
+        );
+        round_trip(
+            r#"{"type":"refused","request":"sync","message":"no sessions on this daemon"}"#,
+            ServerMsg::Refused {
+                request: "sync".into(),
+                session: None,
+                message: "no sessions on this daemon".into(),
+            },
+        );
+        // A session's question is the ask message without its type; a missing option field
+        // reads as null, and a state from a later version still parses.
+        let ask: AskView = serde_json::from_str(
+            r#"{"session":"k7q2","id":"a1","title":"t","question":"q","detail":null,
+                "options":[{"title":"A"},{"title":"B","right":"$1"}],"recommend":null,"at":1}"#,
+        )
+        .unwrap();
+        assert_eq!(ask.options[0].right, None);
+        assert_eq!(
+            serde_json::from_str::<State>(r#""watch""#).unwrap(),
+            State::Unknown
+        );
+        assert!(State::Stopped.finished() && !State::Ask.finished());
     }
 }

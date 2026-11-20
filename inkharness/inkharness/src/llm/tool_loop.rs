@@ -10,11 +10,8 @@ use futures_util::future::join_all;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use super::{Llm, Outcome, Piece, Request};
+use super::{Llm, Outcome, Piece, Request, TooManyRounds};
 use crate::tools::{THINK_TOOL, ToolDef, ToolSet};
-
-/// Tool-call rounds allowed in one turn before giving up.
-pub const MAX_ROUNDS: usize = 6;
 
 /// One provider's chat API.
 #[async_trait]
@@ -55,6 +52,10 @@ pub trait ChatApi: Send + Sync {
         calls: &[Call],
         results: &[CallResult],
     );
+
+    /// Adds what the user said after a round's tool results, for the next round to read
+    /// ([`Request::steer`]).
+    fn add_user(&self, conversation: &mut Self::Conversation, text: &str);
 }
 
 /// What one round produced.
@@ -185,8 +186,9 @@ impl Speaker {
     }
 
     /// A tool call starting.
-    pub async fn tool(&mut self, name: &str) -> Result<()> {
-        self.send(Piece::Tool(name.to_string())).await
+    pub async fn tool(&mut self, name: &str, input: Option<&Value>) -> Result<()> {
+        let input = input.cloned().unwrap_or(Value::Null);
+        self.send(Piece::Tool(name.to_string(), input)).await
     }
 
     fn next_round(&mut self) {
@@ -211,7 +213,7 @@ impl<A: ChatApi> Llm for ToolLoop<A> {
         let api = &self.0;
         let mut conversation = api.start(&request);
         let mut speaker = Speaker::new(out);
-        for _ in 0..MAX_ROUNDS {
+        for _ in 0..request.rounds {
             speaker.next_round();
             let round = api
                 .round(&conversation, request.tools.defs(), &mut speaker)
@@ -232,12 +234,15 @@ impl<A: ChatApi> Llm for ToolLoop<A> {
                 });
             }
             for call in &round.calls {
-                speaker.tool(&call.name).await?;
+                speaker.tool(&call.name, call.input.as_ref()).await?;
             }
             let results = join_all(round.calls.iter().map(|c| run(request.tools, c))).await;
             api.add_round(&mut conversation, round.said, &round.calls, &results);
+            for text in request.steer.map(|steer| steer()).unwrap_or_default() {
+                api.add_user(&mut conversation, &text);
+            }
         }
-        bail!("the model kept calling tools ({MAX_ROUNDS} rounds)")
+        Err(TooManyRounds(request.rounds).into())
     }
 }
 
@@ -277,7 +282,8 @@ mod tests {
     /// What a scripted round says, the calls it makes, and why it stops.
     type Scripted = (Vec<&'static str>, Vec<Call>, Stop);
 
-    struct Script(Mutex<Vec<Scripted>>);
+    /// The rounds to play, and the conversation each was sent.
+    struct Script(Mutex<Vec<Scripted>>, Mutex<Vec<Vec<String>>>);
 
     #[async_trait]
     impl ChatApi for Script {
@@ -290,10 +296,11 @@ mod tests {
 
         async fn round(
             &self,
-            _: &Vec<String>,
+            conversation: &Vec<String>,
             _: &[ToolDef],
             speaker: &mut Speaker,
         ) -> Result<Round<()>> {
+            self.1.lock().unwrap().push(conversation.clone());
             let (pieces, calls, stop) = self.0.lock().unwrap().remove(0);
             for piece in pieces {
                 speaker.say(piece).await?;
@@ -310,6 +317,10 @@ mod tests {
                 c.push(format!("{} -> {:?}", call.name, result));
             }
         }
+
+        fn add_user(&self, c: &mut Vec<String>, text: &str) {
+            c.push(format!("user: {text}"));
+        }
     }
 
     fn call(name: &str, raw: &str) -> Call {
@@ -317,7 +328,7 @@ mod tests {
     }
 
     fn script(rounds: Vec<Scripted>) -> ToolLoop<Script> {
-        ToolLoop(Script(Mutex::new(rounds)))
+        ToolLoop(Script(Mutex::new(rounds), Mutex::default()))
     }
 
     #[tokio::test]
@@ -379,7 +390,7 @@ mod tests {
         let (result, text) = collect(&llm, "q").await;
         assert_eq!((result.unwrap(), text.as_str()), (Outcome::Done, "Cut"));
 
-        let endless = (0..MAX_ROUNDS)
+        let endless = (0..crate::llm::MAX_ROUNDS)
             .map(|_| {
                 (
                     vec![],
@@ -396,6 +407,81 @@ mod tests {
                 .to_string()
                 .contains("kept calling")
         );
+    }
+
+    #[tokio::test]
+    async fn a_request_sets_its_rounds_and_hears_what_was_said_meanwhile() {
+        let llm = script(vec![
+            (
+                vec!["Looking."],
+                vec![call("run_js", r#"{"code": "1"}"#)],
+                Stop::ToolUse,
+            ),
+            (
+                vec![],
+                vec![call("run_js", r#"{"code": "2"}"#)],
+                Stop::ToolUse,
+            ),
+            (vec!["Done."], vec![], Stop::Done),
+        ]);
+        let tools = ToolSet::build(
+            None,
+            &crate::config::Js::default(),
+            Default::default(),
+            Default::default(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        let said = Mutex::new(vec!["make it Saturday".to_string()]);
+        let steer = || std::mem::take(&mut *said.lock().unwrap());
+        let (tx, mut rx) = mpsc::channel(64);
+        let request = Request {
+            system: "sys",
+            history: &[],
+            user: "find a plumber",
+            audio: None,
+            tools: &tools,
+            rounds: 3,
+            steer: Some(&steer),
+        };
+        let drain = async { while rx.recv().await.is_some() {} };
+        let (outcome, ()) = tokio::join!(llm.respond(request, tx), drain);
+        assert_eq!(outcome.unwrap(), Outcome::Done);
+        let seen = llm.0.1.lock().unwrap().clone();
+        assert_eq!(
+            seen[1],
+            [
+                "user: find a plumber",
+                r#"run_js -> CallResult { text: "=> 1", is_error: false }"#,
+                "user: make it Saturday"
+            ]
+        );
+        assert_eq!(seen[2].len(), 4, "said once: {:?}", seen[2]);
+
+        // Three rounds of calls with only three allowed.
+        let llm = script(
+            (0..3)
+                .map(|_| {
+                    (
+                        vec![],
+                        vec![call("run_js", r#"{"code": "1"}"#)],
+                        Stop::ToolUse,
+                    )
+                })
+                .collect(),
+        );
+        let (tx, _rx) = mpsc::channel(64);
+        let request = Request {
+            system: "sys",
+            history: &[],
+            user: "q",
+            audio: None,
+            tools: &tools,
+            rounds: 3,
+            steer: None,
+        };
+        let err = llm.respond(request, tx).await.unwrap_err();
+        assert!(err.downcast_ref::<TooManyRounds>().is_some(), "{err}");
     }
 
     #[test]
