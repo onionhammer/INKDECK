@@ -170,7 +170,7 @@ impl Session {
                 _ => last_log(),
             },
             _ => match &self.result {
-                Some(result) => first_line(result),
+                Some(result) => plain(&first_line(result)),
                 None => last_log(),
             },
         };
@@ -314,6 +314,43 @@ fn first_line(text: &str) -> String {
         .trim_start_matches('#')
         .trim()
         .to_string()
+}
+
+/// A line of Markdown as plain text, for a board that shows it as it is: no heading, list or
+/// quote marker, no emphasis or code marks, and links as their text.
+pub fn plain(line: &str) -> String {
+    let mut line = line.trim().trim_start_matches('#').trim_start();
+    for marker in ["- ", "* ", "+ ", "> "] {
+        line = line.strip_prefix(marker).unwrap_or(line);
+    }
+    if let Some((number, rest)) = line.split_once(". ")
+        && !number.is_empty()
+        && number.bytes().all(|b| b.is_ascii_digit())
+    {
+        line = rest;
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    // [text](url) → text
+    while let Some(open) = rest.find('[') {
+        let link = rest[open..].find("](").and_then(|mid| {
+            let close = rest[open + mid..].find(')')?;
+            Some((open + mid, open + mid + close))
+        });
+        match link {
+            Some((mid, close)) => {
+                out.push_str(&rest[..open]);
+                out.push_str(&rest[open + 1..mid]);
+                rest = &rest[close + 1..];
+            }
+            None => {
+                out.push_str(&rest[..=open]);
+                rest = &rest[open + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out.replace("**", "").replace("__", "").replace('`', "")
 }
 
 /// `text` on one line (runs of whitespace become one space), cut to `max` characters at a
@@ -543,6 +580,21 @@ pub(crate) mod tests {
         let view = s.view("HOME");
         assert_eq!(view.log.len(), LOG_SHOWN);
         assert_eq!(view.log[0].text, "line 29");
+    }
+
+    #[test]
+    fn plain_lines_for_the_board() {
+        assert_eq!(
+            plain("**Done:** booked `Riverside`"),
+            "Done: booked Riverside"
+        );
+        assert_eq!(plain("## A heading"), "A heading");
+        assert_eq!(
+            plain("- [Riverside](https://example.com) at 08:00"),
+            "Riverside at 08:00"
+        );
+        assert_eq!(plain("2. second [not a link"), "second [not a link");
+        assert_eq!(plain("run_js 6 * 7"), "run_js 6 * 7");
     }
 
     #[test]

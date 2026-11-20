@@ -1752,6 +1752,99 @@ mod tests {
         );
     }
 
+    /// Hears the recording: writes it down when asked to, and otherwise says it will do it.
+    struct Hears;
+
+    #[async_trait]
+    impl Llm for Hears {
+        fn hears(&self) -> bool {
+            true
+        }
+
+        async fn respond(
+            &self,
+            request: llm::Request<'_>,
+            out: mpsc::Sender<Piece>,
+        ) -> Result<Outcome> {
+            assert!(request.tools.defs().is_empty(), "no tools for these");
+            let said = if request.system.starts_with("Write down") {
+                assert!(request.audio.is_some());
+                "Find a plumber for Saturday."
+            } else {
+                assert!(request.user.contains("Find a plumber for Saturday."));
+                "I'll find one."
+            };
+            out.send(Piece::Transcript(said.into())).await?;
+            Ok(Outcome::Done)
+        }
+    }
+
+    #[tokio::test]
+    async fn with_no_speech_to_text_the_model_that_hears_writes_it_down() {
+        let dir = crate::skills::tests::scratch("conn-hears");
+        let tools = ToolSet::build(
+            None,
+            &config::Js::default(),
+            Default::default(),
+            Default::default(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        let agent = Agent::open(
+            &crate::agent::tests::cfg(&dir),
+            agent::model(&config::Llm::Mock, reqwest::Client::new()).unwrap(),
+            tools.clone(),
+            agent::prompt(),
+        )
+        .unwrap();
+        let app = Arc::new(App {
+            token: "t".into(),
+            psk: psk("t"),
+            plaintext: false,
+            system_prompt: String::new(),
+            stt: None,
+            llm: Box::new(Hears),
+            tts: None,
+            fast_tools: tools.clone(),
+            tools,
+            think: None,
+            agent: Some(agent.clone()),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            run(stream, app, "s1".into()).await
+        });
+        let (answer, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        assert!(matches!(
+            answer,
+            ServerMsg::Hello {
+                agent: Some(AgentHello { unlocked: true, .. }),
+                ..
+            }
+        ));
+        let (mut reader, mut writer) = board.unwrap();
+        utter(&mut writer, Some(Mode::Agent), None).await;
+        let (_, turn) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
+        assert_eq!(
+            turn[0],
+            ServerMsg::Stt {
+                text: "Find a plumber for Saturday.".into()
+            }
+        );
+        let ServerMsg::Started { session } = &turn[1] else {
+            panic!("{turn:?}")
+        };
+        assert!(turn.contains(&ServerMsg::Text {
+            delta: "I'll find one.".into()
+        }));
+        assert_eq!(
+            agent.view(session).unwrap().prompt,
+            "Find a plumber for Saturday."
+        );
+    }
+
     #[tokio::test]
     async fn without_agent_sessions_the_requests_are_refused() {
         let addr = daemon("t", false).await;

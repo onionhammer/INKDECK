@@ -621,7 +621,7 @@ impl Agent {
                 }
                 Piece::Tool(name, input) => {
                     if !stretch.trim().is_empty() {
-                        self.log(id, &stretch);
+                        self.log(id, &store::plain(&stretch));
                         last = std::mem::take(&mut stretch);
                     }
                     stretch.clear();
