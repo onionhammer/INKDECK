@@ -120,7 +120,7 @@ void configure() {
     const char *what;
   };
   static constexpr Field kFields[] = {
-      {kRegKeyLevels, 0x0F, 0b0001, "PWR key: 512 ms on, 4 s off"},  // OFFLEVEL 00, ONLEVEL 01
+      {kRegKeyLevels, 0x0F, 0b0000, "PWR key: 128 ms on, 4 s off"},  // OFFLEVEL 00, ONLEVEL 00
       {kRegAdcEnable, 0x0C, 0x0C, "ADC: VBUS and VSYS on"},
       {kRegPrecharge, 0x0F, 2, "precharge 50 mA"},                // 25 mA x 2
       {kRegChargeCurrent, 0x1F, 11, "charge 500 mA"},             // 200 + 100 x (11 - 8)

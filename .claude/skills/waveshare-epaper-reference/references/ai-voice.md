@@ -147,7 +147,7 @@ What that does, checked against `docs/datasheets/TG28-PMIC.pdf` and `power.md`:
 | Write | Effect | Compared with ours (`pmic::configure()`) |
 | --- | --- | --- |
 | `0x22=0x06` | Bit 2: die over-temperature (level 2) shutdown on (POR default 1). Bit 1: PWRON held past OFFLEVEL powers off. Bit 0 = 0: that press means power-off, not restart (bits 1:0 default from eFuse) | We don't write it. The 4 s forced-off already works on our boards (power.md) |
-| `0x27=0x10` | IRQLEVEL 1.5 s, OFFLEVEL `00` = 4 s, **ONLEVEL `00` = 128 ms** | We set ONLEVEL 1 s. Under XiaoZhi a 128 ms tap of PWR boots the board |
+| `0x27=0x10` | IRQLEVEL 1.5 s, OFFLEVEL `00` = 4 s, **ONLEVEL `00` = 128 ms** | Ours keeps ONLEVEL at 128 ms too and writes OFFLEVEL 4 s the same, so `0x27` ends at `0x10` under either |
 | `0x80=0x01` | Only DCDC1 on (default DCDC1–4) | Unchanged in ours |
 | `0x90=0x00` → `0x90=0x07`, `0x91=0x00` | All LDOs off, then ALDO1–3 on at 3.3 V (`0x92`–`0x94` = 28 → 0.5 V + 28×0.1 V). DLDO2 off | ALDO3 (panel) and ALDO1/2 (audio, mic) drop briefly at boot. Harmless before the panel is initialised |
 | `0x82=18` | DC1 = 1.5 V + 18×0.1 V = 3.3 V | Default |
@@ -455,7 +455,7 @@ void CustomEpdDisplay::lvgl_flush_cb(lv_display_t* disp, const lv_area_t* area, 
 - Keep XiaoZhi's memory split: AFE stack and buffers in PSRAM (`AFE_MEMORY_ALLOC_MORE_PSRAM`), TCB and DMA internal.
   XiaoZhi reserves 100 KB of internal RAM (`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=102400`). We already have Wi-Fi + TLS
   in the ~230 KB, so measure with dev key `h` before adding WakeNet.
-- Don't copy the PMIC block: it fights `pmic::configure()` (200 vs 500 mA, 128 ms vs 1 s ONLEVEL) and new TG28 writes need
+- Don't copy the PMIC block: it fights `pmic::configure()` (200 vs 500 mA, all LDOs off then ALDO1-3 on) and new TG28 writes need
   the owner's approval anyway.
 - Without AEC, stay half-duplex: mute the uplink while TTS plays, or the server hears its own voice. XiaoZhi keeps AFE
   WakeNet running during playback so the wake word can interrupt (§8). With no echo reference, how well it hears you
