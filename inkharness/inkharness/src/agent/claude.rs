@@ -578,6 +578,7 @@ async fn terminate(child: &mut Child) {
     if let Some(pid) = child.id() {
         let _ = Command::new("kill")
             .args(["-TERM", &pid.to_string()])
+            .stderr(Stdio::null())
             .status()
             .await;
         if tokio::time::timeout(STOP_GRACE, child.wait()).await.is_ok() {
@@ -885,6 +886,7 @@ while read -r line; do result "heard: $(text_of "$line")"; done
         let alive = || {
             std::process::Command::new("kill")
                 .args(["-0", &pid])
+                .stderr(Stdio::null())
                 .status()
                 .unwrap()
                 .success()

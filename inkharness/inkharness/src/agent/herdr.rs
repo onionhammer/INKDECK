@@ -44,6 +44,8 @@ const RELIST_EVERY: Duration = Duration::from_secs(60);
 const LABEL: &str = "inkharness.session";
 /// How long a program started with a task has to say it is ready before the task is typed.
 const READY_WAIT: Duration = Duration::from_secs(20);
+/// How long one that says nothing at all is given.
+const QUIET_READY: Duration = Duration::from_secs(5);
 pub const RUN_TOOL: &str = "herdr_run";
 
 pub struct Herdr {
@@ -257,7 +259,12 @@ impl Herdr {
                 self.still_blocked(agent, &side).await?;
                 json!({"terminal": side.address, "text": text, "force": true})
             }
-            State::Idle => json!({"terminal": side.address, "text": text, "if": "idle"}),
+            // Guarded, so words never land in the middle of its work; a program that reports
+            // no status can't be.
+            State::Idle if side.reports => {
+                json!({"terminal": side.address, "text": text, "if": "idle"})
+            }
+            State::Idle => json!({"terminal": side.address, "text": text}),
             State::Done => json!({"terminal": side.address, "text": text}),
             _ => return Err(Refusal::NotWaiting),
         };
@@ -378,16 +385,18 @@ impl Herdr {
         Ok((id, place))
     }
 
-    /// Waits until a new terminal's program says it is ready (idle), or READY_WAIT.
+    /// Waits until a new terminal's program says it is ready (idle), up to READY_WAIT; one
+    /// that has said nothing after QUIET_READY doesn't report, and is taken as ready.
     async fn wait_ready(&self, address: &str) {
-        let until = Instant::now() + READY_WAIT;
-        while Instant::now() < until {
-            match self
+        let start = Instant::now();
+        while start.elapsed() < READY_WAIT {
+            let t = self
                 .hc
                 .call("terminal.get", json!({"terminal": address}))
-                .await
-            {
+                .await;
+            match t {
                 Ok(t) if t["status"]["state"] == "idle" || t["state"] == "finished" => return,
+                Ok(t) if t["status"].is_null() && start.elapsed() >= QUIET_READY => return,
                 Err(_) => return,
                 _ => tokio::time::sleep(Duration::from_millis(500)).await,
             }
@@ -849,6 +858,7 @@ impl Agent {
         s.progress = t["status"]["progress"].as_u64().map(|p| p.min(100) as u8);
         let side = s.herdr.get_or_insert_with(Default::default);
         side.address = address.clone();
+        side.reports = t["status"].is_object();
         let mut ask_now = None;
         match state {
             State::Ask => {
@@ -1651,6 +1661,32 @@ mod tests {
         until(&agent, &id, State::Idle).await;
         core.terminals.lock().unwrap()[0]["status"] = json!({"state": "working"});
         assert_eq!(agent.say(&id, "more").await, Err(Refusal::Busy));
+    }
+
+    #[tokio::test]
+    async fn a_shell_that_reports_nothing() {
+        let core = FakeCore::new("testbox", vec![terminal("t2", "bash", None)]);
+        let (agent, _) = with_herdr("herdr-shell", &core, "programs = [\"bash\"]\n");
+        let id = session_id("t2");
+        until(&agent, &id, State::Idle).await;
+        agent.say(&id, "ls").await.unwrap();
+        assert_eq!(
+            core.calls("terminal.send"),
+            [json!({"terminal": "t2", "text": "ls"})]
+        );
+        // Something running in it: working.
+        {
+            let mut terminals = core.terminals.lock().unwrap();
+            terminals[0]["foreground"]["name"] = json!("cargo");
+            terminals[0]["title"] = json!("cargo build");
+        }
+        core.event("created", "t2", json!({}));
+        soon(
+            || agent.view(&id).unwrap().title == "cargo build",
+            "the new title",
+        )
+        .await;
+        assert_eq!(agent.view(&id).unwrap().state, State::Working);
     }
 
     #[tokio::test]

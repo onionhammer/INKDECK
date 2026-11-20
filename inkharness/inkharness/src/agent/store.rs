@@ -91,6 +91,9 @@ pub struct HerdrSide {
     /// For each of the pending question's options, the keys it presses.
     #[serde(default)]
     pub keys: Vec<Vec<String>>,
+    /// Whether its program reports a status (a plain shell doesn't).
+    #[serde(default)]
+    pub reports: bool,
 }
 
 /// The checklist the model keeps with the `plan` tool.
