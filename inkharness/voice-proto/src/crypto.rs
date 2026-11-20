@@ -219,6 +219,7 @@ mod tests {
         ServerMsg::Hello {
             proto: crate::PROTO_VERSION,
             session: "s1".into(),
+            agent: None,
         }
     }
 
