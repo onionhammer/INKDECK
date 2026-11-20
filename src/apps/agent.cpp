@@ -320,6 +320,12 @@ class SessionScreen : public ui::Screen {
     more_ = false;
     if (!s.plan.empty()) drawPlan(c, r, s);
     if (finished(s.state) && !s.result.empty()) {
+      if (s.herdr && !s.screen.empty()) {
+        // A herdr agent's result is its last word; what its terminal shows says more.
+        r.takeTop(paragraph(c, r, r.y + 10, s.result, style::kBody, 3) + 10 - r.y);
+        drawScreen(c, r, s.screen, (r.h - kSectionH - 30) / kScreenLineH);
+        return;
+      }
       drawResult(c, r, s.result);
       return;
     }
