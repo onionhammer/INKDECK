@@ -252,10 +252,10 @@ impl ToolSet {
 
     /// Runs a tool. `Err` is a message for the model (bad input, or the call failed).
     pub async fn call(&self, name: &str, input: Value) -> Result<String, String> {
-        if let Some(extra) = &self.extra {
-            if let Some(result) = extra.call(name, &input).await {
-                return result;
-            }
+        if let Some(extra) = &self.extra
+            && let Some(result) = extra.call(name, &input).await
+        {
+            return result;
         }
         if !self.allows(name) {
             return Err(format!("no tool named {name}"));

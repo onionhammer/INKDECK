@@ -223,11 +223,11 @@ mod tests {
         }
     }
 
+    /// One side's sending and receiving halves.
+    type Halves = (Sealer, Opener);
+
     /// Both sides' halves after a handshake with these tokens.
-    fn connect(
-        device: &str,
-        daemon: &str,
-    ) -> Result<((Sealer, Opener), (Sealer, Opener)), ProtoError> {
+    fn connect(device: &str, daemon: &str) -> Result<(Halves, Halves), ProtoError> {
         let mut initiator = Initiator::new(&psk(device));
         let Frame::Handshake(msg1) = initiator.hello(&hello())? else {
             unreachable!()

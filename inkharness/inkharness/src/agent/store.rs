@@ -445,7 +445,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_list_puts_questions_first_then_work_then_the_newest() {
-        let mut sessions = vec![
+        let mut sessions = [
             session("done1", State::Done, 100),
             session("work1", State::Working, 50),
             session("done2", State::Fail, 300),

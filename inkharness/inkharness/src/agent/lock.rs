@@ -115,24 +115,30 @@ impl Lock {
         self.pin.is_some()
     }
 
-    /// Tries a PIN. With no PIN set, anything unlocks.
+    /// Tries a PIN, and issues a ticket if it is right. With no PIN set, anything unlocks.
     pub fn pin(&self, pin: &str, now: u64) -> Unlock {
-        let Some(want) = &self.pin else {
-            return self.issue(now);
-        };
+        match self.check(pin, now) {
+            Some(refused) => refused,
+            None => self.issue(now),
+        }
+    }
+
+    /// Checks a PIN without issuing a ticket (an HTTP request carries it every time): `None`
+    /// if it is right, else why not. Counts towards the backoff like `pin`.
+    pub fn check(&self, pin: &str, now: u64) -> Option<Unlock> {
+        let want = self.pin.as_ref()?;
         let mut state = self.state.lock().unwrap();
         if state.backoff.until > now {
-            return Unlock::Wait {
+            return Some(Unlock::Wait {
                 wait_s: state.backoff.until - now,
-            };
+            });
         }
         if same(&sha256_hex(pin), want) {
             if state.backoff != Backoff::default() {
                 state.backoff = Backoff::default();
                 self.save(state.backoff);
             }
-            drop(state);
-            return self.issue(now);
+            return None;
         }
         state.backoff.wrong += 1;
         let wait = wait_after(state.backoff.wrong);
@@ -143,9 +149,9 @@ impl Lock {
             wait_s = wait,
             "a wrong agent PIN"
         );
-        Unlock::Wrong {
+        Some(Unlock::Wrong {
             wait_s: (wait > 0).then_some(wait),
-        }
+        })
     }
 
     /// Tries a ticket from an earlier unlock: the same ticket back, with the time it has left.

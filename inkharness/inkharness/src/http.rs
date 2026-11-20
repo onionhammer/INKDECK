@@ -13,6 +13,20 @@
 //! starts, then `{"done": true, "reply": "…", "conversation": "…"}` or `{"error": "…"}`.
 //!
 //! With a token set (`token`, the one devices send), /chat wants `Authorization: Bearer <token>`.
+//!
+//! With an [agent] table, the agent sessions (agent/) too, with the same JSON a board gets
+//! (docs/voice-protocol.md, "Agent sessions"), and with a PIN set, `X-Inkharness-Pin: <pin>` on
+//! every request (403 without it or with a wrong one, 429 while wrong ones back off):
+//!
+//! ```text
+//! GET    /sessions                      the `sessions` message, unlocked
+//! GET    /sessions/{id}                 the `session` message
+//! POST   /sessions          {"text"}    starts one: {"session": "k7q2"}
+//! POST   /sessions/{id}/say {"text"}    talks into it (an answer in words, if it is asking)
+//! POST   /sessions/{id}/answer {"ask", "choice"}
+//! POST   /sessions/{id}/stop
+//! DELETE /sessions/{id}
+//! ```
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -21,7 +35,7 @@ use std::time::Instant;
 
 use anyhow::Result;
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
@@ -31,7 +45,9 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
+use voice_proto::ServerMsg;
 
+use crate::agent::{Agent, Refusal, Unlock};
 use crate::chat::{self, Chat};
 use crate::llm::{Piece, Turn};
 
@@ -43,6 +59,7 @@ pub struct Api {
     pub token: String,
     pub skills: Vec<String>,
     conversations: Mutex<Conversations>,
+    agent: Option<Arc<Agent>>,
 }
 
 #[derive(Default)]
@@ -58,7 +75,14 @@ impl Api {
             token,
             skills,
             conversations: Mutex::default(),
+            agent: None,
         }
+    }
+
+    /// The same API with the agent sessions' endpoints answering.
+    pub fn with_agent(mut self, agent: Option<Arc<Agent>>) -> Api {
+        self.agent = agent;
+        self
     }
 
     fn authorized(&self, headers: &HeaderMap) -> bool {
@@ -109,6 +133,11 @@ pub async fn serve(listener: TcpListener, api: Arc<Api>) -> Result<()> {
     let app = axum::Router::new()
         .route("/health", get(health))
         .route("/chat", post(chat_turn))
+        .route("/sessions", get(list_sessions).post(start_session))
+        .route("/sessions/{id}", get(get_session).delete(delete_session))
+        .route("/sessions/{id}/say", post(say_session))
+        .route("/sessions/{id}/answer", post(answer_session))
+        .route("/sessions/{id}/stop", post(stop_session))
         .with_state(api);
     axum::serve(listener, app).await?;
     Ok(())
@@ -181,6 +210,164 @@ async fn chat_turn(
         }
         Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, format!("{e:#}")),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// The header an HTTP request sends the agent's PIN in.
+const PIN_HEADER: &str = "x-inkharness-pin";
+
+/// The agent sessions, if this request may use them: the token, then the PIN if one is set.
+fn sessions<'a>(api: &'a Api, headers: &HeaderMap) -> Result<&'a Arc<Agent>, Box<Response>> {
+    if !api.authorized(headers) {
+        return Err(Box::new(error(
+            StatusCode::UNAUTHORIZED,
+            "wrong or missing token".into(),
+        )));
+    }
+    let Some(agent) = &api.agent else {
+        return Err(Box::new(error(
+            StatusCode::NOT_FOUND,
+            "no sessions on this daemon".into(),
+        )));
+    };
+    if !agent.has_pin() {
+        return Ok(agent);
+    }
+    let Some(pin) = headers.get(PIN_HEADER).and_then(|v| v.to_str().ok()) else {
+        return Err(Box::new(error(
+            StatusCode::FORBIDDEN,
+            "the agent needs its PIN: X-Inkharness-Pin".into(),
+        )));
+    };
+    match agent.check_pin(pin) {
+        None | Some(Unlock::Ok { .. }) => Ok(agent),
+        Some(Unlock::Wrong { wait_s }) => {
+            let body = json!({"error": "wrong PIN", "wait_s": wait_s});
+            Err(Box::new(
+                (StatusCode::FORBIDDEN, Json(body)).into_response(),
+            ))
+        }
+        Some(Unlock::Wait { wait_s }) => {
+            let body =
+                json!({"error": format!("too many wrong PINs: wait {wait_s} s"), "wait_s": wait_s});
+            let retry = [(header::RETRY_AFTER, wait_s.to_string())];
+            Err(Box::new(
+                (StatusCode::TOO_MANY_REQUESTS, retry, Json(body)).into_response(),
+            ))
+        }
+    }
+}
+
+fn refused(refusal: Refusal) -> Response {
+    let status = match refusal {
+        Refusal::NoSuchSession => StatusCode::NOT_FOUND,
+        Refusal::NoSuchChoice => StatusCode::BAD_REQUEST,
+        Refusal::AlreadyAnswered | Refusal::NotRunning => StatusCode::CONFLICT,
+    };
+    error(status, refusal.to_string())
+}
+
+fn done(result: Result<(), Refusal>) -> Response {
+    match result {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(refusal) => refused(refusal),
+    }
+}
+
+#[derive(Deserialize)]
+struct Text {
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct AnswerRequest {
+    ask: String,
+    choice: usize,
+}
+
+async fn list_sessions(State(api): State<Arc<Api>>, headers: HeaderMap) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => Json(ServerMsg::Sessions(agent.list(false))).into_response(),
+        Err(response) => *response,
+    }
+}
+
+async fn get_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => match agent.view(&id) {
+            Some(view) => Json(ServerMsg::Session(Box::new(view))).into_response(),
+            None => refused(Refusal::NoSuchSession),
+        },
+        Err(response) => *response,
+    }
+}
+
+async fn start_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Json(request): Json<Text>,
+) -> Response {
+    let agent = match sessions(&api, &headers) {
+        Ok(agent) => agent,
+        Err(response) => return *response,
+    };
+    if request.text.trim().is_empty() {
+        return error(StatusCode::BAD_REQUEST, "no text".into());
+    }
+    Json(json!({"session": agent.start(&request.text)})).into_response()
+}
+
+async fn say_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<Text>,
+) -> Response {
+    let agent = match sessions(&api, &headers) {
+        Ok(agent) => agent,
+        Err(response) => return *response,
+    };
+    if request.text.trim().is_empty() {
+        return error(StatusCode::BAD_REQUEST, "no text".into());
+    }
+    done(agent.say(&id, &request.text).map(|_| ()))
+}
+
+async fn answer_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<AnswerRequest>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => done(agent.answer(&id, &request.ask, request.choice)),
+        Err(response) => *response,
+    }
+}
+
+async fn stop_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => done(agent.stop(&id)),
+        Err(response) => *response,
+    }
+}
+
+async fn delete_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => done(agent.delete(&id)),
+        Err(response) => *response,
     }
 }
 
@@ -303,6 +490,175 @@ mod tests {
                 .iter()
                 .any(|t| t == "run_js")
         );
+    }
+
+    /// An API with agent sessions (the mock session model) behind the token and the PIN 1234.
+    async fn start_agent(name: &str) -> String {
+        let place = Place {
+            config: Config::from_table(toml::from_str("[llm]\nbackend = \"mock\"\n").unwrap())
+                .unwrap(),
+            read: vec![],
+            instructions: vec![],
+            skill_dirs: vec![],
+        };
+        let harness = Harness::build(&place, false).await.unwrap();
+        let chat = Chat::build(&place.config, &harness).unwrap();
+        let dir = crate::skills::tests::scratch(name);
+        let mut cfg = crate::agent::tests::cfg(&dir);
+        cfg.pin_sha256 = Some(crate::agent::sha256_hex("1234"));
+        let llm = crate::agent::model(&crate::config::Llm::Mock, harness.http.clone()).unwrap();
+        let agent = Agent::open(&cfg, llm, harness.tools.clone(), crate::agent::prompt()).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let api = Arc::new(Api::new(chat, "s3cret".into(), vec![]).with_agent(Some(agent)));
+        tokio::spawn(serve(listener, api));
+        url
+    }
+
+    #[tokio::test]
+    async fn sessions_over_http() {
+        let url = start_agent("http-agent").await;
+        let http = reqwest::Client::new();
+        let call = |method: reqwest::Method, path: &str, pin: Option<&str>, body: Option<Value>| {
+            let mut request = http
+                .request(method, format!("{url}{path}"))
+                .bearer_auth("s3cret");
+            if let Some(pin) = pin {
+                request = request.header("X-Inkharness-Pin", pin);
+            }
+            if let Some(body) = body {
+                request = request.json(&body);
+            }
+            async move {
+                let response = request.send().await.unwrap();
+                let status = response.status().as_u16();
+                (
+                    status,
+                    response.json::<Value>().await.unwrap_or(Value::Null),
+                )
+            }
+        };
+        use reqwest::Method;
+        let pin = Some("1234");
+        assert_eq!(call(Method::GET, "/sessions", None, None).await.0, 403);
+        let (status, body) = call(Method::GET, "/sessions", Some("0000"), None).await;
+        assert_eq!((status, body["error"].as_str()), (403, Some("wrong PIN")));
+        let (status, list) = call(Method::GET, "/sessions", pin, None).await;
+        assert_eq!(
+            (status, list["type"].as_str(), list["locked"].as_bool()),
+            (200, Some("sessions"), Some(false))
+        );
+
+        let (status, started) = call(
+            Method::POST,
+            "/sessions",
+            pin,
+            Some(json!({"text": "plan a trip and ask me"})),
+        )
+        .await;
+        assert_eq!(status, 200);
+        let id = started["session"].as_str().unwrap().to_string();
+        let path = format!("/sessions/{id}");
+        let wait_for = |state: &'static str| {
+            let call = &call;
+            let path = path.clone();
+            async move {
+                for _ in 0..300 {
+                    let (_, view) = call(Method::GET, &path, pin, None).await;
+                    if view["state"] == state {
+                        return view;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                panic!("never {state}")
+            }
+        };
+        let view = wait_for("ask").await;
+        assert_eq!(view["type"], "session");
+        assert_eq!(view["ask"]["id"], "a1");
+        let answer = format!("{path}/answer");
+        assert_eq!(
+            call(
+                Method::POST,
+                &answer,
+                pin,
+                Some(json!({"ask": "a1", "choice": 9}))
+            )
+            .await
+            .0,
+            400
+        );
+        assert_eq!(
+            call(
+                Method::POST,
+                &answer,
+                pin,
+                Some(json!({"ask": "a1", "choice": 1}))
+            )
+            .await
+            .0,
+            200
+        );
+        let view = wait_for("done").await;
+        assert!(
+            view["result"].as_str().unwrap().contains("Northgate"),
+            "{view}"
+        );
+        assert_eq!(
+            call(
+                Method::POST,
+                &answer,
+                pin,
+                Some(json!({"ask": "a1", "choice": 1}))
+            )
+            .await
+            .0,
+            409
+        );
+        assert_eq!(
+            call(Method::POST, &format!("{path}/stop"), pin, None)
+                .await
+                .0,
+            409
+        );
+        // Talking into a finished one starts it again.
+        let say = format!("{path}/say");
+        assert_eq!(
+            call(Method::POST, &say, pin, Some(json!({"text": "thanks"})))
+                .await
+                .0,
+            200
+        );
+        let view = wait_for("done").await;
+        assert!(
+            view["result"]
+                .as_str()
+                .unwrap()
+                .starts_with("You said: thanks"),
+            "{view}"
+        );
+        assert_eq!(call(Method::DELETE, &path, pin, None).await.0, 200);
+        assert_eq!(call(Method::GET, &path, pin, None).await.0, 404);
+        assert_eq!(
+            call(
+                Method::POST,
+                "/sessions/nope/say",
+                pin,
+                Some(json!({"text": "x"}))
+            )
+            .await
+            .0,
+            404
+        );
+    }
+
+    #[tokio::test]
+    async fn no_sessions_without_an_agent() {
+        let url = start("").await;
+        let response = reqwest::get(format!("{url}/sessions")).await.unwrap();
+        assert_eq!(response.status(), 404);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["error"], "no sessions on this daemon");
     }
 
     #[tokio::test]

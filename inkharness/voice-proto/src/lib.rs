@@ -265,8 +265,8 @@ pub enum ServerMsg {
     },
     /// The list of agent sessions (docs/voice-protocol.md, "Agent sessions").
     Sessions(SessionList),
-    /// One session in full.
-    Session(SessionView),
+    /// One session in full (boxed: it is by far the largest message).
+    Session(Box<SessionView>),
     /// A new question from a session.
     Ask(AskView),
     /// During an agent turn: the session the utterance went to, before `reply_start`.
@@ -865,7 +865,7 @@ mod tests {
                         {"text":"Ask which to book","state":"todo"}],
                 "log":[{"at":1795190000,"text":"web_search plumbers open Saturday"}],
                 "result":null,"ask":null}"#,
-            ServerMsg::Session(SessionView {
+            ServerMsg::Session(Box::new(SessionView {
                 id: "k7q2".into(),
                 title: "Plumber · kitchen leak".into(),
                 state: State::Working,
@@ -895,7 +895,7 @@ mod tests {
                 }],
                 result: None,
                 ask: None,
-            }),
+            })),
         );
         round_trip(
             r#"{"type":"ask","session":"k7q2","id":"a1","title":"Plumber · kitchen leak",

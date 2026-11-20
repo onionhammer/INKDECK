@@ -271,6 +271,11 @@ impl Agent {
         self.lock.ticket(ticket, store::now())
     }
 
+    /// Checks a PIN without issuing a ticket: `None` if it is right (or none is set).
+    pub fn check_pin(&self, pin: &str) -> Option<Unlock> {
+        self.lock.check(pin, store::now())
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.events.subscribe()
     }
@@ -881,7 +886,7 @@ fn hostname() -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::Path;
 
     use async_trait::async_trait;

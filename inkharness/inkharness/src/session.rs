@@ -11,23 +11,30 @@
 //! The connection opens with protocol 2's handshake, which carries the hellos and seals every
 //! frame after it (voice_proto's crypto.rs), or, where `plaintext` allows, protocol 1's
 //! unencrypted hello.
+//!
+//! On a daemon with agent sessions (agent/), an encrypted connection can also follow them
+//! (docs/voice-protocol.md, "Agent sessions"): unlock with the PIN if one is set, `sync` the
+//! list, `open` one, answer, stop and delete them, and talk in agent turns, which start a
+//! session or talk into one and get a short spoken reply while the session works on. Talk
+//! turns (no mode, or "talk") are what they always were, and never reach the sessions.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
 use futures_util::FutureExt;
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use voice_proto::{
-    ClientMsg, DeviceTool, Frame, FrameReader, FrameWriter, PROTO_PLAINTEXT, PROTO_VERSION,
-    Responder, ServerMsg, WRONG_TOKEN,
+    AgentHello, ClientMsg, DeviceTool, Frame, FrameReader, FrameWriter, Mode, PROTO_PLAINTEXT,
+    PROTO_VERSION, Responder, ServerMsg, WRONG_TOKEN,
 };
 
+use crate::agent::{self, Agent, Unlock};
 use crate::device::Device;
 use crate::llm::{self, Llm, Outcome, Piece, Recording, Role, Turn};
 use crate::meter;
@@ -55,6 +62,8 @@ pub struct App {
     /// thinking model.
     pub fast_tools: ToolSet,
     pub think: Option<Thinker>,
+    /// Agent sessions, when the daemon has an [agent] table.
+    pub agent: Option<Arc<Agent>>,
 }
 
 /// The model a turn is handed to when the first one calls the think tool.
@@ -91,19 +100,37 @@ impl App {
     }
 }
 
+/// What kind of turn an utterance makes.
+#[derive(Clone)]
+enum Kind {
+    Talk,
+    /// Starts a session, or talks into the one named.
+    Agent(Option<String>),
+    /// An agent turn that can't be: answered with this error when the utterance ends.
+    Refused(String),
+}
+
 /// An utterance as it arrives: fed to speech-to-text, and kept for the models that hear.
 struct Utterance {
     stt: Option<Box<dyn SttSession>>,
     pcm: Option<Vec<u8>>,
     bytes: usize,
+    kind: Kind,
 }
 
 impl Utterance {
-    fn start(app: &App, rate: u32) -> Utterance {
+    fn start(app: &App, rate: u32, kind: Kind) -> Utterance {
+        // A refused turn isn't listened to.
+        let listen = !matches!(kind, Kind::Refused(_));
         Utterance {
-            stt: app.stt.as_ref().map(|stt| stt.start(rate)),
-            pcm: app.records().then(Vec::new),
+            stt: app
+                .stt
+                .as_ref()
+                .filter(|_| listen)
+                .map(|stt| stt.start(rate)),
+            pcm: (listen && app.records()).then(Vec::new),
             bytes: 0,
+            kind,
         }
     }
 
@@ -123,6 +150,10 @@ const AUDIO_CHUNK: usize = 4096;
 const HISTORY_TURNS: usize = 12;
 /// Longest utterance accepted, in seconds of audio.
 const MAX_UTTERANCE_SECS: usize = 60;
+/// What a request about sessions hears from a daemon without them.
+const NO_SESSIONS: &str = "no sessions on this daemon";
+/// The most often a followed list or session is sent again as it changes.
+const PACE: Duration = Duration::from_secs(1);
 
 type History = Arc<Mutex<Vec<Turn>>>;
 
@@ -141,11 +172,18 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
     let mut writer = FrameWriter::new(writer);
     let hello = open(&mut reader, &mut writer, &app, &session).await?;
     let mic_rate = hello.mic_rate;
+    // Sessions only over an encrypted connection: protocol 1 would carry them in the open.
+    let agent = app.agent.clone().filter(|_| hello.encrypted);
+    let mut unlocked = agent.as_ref().is_some_and(|a| !a.has_pin());
 
     // Bounded, so a device that stops reading (its playback buffer is full) holds the
     // pipeline back instead of the daemon buffering the whole reply.
     let (tx, rx) = mpsc::channel::<Frame>(16);
     let writer = tokio::spawn(write_loop(writer, rx));
+    let (follow_tx, follow_rx) = mpsc::channel::<Follow>(8);
+    let follower = agent
+        .clone()
+        .map(|a| tokio::spawn(follow(a, tx.clone(), follow_rx, unlocked)));
 
     let history: History = Arc::default();
     let mut device: Option<Arc<Device>> = None;
@@ -212,24 +250,57 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                     };
                     match msg {
                         ClientMsg::Hello { .. } => tracing::debug!("ignoring a second hello"),
-                        ClientMsg::ListenStart { .. } => {
+                        ClientMsg::ListenStart {
+                            mode,
+                            session: target,
+                        } => {
                             if cancel(&mut turn) {
                                 send(&tx, ServerMsg::ReplyEnd).await;
                             }
-                            utterance = Some(Utterance::start(&app, mic_rate));
+                            let kind = match (mode, &agent) {
+                                (None | Some(Mode::Talk), _) => Kind::Talk,
+                                (Some(Mode::Unknown), _) => Kind::Refused("unknown mode".into()),
+                                (Some(Mode::Agent), None) => Kind::Refused(NO_SESSIONS.into()),
+                                (Some(Mode::Agent), Some(_)) if !unlocked => {
+                                    Kind::Refused("locked".into())
+                                }
+                                (Some(Mode::Agent), Some(a)) => match target {
+                                    Some(id) if !a.exists(&id) => {
+                                        Kind::Refused(agent::Refusal::NoSuchSession.to_string())
+                                    }
+                                    target => Kind::Agent(target),
+                                },
+                            };
+                            utterance = Some(Utterance::start(&app, mic_rate, kind));
                         }
                         ClientMsg::ListenStop => {
                             let Some(heard) = utterance.take() else {
                                 continue;
                             };
-                            turn = Some(tokio::spawn(run_turn(
-                                app.clone(),
-                                tools.clone(),
-                                heard,
-                                mic_rate,
-                                tx.clone(),
-                                history.clone(),
-                            )));
+                            let tx = tx.clone();
+                            turn = Some(match (heard.kind.clone(), &agent) {
+                                (Kind::Agent(target), Some(a)) => tokio::spawn(run_agent_turn(
+                                    app.clone(),
+                                    a.clone(),
+                                    heard,
+                                    mic_rate,
+                                    tx,
+                                    target,
+                                )),
+                                (Kind::Talk, _) => tokio::spawn(run_turn(
+                                    app.clone(),
+                                    tools.clone(),
+                                    heard,
+                                    mic_rate,
+                                    tx,
+                                    history.clone(),
+                                )),
+                                (Kind::Refused(message), _) => tokio::spawn(async move {
+                                    send(&tx, ServerMsg::Error { message }).await;
+                                    send(&tx, ServerMsg::ReplyEnd).await;
+                                }),
+                                (Kind::Agent(_), None) => unreachable!("refused at listen_start"),
+                            });
                         }
                         ClientMsg::Abort => {
                             utterance = None;
@@ -242,7 +313,68 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                                 tracing::debug!(id, "a tool result from a device with no tools")
                             }
                         },
-                        _ => {}
+                        ClientMsg::Unlock { pin, ticket } => {
+                            let Some(a) = &agent else {
+                                refuse(&tx, "unlock", None, NO_SESSIONS).await;
+                                continue;
+                            };
+                            let tried = match (pin, ticket) {
+                                (Some(pin), _) => a.unlock_pin(&pin),
+                                (None, Some(ticket)) => a.unlock_ticket(&ticket),
+                                (None, None) => Unlock::Wrong { wait_s: None },
+                            };
+                            let ok = matches!(tried, Unlock::Ok { .. });
+                            send(&tx, unlocked_msg(tried)).await;
+                            if ok && !unlocked {
+                                unlocked = true;
+                                let _ = follow_tx.send(Follow::Unlocked).await;
+                            }
+                        }
+                        ClientMsg::Sync {} => match &agent {
+                            Some(_) => {
+                                let _ = follow_tx.send(Follow::Sync).await;
+                            }
+                            None => refuse(&tx, "sync", None, NO_SESSIONS).await,
+                        },
+                        ClientMsg::Open { session: id } => match gate(&agent, unlocked) {
+                            Ok(a) if a.seen(&id) => {
+                                let _ = follow_tx.send(Follow::Open(id)).await;
+                            }
+                            Ok(_) => {
+                                let message = agent::Refusal::NoSuchSession.to_string();
+                                refuse(&tx, "open", Some(id), &message).await
+                            }
+                            Err(message) => refuse(&tx, "open", Some(id), &message).await,
+                        },
+                        ClientMsg::Close {} => {
+                            let _ = follow_tx.send(Follow::Close).await;
+                        }
+                        ClientMsg::Answer {
+                            session: id,
+                            ask,
+                            choice,
+                        } => {
+                            let done = gate(&agent, unlocked).and_then(|a| {
+                                a.answer(&id, &ask, choice).map_err(|r| r.to_string())
+                            });
+                            if let Err(message) = done {
+                                refuse(&tx, "answer", Some(id), &message).await;
+                            }
+                        }
+                        ClientMsg::Stop { session: id } => {
+                            let done = gate(&agent, unlocked)
+                                .and_then(|a| a.stop(&id).map_err(|r| r.to_string()));
+                            if let Err(message) = done {
+                                refuse(&tx, "stop", Some(id), &message).await;
+                            }
+                        }
+                        ClientMsg::Delete { session: id } => {
+                            let done = gate(&agent, unlocked)
+                                .and_then(|a| a.delete(&id).map_err(|r| r.to_string()));
+                            if let Err(message) = done {
+                                refuse(&tx, "delete", Some(id), &message).await;
+                            }
+                        }
                     }
                 }
             }
@@ -252,9 +384,189 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
     .await;
 
     cancel(&mut turn);
+    if let Some(follower) = follower {
+        follower.abort();
+    }
     drop(tx);
     let _ = writer.await;
     result
+}
+
+/// The sessions, if this connection may use them now; else why not.
+fn gate(agent: &Option<Arc<Agent>>, unlocked: bool) -> Result<&Arc<Agent>, String> {
+    match agent {
+        None => Err(NO_SESSIONS.into()),
+        Some(_) if !unlocked => Err("locked".into()),
+        Some(agent) => Ok(agent),
+    }
+}
+
+async fn refuse(tx: &mpsc::Sender<Frame>, request: &str, session: Option<String>, message: &str) {
+    let msg = ServerMsg::Refused {
+        request: request.into(),
+        session,
+        message: message.into(),
+    };
+    send(tx, msg).await;
+}
+
+fn unlocked_msg(tried: Unlock) -> ServerMsg {
+    match tried {
+        Unlock::Ok { ticket, ttl_s } => ServerMsg::Unlocked {
+            ok: true,
+            ticket: Some(ticket),
+            ttl_s: Some(ttl_s),
+            wait_s: None,
+        },
+        Unlock::Wrong { wait_s } => ServerMsg::Unlocked {
+            ok: false,
+            ticket: None,
+            ttl_s: None,
+            wait_s,
+        },
+        Unlock::Wait { wait_s } => ServerMsg::Unlocked {
+            ok: false,
+            ticket: None,
+            ttl_s: None,
+            wait_s: Some(wait_s),
+        },
+    }
+}
+
+/// What a connection asks its follower for.
+enum Follow {
+    /// Send the list now, and whenever it changes.
+    Sync,
+    /// Send this session now, and whenever it changes.
+    Open(String),
+    Close,
+    /// The connection may see the sessions now: the list it follows is the full one.
+    Unlocked,
+}
+
+/// A message sent again as what it shows changes: at most once a PACE, and not when it is the
+/// same as the last one sent.
+#[derive(Default)]
+struct Paced {
+    due: Option<tokio::time::Instant>,
+    last: Option<tokio::time::Instant>,
+    sent: String,
+}
+
+impl Paced {
+    /// Something changed: send it now, or a PACE after the last one.
+    fn soon(&mut self) {
+        let now = tokio::time::Instant::now();
+        if self.due.is_none() {
+            self.due = Some(self.last.map_or(now, |last| (last + PACE).max(now)));
+        }
+    }
+
+    fn is_due(&self, now: tokio::time::Instant) -> bool {
+        self.due.is_some_and(|due| due <= now)
+    }
+
+    /// Sends `msg`, unless it is what went last and nobody asked for it (`asked`).
+    async fn send(&mut self, tx: &mpsc::Sender<Frame>, msg: &ServerMsg, asked: bool) {
+        self.due = None;
+        let Ok(json) = serde_json::to_string(msg) else {
+            return;
+        };
+        if !asked && json == self.sent {
+            return;
+        }
+        self.last = Some(tokio::time::Instant::now());
+        self.sent.clone_from(&json);
+        let _ = tx.send(Frame::Control(json)).await;
+    }
+}
+
+/// Sends a connection what it follows: after `sync`, the list whenever it changes and each new
+/// question as it is asked (none while locked: the list's counts say one is waiting); after
+/// `open`, that session whenever it changes, which keeps it seen.
+async fn follow(
+    agent: Arc<Agent>,
+    tx: mpsc::Sender<Frame>,
+    mut asks: mpsc::Receiver<Follow>,
+    mut unlocked: bool,
+) {
+    let mut events = agent.subscribe();
+    let mut sync = false;
+    let mut open: Option<String> = None;
+    let (mut list, mut one) = (Paced::default(), Paced::default());
+    loop {
+        let due = [list.due, one.due].into_iter().flatten().min();
+        let wake = async {
+            match due {
+                Some(due) => tokio::time::sleep_until(due).await,
+                None => std::future::pending().await,
+            }
+        };
+        let (mut list_now, mut one_now) = (false, false);
+        tokio::select! {
+            ask = asks.recv() => match ask {
+                None => return,
+                Some(Follow::Sync) => {
+                    sync = true;
+                    list_now = true;
+                }
+                Some(Follow::Open(id)) => {
+                    open = Some(id);
+                    one_now = true;
+                }
+                Some(Follow::Close) => {
+                    open = None;
+                    one.due = None;
+                }
+                Some(Follow::Unlocked) => {
+                    unlocked = true;
+                    list_now = sync;
+                }
+            },
+            event = events.recv() => match event {
+                Ok(event) => {
+                    if sync {
+                        list.soon();
+                    }
+                    if open.as_deref() == Some(event.session.as_str()) {
+                        one.soon();
+                    }
+                    if event.asked && sync && unlocked
+                        && let Some(ask) = agent.question(&event.session)
+                    {
+                        send(&tx, ServerMsg::Ask(ask)).await;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if sync {
+                        list.soon();
+                    }
+                    if open.is_some() {
+                        one.soon();
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+            () = wake => {}
+        }
+        let now = tokio::time::Instant::now();
+        if list_now || (sync && list.is_due(now)) {
+            let msg = ServerMsg::Sessions(agent.list(!unlocked));
+            list.send(&tx, &msg, list_now).await;
+        }
+        if let Some(id) = open.clone()
+            && (one_now || one.is_due(now))
+        {
+            match agent.view(&id) {
+                Some(view) => {
+                    one.send(&tx, &ServerMsg::Session(Box::new(view)), one_now)
+                        .await;
+                    agent.seen(&id);
+                }
+                None => open = None, // deleted
+            }
+        }
+    }
 }
 
 /// What a device said in its hello, once checked.
@@ -289,11 +601,15 @@ async fn open(
             };
             // The answer rides in message 2, so a refusal is encrypted too.
             let hello = check_hello(&json, PROTO_VERSION);
+            let agent: Option<AgentHello> = app
+                .agent
+                .as_ref()
+                .map(|agent| agent.hello(!agent.has_pin()));
             let answer = match &hello {
                 Ok(_) => ServerMsg::Hello {
                     proto: PROTO_VERSION,
                     session: session.into(),
-                    agent: None,
+                    agent,
                 },
                 Err(e) => ServerMsg::Error {
                     message: format!("{e:#}"),
@@ -481,8 +797,10 @@ impl<'a> AudioOut<'a> {
 const SILENCE_PEAK: i32 = 64;
 
 fn silent(pcm: &[u8]) -> bool {
-    pcm.chunks_exact(2)
-        .all(|s| (i16::from_le_bytes([s[0], s[1]]) as i32).abs() < SILENCE_PEAK)
+    pcm.as_chunks::<2>()
+        .0
+        .iter()
+        .all(|s| (i16::from_le_bytes(*s) as i32).abs() < SILENCE_PEAK)
 }
 
 async fn turn_inner(
@@ -535,8 +853,7 @@ async fn turn_inner(
     };
 
     let past = history.lock().await.clone();
-    let (piece_tx, mut piece_rx) = mpsc::channel::<Piece>(64);
-    let (say_tx, mut say_rx) = mpsc::channel::<Say>(16);
+    let (piece_tx, piece_rx) = mpsc::channel::<Piece>(64);
 
     // For a model that heard the recording: the transcript goes to the display when it comes.
     let show = async {
@@ -597,8 +914,84 @@ async fn turn_inner(
         Ok(())
     };
 
-    // Text goes to the display as it comes, and to speech a sentence at a time; the model's
-    // own speech goes to the speaker after whatever text came before it.
+    let (model_result, spoken, ()) = tokio::join!(model, speak(app, tx, &ms, piece_rx), show);
+    let total_ms = ms();
+    let Spoken {
+        reply,
+        first_token_ms,
+        first_audio_ms,
+        audio_bytes,
+        result: speak_result,
+    } = spoken;
+
+    // The history keeps the transcript, or the recording when there is none.
+    let said = if app.llm.hears() {
+        transcript.clone().await.unwrap_or_default()
+    } else {
+        user
+    };
+    let charges = meter::so_far();
+    let (cost, unpriced) = meter::total(&charges);
+    tracing::info!(
+        heard_secs,
+        stt_ms = stt_ms.unwrap_or(0),
+        first_token_ms = first_token_ms.unwrap_or(0),
+        first_audio_ms = first_audio_ms.unwrap_or(0),
+        total_ms,
+        thought,
+        reply_secs = audio_bytes as f32 / (app.reply_rate() as f32 * 2.0),
+        cost,
+        unpriced,
+        requests = %meter::ids(&charges),
+        "turn: {:?} -> {:?}",
+        if said.is_empty() { "(heard by the model)" } else { said.as_str() },
+        reply.trim()
+    );
+    model_result?;
+    speak_result?;
+
+    let mut history = history.lock().await;
+    history.push(Turn {
+        role: Role::User,
+        audio: if said.is_empty() { recording } else { None },
+        text: said,
+    });
+    if !reply.trim().is_empty() {
+        history.push(Turn {
+            role: Role::Assistant,
+            text: reply.trim().to_string(),
+            audio: None,
+        });
+    } else {
+        history.pop(); // a user turn with no reply would break the alternation
+    }
+    let extra = history.len().saturating_sub(HISTORY_TURNS);
+    history.drain(..extra);
+    Ok(())
+}
+
+/// What came of playing a reply on the device.
+struct Spoken {
+    /// Its text.
+    reply: String,
+    /// When the first of it came, and when its first audio went (ms from the turn's clock).
+    first_token_ms: Option<u64>,
+    first_audio_ms: Option<u64>,
+    audio_bytes: usize,
+    /// Whether text-to-speech managed it.
+    result: Result<()>,
+}
+
+/// Plays a model's reply on the device as it comes: its text goes to the display, and to
+/// speech a sentence at a time; the model's own speech goes to the speaker after whatever text
+/// came before it.
+async fn speak(
+    app: &App,
+    tx: &mpsc::Sender<Frame>,
+    ms: &(dyn Fn() -> u64 + Sync),
+    mut piece_rx: mpsc::Receiver<Piece>,
+) -> Spoken {
+    let (say_tx, mut say_rx) = mpsc::channel::<Say>(16);
     let mut first_token_ms = None;
     let split = async {
         let mut splitter = Splitter::new();
@@ -676,54 +1069,136 @@ async fn turn_inner(
         anyhow::Ok((out.first_ms, out.bytes))
     };
 
-    let (model_result, reply, speak_result, ()) = tokio::join!(model, split, speak, show);
-    let total_ms = ms();
+    let (reply, speak_result) = tokio::join!(split, speak);
     let (first_audio_ms, audio_bytes) = speak_result.as_ref().copied().unwrap_or((None, 0));
+    Spoken {
+        reply,
+        first_token_ms,
+        first_audio_ms,
+        audio_bytes,
+        result: speak_result.map(|_| ()),
+    }
+}
 
-    // The history keeps the transcript, or the recording when there is none.
-    let said = if app.llm.hears() {
-        transcript.clone().await.unwrap_or_default()
-    } else {
-        user
+async fn run_agent_turn(
+    app: Arc<App>,
+    agent: Arc<Agent>,
+    heard: Utterance,
+    rate: u32,
+    tx: mpsc::Sender<Frame>,
+    target: Option<String>,
+) {
+    let turn = agent_turn(&app, &agent, heard, rate, &tx, target);
+    if let (Err(e), _) = meter::measure(turn).await {
+        tracing::warn!("agent turn failed: {e:#}");
+        send(
+            &tx,
+            ServerMsg::Error {
+                message: format!("{e:#}"),
+            },
+        )
+        .await;
+    }
+    send(&tx, ServerMsg::ReplyEnd).await;
+}
+
+/// An agent turn: what was said starts a session or goes into the one named, the device hears
+/// which (`started`), and then a short spoken reply while the session works on.
+async fn agent_turn(
+    app: &App,
+    agent: &Arc<Agent>,
+    heard: Utterance,
+    rate: u32,
+    tx: &mpsc::Sender<Frame>,
+    target: Option<String>,
+) -> Result<()> {
+    let started = Instant::now(); // the end of speech
+    let ms = || started.elapsed().as_millis() as u64;
+    let text = written_down(app, heard, rate).await?;
+    let stt_ms = ms();
+    send(tx, ServerMsg::Stt { text: text.clone() }).await;
+    let text = text.trim();
+    if text.is_empty() {
+        tracing::info!(stt_ms, "agent turn: heard nothing");
+        return Ok(());
+    }
+    let (id, said) = match target {
+        None => (agent.start(text), None),
+        Some(id) => {
+            let said = agent.say(&id, text).map_err(|r| anyhow!("{r}"))?;
+            (id, Some(said))
+        }
     };
-    let charges = meter::so_far();
-    let (cost, unpriced) = meter::total(&charges);
+    send(
+        tx,
+        ServerMsg::Started {
+            session: id.clone(),
+        },
+    )
+    .await;
+
+    let request = agent::voice_request(text, said.as_ref());
+    let no_tools = app.tools.only(&[]);
+    let (piece_tx, piece_rx) = mpsc::channel::<Piece>(64);
+    let model = app.llm.respond(
+        llm::Request {
+            system: agent::VOICE_PROMPT,
+            history: &[],
+            user: &request,
+            audio: None,
+            tools: &no_tools,
+            rounds: 1,
+            steer: None,
+        },
+        piece_tx,
+    );
+    let (model_result, spoken) = tokio::join!(model, speak(app, tx, &ms, piece_rx));
     tracing::info!(
-        heard_secs,
-        stt_ms = stt_ms.unwrap_or(0),
-        first_token_ms = first_token_ms.unwrap_or(0),
-        first_audio_ms = first_audio_ms.unwrap_or(0),
-        total_ms,
-        thought,
-        reply_secs = audio_bytes as f32 / (app.reply_rate() as f32 * 2.0),
-        cost,
-        unpriced,
-        requests = %meter::ids(&charges),
-        "turn: {:?} -> {:?}",
-        if said.is_empty() { "(heard by the model)" } else { said.as_str() },
-        reply.trim()
+        session = %id,
+        stt_ms,
+        first_audio_ms = spoken.first_audio_ms.unwrap_or(0),
+        total_ms = ms(),
+        "agent turn: {text:?} -> {:?}",
+        spoken.reply.trim()
     );
     model_result?;
-    speak_result?;
+    spoken.result
+}
 
-    let mut history = history.lock().await;
-    history.push(Turn {
-        role: Role::User,
-        audio: if said.is_empty() { recording } else { None },
-        text: said,
-    });
-    if !reply.trim().is_empty() {
-        history.push(Turn {
-            role: Role::Assistant,
-            text: reply.trim().to_string(),
-            audio: None,
-        });
-    } else {
-        history.pop(); // a user turn with no reply would break the alternation
+/// What was said, as text: from speech-to-text, or, with none, written down by the model that
+/// heard it (a session needs the words).
+async fn written_down(app: &App, heard: Utterance, rate: u32) -> Result<String> {
+    if let Some(stt) = heard.stt {
+        return stt.finish().await;
     }
-    let extra = history.len().saturating_sub(HISTORY_TURNS);
-    history.drain(..extra);
-    Ok(())
+    let Some(pcm) = heard.pcm.filter(|pcm| !silent(pcm)) else {
+        return Ok(String::new());
+    };
+    let recording = Recording::new(&pcm, rate);
+    let no_tools = app.tools.only(&[]);
+    let (piece_tx, mut piece_rx) = mpsc::channel::<Piece>(64);
+    let request = llm::Request {
+        system: "Write down exactly what the speaker says, word for word, in the language they \
+                 speak, and nothing else: no answer, no quotation marks, no notes.",
+        history: &[],
+        user: "",
+        audio: Some(&recording),
+        tools: &no_tools,
+        rounds: 1,
+        steer: None,
+    };
+    let collect = async {
+        let mut text = String::new();
+        while let Some(piece) = piece_rx.recv().await {
+            if let Piece::Text(t) | Piece::Transcript(t) = piece {
+                text.push_str(&t);
+            }
+        }
+        text
+    };
+    let (result, text) = tokio::join!(app.llm.respond(request, piece_tx), collect);
+    result?;
+    Ok(text.trim().to_string())
 }
 
 #[cfg(test)]
@@ -732,6 +1207,8 @@ mod tests {
     use serde_json::json;
     use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
     use voice_proto::{DeviceTool, Initiator, psk};
+
+    use voice_proto::State;
 
     use super::*;
     use crate::config;
@@ -792,6 +1269,7 @@ mod tests {
             fast_tools: tools.clone(),
             tools,
             think: None,
+            agent: None,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -936,6 +1414,367 @@ mod tests {
                 message: "protocol 3 is not supported".into()
             }
         );
+    }
+
+    /// A daemon with agent sessions behind the PIN 1234, whose speech-to-text always hears
+    /// `heard`; its address and the agent.
+    async fn agent_daemon(name: &str, heard: &str) -> (std::net::SocketAddr, Arc<Agent>) {
+        let dir = crate::skills::tests::scratch(name);
+        let tools = ToolSet::build(
+            None,
+            &config::Js::default(),
+            Default::default(),
+            Default::default(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        let mut cfg = crate::agent::tests::cfg(&dir);
+        cfg.pin_sha256 = Some(agent::sha256_hex("1234"));
+        let http = reqwest::Client::new();
+        let agent = Agent::open(
+            &cfg,
+            agent::model(&config::Llm::Mock, http.clone()).unwrap(),
+            tools.clone(),
+            agent::prompt(),
+        )
+        .unwrap();
+        let app = Arc::new(App {
+            token: "t".into(),
+            psk: psk("t"),
+            plaintext: false,
+            system_prompt: String::new(),
+            stt: Some(
+                crate::stt::build(&config::Stt::Mock { text: heard.into() }, http.clone()).unwrap(),
+            ),
+            llm: llm::build(&config::Llm::Mock, http.clone()).unwrap(),
+            tts: Some(crate::tts::build(&config::Tts::Mock, http).unwrap()),
+            fast_tools: tools.clone(),
+            tools,
+            think: None,
+            agent: Some(agent.clone()),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut n = 0;
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                n += 1;
+                tokio::spawn(run(stream, app.clone(), format!("s{n}")));
+            }
+        });
+        (addr, agent)
+    }
+
+    async fn put(writer: &mut FrameWriter<OwnedWriteHalf>, msg: ClientMsg) {
+        writer.write(&Frame::control(&msg).unwrap()).await.unwrap();
+    }
+
+    /// The next control message, skipping audio.
+    async fn next(reader: &mut FrameReader<OwnedReadHalf>) -> ServerMsg {
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(10), reader.read())
+                .await
+                .expect("the daemon went quiet")
+                .unwrap()
+                .expect("the daemon hung up");
+            if let Frame::Control(json) = frame {
+                return serde_json::from_str(&json).unwrap();
+            }
+        }
+    }
+
+    /// Messages until one `until` takes, which it returns; the ones before it too.
+    async fn until(
+        reader: &mut FrameReader<OwnedReadHalf>,
+        mut until: impl FnMut(&ServerMsg) -> bool,
+    ) -> (ServerMsg, Vec<ServerMsg>) {
+        let mut before = Vec::new();
+        loop {
+            let msg = next(reader).await;
+            if until(&msg) {
+                return (msg, before);
+            }
+            before.push(msg);
+        }
+    }
+
+    /// Says something: an utterance of a little noise in the given mode.
+    async fn utter(
+        writer: &mut FrameWriter<OwnedWriteHalf>,
+        mode: Option<Mode>,
+        session: Option<&str>,
+    ) {
+        let start = ClientMsg::ListenStart {
+            mode,
+            session: session.map(str::to_string),
+        };
+        put(writer, start).await;
+        let speech: Vec<u8> = (0..1600)
+            .flat_map(|i| ((i % 64) as i16 * 100).to_le_bytes())
+            .collect();
+        writer.write(&Frame::Audio(speech)).await.unwrap();
+        put(writer, ClientMsg::ListenStop).await;
+    }
+
+    #[tokio::test]
+    async fn a_board_unlocks_follows_and_answers_its_sessions() {
+        let (addr, agent) = agent_daemon("conn-agent", "find a plumber and ask me which").await;
+        let (answer, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        assert_eq!(
+            answer,
+            ServerMsg::Hello {
+                proto: PROTO_VERSION,
+                session: "s1".into(),
+                agent: Some(AgentHello {
+                    place: "HOME".into(),
+                    pin: true,
+                    unlocked: false
+                }),
+            }
+        );
+        let (mut reader, mut writer) = board.unwrap();
+
+        // Locked: the counts only, and nothing else about the sessions.
+        put(&mut writer, ClientMsg::Sync {}).await;
+        let ServerMsg::Sessions(list) = next(&mut reader).await else {
+            panic!("no list")
+        };
+        assert!(list.locked && list.sessions.is_empty());
+        put(
+            &mut writer,
+            ClientMsg::Open {
+                session: "k7q2".into(),
+            },
+        )
+        .await;
+        assert_eq!(
+            next(&mut reader).await,
+            ServerMsg::Refused {
+                request: "open".into(),
+                session: Some("k7q2".into()),
+                message: "locked".into()
+            }
+        );
+        utter(&mut writer, Some(Mode::Agent), None).await;
+        assert_eq!(
+            next(&mut reader).await,
+            ServerMsg::Error {
+                message: "locked".into()
+            }
+        );
+        assert_eq!(next(&mut reader).await, ServerMsg::ReplyEnd);
+        // A talk turn works as ever.
+        utter(&mut writer, None, None).await;
+        let (_, before) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
+        assert!(before.contains(&ServerMsg::Stt {
+            text: "find a plumber and ask me which".into()
+        }));
+        assert!(
+            !before
+                .iter()
+                .any(|m| matches!(m, ServerMsg::Started { .. }))
+        );
+
+        put(
+            &mut writer,
+            ClientMsg::Unlock {
+                pin: Some("0000".into()),
+                ticket: None,
+            },
+        )
+        .await;
+        assert_eq!(
+            next(&mut reader).await,
+            ServerMsg::Unlocked {
+                ok: false,
+                ticket: None,
+                ttl_s: None,
+                wait_s: None
+            }
+        );
+        put(
+            &mut writer,
+            ClientMsg::Unlock {
+                pin: Some("1234".into()),
+                ticket: None,
+            },
+        )
+        .await;
+        let ServerMsg::Unlocked {
+            ok: true,
+            ticket: Some(ticket),
+            ttl_s: Some(3600),
+            wait_s: None,
+        } = next(&mut reader).await
+        else {
+            panic!("not unlocked")
+        };
+        // Following the list, it gets the full one now.
+        let ServerMsg::Sessions(list) = next(&mut reader).await else {
+            panic!("no list")
+        };
+        assert!(!list.locked);
+
+        // An agent turn: heard, started, a short spoken reply; the session works on.
+        utter(&mut writer, Some(Mode::Agent), None).await;
+        let (_, turn) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
+        let id = turn
+            .iter()
+            .find_map(|m| match m {
+                ServerMsg::Started { session } => Some(session.clone()),
+                _ => None,
+            })
+            .expect("started");
+        let at = |want: fn(&ServerMsg) -> bool| turn.iter().position(want).unwrap();
+        assert!(
+            at(|m| matches!(m, ServerMsg::Stt { .. }))
+                < at(|m| matches!(m, ServerMsg::Started { .. }))
+        );
+        assert!(
+            at(|m| matches!(m, ServerMsg::Started { .. }))
+                < at(|m| matches!(m, ServerMsg::ReplyStart { .. }))
+        );
+        // Its question comes as it is asked (or came during the turn).
+        let ask = match turn.iter().find(|m| matches!(m, ServerMsg::Ask(_))) {
+            Some(ServerMsg::Ask(ask)) => ask.clone(),
+            _ => match until(&mut reader, |m| matches!(m, ServerMsg::Ask(_)))
+                .await
+                .0
+            {
+                ServerMsg::Ask(ask) => ask,
+                _ => unreachable!(),
+            },
+        };
+        assert_eq!((ask.session.as_str(), ask.id.as_str()), (id.as_str(), "a1"));
+        assert_eq!(ask.question, "Which plumber should I book?");
+
+        put(
+            &mut writer,
+            ClientMsg::Answer {
+                session: id.clone(),
+                ask: "a1".into(),
+                choice: 0,
+            },
+        )
+        .await;
+        let done = |m: &ServerMsg| {
+            matches!(m, ServerMsg::Sessions(list)
+            if list.sessions.first().is_some_and(|s| s.state == State::Done))
+        };
+        until(&mut reader, done).await;
+        put(
+            &mut writer,
+            ClientMsg::Answer {
+                session: id.clone(),
+                ask: "a1".into(),
+                choice: 0,
+            },
+        )
+        .await;
+        let (refused, _) = until(&mut reader, |m| matches!(m, ServerMsg::Refused { .. })).await;
+        assert_eq!(
+            refused,
+            ServerMsg::Refused {
+                request: "answer".into(),
+                session: Some(id.clone()),
+                message: "already answered".into()
+            }
+        );
+        put(
+            &mut writer,
+            ClientMsg::Open {
+                session: id.clone(),
+            },
+        )
+        .await;
+        let (session, _) = until(&mut reader, |m| matches!(m, ServerMsg::Session(_))).await;
+        let ServerMsg::Session(view) = session else {
+            unreachable!()
+        };
+        assert_eq!(view.state, State::Done);
+        assert!(view.result.unwrap().contains("Riverside"));
+        assert!(!agent.list(false).sessions[0].unread, "opened is seen");
+
+        // Talking into it from its screen: the session hears it, and says so.
+        utter(&mut writer, Some(Mode::Agent), Some(&id)).await;
+        let (_, turn) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
+        assert!(turn.contains(&ServerMsg::Started {
+            session: id.clone()
+        }));
+        utter(&mut writer, Some(Mode::Agent), Some("nope")).await;
+        let (_, turn) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
+        assert!(turn.contains(&ServerMsg::Error {
+            message: "no such session".into()
+        }));
+
+        // A second connection comes back in with the ticket.
+        let (_, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        let (mut reader2, mut writer2) = board.unwrap();
+        put(
+            &mut writer2,
+            ClientMsg::Unlock {
+                pin: None,
+                ticket: Some(ticket.clone()),
+            },
+        )
+        .await;
+        let ServerMsg::Unlocked {
+            ok: true,
+            ticket: Some(again),
+            ..
+        } = next(&mut reader2).await
+        else {
+            panic!("the ticket didn't unlock")
+        };
+        assert_eq!(again, ticket);
+        put(
+            &mut writer2,
+            ClientMsg::Delete {
+                session: id.clone(),
+            },
+        )
+        .await;
+        put(
+            &mut writer2,
+            ClientMsg::Stop {
+                session: id.clone(),
+            },
+        )
+        .await;
+        assert_eq!(
+            next(&mut reader2).await,
+            ServerMsg::Refused {
+                request: "stop".into(),
+                session: Some(id.clone()),
+                message: "no such session".into()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn without_agent_sessions_the_requests_are_refused() {
+        let addr = daemon("t", false).await;
+        let (answer, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        assert!(matches!(answer, ServerMsg::Hello { agent: None, .. }));
+        let (mut reader, mut writer) = board.unwrap();
+        put(&mut writer, ClientMsg::Sync {}).await;
+        assert_eq!(
+            next(&mut reader).await,
+            ServerMsg::Refused {
+                request: "sync".into(),
+                session: None,
+                message: NO_SESSIONS.into()
+            }
+        );
+        utter(&mut writer, Some(Mode::Agent), None).await;
+        assert_eq!(
+            next(&mut reader).await,
+            ServerMsg::Error {
+                message: NO_SESSIONS.into()
+            }
+        );
+        assert_eq!(next(&mut reader).await, ServerMsg::ReplyEnd);
     }
 
     /// The daemon's answer to a protocol 1 hello.

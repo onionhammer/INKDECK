@@ -447,7 +447,7 @@ mod tests {
         let drain = async { while rx.recv().await.is_some() {} };
         let (outcome, ()) = tokio::join!(llm.respond(request, tx), drain);
         assert_eq!(outcome.unwrap(), Outcome::Done);
-        let seen = llm.0.1.lock().unwrap();
+        let seen = llm.0.1.lock().unwrap().clone();
         assert_eq!(
             seen[1],
             [

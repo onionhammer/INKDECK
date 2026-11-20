@@ -1,12 +1,14 @@
 //! `inkharness serve`: the daemon. Devices connect over TCP (docs/voice-protocol.md), encrypted
 //! with the token, send an utterance and get the spoken reply back; programs send text over HTTP (http.rs). A config
-//! that can't serve devices (no speech in or out for its model) still serves HTTP.
+//! that can't serve devices (no speech in or out for its model) still serves HTTP. With an
+//! [agent] table, both reach the agent sessions too (agent/).
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
 
+use crate::agent::{self, Agent};
 use crate::chat::Chat;
 use crate::harness::Harness;
 use crate::http;
@@ -15,8 +17,18 @@ use crate::{llm, session, stt, tts};
 
 pub async fn run(place: Place, harness: Harness) -> Result<()> {
     let cfg = &place.config;
+    // Sessions use the text model, with the daemon's tools and their own (no device's).
+    let agent = match &cfg.agent {
+        Some(agent_cfg) => {
+            let model = cfg.chat.as_ref().map_or(&cfg.llm, |chat| &chat.llm);
+            let llm = agent::model(model, harness.http.clone())?;
+            let system = harness.prompt_from(agent::prompt());
+            Some(Agent::open(agent_cfg, llm, harness.tools.clone(), system)?)
+        }
+        None => None,
+    };
     let devices = match cfg.check() {
-        Ok(()) => Some(device_app(&place, &harness)?),
+        Ok(()) => Some(device_app(&place, &harness, agent.clone())?),
         Err(e) if !cfg.http.is_empty() => {
             tracing::warn!("no device port: {e:#}");
             None
@@ -45,7 +57,7 @@ pub async fn run(place: Place, harness: Harness) -> Result<()> {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let api = Arc::new(http::Api::new(chat, cfg.token.clone(), skills));
+        let api = Arc::new(http::Api::new(chat, cfg.token.clone(), skills).with_agent(agent));
         Some(tokio::spawn(http::serve(listener, api)))
     };
     let listener = match &devices {
@@ -62,6 +74,7 @@ pub async fn run(place: Place, harness: Harness) -> Result<()> {
         model = %cfg.llm.name(),
         tools = harness.tools.defs().len(),
         skills = harness.skills.names().len(),
+        agent = cfg.agent.is_some(),
         instructions = place.instructions.len(),
         "inkharness is up"
     );
@@ -89,10 +102,24 @@ pub async fn run(place: Place, harness: Harness) -> Result<()> {
     }
 }
 
-/// What a device session needs: speech in and out, and the models as configured.
-fn device_app(place: &Place, harness: &Harness) -> Result<Arc<session::App>> {
+/// What a device session needs: speech in and out, the models as configured, and the agent
+/// sessions if there are any. Talk turns get the tools `[talk]` leaves them.
+fn device_app(
+    place: &Place,
+    harness: &Harness,
+    agent: Option<Arc<Agent>>,
+) -> Result<Arc<session::App>> {
     let cfg = &place.config;
     let http = &harness.http;
+    let tools = match &cfg.talk.tools {
+        Some(patterns) => {
+            let tools = harness.tools.only(patterns);
+            let names: Vec<&str> = tools.defs().iter().map(|d| d.name.as_str()).collect();
+            tracing::info!(?names, "talk tools");
+            tools
+        }
+        None => harness.tools.clone(),
+    };
     let think = match &cfg.think {
         Some(think) => Some(session::Thinker {
             llm: llm::build(&think.llm, http.clone())?,
@@ -102,9 +129,9 @@ fn device_app(place: &Place, harness: &Harness) -> Result<Arc<session::App>> {
         None => None,
     };
     let fast_tools = if think.is_some() {
-        harness.tools.with_think()
+        tools.with_think()
     } else {
-        harness.tools.clone()
+        tools.clone()
     };
     let tts = match &cfg.tts {
         Some(tts) => {
@@ -145,9 +172,10 @@ fn device_app(place: &Place, harness: &Harness) -> Result<Arc<session::App>> {
             .transpose()?,
         llm,
         tts,
-        tools: harness.tools.clone(),
+        tools,
         fast_tools,
         think,
+        agent,
     });
     if app.think.is_some() && app.tts.is_none() {
         tracing::warn!("no [tts]: the think phrases go unsaid");
