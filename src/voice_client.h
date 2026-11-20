@@ -55,6 +55,7 @@ struct Status {
   bool mic = false;     // the mic is on: listening, or a talk that waits for the session
   uint32_t turn = 0;    // counts utterances: a tool call belongs to the turn it came in
   bool agentTurn = false;   // the last utterance went to the agent, not a talk turn
+  std::string turnSession;  // with agentTurn: the session it was said into; empty: a new one
   uint32_t generation = 0;  // changes with the state and the texts
 };
 

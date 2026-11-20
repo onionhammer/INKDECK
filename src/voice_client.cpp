@@ -698,6 +698,7 @@ std::string listenStart() {
   {
     Locked l;
     shared.agentTurn = to.agent;
+    shared.turnSession = to.agent ? to.session : std::string();
   }
   if (!to.agent) return "{\"type\":\"listen_start\"}";
   std::string json = "{\"type\":\"listen_start\",\"mode\":\"agent\"";

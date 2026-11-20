@@ -639,11 +639,15 @@ class AgentList : public ui::Screen {
   bool onTick() override {
     const voice::Agent a = voice::agent();
     const voice::Status st = voice::status();
-    // A new session from HOLD BOOT here: select it once the list has it.
-    if (!a.started.empty() && a.startedTurn != followed_ && indexOf(a, a.started, -1) >= 0) {
-      selected_ = a.started;
+    // A new session from HOLD BOOT here: open it once the voice sheet has gone and this is on
+    // top again (a turn said into an existing session isn't one: that session was on screen).
+    if (!a.started.empty() && a.startedTurn != followed_ && a.startedTurn == st.turn &&
+        st.agentTurn && st.turnSession.empty() && ui::nav::top() == this) {
       followed_ = a.startedTurn;
-      return true;
+      selected_ = a.started;
+      const int row = indexOf(a, a.started, -1);
+      ui::nav::push(std::make_unique<SessionScreen>(a.started, row >= 0 ? a.rows[row].title : ""));
+      return false;
     }
     return a.generation != drawnAgent_ || st.generation != drawnStatus_;
   }
@@ -796,7 +800,7 @@ class AgentList : public ui::Screen {
   }
 
   std::string selected_;      // the session under the cursor, by id: it follows a reorder
-  uint32_t followed_ = 0;     // the turn whose new session was last selected
+  uint32_t followed_ = 0;     // the turn whose new session was last opened
   uint32_t drawnAgent_ = 0;
   uint32_t drawnStatus_ = 0;
 };

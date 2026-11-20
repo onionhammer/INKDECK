@@ -20,8 +20,9 @@
 //   else:    ▲▼ page   ● the result as a note (finished)   HOLD ● menu   HOLD BOOT talk into it
 //            BOOT back
 //
-// HOLD BOOT on these screens goes to the agent: a new session from the list, into the session
-// on its screen (answering its question, if it asks). Anywhere else it is a talk turn, the
+// HOLD BOOT on these screens goes to the agent: a new session from the list, which opens by
+// itself once the voice sheet has gone, or into the session on its screen (answering its
+// question, if it asks). Anywhere else it is a talk turn, the
 // limited assistant that sees no sessions (issue #52, "Security: talk and agent").
 //
 // The PIN: with `agent` in INKDECK_PIN_ON, Home opens the Agent through the wheels
