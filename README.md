@@ -60,7 +60,7 @@ the same way round in both. Phone photos come out upright (EXIF orientation), an
   a Tailscale key (Tailnet, below).
 
 **Lock:** with a PIN set (System → PIN LOCK, or `inkdeck.ini` below), the board asks for it in
-the places the build names in `INKDECK_PIN_ON` (`platformio.ini`, set to `files`; all four
+the places the build names in `INKDECK_PIN_ON` (`platformio.ini`, set to `files,agent`; all four
 if it's unset):
 
 - `power_on`: whenever the board starts and whenever it wakes from the USB clock face. If
