@@ -178,6 +178,37 @@ api_key_env = "OPENAI_API_KEY"
 # model = "anthropic/claude-haiku-5.5"
 # api_key_env = "OPENROUTER_API_KEY"
 # reasoning = "low"           # optional, as under [llm]
+#
+# What new sessions run on: "api" (the model above), "claude" (Claude Code, [agent.claude]) or
+# "herdr" (a program in a new herdr terminal, [herdr] default_program).
+# backend = "api"
+#
+# Claude Code in print mode, one run per session. It pays with ANTHROPIC_API_KEY if that is set
+# (here in the environment or the .env), else with the subscription `claude` is logged in with.
+# [agent.claude]
+# command = ["claude"]
+# model = ""                  # --model; empty: Claude Code's default
+# permission_mode = "default"
+# allowed_tools = ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]
+# disallowed_tools = []
+# dir = "work"                # each session works in <dir>/<id>, relative to this file
+# max_turns = 40
+
+# --- herdr -----------------------------------------------------------------------------
+# Programs in herdr terminals (Claude Code, Codex, a shell…), here or on other herdr machines,
+# as sessions of their own, followed through `hc connect`. With an [agent] table.
+# [herdr]
+# command = ["hc"]            # or ["ssh", "box", "hc"]
+# machines = []               # whose terminals count; empty: all
+# programs = []               # which programs count; empty: any that reports a status
+# run = "allow"               # herdr_run, and [agent] backend = "herdr"
+# answer = "allow"            # press the keys of a question's choice
+# send = "allow"              # type words into it
+# interrupt = "deny"          # press its stop key
+# kill = "deny"               # end its program
+# templates = { claude = ["claude"], codex = ["codex", "--no-daemon"] }
+# default_program = "claude"
+# default_machine = ""
 
 # --- Talk ------------------------------------------------------------------------------
 # What a talk turn (HOLD BOOT outside the Agent, and every board from before sessions) may

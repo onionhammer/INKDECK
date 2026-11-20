@@ -218,7 +218,7 @@ The daemon's `hello` gains `agent` when it has sessions:
 | `ask` | a question | A new question appeared, for the board's ask sheet ([below](#ask)). Also inside `session` |
 | `started` | `session` | During an agent turn: the session the utterance went to (new or existing), once the daemon knows, before `reply_start` |
 | `unlocked` | `ok`, `ticket` (when ok), `ttl_s` (when ok), `wait_s` (when further tries are refused for a while) | The answer to `unlock` ([Unlock](#unlock)) |
-| `refused` | `request` (the refused message's `type`), `session` (if it named one), `message` | A request that isn't a turn and can't be done. `message` is one of `locked`, `no such session`, `already answered`, `no such choice`, `not running`, `no sessions on this daemon` |
+| `refused` | `request` (the refused message's `type`), `session` (if it named one), `message` | A request that isn't a turn and can't be done. `message` is one of `locked`, `no such session`, `already answered`, `no such choice`, `not running`, `no sessions on this daemon`, and for herdr sessions `not waiting any more`, `it's busy`, `not allowed by [herdr]`, `herdr is not reachable`, or a sentence |
 
 `sessions`, `session` and `ask` come whenever something changes, so they can arrive at any
 time: between turns, and in the middle of one (between a reply's `text` and its audio frames).
@@ -227,39 +227,53 @@ The board should take them wherever they come.
 An agent `listen_start` that can't be done (the connection is locked, the daemon has no
 sessions, the session doesn't exist, a `mode` this daemon doesn't know) is still a turn: the
 daemon takes the audio, and after `listen_stop` answers with `error {message}` (`locked`,
-`no sessions on this daemon`, `no such session`, `unknown mode`) and `reply_end`.
+`no sessions on this daemon`, `no such session`, `unknown mode`; into a herdr session also
+`it's busy` and the other refusals above) and `reply_end`.
 
 ### `sessions`
 
 ```json
 {"type": "sessions", "locked": false,
- "counts": {"ask": 2, "running": 4, "planned": 0, "unread": 1},
+ "counts": {"ask": 2, "running": 4, "planned": 0, "unread": 1, "idle": 1},
  "check_at": null,
  "older": 0,
  "sessions": [
    {"id": "k7q2", "title": "Plumber · kitchen leak", "state": "ask",
-    "place": "ONIONSERVE", "sub": "Which plumber should I book?",
+    "place": "ONIONSERVE", "via": "inkharness", "program": null,
+    "sub": "Which plumber should I book?",
     "step": null, "steps": null, "progress": null,
-    "updated": 1795190000, "unread": true}
+    "updated": 1795190000, "unread": true},
+   {"id": "h3kq9mtc", "title": "Fix the build", "state": "working",
+    "place": "DESKTOP", "via": "herdr", "program": "codex",
+    "sub": "Running cargo test", "step": null, "steps": null, "progress": 40,
+    "updated": 1795190100, "unread": false}
  ]}
 ```
 
-- `state`: `working`, `ask` (waiting on an answer), `done` (finished with a result), `note`
-  (finished; the result is meant to be read as a note), `fail` (gave up or failed; the result
-  says why), `stopped`. Later versions add `watch` and `scheduled`: treat a state you don't know
-  as finished.
-- `counts`: over all sessions, not only those listed. `ask`: asking; `running`: working;
-  `planned`: scheduled (always 0 for now); `unread`: finished or asking, and not opened since.
+- `state`: `working`, `ask` (waiting on an answer), `idle` (ready for more, nothing to do: a
+  herdr session), `done` (finished with a result), `note` (finished; the result is meant to be
+  read as a note), `fail` (gave up or failed; the result says why), `stopped`. Later versions
+  add `watch` and `scheduled`: treat a state you don't know as finished (right enough for
+  `idle` too).
+- `via`: who runs it, `"inkharness"` (the api and claude backends) or `"herdr"` (a program in a
+  herdr terminal; the board draws an outlined `[hc]` mark before `place`). Absent means
+  `"inkharness"`. `program`: what runs it, lowercase (`"claude code"`, `"codex"`, `"bash"`), or
+  null for the api backend; the board shows it after the place (`DESKTOP · CLAUDE CODE · …`).
+- `place`: where it runs: the daemon's place, or a herdr session's machine (uppercased).
+- `counts`: over all sessions, not only those listed. `ask`: asking; `running`: working, of
+  every kind; `idle`: ready for more; `planned`: scheduled (always 0 for now); `unread`:
+  finished or asking, and not opened since.
 - `check_at`: when the board should check in next (Unix seconds), or null. Always null for now.
 - `step`, `steps`: the plan's progress, when the session has a plan: the current step (from 1)
-  and the number of steps. `progress`: 0–100 when known, else null (always null for now).
+  and the number of steps. `progress`: 0–100 when known (a herdr program that reports it),
+  else null.
 - `sub`: one line, at most 80 characters, plain text: the question while asking; the plan's
   current step, or the last log line, while working; the result's first line when finished.
 - `title`: at most 40 characters, from the model (with its first plan) or, until then, from the
   prompt. The board uppercases it.
 - `updated`: when the session last changed. All times are Unix seconds (UTC).
 - Order: asking first (the oldest question first), then working (the most recently active
-  first), then the rest, newest first. At most 40; `older` counts the rest.
+  first), then idle, then the rest, newest first. At most 40; `older` counts the rest.
 - **Locked** (a PIN is set and this connection hasn't unlocked): `"locked": true` with the
   counts and `check_at`, `"sessions": []` and `"older": 0`. That is enough for Home's row, the
   status bar's `?2`, the Agent face and the chirps, and says nothing of what the sessions are.
@@ -268,7 +282,8 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
 
 ```json
 {"type": "session", "id": "k7q2", "title": "Plumber · kitchen leak", "state": "working",
- "place": "ONIONSERVE", "prompt": "Find a plumber for the kitchen leak this week",
+ "place": "ONIONSERVE", "via": "inkharness", "program": null, "backend": "api",
+ "prompt": "Find a plumber for the kitchen leak this week",
  "started": 1795189000, "updated": 1795190000,
  "step": 2, "steps": 3,
  "plan": [{"text": "Find plumbers near home", "state": "done"},
@@ -276,10 +291,14 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
           {"text": "Ask which to book", "state": "todo"}],
  "log": [{"at": 1795190000, "text": "web_search plumbers open Saturday"}],
  "result": null,
- "ask": null}
+ "ask": null,
+ "screen": null}
 ```
 
-- `prompt`: what started it, in the user's words (cut to 2000 characters).
+- `via`, `program`, `place`: as in the list.
+- `backend`: `"api"`, `"claude"` or `"herdr"` ([Backends](#backends)), for the board's header.
+- `prompt`: what started it, in the user's words (cut to 2000 characters); a herdr session it
+  didn't start: the command it runs.
 - `plan`: the checklist, or null without one; each step `done`, `now` or `todo` (all `done`
   once the session is done or a note).
 - `log`: newest first, at most 20 lines of at most 120 characters: a tool call (its name and a
@@ -288,6 +307,9 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
 - `result`: Markdown, at most 8 KB, once the session has finished; null while it works or asks,
   including when it works again after being talked into (it then writes a new one).
 - `ask`: the question waiting (the `ask` message without its `type`), or null.
+- `screen`: a herdr session's last lines of screen (at most 12, plain text, each at most 80
+  characters), or null. It is read while a board has the session open (and while HTTP looks),
+  at most every 2 s, and a new `session` follows when it changes.
 
 ### `ask`
 
@@ -355,6 +377,61 @@ device                                   daemon
   finished session starts it again with them, and the reply answers from its result if it can.
 - Without speech-to-text on the daemon, the model that hears the recording writes the words
   down first: a session needs them as text.
+
+### Backends
+
+A session runs one of three ways, its `backend`. New sessions (from the board or HTTP) run on
+`[agent] backend` (`"api"` unless set); herdr sessions also turn up on their own.
+
+| `backend` | Runs on | Pays with |
+| --- | --- | --- |
+| `api` | `[agent.llm]`, else `[chat.llm]`, else `[llm]`, with inkharness's tools | the provider's API |
+| `claude` | a headless Claude Code run per session (`claude -p`, `[agent.claude]`) | `ANTHROPIC_API_KEY` if set, else the subscription Claude Code is logged in with |
+| `herdr` | any program in a herdr terminal (Claude Code, Codex, a shell…), here or on another herdr machine (`[herdr]`) | whatever that program uses |
+
+- **claude**: the session's prompt and later words go to Claude Code as messages while it
+  runs. Its tool calls are the log, its todo list (TodoWrite) the plan, its final answer the
+  result, and its `ask_choice` and `plan` are inkharness's own, so its questions reach the board
+  as above. It works in a folder of its own; stopped, its process ends. `program` is
+  `"claude code"`.
+- Messages, states and answers are the same for every backend; herdr sessions differ in what
+  is described below.
+
+### herdr
+
+herdr keeps programs alive in terminals of their own, here and on other machines (its command
+is `hc`); inkharness follows them through its API (`hc connect`).
+
+- **Which terminals are sessions**: every one whose program reports its status to herdr (or
+  is named in `[herdr] programs`), on the machines `[herdr] machines` names (all, unless set),
+  without anyone starting it from the board. Its id stays the same while the terminal lives
+  (`h` and seven letters and digits), `via` is `"herdr"`, `program` its program, `place` its
+  machine, `title` the terminal's name or title (else its program and folder).
+- **States** come from the program's own status: working → `working` (with `progress` when it
+  says), blocked → `ask`, idle → `idle`, done → `done`, error → `fail`, the program or its
+  terminal gone → `done` (`fail` with a non-zero exit code). A program that reports nothing is
+  `working` while something runs in its shell, else `idle`. Finished herdr sessions stay
+  listed; `delete` only takes one off the list (its program goes on), until it does something
+  new.
+- **Questions**: when the program blocks, the daemon reads its screen and puts the question to
+  the board: `detail` is the program's own message, and the options are the choices on its
+  screen, each with `right` saying what it sends (`"KEY 1"`, `"ENTER"`, `"Y"`). `answer`
+  presses those keys, if the terminal still waits on that same question; else `refused
+  {message: "not waiting any more"}`. A question that isn't for permission can be answered in
+  words (typed in). A question with no choices on screen has none (the board's "something
+  else" still works).
+- **Talking into it**: an agent turn with its `session` types the words into the program when
+  it is `idle`, `done`, or asking a question; while it works the turn gets `error {message:
+  "it's busy"}`. The spoken reply says it was typed in.
+- **Stop** presses its stop key (when `[herdr] interrupt` allows; refused otherwise, `not
+  allowed by [herdr]`). Each action checks its `[herdr]` policy: answering, typing, stopping.
+- **Starting one**: api and claude sessions get a `herdr_run` tool (when `[herdr] run`
+  allows): "start Codex on the desktop to fix the build" is a session that starts it and
+  finishes; the new terminal is a session of its own. With `[agent] backend = "herdr"`, a new
+  session from the board starts `[herdr] default_program` on `default_machine` with the words
+  as its task, and `started` names the new terminal's session.
+- If herdr can't be reached, its sessions keep their last state, and actions on them get
+  `herdr is not reachable` until it is back.
 
 ### Over HTTP
 

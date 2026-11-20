@@ -180,8 +180,9 @@ with a wrong one, 429 while wrong ones back off):
 | `POST /sessions` | `{"text"}` starts one: `{"session": "k7q2"}` |
 | `POST /sessions/{id}/say` | `{"text"}` talks into it (answers its question in words) |
 | `POST /sessions/{id}/answer` | `{"ask": "a1", "choice": 0}` |
-| `POST /sessions/{id}/stop` | Stops a working or asking one |
-| `DELETE /sessions/{id}` | Deletes it |
+| `POST /sessions/{id}/stop` | Stops a working or asking one (a herdr session: its stop key) |
+| `POST /sessions/{id}/kill` | A herdr session: ends its program (`[herdr] kill`) |
+| `DELETE /sessions/{id}` | Deletes it (a herdr session: takes it off the list) |
 
 ```sh
 pin=(-H "Authorization: Bearer $TOKEN" -H "X-Inkharness-Pin: 1234" -H 'content-type: application/json')
@@ -192,6 +193,80 @@ curl -s "${pin[@]}" localhost:7392/sessions/k7q2/answer -d '{"ask": "a1", "choic
 With `[llm] backend = "mock"`, sessions play through a scripted run instead (`agent/mock.rs`): a
 plan of three steps, a tool call and a result; "ask" in the task asks which of two plumbers to
 book, "slow" takes 3 s a step, "note" makes it a note, "fail" fails it.
+
+### Backends
+
+A session runs on the `api` backend above, on Claude Code, or in herdr. `[agent] backend` says
+which for new sessions (`"api"`, `"claude"` or `"herdr"`; default `"api"`); herdr sessions also
+turn up on their own. Boards see the same messages for all three, with `via`, `program` and
+`backend` saying what runs each ([protocol](../docs/voice-protocol.md#backends)).
+
+**claude**: a headless Claude Code run per session, in `<dir>/<id>`.
+
+```toml
+[agent.claude]
+command = ["claude"]          # or ["ssh", "box", "claude"] (then without inkharness's tools, below)
+model = ""                    # --model, e.g. "haiku"; empty: Claude Code's default
+permission_mode = "default"   # --permission-mode
+allowed_tools = ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]   # --allowedTools; a cautious default
+disallowed_tools = []         # --disallowedTools
+dir = "work"                  # each session works in <dir>/<id>, relative to this file
+max_turns = 40                # --max-turns
+```
+
+- It runs `claude -p` with stream-json both ways: the prompt, and later words said into the
+  session, go in as messages while it runs. Tool calls go to the session's log, TodoWrite is the
+  plan, the final result is the result (an error result fails it), and its cost is logged
+  (`total_cost_usd`; notional on a subscription).
+- **Credentials, as the Agent SDK takes them**: the run gets the daemon's environment as it is.
+  With `ANTHROPIC_API_KEY` set (or in the `.env` inkharness reads), Claude Code pays with that
+  key; without, it uses the subscription it is logged in with (`claude` once, by hand, to log
+  in). The startup log says which (`claude backend: ANTHROPIC_API_KEY` or `subscription`), after
+  checking that `claude --version` runs; if it doesn't, the backend is off, with a warning, and
+  new sessions use the api.
+- Its `ask_choice` and `plan` are inkharness's: each run's `--mcp-config` starts this binary as
+  a small MCP server (`inkharness mcp-bridge`) that passes the calls to the daemon over a local
+  connection, with a key of the run's own, in a file only the daemon's user can read. So a
+  remote `command` (over ssh) runs without them for now. It runs with `--permission-prompts
+  none`: nobody is at that terminal, so what would ask for permission is denied.
+- Claude Code's session id is kept: a daemon restart resumes a working session with `--resume`,
+  and so does talking into a finished one. Stop ends its process (SIGTERM, then SIGKILL after
+  5 s).
+
+**herdr**: programs in herdr terminals, here or on other herdr machines, are sessions of their
+own: Claude Code, Codex, a shell. inkharness follows them through `hc connect` and doesn't need
+to have started them.
+
+```toml
+[herdr]
+command = ["hc"]          # spoken to as `<command> connect`; or ["ssh", "box", "hc"]
+machines = []             # whose terminals count; empty: all
+programs = []             # which programs count (foreground name, status app or label); empty: any that reports a status
+run = "allow"             # herdr_run, and new sessions with [agent] backend = "herdr"
+answer = "allow"          # press the keys a question's choice stands for
+send = "allow"            # type words into it
+interrupt = "deny"        # press its stop key (the board's STOP)
+kill = "deny"             # end its program (POST /sessions/{id}/kill)
+templates = { claude = ["claude"], codex = ["codex", "--no-daemon"] }
+default_program = "claude"   # what [agent] backend = "herdr" starts: a template, an hc template or a command
+default_machine = ""         # where; empty: this machine
+```
+
+- Each terminal's program's own status is the session's state (working, blocked → asking,
+  idle, done, error → failed). When it blocks, its screen is read and the question put to the
+  board, each choice saying what it presses (`KEY 1`); the session model reads the screen if
+  there is one (one short request a question), else the numbered choices are taken by rule. An
+  answer presses the keys only if the program still waits on that question.
+- Words said into a herdr session are typed into it when it is idle, done or asking; while it
+  works they are refused (`it's busy`). Stop presses its stop key, kill ends it; each only as
+  its policy allows. Deleting one takes it off the list until it does something new.
+- api and claude sessions get `herdr_run` (`{machine?, program, task, dir?}`), which starts a
+  program in a new terminal and types the task once it is ready: "start Codex on the desktop to
+  fix the build" is a session that starts one and finishes. An hc template (`hc templates`)
+  gets the task from hc itself, which knows when the agent is ready.
+- While a board has a herdr session open, its screen is read every 2 s and sent along.
+- If herdr can't be reached, its sessions keep their last state and the daemon carries on; it
+  subscribes again as soon as herdr answers.
 
 ## A spoken turn
 
@@ -242,7 +317,7 @@ scripts can't call the skill tools.
 | Path | |
 | --- | --- |
 | `voice-proto/` | Framing and messages, shared by the daemon and the test client |
-| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice` and `plan`, `mock.rs` a scripted session model), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
+| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan` and `herdr_run`, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
 | `voice-client/` | Plays a board's part from a WAV file |
 | `skills/` | Agent Skills, found when inkharness starts in this folder; `goodnight` pauses every speaker that's playing in one `run_js` script |
 | `install.sh` | Installs inkharness from this checkout (`cargo install --path`) |
