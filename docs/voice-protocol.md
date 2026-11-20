@@ -73,7 +73,7 @@ Device → daemon:
 | `type` | Fields | Meaning |
 | --- | --- | --- |
 | `hello` | `proto` (2), `device` (a name), `mic_rate` (Hz, 8000–48000), `tools` (optional, see [Device tools](#device-tools)) | First message, in the handshake's message 1 |
-| `listen_start` | | The audio frames that follow are one utterance. Cancels a reply still in progress |
+| `listen_start` | `mode` (optional: `"talk"`, the default, or `"agent"`), `session` (optional, agent only) | The audio frames that follow are one utterance. Cancels a reply still in progress. An agent turn starts a session or talks into one ([Agent sessions](#agent-sessions)) |
 | `listen_stop` | | The utterance is complete; the daemon answers |
 | `abort` | | Drop the utterance or the reply in progress |
 | `tool_result` | `id`, `text`, `error` (optional, default false) | The answer to a `tool_call` with that `id`: what the tool did or found, or with `error` why it couldn't |
@@ -82,7 +82,7 @@ Daemon → device:
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `hello` | `proto`, `session` | Answer to the device's hello, in the handshake's message 2 |
+| `hello` | `proto`, `session` (this connection's name), `agent` (when the daemon has [agent sessions](#agent-sessions)) | Answer to the device's hello, in the handshake's message 2 |
 | `stt` | `text` | What the daemon heard (may be empty). When the model hears the recording itself, this comes alongside the reply, or not at all if the daemon has no speech-to-text |
 | `text` | `delta` | The reply's text as it is generated, for the display. Can arrive before `reply_start` |
 | `reply_start` | `rate` (Hz) | Audio frames follow at this sample rate |
@@ -162,6 +162,205 @@ During a turn, between `listen_stop` and `reply_end`:
   until the `reply_end`.
 - **Limits.** An utterance over 60 s is refused with an `error`.
 
+## Agent sessions
+
+A daemon with an `[agent]` table in `inkharness.toml` keeps **sessions**: agent runs that live on
+the daemon, are kept on disk, and go on working with no board connected. Each has a title, a
+state, an optional plan, a log of what it did, a result, and at most one question waiting for an
+answer. The board follows them on the Agent screen, answers their questions and talks into them.
+Everything here is additive: `proto` stays 2, and a board or daemon from before sessions skips
+the messages it doesn't know.
+
+There are two kinds of turn, and the daemon keeps them apart, whatever else the board asks for:
+
+- **Talk** (`listen_start` with no `mode`, as every board before sessions sends it, or
+  `"mode": "talk"`): today's voice, with its own short conversation per connection and the tools
+  `[talk] tools` leaves it (the device's always stay). It never sees, starts or answers a session.
+- **Agent** (`"mode": "agent"`): starts a session, or talks into the one in `session`.
+
+Sessions are offered only on encrypted connections (protocol 2). On a protocol 1 connection the
+daemon's hello has no `agent`, and the session requests are refused.
+
+### The hello
+
+The daemon's `hello` gains `agent` when it has sessions:
+
+```json
+{"type": "hello", "proto": 2, "session": "s1",
+ "agent": {"place": "ONIONSERVE", "pin": true, "unlocked": false}}
+```
+
+- `place`: the name the board shows for where sessions run (`[agent] place`, or the host's
+  name, uppercased).
+- `pin`: whether a PIN guards the sessions (`[agent] pin_sha256`).
+- `unlocked`: whether this connection may use them now: true from the start when no PIN is set.
+- No `agent`: no sessions on this daemon.
+
+### Device → daemon
+
+| `type` | Fields | Meaning |
+| --- | --- | --- |
+| `listen_start` | `mode` (optional: `"talk"` default, `"agent"`), `session` (optional, agent only) | As above. Agent without `session`: the utterance starts a new session. With `session`: it talks into that one; if the session has a question waiting, the utterance's text is the answer |
+| `unlock` | `pin` (digits, as a string) **or** `ticket` | Unlocks this connection. Answered with `unlocked` |
+| `sync` | | Send `sessions` now, again whenever the list changes (at most once a second), and `ask` whenever a new question appears, for as long as the connection lasts |
+| `open` | `session` | Send `session` for it now and whenever it changes (at most once a second), until another `open` or a `close`. Marks it seen (clears `unread`), and keeps it seen while open |
+| `close` | | Stop sending `session` updates |
+| `answer` | `session`, `ask` (the question's id), `choice` (an index into its `options`) | Answers a question. The session carries on |
+| `stop` | `session` | Stops a working or asking session (state `stopped`) |
+| `delete` | `session` | Deletes a session for good |
+
+### Daemon → device
+
+| `type` | Fields | Meaning |
+| --- | --- | --- |
+| `sessions` | `locked`, `counts`, `check_at`, `sessions`, `older` | The list ([below](#sessions)) |
+| `session` | one session in full | [Below](#session) |
+| `ask` | a question | A new question appeared, for the board's ask sheet ([below](#ask)). Also inside `session` |
+| `started` | `session` | During an agent turn: the session the utterance went to (new or existing), once the daemon knows, before `reply_start` |
+| `unlocked` | `ok`, `ticket` (when ok), `ttl_s` (when ok), `wait_s` (when further tries are refused for a while) | The answer to `unlock` ([Unlock](#unlock)) |
+| `refused` | `request` (the refused message's `type`), `session` (if it named one), `message` | A request that isn't a turn and can't be done. `message` is one of `locked`, `no such session`, `already answered`, `no such choice`, `not running`, `no sessions on this daemon` |
+
+`sessions`, `session` and `ask` come whenever something changes, so they can arrive at any
+time: between turns, and in the middle of one (between a reply's `text` and its audio frames).
+The board should take them wherever they come.
+
+An agent `listen_start` that can't be done (the connection is locked, the daemon has no
+sessions, the session doesn't exist, a `mode` this daemon doesn't know) is still a turn: the
+daemon takes the audio, and after `listen_stop` answers with `error {message}` (`locked`,
+`no sessions on this daemon`, `no such session`, `unknown mode`) and `reply_end`.
+
+### `sessions`
+
+```json
+{"type": "sessions", "locked": false,
+ "counts": {"ask": 2, "running": 4, "planned": 0, "unread": 1},
+ "check_at": null,
+ "older": 0,
+ "sessions": [
+   {"id": "k7q2", "title": "Plumber · kitchen leak", "state": "ask",
+    "place": "ONIONSERVE", "sub": "Which plumber should I book?",
+    "step": null, "steps": null, "progress": null,
+    "updated": 1795190000, "unread": true}
+ ]}
+```
+
+- `state`: `working`, `ask` (waiting on an answer), `done` (finished with a result), `note`
+  (finished; the result is meant to be read as a note), `fail` (gave up or failed; the result
+  says why), `stopped`. Later versions add `watch` and `scheduled`: treat a state you don't know
+  as finished.
+- `counts`: over all sessions, not only those listed. `ask`: asking; `running`: working;
+  `planned`: scheduled (always 0 for now); `unread`: finished or asking, and not opened since.
+- `check_at`: when the board should check in next (Unix seconds), or null. Always null for now.
+- `step`, `steps`: the plan's progress, when the session has a plan: the current step (from 1)
+  and the number of steps. `progress`: 0–100 when known, else null (always null for now).
+- `sub`: one line, at most 80 characters, plain text: the question while asking; the plan's
+  current step, or the last log line, while working; the result's first line when finished.
+- `title`: at most 40 characters, from the model (with its first plan) or, until then, from the
+  prompt. The board uppercases it.
+- `updated`: when the session last changed. All times are Unix seconds (UTC).
+- Order: asking first (the oldest question first), then working (the most recently active
+  first), then the rest, newest first. At most 40; `older` counts the rest.
+- **Locked** (a PIN is set and this connection hasn't unlocked): `"locked": true` with the
+  counts and `check_at`, `"sessions": []` and `"older": 0`. That is enough for Home's row, the
+  status bar's `?2`, the Agent face and the chirps, and says nothing of what the sessions are.
+
+### `session`
+
+```json
+{"type": "session", "id": "k7q2", "title": "Plumber · kitchen leak", "state": "working",
+ "place": "ONIONSERVE", "prompt": "Find a plumber for the kitchen leak this week",
+ "started": 1795189000, "updated": 1795190000,
+ "step": 2, "steps": 3,
+ "plan": [{"text": "Find plumbers near home", "state": "done"},
+          {"text": "Check reviews and prices", "state": "now"},
+          {"text": "Ask which to book", "state": "todo"}],
+ "log": [{"at": 1795190000, "text": "web_search plumbers open Saturday"}],
+ "result": null,
+ "ask": null}
+```
+
+- `prompt`: what started it, in the user's words (cut to 2000 characters).
+- `plan`: the checklist, or null without one; each step `done`, `now` or `todo` (all `done`
+  once the session is done or a note).
+- `log`: newest first, at most 20 lines of at most 120 characters: a tool call (its name and a
+  short form of its input), a short line from the model, what the user said into it
+  (`you: …`), a question asked and its answer (`asked: …`, `answered: …`), `stopped`.
+- `result`: Markdown, at most 8 KB, once the session has finished (and kept while it works
+  again after being talked into); null before.
+- `ask`: the question waiting (the `ask` message without its `type`), or null.
+
+### `ask`
+
+```json
+{"type": "ask", "session": "k7q2", "id": "a1", "title": "Plumber · kitchen leak",
+ "question": "Which plumber should I book?", "detail": "Three can come before the weekend.",
+ "options": [{"title": "Riverside · Thu 08:00", "right": "$145", "detail": "4.8 ★ (212)…"},
+             {"title": "Northgate · Wed 13:00", "right": "$120", "detail": null}],
+ "recommend": 0, "at": 1795190000}
+```
+
+- The model asks with its `ask_choice` tool, which only sessions have. 2 to 6 options; an
+  option's `title` is at most 32 characters, `right` (a price, a time) at most 12, `detail` at
+  most 400; the question at most 200 and its `detail` at most 400. Absent fields are null.
+  `recommend`: the option the session recommends (the board's `PICK`), or null.
+- `id` numbers a session's questions (`a1`, `a2`, …). `at`: when it was asked.
+- The board adds "something else" itself: an answer in words, by voice (`listen_start` with
+  `mode: "agent"` and the `session`).
+- The model gets `{"choice": n, "title": "…"}` back for an answer by key, or `{"text": "…"}` for
+  one in words, and carries on. A session asks one question at a time, and its question waits
+  as long as it takes, a daemon restart included.
+- `ask` goes to connections that sent `sync` and are unlocked. A locked connection gets no
+  `ask`: the `ask` count in `sessions` says one is waiting.
+
+### Unlock
+
+- Without `pin_sha256` every connection is unlocked from the start, and `unlock` answers ok.
+- `unlock {pin}`: the daemon compares the PIN's SHA-256 (lowercase hex) with `pin_sha256`, in
+  constant time. Right: `unlocked {ok: true, ticket, ttl_s}`; the connection is unlocked and
+  the count of wrong PINs resets. Wrong: `unlocked {ok: false}`.
+- After 3 wrong PINs in a row (across connections, and HTTP's too), further tries are refused
+  for 30 s, then twice as long after each further wrong one, up to 30 min, like the board's own
+  PIN. A refused try isn't checked, the right PIN included: `unlocked {ok: false, wait_s}`, with
+  the seconds left. The wrong PIN that starts a wait also carries `wait_s`. The daemon keeps the
+  count on disk, so a restart doesn't clear it.
+- `unlock {ticket}`: a ticket from an earlier unlock unlocks a new connection without the PIN,
+  for `ticket_minutes` (60 by default) from when it was issued. The answer gives the same
+  ticket and the seconds it has left. A wrong or expired ticket gets `unlocked {ok: false}`
+  (and doesn't count as a wrong PIN): ask for the PIN. Tickets are random (128 bits) and live
+  in the daemon's memory, so a daemon restart ends them; the board keeps its own in RAM.
+- While locked: `sessions` is the locked form; `open`, `answer`, `stop` and `delete` get
+  `refused {message: "locked"}`; an agent turn gets `error {message: "locked"}` and
+  `reply_end`; no `ask` is sent. Talk turns work as before.
+
+### An agent turn
+
+```
+device                                   daemon
+  listen_start {mode: "agent"}   →
+  audio …, listen_stop           →
+                                 ←       stt {text}
+                                 ←       started {session: "k7q2"}
+                                 ←       text {delta} …, reply_start, audio …   (a short reply)
+                                 ←       reply_end
+                                 ←       sessions …, session … (if open)  (the session works on)
+```
+
+- The session's run goes on in the background after `reply_end`: the session hears the words
+  at once and works with the daemon's tools, not the board's.
+- The spoken reply is short. For a new session, what it is going to do ("I'll compare plumbers
+  who can come this week and ask you to pick"). Talking into a working session adds the words
+  to its conversation (the model reads them at its next round), and the reply acknowledges
+  them. Talking into an asking session answers its question with the words. Talking into a
+  finished session starts it again with them, and the reply answers from its result if it can.
+- Without speech-to-text on the daemon, the model that hears the recording writes the words
+  down first: a session needs them as text.
+
+### Over HTTP
+
+The same sessions, with the same JSON, are at `/sessions` on the daemon's HTTP port, for scripts
+and for testing without a board; with a PIN set, each request sends it in `X-Inkharness-Pin`
+(inkharness/README.md, "Agent sessions").
+
 ## Protocol 1
 
 Before encryption the device sent its `hello` as the first control frame, with `"proto": 1` and
@@ -184,3 +383,16 @@ It prints each message with its time since `listen_stop` and saves the reply aud
 gives the token (the mock config has none); `--plaintext` speaks protocol 1, as older boards do. With
 `--tools tools.json` (an array of tools as in the hello, each with an `answer`), it announces
 them and answers each call with its tool's `answer`.
+
+It drives agent sessions too: `--unlock PIN` or `--ticket T` first, `--sync` and `--open ID` to
+follow, `--answer SESSION:ASK:N`, `--stop ID`, `--delete ID`, and `--mode agent` (with
+`--session ID` to talk into one) for an agent turn; `--wait SECS` goes on printing what comes,
+and `--json` prints each message as it was sent. With `[llm] backend = "mock"`, sessions play
+through a scripted run instead of a model: a plan of three steps, a tool call, then a result;
+"ask" in the task makes it ask which of two plumbers to book, "slow" takes 3 s a step, "note"
+makes the result a note and "fail" fails it (inkharness/src/agent/mock.rs).
+
+```sh
+cargo run -p voice-client -- --token T --unlock 1234 --sync --mode agent --silence 1 --wait 5
+cargo run -p voice-client -- --token T --unlock 1234 --answer k7q2:a1:0 --open k7q2
+```
