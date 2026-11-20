@@ -4,9 +4,12 @@
 #include <stdio.h>
 #include <time.h>
 
+#include <algorithm>
 
 #include "alarms.h"
 #include "apps/lock.h"
+#include "covers.h"
+#include "picture.h"
 #include "pmic.h"
 #include "power.h"
 #include "readstate.h"
@@ -30,6 +33,9 @@ constexpr TextStyle kKey{&ui::fonts::kMono14Medium, 1};
 constexpr TextStyle kValue{&ui::fonts::kMono14Bold, 0};
 constexpr TextStyle kBoot{&ui::fonts::kMono14Bold, 1};
 constexpr TextStyle kBootCap{&ui::fonts::kMono14ExtraBold, 0};
+constexpr TextStyle kCardLabel{&ui::fonts::kMono13Medium, 1};
+constexpr TextStyle kCardTitle{&ui::fonts::kMono15Bold, 0};
+constexpr TextStyle kCardPercent{&ui::fonts::kMono15ExtraBold, 0};
 
 constexpr int kPanelW = 292;  // the inverted wake panel
 constexpr int kTopH = 40;     // strips, including their 3 px rules
@@ -37,6 +43,23 @@ constexpr int kBottomH = 44;
 constexpr int kCols = 36;     // dot-matrix field: 36 x 28 cells of 14 px
 constexpr int kRows = 28;
 constexpr int kCell = 14;
+
+// The book's card at the foot of the panel: its cover (at most 72 x 108, a box of its own in
+// the covers cache) in a 2 px paper frame with a 4 px dithered shadow, Home's READER cover
+// inverted; beside it // READING, the title and the progress. Rows from the top: label, gap,
+// title lines; from the bottom: bar, gap, READ / percent.
+constexpr int kCoverW = 72;
+constexpr int kCoverH = 108;
+constexpr int kCoverFrame = 2;
+constexpr int kCoverShadow = 4;
+constexpr int kCardGap = 16;  // shadow to text
+constexpr int kCardLabelH = 16;
+constexpr int kCardTitleLineH = 19;
+constexpr int kCardRowGap = 6;
+constexpr int kCardPercentH = 19;
+constexpr int kCardBarH = 12;
+constexpr int kCardMinH = kCardLabelH + kCardRowGap + kCardTitleLineH + kCardRowGap +
+                          kCardPercentH + kCardRowGap + kCardBarH;
 
 // The artboard's sprites: '#' ink, '+' 50 % dither, 'o' paper inside the sprite.
 const char *const kFrog[] = {
@@ -130,9 +153,16 @@ class SleepScreen : public ui::Screen {
     detail_ = pmic::detail();
     std::string path, title;
     readstate::Position pos;
-    resume_ = readstate::last(path, title, pos)
-                  ? "Reader \xC2\xB7 " + title + " \xC2\xB7 " + std::to_string(pos.percent) + "%"
-                  : "Home";
+    if (readstate::last(path, title, pos)) {
+      resume_ = "Reader \xC2\xB7 " + title + " \xC2\xB7 " + std::to_string(pos.percent) + "%";
+      title_ = title;
+      percent_ = std::min<int>(pos.percent, 100);
+      // The first sleep with a book renders its thumbnail (a few hundred ms), later ones read it
+      // from the card. No cover, or no card: the panel as it was.
+      hasCover_ = covers::thumbnail(path, kCoverW, kCoverH, cover_);
+    } else {
+      resume_ = "Home";
+    }
   }
 
   std::string tag() const override { return "SLEEP"; }
@@ -251,8 +281,9 @@ class SleepScreen : public ui::Screen {
       y += 18 + 10;
     }
 
-    // HOLD [PWR] TO BOOT, at the bottom.
+    // HOLD [PWR] TO BOOT, at the bottom, and the book's card on top of it.
     const Rect line{p.x, p.bottom() - 24, p.w, 24};
+    if (hasCover_) drawCard(c, {p.x, y, p.w, line.y - 14 - y});
     const int base = baselineCentered(kBoot, line.y, line.h);
     int x = drawText(c, p.x, base, "HOLD", kBoot, kPaper) + 8;
     const int capW = textWidth(kBootCap, "PWR") + 14 + 4;
@@ -262,12 +293,57 @@ class SleepScreen : public ui::Screen {
     drawText(c, x, base, "TO BOOT", kBoot, kPaper);
   }
 
+  // The book's card, at the bottom of `area` (ink).
+  void drawCard(ui::Canvas &c, const Rect &area) const {
+    using namespace ui;
+    const Rect box{area.x, 0, cover_.w + 2 * kCoverFrame, cover_.h + 2 * kCoverFrame};
+    const int cardH = std::max(box.h, kCardMinH);
+    if (cardH + kCoverShadow > area.h) return;
+    const int top = area.bottom() - kCoverShadow - cardH;
+
+    // The cover, framed in paper, its shadow a 50 % dither of paper on the ink.
+    const Rect cover{box.x, top, box.w, box.h};
+    const Rect shadows[] = {{cover.x + kCoverShadow, cover.bottom(), cover.w, kCoverShadow},
+                            {cover.right(), cover.y + kCoverShadow, kCoverShadow, cover.h}};
+    for (const Rect &s : shadows) {
+      fill(c, s, kPaper);
+      dither50(c, s);
+    }
+    frame(c, cover, kCoverFrame, kPaper);
+    picture::draw(c, cover.x + kCoverFrame, cover.y + kCoverFrame, cover_);
+
+    // Beside it: // READING and the title from the top, READ / percent and the bar from the
+    // bottom; the title gets the lines in between (two, beside a 2:3 cover).
+    const int x = cover.right() + kCoverShadow + kCardGap;
+    const int w = area.right() - x;
+    drawText(c, {x, top, w, kCardLabelH}, "// READING", kCardLabel, Align::Left, kPaper);
+    const int titleY = top + kCardLabelH + kCardRowGap;
+    const int barY = top + cardH - kCardBarH;
+    const int percentY = barY - kCardRowGap - kCardPercentH;
+    const int lines = std::max(1, (percentY - kCardRowGap - titleY) / kCardTitleLineH);
+    int ly = titleY;
+    for (const std::string &l : wrap(kCardTitle, title_, w, lines)) {
+      drawText(c, {x, ly, w, kCardTitleLineH}, l, kCardTitle, Align::Left, kPaper);
+      ly += kCardTitleLineH;
+    }
+    drawText(c, {x, percentY, w, kCardPercentH}, "READ", kCardLabel, Align::Left, kPaper);
+    drawText(c, {x, percentY, w, kCardPercentH}, std::to_string(percent_) + "%", kCardPercent,
+             Align::Right, kPaper);
+    const Rect bar{x, barY, w, kCardBarH};
+    frame(c, bar, 2, kPaper);
+    fill(c, {bar.x + 4, bar.y + 4, (bar.w - 8) * percent_ / 100, bar.h - 8}, kPaper);
+  }
+
   time_t now_ = 0;
   time_t wakeAt_ = 0;
   int slot_ = -1;
   bool snoozed_ = false;
   pmic::Detail detail_;
   std::string resume_;
+  std::string title_;  // the book in progress, for its card
+  int percent_ = 0;
+  bool hasCover_ = false;
+  picture::Bitmap cover_;
   bool drawn_ = false;
   int ticks_ = 0;  // since drawn
 };
