@@ -636,6 +636,7 @@ pub(crate) mod tests {
         save(&dir, &session("w1", State::Working, 5)).unwrap();
         std::fs::write(dir.join("bad1.json"), "{not json").unwrap();
         std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
+        std::fs::write(dir.join("pin-tries.json"), r#"{"wrong":1,"until":0}"#).unwrap();
         let mut loaded = load_all(&dir);
         loaded.sort_by(|a, b| a.id.cmp(&b.id));
         let ids: Vec<&str> = loaded.iter().map(|s| s.id.as_str()).collect();

@@ -5,7 +5,7 @@
 //!
 //! Wrong PINs back off as the board's own do: after 3 in a row (across connections), each
 //! further try is refused for 30 s, then twice as long each time, up to 30 min. The count is kept
-//! in `unlock.json` in the sessions' folder, so a restart doesn't clear it. Tickets are random,
+//! in `pin-tries.json` in the sessions' folder, so a restart doesn't clear it. Tickets are random,
 //! 128 bits, last `ticket_minutes` from when they were issued, and live in memory only.
 
 use std::collections::HashMap;
@@ -201,7 +201,7 @@ mod tests {
 
     fn lock(name: &str) -> (Lock, PathBuf) {
         let dir = crate::skills::tests::scratch(name);
-        let file = dir.join("unlock.json");
+        let file = dir.join("pin-tries.json");
         let pin = sha256_hex("1234");
         (Lock::new(Some(&pin), 60, file.clone()).unwrap(), file)
     }
@@ -259,10 +259,10 @@ mod tests {
     #[test]
     fn without_a_pin_anything_unlocks() {
         let dir = crate::skills::tests::scratch("lock-none");
-        let lock = Lock::new(None, 60, dir.join("unlock.json")).unwrap();
+        let lock = Lock::new(None, 60, dir.join("pin-tries.json")).unwrap();
         assert!(!lock.has_pin());
         assert!(matches!(lock.pin("", 0), Unlock::Ok { .. }));
-        assert!(Lock::new(Some("abc"), 60, dir.join("unlock.json")).is_err());
+        assert!(Lock::new(Some("abc"), 60, dir.join("pin-tries.json")).is_err());
         assert_eq!(
             sha256_hex("1234"),
             "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4"

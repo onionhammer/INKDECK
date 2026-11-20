@@ -185,7 +185,7 @@ impl Agent {
         let lock = lock::Lock::new(
             cfg.pin_sha256.as_deref(),
             cfg.ticket_minutes,
-            dir.join("unlock.json"),
+            dir.join("pin-tries.json"),
         )?;
         let place = cfg
             .place
@@ -991,6 +991,29 @@ pub(crate) mod tests {
         assert!(agent.seen(&id));
         assert!(!agent.list(false).sessions[0].unread);
         assert!(!agent.seen("nope"));
+    }
+
+    #[tokio::test]
+    async fn a_question_answered_in_words() {
+        let dir = crate::skills::tests::scratch("agent-words");
+        let agent = mock(&dir);
+        let id = agent.start("ask me which plumber");
+        until(&agent, &id, State::Ask).await;
+        let said = agent.say(&id, "none, find one for Saturday").unwrap();
+        assert_eq!(
+            said,
+            Said::Answered {
+                question: "Which plumber should I book?".into()
+            }
+        );
+        let view = until(&agent, &id, State::Done).await;
+        assert!(
+            view.result
+                .as_deref()
+                .unwrap()
+                .contains(r#"You chose: {"text":"none, find one for Saturday"}"#)
+        );
+        assert!(log(&view).contains(&"answered: none, find one for Saturday"));
     }
 
     #[tokio::test]
