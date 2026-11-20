@@ -186,8 +186,9 @@ impl Speaker {
     }
 
     /// A tool call starting.
-    pub async fn tool(&mut self, name: &str) -> Result<()> {
-        self.send(Piece::Tool(name.to_string())).await
+    pub async fn tool(&mut self, name: &str, input: Option<&Value>) -> Result<()> {
+        let input = input.cloned().unwrap_or(Value::Null);
+        self.send(Piece::Tool(name.to_string(), input)).await
     }
 
     fn next_round(&mut self) {
@@ -233,7 +234,7 @@ impl<A: ChatApi> Llm for ToolLoop<A> {
                 });
             }
             for call in &round.calls {
-                speaker.tool(&call.name).await?;
+                speaker.tool(&call.name, call.input.as_ref()).await?;
             }
             let results = join_all(round.calls.iter().map(|c| run(request.tools, c))).await;
             api.add_round(&mut conversation, round.said, &round.calls, &results);

@@ -78,7 +78,9 @@ impl Chat {
             let outcome = self.llm.respond(request(&self.tools), tx.clone()).await?;
             if let (Outcome::Think { .. }, Some((think, tools))) = (outcome, &self.think) {
                 tracing::info!("handing the turn to the thinking model");
-                let _ = tx.send(Piece::Tool(THINK_TOOL.into())).await;
+                let _ = tx
+                    .send(Piece::Tool(THINK_TOOL.into(), serde_json::Value::Null))
+                    .await;
                 think.respond(request(tools), tx).await?;
             }
             anyhow::Ok(())
@@ -268,7 +270,7 @@ impl Printer {
                     self.line_start = text.ends_with('\n');
                 }
             }
-            Piece::Tool(name) => {
+            Piece::Tool(name, _) => {
                 if !self.line_start {
                     println!();
                     self.line_start = true;

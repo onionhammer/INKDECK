@@ -1,0 +1,92 @@
+//! The session model with `backend = "mock"`: plays a session through without a model, so a
+//! board or a test can see every state. Words in the task steer it:
+//!
+//! - always: a plan of three steps, a run_js call and a line of log, then a result in Markdown;
+//! - "ask" or "choose": asks which of two plumbers to book, and waits for the answer;
+//! - "slow": takes 3 s over each step, long enough to watch it work and to talk into it;
+//! - "note": the result opens with a heading, which makes the session a note;
+//! - "fail": the run fails.
+//!
+//! Talked into afterwards, it answers "You said: …".
+
+use std::time::Duration;
+
+use anyhow::{Result, bail};
+use async_trait::async_trait;
+use serde_json::json;
+use tokio::sync::mpsc;
+
+use super::tools::{ASK_TOOL, PLAN_TOOL};
+use crate::llm::{Llm, Outcome, Piece, Request};
+use crate::tools::JS_TOOL;
+
+pub struct MockAgent;
+
+#[async_trait]
+impl Llm for MockAgent {
+    async fn respond(&self, request: Request<'_>, out: mpsc::Sender<Piece>) -> Result<Outcome> {
+        let say = |text: String| {
+            let out = out.clone();
+            async move {
+                out.send(Piece::Text(text))
+                    .await
+                    .map_err(anyhow::Error::from)
+            }
+        };
+        let call = |name: &'static str, input: serde_json::Value| {
+            let out = out.clone();
+            let tools = request.tools;
+            async move {
+                out.send(Piece::Tool(name.into(), input.clone())).await?;
+                anyhow::Ok(tools.call(name, input).await)
+            }
+        };
+        let follow_up =
+            !request.history.is_empty() || request.user.contains("inkharness restarted");
+        if follow_up {
+            say(format!("You said: {}", request.user)).await?;
+            return Ok(Outcome::Done);
+        }
+
+        let task = request.user.trim();
+        let words = task.to_lowercase();
+        let pause = Duration::from_secs(if words.contains("slow") { 3 } else { 0 });
+        let steps = ["Read the task", "Work it out", "Write the result"];
+        let title: String = format!("Mock · {task}").chars().take(40).collect();
+        let plan = |current: usize| json!({"steps": steps, "current": current, "title": title});
+
+        call(PLAN_TOOL, plan(1)).await?.ok();
+        say("Reading the task.".into()).await?;
+        call(JS_TOOL, json!({"code": "1 + 1"})).await?.ok();
+        tokio::time::sleep(pause).await;
+        call(PLAN_TOOL, plan(2)).await?.ok();
+        let mut chose = String::new();
+        if words.contains("ask") || words.contains("choose") {
+            let question = json!({
+                "question": "Which plumber should I book?",
+                "detail": "Two can come this week.",
+                "options": [
+                    {"title": "Riverside · Thu 08:00", "right": "$145", "detail": "4.8 ★ (212 reviews), licensed, 2 km away."},
+                    {"title": "Northgate · Wed 13:00", "right": "$120"}
+                ],
+                "recommend": 0
+            });
+            let answer = call(ASK_TOOL, question).await?;
+            chose = format!("\n- You chose: {}", answer.unwrap_or_else(|e| e));
+        }
+        tokio::time::sleep(pause).await;
+        if words.contains("fail") {
+            bail!("the mock model failed, as the task asked");
+        }
+        call(PLAN_TOOL, plan(3)).await?.ok();
+        tokio::time::sleep(pause).await;
+        call(PLAN_TOOL, plan(4)).await?.ok();
+        let result = if words.contains("note") {
+            format!("# Note: {task}\n\n- The first thing to keep\n- The second{chose}\n")
+        } else {
+            format!("**Done:** {task}\n\n- Read it\n- Worked it out{chose}\n")
+        };
+        say(result).await?;
+        Ok(Outcome::Done)
+    }
+}

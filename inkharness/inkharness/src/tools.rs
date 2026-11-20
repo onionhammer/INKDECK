@@ -4,11 +4,13 @@
 //! itself (device.rs). Then run_js, a JavaScript sandbox that can call all of those (js.rs), the
 //! skill tools
 //! (skills.rs), and the think tool, which the chat backends hand back to the session instead of
-//! running.
+//! running. An agent session adds its own (agent/tools.rs: `ask_choice`, `plan`) as [`Extra`]
+//! tools, and `[talk]` can narrow what a talk turn gets ([`ToolSet::only`]).
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -32,9 +34,20 @@ pub struct ToolDef {
     pub schema: Value,
 }
 
+/// Tools a front-end adds for itself, such as an agent session's `ask_choice` and `plan`. The
+/// model gets them; scripts don't, and `[talk]` doesn't filter them.
+#[async_trait]
+pub trait Extra: Send + Sync {
+    fn defs(&self) -> Vec<ToolDef>;
+
+    /// Runs one of its tools; `None` if `name` isn't one of them.
+    async fn call(&self, name: &str, input: &Value) -> Option<Result<String, String>>;
+}
+
 #[derive(Clone)]
 pub struct ToolSet {
-    /// What the model gets: `callable`, run_js, the skill tools, the think tool.
+    /// What the model gets: `callable`, run_js, the skill tools, the think tool, the extra
+    /// tools.
     defs: Vec<ToolDef>,
     /// What a script can call too: Home Assistant's tools, the MCP servers', web search, the
     /// device's.
@@ -43,6 +56,10 @@ pub struct ToolSet {
     backends: Backends,
     js: Option<js::Limits>,
     skills: Arc<Skills>,
+    extra: Option<Arc<dyn Extra>>,
+    /// Only the tools these name (a name, or a prefix ending in `*`), besides the device's and
+    /// the extra ones. None: all.
+    allow: Option<Arc<Vec<String>>>,
 }
 
 /// What runs the tools a script can call too.
@@ -125,23 +142,69 @@ impl ToolSet {
             },
             js,
             skills,
+            extra: None,
+            allow: None,
         };
         tools.assemble();
         Ok(tools)
     }
 
     fn assemble(&mut self) {
-        let mut defs = self.callable.clone();
-        if let Some(limits) = &self.js {
-            let callable: Vec<&str> = self.callable.iter().map(|d| d.name.as_str()).collect();
+        let callable: Vec<ToolDef> = self
+            .callable
+            .iter()
+            .filter(|d| self.allows(&d.name))
+            .cloned()
+            .collect();
+        let mut defs = callable.clone();
+        if let (Some(limits), true) = (&self.js, self.allows(JS_TOOL)) {
+            let callable: Vec<&str> = callable.iter().map(|d| d.name.as_str()).collect();
             defs.push(js_definition(&callable, limits));
         }
         // After run_js, so scripts don't get them: see skills.rs.
-        defs.extend(self.skills.defs());
-        if self.think {
+        defs.extend(
+            self.skills
+                .defs()
+                .into_iter()
+                .filter(|d| self.allows(&d.name)),
+        );
+        if self.think && self.allows(THINK_TOOL) {
             defs.push(think_definition());
         }
+        if let Some(extra) = &self.extra {
+            defs.extend(extra.defs());
+        }
         self.defs = defs;
+    }
+
+    /// True if `[talk]` (or whoever narrowed the set) lets the model have this tool. The
+    /// device's tools always stay.
+    fn allows(&self, name: &str) -> bool {
+        let Some(allow) = &self.allow else {
+            return true;
+        };
+        allow.iter().any(|pattern| match pattern.strip_suffix('*') {
+            Some(prefix) => name.starts_with(prefix),
+            None => name == pattern,
+        }) || self.backends.device.as_ref().is_some_and(|d| d.has(name))
+    }
+
+    /// The same tools, narrowed to the ones `patterns` name: a tool's name, or a prefix ending
+    /// in `*` (`home_*`). A device's tools, added before or after, always stay, and scripts can
+    /// call only what is left.
+    pub fn only(&self, patterns: &[String]) -> ToolSet {
+        let mut tools = self.clone();
+        tools.allow = Some(Arc::new(patterns.to_vec()));
+        tools.assemble();
+        tools
+    }
+
+    /// The same tools plus a front-end's own.
+    pub fn with_extra(&self, extra: Arc<dyn Extra>) -> ToolSet {
+        let mut tools = self.clone();
+        tools.extra = Some(extra);
+        tools.assemble();
+        tools
     }
 
     /// The same tools plus the think tool, for the fast model.
@@ -189,6 +252,14 @@ impl ToolSet {
 
     /// Runs a tool. `Err` is a message for the model (bad input, or the call failed).
     pub async fn call(&self, name: &str, input: Value) -> Result<String, String> {
+        if let Some(extra) = &self.extra {
+            if let Some(result) = extra.call(name, &input).await {
+                return result;
+            }
+        }
+        if !self.allows(name) {
+            return Err(format!("no tool named {name}"));
+        }
         match name {
             THINK_TOOL => Err(format!("{THINK_TOOL} is handled by the daemon, not run")),
             JS_TOOL => {
@@ -199,8 +270,13 @@ impl ToolSet {
                     return Err("invalid input: code is required".into());
                 };
                 // The script gets the home's, search and the device's tools: not run_js itself,
-                // the think tool or the skill tools.
-                let names: Vec<String> = self.callable.iter().map(|d| d.name.clone()).collect();
+                // the think tool, the skill tools or the extra ones.
+                let names: Vec<String> = self
+                    .callable
+                    .iter()
+                    .filter(|d| self.allows(&d.name))
+                    .map(|d| d.name.clone())
+                    .collect();
                 let backends = self.backends.clone();
                 let call: js::Caller = Arc::new(move |name, input| {
                     let backends = backends.clone();
@@ -687,6 +763,50 @@ mod tests {
             requests.recv().await.unwrap(),
             r#"POST /api/services/media_player/media_pause {"entity_id":"media_player.bedroom"}"#
         );
+    }
+
+    #[tokio::test]
+    async fn talk_can_be_narrowed() {
+        let mcp = Arc::new(crate::mcp::tests::connected(None).await);
+        let all = ToolSet::build(
+            None,
+            &config::Js::default(),
+            mcp,
+            Default::default(),
+            reqwest::Client::new(),
+        )
+        .unwrap()
+        .with_think();
+        let talk = all.only(&["run_js".into(), "test_a*".into()]);
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let board = Arc::new(Device::new(
+            vec![voice_proto::DeviceTool {
+                name: "open_book".into(),
+                description: "Opens a book.".into(),
+                input_schema: json!({"type": "object"}),
+            }],
+            &[],
+            tx,
+        ));
+        let talk = talk.with_device(board);
+        let names: Vec<&str> = talk.defs().iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["test_add", "open_book", "run_js"]);
+        assert!(talk.defs()[2].description.contains("(test_add, open_book)"));
+        assert_eq!(
+            talk.call("test_broken", json!({})).await,
+            Err("no tool named test_broken".into())
+        );
+        assert_eq!(
+            talk.call(THINK_TOOL, json!({})).await,
+            Err("no tool named think_harder".into())
+        );
+        let out = talk
+            .call(
+                JS_TOOL,
+                json!({"code": "[typeof tools.test_add, typeof tools.test_broken]"}),
+            )
+            .await;
+        assert_eq!(out, Ok(r#"=> ["function","undefined"]"#.into()));
     }
 
     #[tokio::test]

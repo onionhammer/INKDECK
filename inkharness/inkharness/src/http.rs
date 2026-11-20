@@ -171,7 +171,7 @@ async fn chat_turn(
     }
     let mut tools = Vec::new();
     while let Some(piece) = rx.recv().await {
-        if let Piece::Tool(name) = piece {
+        if let Piece::Tool(name, _) = piece {
             tools.push(name);
         }
     }
@@ -210,7 +210,9 @@ fn events(
             Some(Piece::Text(text) | Piece::Transcript(text)) => {
                 (event(json!({"text": text})), Stream::Turn(rx, task, id))
             }
-            Some(Piece::Tool(name)) => (event(json!({"tool": name})), Stream::Turn(rx, task, id)),
+            Some(Piece::Tool(name, _)) => {
+                (event(json!({"tool": name})), Stream::Turn(rx, task, id))
+            }
             Some(Piece::Audio(_)) => unreachable!(),
             None => {
                 let end = match task.await {

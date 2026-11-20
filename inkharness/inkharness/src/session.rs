@@ -604,7 +604,7 @@ async fn turn_inner(
         let mut splitter = Splitter::new();
         let mut reply = String::new();
         while let Some(piece) = piece_rx.recv().await {
-            if let Piece::Tool(_) = piece {
+            if let Piece::Tool(..) = piece {
                 continue; // a device shows only what is said
             }
             first_token_ms.get_or_insert_with(ms);
@@ -638,7 +638,7 @@ async fn turn_inner(
                     }
                     let _ = say_tx.send(Say::Pcm(pcm)).await;
                 }
-                Piece::Tool(_) => {}
+                Piece::Tool(..) => {}
             }
         }
         if let Some(rest) = splitter.finish() {
