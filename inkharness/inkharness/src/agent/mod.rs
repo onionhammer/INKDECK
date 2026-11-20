@@ -62,6 +62,30 @@ struct Live {
     run: Option<AbortHandle>,
     /// The ask_choice call waiting for its answer, when the run that asked is still going.
     waiting: Option<oneshot::Sender<Answer>>,
+    /// Which run is the session's: each new run, and each stop, counts one up. A run that is
+    /// no longer the session's (stopped, or replaced while it finished) changes nothing.
+    generation: u64,
+}
+
+impl Live {
+    fn new(session: Session) -> Live {
+        Live {
+            session,
+            run: None,
+            waiting: None,
+            generation: 0,
+        }
+    }
+
+    /// A run is working on it (one that ended without saying so, by a panic, doesn't count).
+    fn running(&self) -> bool {
+        self.run.as_ref().is_some_and(|run| !run.is_finished())
+    }
+}
+
+/// The session, if `run` is still its run.
+fn own<'a>(sessions: &'a mut HashMap<String, Live>, id: &str, run: u64) -> Option<&'a mut Live> {
+    sessions.get_mut(id).filter(|live| live.generation == run)
 }
 
 /// A session changed (or went): what a board connection that follows the list listens for.
@@ -199,12 +223,7 @@ impl Agent {
                 let _ = store::remove(&dir, &session.id);
                 continue;
             }
-            let live = Live {
-                session,
-                run: None,
-                waiting: None,
-            };
-            sessions.insert(live.session.id.clone(), live);
+            sessions.insert(session.id.clone(), Live::new(session));
         }
         let agent = Arc::new(Agent {
             place,
@@ -322,11 +341,7 @@ impl Agent {
         let session = Session::new(id.clone(), text, store::now());
         tracing::info!(session = %id, title = %session.title, "a new session");
         self.save(&session);
-        let mut live = Live {
-            session,
-            run: None,
-            waiting: None,
-        };
+        let mut live = Live::new(session);
         self.spawn_run(&mut live);
         sessions.insert(id.clone(), live);
         self.notify(&id, false);
@@ -355,7 +370,7 @@ impl Agent {
                 live.session.inbox.push(text.to_string());
                 live.session.add_log(&format!("you: {text}"), now);
                 live.session.updated = now;
-                if live.run.is_none() {
+                if !live.running() {
                     self.spawn_run(live);
                 }
                 Said::Added {
@@ -372,6 +387,8 @@ impl Agent {
                 s.inbox.push(text.to_string());
                 s.add_log(&format!("you: {text}"), now);
                 s.state = State::Working;
+                // A result belongs to a finished session; the run writes a new one.
+                s.result = None;
                 s.unread = false;
                 s.updated = now;
                 self.spawn_run(live);
@@ -424,7 +441,7 @@ impl Agent {
         if let Some(answer) = unsent {
             let note = resume_note(&live.session, Some((&question, &answer)));
             live.session.inbox.push(note);
-            if live.run.is_none() {
+            if !live.running() {
                 self.spawn_run(live);
             }
         }
@@ -440,6 +457,7 @@ impl Agent {
         if let Some(run) = live.run.take() {
             run.abort();
         }
+        live.generation += 1;
         live.waiting = None;
         let now = store::now();
         let s = &mut live.session;
@@ -479,7 +497,7 @@ impl Agent {
         let mut sessions = self.sessions.lock().unwrap();
         let old: Vec<String> = sessions
             .values()
-            .filter(|l| l.run.is_none() && store::expired(&l.session, self.keep_days, now))
+            .filter(|l| !l.running() && store::expired(&l.session, self.keep_days, now))
             .map(|l| l.session.id.clone())
             .collect();
         for id in old {
@@ -492,22 +510,25 @@ impl Agent {
     // What the runs and their tools do.
 
     fn spawn_run(self: &Arc<Self>, live: &mut Live) {
+        live.generation += 1;
         let (agent, id) = (self.clone(), live.session.id.clone());
-        live.run = Some(tokio::spawn(agent.run(id)).abort_handle());
+        live.run = Some(tokio::spawn(agent.run(id, live.generation)).abort_handle());
     }
 
-    async fn run(self: Arc<Self>, id: String) {
+    /// The session's run: legs until it has nothing more to hear. `run` is its generation.
+    async fn run(self: Arc<Self>, id: String, run: u64) {
         loop {
-            let Some((history, user)) = self.begin_leg(&id) else {
+            let Some((history, user)) = self.begin_leg(&id, run) else {
                 return;
             };
             let tools = self.tools.with_extra(Arc::new(SessionTools {
                 agent: self.clone(),
                 id: id.clone(),
+                run,
             }));
             let steer = {
                 let (agent, id) = (self.clone(), id.clone());
-                move || agent.hear(&id)
+                move || agent.hear(&id, run)
             };
             let (tx, rx) = mpsc::channel::<Piece>(64);
             let request = llm::Request {
@@ -519,7 +540,8 @@ impl Agent {
                 rounds: self.max_rounds,
                 steer: Some(&steer),
             };
-            let leg = async { tokio::join!(self.llm.respond(request, tx), self.follow(&id, rx)) };
+            let leg =
+                async { tokio::join!(self.llm.respond(request, tx), self.follow(&id, run, rx)) };
             let ((outcome, written), charges) = meter::measure(leg).await;
             let (cost, unpriced) = meter::total(&charges);
             tracing::info!(
@@ -531,9 +553,9 @@ impl Agent {
                 "session leg"
             );
             let again = match outcome {
-                Ok(_) => self.end_leg(&id, written),
+                Ok(_) => self.end_leg(&id, run, written),
                 Err(e) => {
-                    self.fail(&id, &e);
+                    self.fail(&id, run, &e);
                     false
                 }
             };
@@ -544,13 +566,11 @@ impl Agent {
     }
 
     /// What the next leg hears: the conversation so far, and the user's words since its last
-    /// answer (what was waiting moves into the conversation). None if the session has gone or
-    /// stopped.
-    fn begin_leg(&self, id: &str) -> Option<(Vec<Turn>, String)> {
+    /// answer (what was waiting moves into the conversation). None if the session has gone,
+    /// stopped or isn't this run's.
+    fn begin_leg(&self, id: &str, run: u64) -> Option<(Vec<Turn>, String)> {
         let mut sessions = self.sessions.lock().unwrap();
-        let live = sessions
-            .get_mut(id)
-            .filter(|l| l.session.state == State::Working)?;
+        let live = own(&mut sessions, id, run).filter(|l| l.session.state == State::Working)?;
         let s = &mut live.session;
         for text in std::mem::take(&mut s.inbox) {
             s.add_said(Who::User, &text);
@@ -593,9 +613,9 @@ impl Agent {
     }
 
     /// What the user has said since the last round, for the next one (the tool loop's steer).
-    fn hear(&self, id: &str) -> Vec<String> {
+    fn hear(&self, id: &str, run: u64) -> Vec<String> {
         let mut sessions = self.sessions.lock().unwrap();
-        let Some(live) = sessions.get_mut(id) else {
+        let Some(live) = own(&mut sessions, id, run) else {
             return Vec::new();
         };
         let heard = std::mem::take(&mut live.session.inbox);
@@ -611,7 +631,7 @@ impl Agent {
     /// Follows a leg's reply: each stretch of text before a tool call goes to the log as a
     /// line, then the call, and the last stretch is the result (or the last there was, if the
     /// model ended on a tool call).
-    async fn follow(&self, id: &str, mut rx: mpsc::Receiver<Piece>) -> Written {
+    async fn follow(&self, id: &str, run: u64, mut rx: mpsc::Receiver<Piece>) -> Written {
         let (mut all, mut stretch, mut last) = (String::new(), String::new(), String::new());
         while let Some(piece) = rx.recv().await {
             match piece {
@@ -621,13 +641,13 @@ impl Agent {
                 }
                 Piece::Tool(name, input) => {
                     if !stretch.trim().is_empty() {
-                        self.log(id, &store::plain(&stretch));
+                        self.log(id, run, &store::plain(&stretch));
                         last = std::mem::take(&mut stretch);
                     }
                     stretch.clear();
                     // The plan and the question show for themselves.
                     if name != tools::ASK_TOOL && name != tools::PLAN_TOOL {
-                        self.log(id, &tools::short_call(&name, &input));
+                        self.log(id, run, &tools::short_call(&name, &input));
                     }
                 }
                 Piece::Audio(_) => {}
@@ -643,9 +663,9 @@ impl Agent {
 
     /// A leg ended with an answer. True if the user said more meanwhile and another leg should
     /// hear it; otherwise the session is done (or a note, if its result opens with a heading).
-    fn end_leg(&self, id: &str, written: Written) -> bool {
+    fn end_leg(&self, id: &str, run: u64, written: Written) -> bool {
         let mut sessions = self.sessions.lock().unwrap();
-        let Some(live) = sessions.get_mut(id) else {
+        let Some(live) = own(&mut sessions, id, run) else {
             return false;
         };
         let s = &mut live.session;
@@ -682,9 +702,9 @@ impl Agent {
         false
     }
 
-    fn fail(&self, id: &str, error: &anyhow::Error) {
+    fn fail(&self, id: &str, run: u64, error: &anyhow::Error) {
         let mut sessions = self.sessions.lock().unwrap();
-        let Some(live) = sessions.get_mut(id) else {
+        let Some(live) = own(&mut sessions, id, run) else {
             return;
         };
         if live.session.state != State::Working {
@@ -716,12 +736,13 @@ impl Agent {
     fn put_question(
         &self,
         id: &str,
+        run: u64,
         mut question: Question,
     ) -> Result<oneshot::Receiver<Answer>, String> {
         let mut sessions = self.sessions.lock().unwrap();
-        let live = sessions.get_mut(id).ok_or("the session has gone")?;
+        let live = own(&mut sessions, id, run).ok_or("the session was stopped")?;
         let s = &mut live.session;
-        if s.ask.is_some() {
+        if s.state != State::Working || s.ask.is_some() {
             return Err("a question is already waiting for its answer: ask one at a time".into());
         }
         let now = store::now();
@@ -745,12 +766,13 @@ impl Agent {
     fn set_plan(
         &self,
         id: &str,
+        run: u64,
         steps: Vec<String>,
         current: usize,
         title: Option<String>,
     ) -> Result<(), String> {
         let mut sessions = self.sessions.lock().unwrap();
-        let live = sessions.get_mut(id).ok_or("the session has gone")?;
+        let live = own(&mut sessions, id, run).ok_or("the session was stopped")?;
         let s = &mut live.session;
         s.plan = Some(store::Plan { steps, current });
         if let Some(title) = title {
@@ -762,10 +784,10 @@ impl Agent {
         Ok(())
     }
 
-    /// Adds a line to the session's log.
-    fn log(&self, id: &str, text: &str) {
+    /// Adds a line to the session's log, from its run.
+    fn log(&self, id: &str, run: u64, text: &str) {
         let mut sessions = self.sessions.lock().unwrap();
-        let Some(live) = sessions.get_mut(id) else {
+        let Some(live) = own(&mut sessions, id, run) else {
             return;
         };
         let now = store::now();
@@ -1105,6 +1127,7 @@ pub(crate) mod tests {
                 result: Some("heard: make it Saturday".into())
             }
         );
+        assert_eq!(agent.view(&id).unwrap().result, None, "none while it works");
         let view = until(&agent, &id, State::Done).await;
         assert_eq!(view.result.as_deref(), Some("heard: and the price?"));
         let sessions = agent.sessions.lock().unwrap();
@@ -1149,6 +1172,81 @@ pub(crate) mod tests {
         assert!(!dir.join(format!("{id}.json")).exists());
         assert_eq!(agent.delete(&id), Err(Refusal::NoSuchSession));
         assert!(agent.view(&id).is_none() && agent.list(false).sessions.is_empty());
+    }
+
+    /// Waits for a permit, then asks a question (or, the first time with `panics`, panics);
+    /// answers "heard it" once asked whether it is there.
+    struct AsksLate {
+        gate: Arc<Semaphore>,
+        panics: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait]
+    impl Llm for AsksLate {
+        async fn respond(&self, request: Request<'_>, out: mpsc::Sender<Piece>) -> Result<Outcome> {
+            if self
+                .panics
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+            {
+                panic!("a backend that panics");
+            }
+            if request.user.contains("are you there?") {
+                out.send(Piece::Text("heard it".into())).await?;
+                return Ok(Outcome::Done);
+            }
+            self.gate.acquire().await?.forget();
+            let question = serde_json::json!({"question": "Which?", "options": [{"title": "A"}, {"title": "B"}]});
+            let answer = request.tools.call(tools::ASK_TOOL, question).await;
+            out.send(Piece::Text(format!("{answer:?}"))).await?;
+            Ok(Outcome::Done)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_stopped_run_changes_nothing() {
+        let dir = crate::skills::tests::scratch("agent-stopped-run");
+        let gate = Arc::new(Semaphore::new(0));
+        let llm = AsksLate {
+            gate: gate.clone(),
+            panics: false.into(),
+        };
+        let agent = Agent::open(&cfg(&dir), Box::new(llm), tools(), prompt()).unwrap();
+        let id = agent.start("pick one");
+        tokio::task::yield_now().await;
+        // Stopped while the run, about to ask, can't be cancelled at once.
+        let run = agent.sessions.lock().unwrap()[&id].generation;
+        agent.stop(&id).unwrap();
+        let question = Question {
+            id: String::new(),
+            question: "Which?".into(),
+            detail: None,
+            options: vec![],
+            recommend: None,
+            at: 0,
+        };
+        assert!(agent.put_question(&id, run, question).is_err());
+        agent.log(&id, run, "a late line");
+        gate.add_permits(1);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let view = agent.view(&id).unwrap();
+        assert_eq!((view.state, &view.ask), (State::Stopped, &None));
+        assert_eq!(log(&view), ["stopped"]);
+    }
+
+    #[tokio::test]
+    async fn a_run_that_died_is_started_again() {
+        let dir = crate::skills::tests::scratch("agent-panic");
+        let llm = AsksLate {
+            gate: Arc::new(Semaphore::new(0)),
+            panics: true.into(),
+        };
+        let agent = Agent::open(&cfg(&dir), Box::new(llm), tools(), prompt()).unwrap();
+        let id = agent.start("pick one");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(agent.view(&id).unwrap().state, State::Working);
+        agent.say(&id, "are you there?").unwrap();
+        let view = until(&agent, &id, State::Done).await;
+        assert_eq!(view.result.as_deref(), Some("heard it"));
     }
 
     /// Fails as a tool loop does when the model keeps calling tools.

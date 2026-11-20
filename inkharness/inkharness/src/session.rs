@@ -387,7 +387,8 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
     if let Some(follower) = follower {
         follower.abort();
     }
-    drop(tx);
+    // The writer ends once every way to it is gone: the device's tools hold one too.
+    drop((tools, device, tx));
     let _ = writer.await;
     result
 }
@@ -563,7 +564,11 @@ async fn follow(
                         .await;
                     agent.seen(&id);
                 }
-                None => open = None, // deleted
+                None => {
+                    // Deleted: nothing more to send for it.
+                    open = None;
+                    one.due = None;
+                }
             }
         }
     }
@@ -1389,6 +1394,46 @@ mod tests {
             }
         }
         assert_eq!(said, r#"Ok("=> Opening Dune once the reply has played.")"#);
+    }
+
+    #[tokio::test]
+    async fn a_board_with_tools_that_leaves_ends_its_connection() {
+        let tools = ToolSet::build(
+            None,
+            &config::Js::default(),
+            Default::default(),
+            Default::default(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        let app = Arc::new(App {
+            token: "t".into(),
+            psk: psk("t"),
+            plaintext: false,
+            system_prompt: String::new(),
+            stt: None,
+            llm: Box::new(OpensABook),
+            tts: None,
+            fast_tools: tools.clone(),
+            tools,
+            think: None,
+            agent: None,
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connection = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            run(stream, app, "s1".into()).await
+        });
+        let tools = vec![DeviceTool {
+            name: "open_book".into(),
+            description: "Opens a book on the board.".into(),
+            input_schema: json!({"type": "object"}),
+        }];
+        let (_, board) = handshake(addr, "t", hello(PROTO_VERSION, "", tools)).await;
+        drop(board);
+        let ended = tokio::time::timeout(Duration::from_secs(2), connection).await;
+        assert!(ended.is_ok(), "the connection's task outlived the board");
     }
 
     #[tokio::test]

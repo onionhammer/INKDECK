@@ -285,8 +285,8 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
 - `log`: newest first, at most 20 lines of at most 120 characters: a tool call (its name and a
   short form of its input), a short line from the model, what the user said into it
   (`you: …`), a question asked and its answer (`asked: …`, `answered: …`), `stopped`.
-- `result`: Markdown, at most 8 KB, once the session has finished (and kept while it works
-  again after being talked into); null before.
+- `result`: Markdown, at most 8 KB, once the session has finished; null while it works or asks,
+  including when it works again after being talked into (it then writes a new one).
 - `ask`: the question waiting (the `ask` message without its `type`), or null.
 
 ### `ask`
@@ -314,7 +314,8 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
 
 ### Unlock
 
-- Without `pin_sha256` every connection is unlocked from the start, and `unlock` answers ok.
+- Without `pin_sha256` every connection is unlocked from the start, and `unlock` (with a PIN
+  or a ticket) answers ok.
 - `unlock {pin}`: the daemon compares the PIN's SHA-256 (lowercase hex) with `pin_sha256`, in
   constant time. Right: `unlocked {ok: true, ticket, ttl_s}`; the connection is unlocked and
   the count of wrong PINs resets. Wrong: `unlocked {ok: false}`.

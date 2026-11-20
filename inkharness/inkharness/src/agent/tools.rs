@@ -57,6 +57,8 @@ impl Answer {
 pub struct SessionTools {
     pub agent: Arc<Agent>,
     pub id: String,
+    /// The run they belong to (Live::generation).
+    pub run: u64,
 }
 
 #[async_trait]
@@ -137,7 +139,7 @@ impl SessionTools {
             options,
             at: 0,
         };
-        let answer = self.agent.put_question(&self.id, question)?;
+        let answer = self.agent.put_question(&self.id, self.run, question)?;
         match answer.await {
             Ok(answer) => Ok(answer.for_model()),
             Err(_) => Err("the question was withdrawn".into()),
@@ -160,7 +162,8 @@ impl SessionTools {
         let n = steps.len();
         let current = input.current.unwrap_or(1).max(1);
         let title = given(input.title).map(|t| one_line(&t, TITLE_CHARS));
-        self.agent.set_plan(&self.id, steps, current, title)?;
+        self.agent
+            .set_plan(&self.id, self.run, steps, current, title)?;
         Ok(if current > n {
             format!("Plan saved: all {n} steps done.")
         } else {

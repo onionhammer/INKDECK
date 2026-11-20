@@ -158,6 +158,9 @@ impl Lock {
     /// A wrong one doesn't count towards the backoff (they can't be guessed, and an expired one
     /// is ordinary).
     pub fn ticket(&self, ticket: &str, now: u64) -> Unlock {
+        if self.pin.is_none() {
+            return self.issue(now); // nothing to unlock
+        }
         let mut state = self.state.lock().unwrap();
         state.tickets.retain(|_, expires| *expires > now);
         match state.tickets.get(ticket) {
@@ -262,6 +265,7 @@ mod tests {
         let lock = Lock::new(None, 60, dir.join("pin-tries.json")).unwrap();
         assert!(!lock.has_pin());
         assert!(matches!(lock.pin("", 0), Unlock::Ok { .. }));
+        assert!(matches!(lock.ticket("old", 0), Unlock::Ok { .. }));
         assert!(Lock::new(Some("abc"), 60, dir.join("pin-tries.json")).is_err());
         assert_eq!(
             sha256_hex("1234"),
