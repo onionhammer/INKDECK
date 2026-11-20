@@ -142,6 +142,13 @@ struct AgentSession {
   Ask ask;
 };
 
+// Words for a herdr agent's terminal, held by inkharness until the board says to type them
+// (the daemon's `draft`): a mis-heard utterance must never reach a coding agent unseen.
+struct Draft {
+  std::string session, id, text;
+  uint32_t turn = 0;  // the utterance it came from (Status::turn)
+};
+
 struct Agent {
   bool known = false;      // a daemon has said hello since the board started
   bool supported = false;  // and it has sessions (its hello had `agent`)
@@ -158,9 +165,11 @@ struct Agent {
   bool hasOpen = false;        // `open` holds the session agentOpen() asked for
   AgentSession open;
   std::string started;       // the session the last agent turn went to
+  Draft draft;               // waiting to be typed (an empty id: none)
   uint32_t startedTurn = 0;  // that turn (Status::turn)
   std::string refusal;          // the daemon's last `refused` message
   std::string refusalSession;   // the session it named, if any
+  std::string refusalRequest;   // what it refused: answer, send_draft, open...
   uint32_t refusals = 0;        // counts them, so a screen can tell a new one
   uint32_t generation = 0;   // changes with any of the above
 };
@@ -178,6 +187,9 @@ void agentOpen(const std::string &session);
 void agentAnswer(const std::string &session, const std::string &ask, int choice);
 void agentStop(const std::string &session);
 void agentDelete(const std::string &session);
+// Types agent().draft into its herdr session, or drops it. Either way it's gone from agent().
+void agentSendDraft();
+void agentDropDraft();
 // Unlocks the daemon with these digits, now or on the next connection. Kept in RAM only until
 // the daemon answers; a right one leaves a ticket that lets later connections in without it,
 // until the board powers off or the ticket runs out.

@@ -143,6 +143,7 @@ void forgetAgentConnection() {
   outbox.clear();
   agentShared.connected = agentShared.synced = agentShared.unlocking = false;
   agentShared.unlocked = false;
+  agentShared.draft = {};  // inkharness drops it with the connection
   agentChanged();
 }
 
@@ -476,6 +477,7 @@ void onRefused(const cJSON *json) {
   Locked l;
   agentShared.refusal = message;
   agentShared.refusalSession = field(json, "session");
+  agentShared.refusalRequest = field(json, "request");
   agentShared.refusals++;
   if (message == "locked") agentShared.unlocked = false;
   agentChanged();
@@ -498,6 +500,11 @@ void onControl(const uint8_t *payload, size_t len) {
     Locked l;
     agentShared.started = field(json, "session");
     agentShared.startedTurn = turns.load();
+    agentChanged();
+  } else if (type == "draft") {
+    Locked l;
+    agentShared.draft = {field(json, "session"), field(json, "id"), field(json, "text"),
+                         turns.load()};
     agentChanged();
   } else if (type == "unlocked") {
     onUnlocked(json);
@@ -1181,6 +1188,27 @@ void agentStop(const std::string &session) {
 void agentDelete(const std::string &session) {
   request("{\"type\":\"delete\",\"session\":" + quoted(session) + "}");
 }
+
+namespace {
+// Sends what becomes of the draft, and forgets it here.
+void settleDraft(const char *type) {
+  if (!lock) return;
+  {
+    Locked l;
+    const Draft d = agentShared.draft;
+    if (d.id.empty()) return;
+    outbox.push_back(std::string("{\"type\":\"") + type + "\",\"session\":" + quoted(d.session) +
+                     ",\"draft\":" + quoted(d.id) + "}");
+    agentShared.draft = {};
+    agentChanged();
+  }
+  post(Event::Kick);
+}
+}  // namespace
+
+void agentSendDraft() { settleDraft("send_draft"); }
+
+void agentDropDraft() { settleDraft("drop_draft"); }
 
 void agentUnlock(const std::string &pin) {
   start();
