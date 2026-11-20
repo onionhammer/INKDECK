@@ -224,12 +224,19 @@ fn resolve_paths(table: &mut toml::Table, base: &Path) {
     {
         dirs.iter_mut().for_each(fix);
     }
-    // The sessions' folder, from the file whose [agent] table is used.
+    // The sessions' folder, from the file whose [agent] table is used, and the claude
+    // backend's.
     if let Some(toml::Value::Table(agent)) = table.get_mut("agent") {
         let dir = agent
             .entry("dir")
             .or_insert_with(|| crate::config::default_agent_dir().into());
         fix(dir);
+        if let Some(toml::Value::Table(claude)) = agent.get_mut("claude") {
+            let dir = claude
+                .entry("dir")
+                .or_insert_with(|| crate::config::default_claude_dir().into());
+            fix(dir);
+        }
     }
     for stage in ["stt", "tts"] {
         let Some(toml::Value::Table(stage)) = table.get_mut(stage) else {

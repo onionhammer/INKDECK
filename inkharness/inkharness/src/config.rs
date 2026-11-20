@@ -52,6 +52,8 @@ pub struct Config {
     pub search: Vec<Search>,
     /// Agent sessions (agent/): without this table there are none, and only talk turns work.
     pub agent: Option<Agent>,
+    /// herdr terminals as sessions (herdr.rs), when there is also an [agent] table.
+    pub herdr: Option<Herdr>,
     #[serde(default)]
     pub talk: Talk,
 }
@@ -81,6 +83,154 @@ pub struct Agent {
     /// [agent.llm]: the model sessions run on, any [llm] backend. Unset: [chat.llm], else
     /// [llm] (Config::agent_model).
     pub llm: Option<Llm>,
+    /// What new sessions run on.
+    #[serde(default)]
+    pub backend: BackendName,
+    /// [agent.claude]: the claude backend, headless Claude Code.
+    pub claude: Option<Claude>,
+}
+
+/// What a session runs on, as `[agent] backend` names it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendName {
+    /// A model through its provider's API ([agent.llm], [chat.llm] or [llm]).
+    #[default]
+    Api,
+    /// Claude Code in print mode, one run per session ([agent.claude]).
+    Claude,
+    /// A program in a new herdr terminal ([herdr] default_program).
+    Herdr,
+}
+
+/// [agent.claude]: Claude Code in print mode, one run per session. It uses ANTHROPIC_API_KEY
+/// if that is set, else the subscription it is logged in with.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Claude {
+    /// The command, as a list: `["claude"]`, or `["ssh", "box", "claude"]`.
+    #[serde(default = "default_claude_command")]
+    pub command: Vec<String>,
+    /// Passed as --model when set.
+    #[serde(default)]
+    pub model: String,
+    /// Passed as --permission-mode.
+    #[serde(default = "default_permission_mode")]
+    pub permission_mode: String,
+    /// Passed as --allowedTools (inkharness's own tools are added).
+    #[serde(default = "default_allowed_tools")]
+    pub allowed_tools: Vec<String>,
+    /// Passed as --disallowedTools.
+    #[serde(default)]
+    pub disallowed_tools: Vec<String>,
+    /// Each session works in <dir>/<id>; relative to the config file (place.rs).
+    #[serde(default = "default_claude_dir")]
+    pub dir: String,
+    /// Passed as --max-turns.
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
+}
+
+impl Default for Claude {
+    fn default() -> Self {
+        Claude {
+            command: default_claude_command(),
+            model: String::new(),
+            permission_mode: default_permission_mode(),
+            allowed_tools: default_allowed_tools(),
+            disallowed_tools: Vec::new(),
+            dir: default_claude_dir(),
+            max_turns: default_max_turns(),
+        }
+    }
+}
+
+fn default_claude_command() -> Vec<String> {
+    vec!["claude".into()]
+}
+fn default_permission_mode() -> String {
+    "default".into()
+}
+fn default_allowed_tools() -> Vec<String> {
+    ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]
+        .map(String::from)
+        .to_vec()
+}
+pub(crate) fn default_claude_dir() -> String {
+    "work".into()
+}
+fn default_max_turns() -> u32 {
+    40
+}
+
+/// Allow or deny, for what [herdr] lets inkharness do to a terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Policy {
+    Allow,
+    Deny,
+}
+
+/// [herdr]: programs in herdr terminals (Claude Code, Codex, a shell…), here or on other
+/// herdr machines, followed as sessions and driven through `hc connect`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Herdr {
+    /// Spoken to as `<command> connect` (JSON-RPC over stdio): `["hc"]`, or
+    /// `["ssh", "box", "hc"]`.
+    #[serde(default = "default_hc_command")]
+    pub command: Vec<String>,
+    /// Which herdr machines' terminals count; empty: all.
+    #[serde(default)]
+    pub machines: Vec<String>,
+    /// Which programs count as agents (by foreground name, status app or label); empty: any
+    /// that reports a status.
+    #[serde(default)]
+    pub programs: Vec<String>,
+    /// Start a program in a new terminal (herdr_run).
+    #[serde(default = "allow")]
+    pub run: Policy,
+    /// Press the keys a question's choice stands for.
+    #[serde(default = "allow")]
+    pub answer: Policy,
+    /// Type words into it (talking into the session, an answer in words).
+    #[serde(default = "allow")]
+    pub send: Policy,
+    /// Press its stop key (the board's STOP).
+    #[serde(default = "deny")]
+    pub interrupt: Policy,
+    /// End its program (HTTP's /kill).
+    #[serde(default = "deny")]
+    pub kill: Policy,
+    /// Names for programs: `{ claude = ["claude"], codex = ["codex", "--no-daemon"] }`.
+    #[serde(default)]
+    pub templates: std::collections::BTreeMap<String, Vec<String>>,
+    /// What a new session from the board starts with `[agent] backend = "herdr"`: a template
+    /// name or a command.
+    #[serde(default = "default_herdr_program")]
+    pub default_program: String,
+    /// The herdr machine it starts on; empty: this one.
+    #[serde(default)]
+    pub default_machine: String,
+}
+
+impl Default for Herdr {
+    fn default() -> Self {
+        toml::from_str("").expect("every [herdr] key has a default")
+    }
+}
+
+fn default_hc_command() -> Vec<String> {
+    vec!["hc".into()]
+}
+fn allow() -> Policy {
+    Policy::Allow
+}
+fn deny() -> Policy {
+    Policy::Deny
+}
+fn default_herdr_program() -> String {
+    "claude".into()
 }
 
 /// [talk]: what a talk turn (HOLD BOOT outside the Agent) may use.

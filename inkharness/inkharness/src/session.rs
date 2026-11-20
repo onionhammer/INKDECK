@@ -349,32 +349,44 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                         ClientMsg::Close {} => {
                             let _ = follow_tx.send(Follow::Close).await;
                         }
+                        // These can wait on herdr, so they run beside the connection.
                         ClientMsg::Answer {
                             session: id,
                             ask,
                             choice,
-                        } => {
-                            let done = gate(&agent, unlocked).and_then(|a| {
-                                a.answer(&id, &ask, choice).map_err(|r| r.to_string())
-                            });
-                            if let Err(message) = done {
-                                refuse(&tx, "answer", Some(id), &message).await;
+                        } => match gate(&agent, unlocked) {
+                            Ok(a) => {
+                                let (a, tx) = (a.clone(), tx.clone());
+                                tokio::spawn(async move {
+                                    if let Err(r) = a.answer(&id, &ask, choice).await {
+                                        refuse(&tx, "answer", Some(id), &r.to_string()).await;
+                                    }
+                                });
                             }
-                        }
-                        ClientMsg::Stop { session: id } => {
-                            let done = gate(&agent, unlocked)
-                                .and_then(|a| a.stop(&id).map_err(|r| r.to_string()));
-                            if let Err(message) = done {
-                                refuse(&tx, "stop", Some(id), &message).await;
+                            Err(message) => refuse(&tx, "answer", Some(id), &message).await,
+                        },
+                        ClientMsg::Stop { session: id } => match gate(&agent, unlocked) {
+                            Ok(a) => {
+                                let (a, tx) = (a.clone(), tx.clone());
+                                tokio::spawn(async move {
+                                    if let Err(r) = a.stop(&id).await {
+                                        refuse(&tx, "stop", Some(id), &r.to_string()).await;
+                                    }
+                                });
                             }
-                        }
-                        ClientMsg::Delete { session: id } => {
-                            let done = gate(&agent, unlocked)
-                                .and_then(|a| a.delete(&id).map_err(|r| r.to_string()));
-                            if let Err(message) = done {
-                                refuse(&tx, "delete", Some(id), &message).await;
+                            Err(message) => refuse(&tx, "stop", Some(id), &message).await,
+                        },
+                        ClientMsg::Delete { session: id } => match gate(&agent, unlocked) {
+                            Ok(a) => {
+                                let (a, tx) = (a.clone(), tx.clone());
+                                tokio::spawn(async move {
+                                    if let Err(r) = a.delete(&id).await {
+                                        refuse(&tx, "delete", Some(id), &r.to_string()).await;
+                                    }
+                                });
                             }
-                        }
+                            Err(message) => refuse(&tx, "delete", Some(id), &message).await,
+                        },
                     }
                 }
             }
@@ -495,6 +507,8 @@ async fn follow(
     let mut sync = false;
     let mut open: Option<String> = None;
     let (mut list, mut one) = (Paced::default(), Paced::default());
+    // While a session is open, the board is looking at it: a herdr session's screen stays fresh.
+    let mut looking = tokio::time::interval(Duration::from_secs(2));
     loop {
         let due = [list.due, one.due].into_iter().flatten().min();
         let wake = async {
@@ -549,6 +563,11 @@ async fn follow(
                 Err(broadcast::error::RecvError::Closed) => return,
             },
             () = wake => {}
+            _ = looking.tick() => {
+                if let Some(id) = &open {
+                    agent.watch(id);
+                }
+            }
         }
         let now = tokio::time::Instant::now();
         if list_now || (sync && list.is_due(now)) {
@@ -1128,9 +1147,9 @@ async fn agent_turn(
         return Ok(());
     }
     let (id, said) = match target {
-        None => (agent.start(text), None),
+        None => (agent.start(text).await.map_err(|r| anyhow!("{r}"))?, None),
         Some(id) => {
-            let said = agent.say(&id, text).map_err(|r| anyhow!("{r}"))?;
+            let said = agent.say(&id, text).await.map_err(|r| anyhow!("{r}"))?;
             (id, Some(said))
         }
     };
@@ -1482,6 +1501,7 @@ mod tests {
             tools.clone(),
             agent::prompt(),
             "test",
+            Default::default(),
         )
         .unwrap();
         let app = Arc::new(App {
@@ -1842,6 +1862,7 @@ mod tests {
             tools.clone(),
             agent::prompt(),
             "test",
+            Default::default(),
         )
         .unwrap();
         let app = Arc::new(App {

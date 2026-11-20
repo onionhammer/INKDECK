@@ -12,7 +12,15 @@
 //!
 //! Boards reach sessions through their connection (session.rs) and programs over HTTP
 //! (http.rs); both see the same sessions. A PIN can guard them (lock.rs). Talk turns never do.
+//!
+//! That is the `api` backend. Two more run sessions elsewhere: `claude` runs headless Claude
+//! Code per session (claude.rs), which reaches ask_choice and plan through an MCP server that
+//! calls back into the daemon (bridge.rs); `herdr` follows programs in herdr terminals, here or
+//! on other machines, as sessions of their own (herdr.rs, over hc.rs).
 
+pub mod bridge;
+mod claude;
+mod herdr;
 mod lock;
 mod mock;
 pub mod store;
@@ -20,19 +28,21 @@ mod tools;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use tokio::task::AbortHandle;
-use voice_proto::{AgentHello, AskView, SessionList, SessionView, State};
+use voice_proto::{AgentHello, AskView, Backend, SessionList, SessionView, State};
 
 use crate::config;
 use crate::harness::Harness;
 use crate::llm::{self, Llm, Piece, Role, TooManyRounds, Turn};
 use crate::meter;
 use crate::tools::ToolSet;
+pub use claude::Claude;
+pub use herdr::Herdr;
 pub use lock::Unlock;
 #[cfg(test)]
 pub use lock::sha256_hex;
@@ -55,6 +65,22 @@ pub struct Agent {
     lock: lock::Lock,
     sessions: Mutex<HashMap<String, Live>>,
     events: broadcast::Sender<Event>,
+    /// What new sessions run on.
+    backend: Backend,
+    /// The claude backend, when it is on.
+    claude: Option<Claude>,
+    /// Where claude runs reach ask_choice and plan.
+    bridge: OnceLock<Arc<bridge::Bridge>>,
+    /// herdr, when there is a [herdr] table (attach_herdr).
+    herdr: OnceLock<Arc<Herdr>>,
+}
+
+/// What sessions can run on besides the api backend, built at startup (agent::start).
+#[derive(Default)]
+pub struct Backends {
+    /// What new sessions run on.
+    pub default: Backend,
+    pub claude: Option<Claude>,
 }
 
 /// A session and what is working on it.
@@ -66,6 +92,11 @@ struct Live {
     /// Which run is the session's: each new run, and each stop, counts one up. A run that is
     /// no longer the session's (stopped, or replaced while it finished) changes nothing.
     generation: u64,
+    /// Tells a claude run that something changed: words to pass on, or a stop.
+    wake: Arc<Notify>,
+    /// A herdr session's last lines of screen, and until when someone is looking at them.
+    screen: Option<Vec<String>>,
+    watched: Option<std::time::Instant>,
 }
 
 impl Live {
@@ -75,6 +106,9 @@ impl Live {
             run: None,
             waiting: None,
             generation: 0,
+            wake: Arc::new(Notify::new()),
+            screen: None,
+            watched: None,
         }
     }
 
@@ -98,12 +132,22 @@ pub struct Event {
 }
 
 /// Why a request about a session can't be done; the message a board or HTTP gets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Refusal {
     NoSuchSession,
     AlreadyAnswered,
     NoSuchChoice,
     NotRunning,
+    /// A herdr program that has moved on since its question was put.
+    NotWaiting,
+    /// A herdr program at work: words wait until it is ready.
+    Busy,
+    /// A [herdr] policy says no.
+    NotAllowed,
+    /// herdr doesn't answer.
+    Unreachable,
+    /// Anything else, said as it is.
+    Other(String),
 }
 
 impl std::fmt::Display for Refusal {
@@ -113,6 +157,11 @@ impl std::fmt::Display for Refusal {
             Refusal::AlreadyAnswered => "already answered",
             Refusal::NoSuchChoice => "no such choice",
             Refusal::NotRunning => "not running",
+            Refusal::NotWaiting => "not waiting any more",
+            Refusal::Busy => "it's busy",
+            Refusal::NotAllowed => "not allowed by [herdr]",
+            Refusal::Unreachable => "herdr is not reachable",
+            Refusal::Other(message) => message,
         })
     }
 }
@@ -129,6 +178,8 @@ pub enum Said {
         title: String,
         result: Option<String>,
     },
+    /// They were typed into a program in a herdr terminal.
+    Typed { program: String, place: String },
 }
 
 /// The session model for `cfg`: the mock plays a whole session (mock.rs).
@@ -140,8 +191,9 @@ pub fn model(cfg: &config::Llm, http: reqwest::Client) -> Result<Box<dyn Llm>> {
 }
 
 /// The agent sessions `cfg` asks for, if it has an [agent] table: on [agent.llm] (else
-/// [chat.llm], else [llm]), with the daemon's tools and their own (none of a device's).
-pub fn start(cfg: &config::Config, harness: &Harness) -> Result<Option<Arc<Agent>>> {
+/// [chat.llm], else [llm]), with the daemon's tools and their own (none of a device's), and
+/// on Claude Code and herdr as configured.
+pub async fn start(cfg: &config::Config, harness: &Harness) -> Result<Option<Arc<Agent>>> {
     let Some(agent_cfg) = &cfg.agent else {
         return Ok(None);
     };
@@ -163,7 +215,54 @@ pub fn start(cfg: &config::Config, harness: &Harness) -> Result<Option<Arc<Agent
     let llm = model(chosen, harness.http.clone()).context(table)?;
     let system = harness.prompt_from(prompt());
     let name = format!("{} {table}", chosen.name());
-    Agent::open(agent_cfg, llm, harness.tools.clone(), system, &name).map(Some)
+
+    // Claude Code, if it is configured or new sessions run on it, and it answers.
+    let mut backends = Backends {
+        default: match agent_cfg.backend {
+            config::BackendName::Api => Backend::Api,
+            config::BackendName::Claude => Backend::Claude,
+            config::BackendName::Herdr => Backend::Herdr,
+        },
+        claude: None,
+    };
+    if agent_cfg.claude.is_some() || backends.default == Backend::Claude {
+        let claude = Claude::new(&agent_cfg.claude.clone().unwrap_or_default());
+        match claude.check().await {
+            Ok(version) => {
+                tracing::info!(version, "claude backend: {}", claude.credential());
+                backends.claude = Some(claude);
+            }
+            Err(e) => tracing::warn!("the claude backend is off: {e:#}"),
+        }
+    }
+    if backends.default == Backend::Claude && backends.claude.is_none() {
+        tracing::warn!("new sessions run on the api backend instead");
+        backends.default = Backend::Api;
+    }
+    if backends.default == Backend::Herdr && cfg.herdr.is_none() {
+        anyhow::bail!("[agent] backend = \"herdr\" needs a [herdr] table");
+    }
+    let agent = Agent::open(
+        agent_cfg,
+        llm,
+        harness.tools.clone(),
+        system,
+        &name,
+        backends,
+    )?;
+    if let Some(herdr_cfg) = &cfg.herdr {
+        let connector = crate::hc::command_connector(herdr_cfg.command.clone());
+        let use_model = !matches!(chosen, config::Llm::Mock);
+        let herdr = Herdr::new(
+            herdr_cfg.clone(),
+            connector,
+            &agent.dir,
+            use_model,
+            Duration::from_secs(1),
+        );
+        agent.attach_herdr(herdr);
+    }
+    Ok(Some(agent))
 }
 
 /// The base of a session's system prompt (the instructions files and skills follow it).
@@ -214,6 +313,10 @@ pub fn voice_request(text: &str, said: Option<&Said>) -> String {
              briefly what the agent will do next.",
             result.as_deref().unwrap_or("(none)")
         ),
+        Some(Said::Typed { program, place }) => format!(
+            "The user's words \"{text}\" were typed into {program} on {place}. Say so in a few \
+             words."
+        ),
     }
 }
 
@@ -233,6 +336,7 @@ impl Agent {
         tools: ToolSet,
         system: String,
         model: &str,
+        backends: Backends,
     ) -> Result<Arc<Agent>> {
         let dir = PathBuf::from(&cfg.dir);
         std::fs::create_dir_all(&dir).with_context(|| format!("making {}", dir.display()))?;
@@ -266,13 +370,22 @@ impl Agent {
             lock,
             sessions: Mutex::new(sessions),
             events: broadcast::channel(256).0,
+            backend: backends.default,
+            claude: backends.claude,
+            bridge: OnceLock::new(),
+            herdr: OnceLock::new(),
         });
+        if agent.claude.is_some() {
+            let bridge = bridge::Bridge::start(Arc::downgrade(&agent))?;
+            let _ = agent.bridge.set(bridge);
+        }
 
         let mut resumed = 0;
         {
             let mut sessions = agent.sessions.lock().unwrap();
             for live in sessions.values_mut() {
-                if live.session.state == State::Working {
+                // herdr sessions aren't run by the daemon: herdr.rs catches up with them.
+                if live.session.state == State::Working && live.session.backend != Backend::Herdr {
                     let note = resume_note(&live.session, None);
                     live.session.inbox.push(note);
                     agent.save(&live.session);
@@ -284,6 +397,7 @@ impl Agent {
                 dir = %agent.dir.display(),
                 place = %agent.place,
                 model,
+                backend = ?agent.backend,
                 sessions = sessions.len(),
                 resumed,
                 pin = agent.lock.has_pin(),
@@ -336,9 +450,30 @@ impl Agent {
         store::list(sessions.values().map(|l| &l.session), &self.place, locked)
     }
 
+    /// One session in full. Looking at a herdr session keeps its screen fresh for a while.
     pub fn view(&self, id: &str) -> Option<SessionView> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let live = sessions.get_mut(id)?;
+        if live.session.backend == Backend::Herdr {
+            live.watched = Some(std::time::Instant::now() + herdr::WATCH);
+        }
+        Some(live.session.view(&self.place, live.screen.clone()))
+    }
+
+    /// Someone is still looking at it (a board with it open): keeps a herdr session's screen
+    /// fresh.
+    pub fn watch(&self, id: &str) {
+        if let Some(live) = self.sessions.lock().unwrap().get_mut(id)
+            && live.session.backend == Backend::Herdr
+        {
+            live.watched = Some(std::time::Instant::now() + herdr::WATCH);
+        }
+    }
+
+    /// What runs a session (None: no such session).
+    fn backend_of(&self, id: &str) -> Option<Backend> {
         let sessions = self.sessions.lock().unwrap();
-        sessions.get(id).map(|l| l.session.view(&self.place))
+        sessions.get(id).map(|l| l.session.backend)
     }
 
     /// The session's pending question.
@@ -365,12 +500,28 @@ impl Agent {
         true
     }
 
-    /// Starts a session for `text`; its id.
-    pub fn start(self: &Arc<Self>, text: &str) -> String {
+    /// Starts a session for `text` on the backend new sessions run on; its id. With herdr,
+    /// that is a program in a new terminal, given `text` as its task.
+    pub async fn start(self: &Arc<Self>, text: &str) -> Result<String, Refusal> {
+        match self.backend {
+            Backend::Herdr => {
+                let herdr = self.herdr.get().ok_or_else(no_herdr)?;
+                herdr.start_default(self, text).await
+            }
+            backend => Ok(self.start_here(text, backend)),
+        }
+    }
+
+    /// A session that runs here (api or claude).
+    fn start_here(self: &Arc<Self>, text: &str, backend: Backend) -> String {
         let mut sessions = self.sessions.lock().unwrap();
         let id = store::new_id(|id| sessions.contains_key(id));
-        let session = Session::new(id.clone(), text, store::now());
-        tracing::info!(session = %id, title = %session.title, "a new session");
+        let mut session = Session::new(id.clone(), text, store::now());
+        session.backend = backend;
+        if backend == Backend::Claude {
+            session.program = Some(claude::PROGRAM.into());
+        }
+        tracing::info!(session = %id, title = %session.title, ?backend, "a new session");
         self.save(&session);
         let mut live = Live::new(session);
         self.spawn_run(&mut live);
@@ -380,8 +531,18 @@ impl Agent {
     }
 
     /// Talks into a session: answers its question in words, joins its work, or starts it again
-    /// if it had finished.
-    pub fn say(self: &Arc<Self>, id: &str, text: &str) -> Result<Said, Refusal> {
+    /// if it had finished. Into a herdr session, the words are typed.
+    pub async fn say(self: &Arc<Self>, id: &str, text: &str) -> Result<Said, Refusal> {
+        match self.backend_of(id).ok_or(Refusal::NoSuchSession)? {
+            Backend::Herdr => {
+                let herdr = self.herdr.get().ok_or_else(no_herdr)?;
+                herdr.say(self, id, text).await
+            }
+            _ => self.say_here(id, text),
+        }
+    }
+
+    fn say_here(self: &Arc<Self>, id: &str, text: &str) -> Result<Said, Refusal> {
         let text = text.trim();
         let mut sessions = self.sessions.lock().unwrap();
         let live = sessions.get_mut(id).ok_or(Refusal::NoSuchSession)?;
@@ -401,7 +562,9 @@ impl Agent {
                 live.session.inbox.push(text.to_string());
                 live.session.add_log(&format!("you: {text}"), now);
                 live.session.updated = now;
-                if !live.running() {
+                if live.running() {
+                    live.wake.notify_one();
+                } else {
                     self.spawn_run(live);
                 }
                 Said::Added {
@@ -431,8 +594,18 @@ impl Agent {
         Ok(said)
     }
 
-    /// Answers a session's question `ask` with its option `choice`.
-    pub fn answer(self: &Arc<Self>, id: &str, ask: &str, choice: usize) -> Result<(), Refusal> {
+    /// Answers a session's question `ask` with its option `choice`. For a herdr session, that
+    /// presses the keys the option stands for.
+    pub async fn answer(
+        self: &Arc<Self>,
+        id: &str,
+        ask: &str,
+        choice: usize,
+    ) -> Result<(), Refusal> {
+        if self.backend_of(id).ok_or(Refusal::NoSuchSession)? == Backend::Herdr {
+            let herdr = self.herdr.get().ok_or_else(no_herdr)?;
+            return herdr.answer(self, id, ask, choice).await;
+        }
         let mut sessions = self.sessions.lock().unwrap();
         let live = sessions.get_mut(id).ok_or(Refusal::NoSuchSession)?;
         let question = live
@@ -472,20 +645,30 @@ impl Agent {
         if let Some(answer) = unsent {
             let note = resume_note(&live.session, Some((&question, &answer)));
             live.session.inbox.push(note);
-            if !live.running() {
+            if live.running() {
+                live.wake.notify_one();
+            } else {
                 self.spawn_run(live);
             }
         }
     }
 
-    /// Stops a working or asking session.
-    pub fn stop(&self, id: &str) -> Result<(), Refusal> {
+    /// Stops a working or asking session: a claude run's process is ended (SIGTERM, then
+    /// SIGKILL), and a herdr program gets its stop key (the `interrupt` policy).
+    pub async fn stop(self: &Arc<Self>, id: &str) -> Result<(), Refusal> {
+        if self.backend_of(id).ok_or(Refusal::NoSuchSession)? == Backend::Herdr {
+            let herdr = self.herdr.get().ok_or_else(no_herdr)?;
+            return herdr.interrupt(self, id).await;
+        }
         let mut sessions = self.sessions.lock().unwrap();
         let live = sessions.get_mut(id).ok_or(Refusal::NoSuchSession)?;
         if !matches!(live.session.state, State::Working | State::Ask) {
             return Err(Refusal::NotRunning);
         }
-        if let Some(run) = live.run.take() {
+        if live.session.backend == Backend::Claude {
+            // The run ends its process itself, gently first.
+            live.wake.notify_one();
+        } else if let Some(run) = live.run.take() {
             run.abort();
         }
         live.generation += 1;
@@ -504,20 +687,44 @@ impl Agent {
         Ok(())
     }
 
-    /// Deletes a session for good, stopping it first.
-    pub fn delete(&self, id: &str) -> Result<(), Refusal> {
+    /// Ends a herdr session's program (the `kill` policy). Only herdr sessions have one to end.
+    pub async fn kill(self: &Arc<Self>, id: &str) -> Result<(), Refusal> {
+        if self.backend_of(id).ok_or(Refusal::NoSuchSession)? != Backend::Herdr {
+            return Err(Refusal::Other(
+                "only a herdr session's program can be ended".into(),
+            ));
+        }
+        let herdr = self.herdr.get().ok_or_else(no_herdr)?;
+        herdr.kill(self, id).await
+    }
+
+    /// Deletes a session for good, stopping it first. A herdr session is only forgotten: its
+    /// program goes on, and it comes back when it does something new.
+    pub async fn delete(&self, id: &str) -> Result<(), Refusal> {
         let live = self
             .sessions
             .lock()
             .unwrap()
             .remove(id)
             .ok_or(Refusal::NoSuchSession)?;
-        if let Some(run) = live.run {
-            run.abort();
+        match live.session.backend {
+            Backend::Herdr => {
+                if let (Some(herdr), Some(side)) = (self.herdr.get(), &live.session.herdr) {
+                    herdr.forget(&side.address, side.turn);
+                }
+            }
+            // The run sees the session gone and ends its process.
+            Backend::Claude => live.wake.notify_one(),
+            _ => {
+                if let Some(run) = live.run {
+                    run.abort();
+                }
+            }
         }
         if let Err(e) = store::remove(&self.dir, id) {
             tracing::warn!(session = %id, "couldn't delete its file: {e}");
         }
+        let _ = std::fs::remove_file(self.dir.join(format!("{id}.mcp.json")));
         tracing::info!(session = %id, "deleted");
         self.notify(id, false);
         Ok(())
@@ -542,8 +749,13 @@ impl Agent {
 
     fn spawn_run(self: &Arc<Self>, live: &mut Live) {
         live.generation += 1;
-        let (agent, id) = (self.clone(), live.session.id.clone());
-        live.run = Some(tokio::spawn(agent.run(id, live.generation)).abort_handle());
+        let (agent, id, run) = (self.clone(), live.session.id.clone(), live.generation);
+        let task = match live.session.backend {
+            Backend::Claude => tokio::spawn(agent.run_claude(id, run, live.wake.clone())),
+            Backend::Herdr => return, // herdr runs it
+            _ => tokio::spawn(agent.run(id, run)),
+        };
+        live.run = Some(task.abort_handle());
     }
 
     /// The session's run: legs until it has nothing more to hear. `run` is its generation.
@@ -853,6 +1065,10 @@ impl Agent {
     }
 }
 
+fn no_herdr() -> Refusal {
+    Refusal::Other("no [herdr] on this daemon".into())
+}
+
 /// What a new run is told when the daemon restarted under the session: that the tool results
 /// are gone, its plan and what it did, and the answer to its question if that is what it was
 /// waiting for.
@@ -957,6 +1173,8 @@ pub(crate) mod tests {
             keep_days: 30,
             max_rounds: 40,
             llm: None,
+            backend: Default::default(),
+            claude: None,
         }
     }
 
@@ -978,6 +1196,7 @@ pub(crate) mod tests {
             tools(),
             prompt(),
             "test",
+            Default::default(),
         )
         .unwrap()
     }
@@ -1002,7 +1221,10 @@ pub(crate) mod tests {
         let dir = crate::skills::tests::scratch("agent-ask");
         let agent = mock(&dir);
         let mut events = agent.subscribe();
-        let id = agent.start("find a plumber and ask me which");
+        let id = agent
+            .start("find a plumber and ask me which")
+            .await
+            .unwrap();
         let view = until(&agent, &id, State::Ask).await;
         assert_eq!(view.title, "Mock · find a plumber and ask me which");
         assert_eq!((view.step, view.steps), (Some(2), Some(3)));
@@ -1022,11 +1244,20 @@ pub(crate) mod tests {
         }
         assert!(asked);
 
-        assert_eq!(agent.answer(&id, "a1", 2), Err(Refusal::NoSuchChoice));
-        assert_eq!(agent.answer(&id, "a2", 0), Err(Refusal::AlreadyAnswered));
-        assert_eq!(agent.answer("nope", "a1", 0), Err(Refusal::NoSuchSession));
-        agent.answer(&id, "a1", 1).unwrap();
-        assert_eq!(agent.answer(&id, "a1", 1), Err(Refusal::AlreadyAnswered));
+        assert_eq!(agent.answer(&id, "a1", 2).await, Err(Refusal::NoSuchChoice));
+        assert_eq!(
+            agent.answer(&id, "a2", 0).await,
+            Err(Refusal::AlreadyAnswered)
+        );
+        assert_eq!(
+            agent.answer("nope", "a1", 0).await,
+            Err(Refusal::NoSuchSession)
+        );
+        agent.answer(&id, "a1", 1).await.unwrap();
+        assert_eq!(
+            agent.answer(&id, "a1", 1).await,
+            Err(Refusal::AlreadyAnswered)
+        );
         let view = until(&agent, &id, State::Done).await;
         let result = view.result.as_deref().unwrap();
         assert!(
@@ -1058,9 +1289,9 @@ pub(crate) mod tests {
     async fn a_question_answered_in_words() {
         let dir = crate::skills::tests::scratch("agent-words");
         let agent = mock(&dir);
-        let id = agent.start("ask me which plumber");
+        let id = agent.start("ask me which plumber").await.unwrap();
         until(&agent, &id, State::Ask).await;
-        let said = agent.say(&id, "none, find one for Saturday").unwrap();
+        let said = agent.say(&id, "none, find one for Saturday").await.unwrap();
         assert_eq!(
             said,
             Said::Answered {
@@ -1081,7 +1312,7 @@ pub(crate) mod tests {
     async fn a_restart_keeps_the_question_and_the_work() {
         let dir = crate::skills::tests::scratch("agent-restart");
         let agent = mock(&dir);
-        let asking = agent.start("ask me which plumber");
+        let asking = agent.start("ask me which plumber").await.unwrap();
         until(&agent, &asking, State::Ask).await;
         agent.halt();
         drop(agent);
@@ -1112,7 +1343,7 @@ pub(crate) mod tests {
         // The question waited through it; its answer starts a run that is told what it was.
         let view = agent.view(&asking).unwrap();
         assert_eq!(view.state, State::Ask);
-        agent.answer(&asking, "a1", 0).unwrap();
+        agent.answer(&asking, "a1", 0).await.unwrap();
         let view = until(&agent, &asking, State::Done).await;
         let result = view.result.unwrap();
         assert!(
@@ -1147,11 +1378,12 @@ pub(crate) mod tests {
             tools(),
             prompt(),
             "test",
+            Default::default(),
         )
         .unwrap();
-        let id = agent.start("find a plumber");
+        let id = agent.start("find a plumber").await.unwrap();
         tokio::task::yield_now().await;
-        let said = agent.say(&id, "make it Saturday").unwrap();
+        let said = agent.say(&id, "make it Saturday").await.unwrap();
         assert_eq!(
             said,
             Said::Added {
@@ -1164,7 +1396,7 @@ pub(crate) mod tests {
         let view = until(&agent, &id, State::Done).await;
         assert_eq!(view.result.as_deref(), Some("heard: make it Saturday"));
         // Finished: talking starts it again, and the spoken reply gets the result.
-        let said = agent.say(&id, "and the price?").unwrap();
+        let said = agent.say(&id, "and the price?").await.unwrap();
         assert_eq!(
             said,
             Said::Resumed {
@@ -1175,12 +1407,11 @@ pub(crate) mod tests {
         assert_eq!(agent.view(&id).unwrap().result, None, "none while it works");
         let view = until(&agent, &id, State::Done).await;
         assert_eq!(view.result.as_deref(), Some("heard: and the price?"));
-        let sessions = agent.sessions.lock().unwrap();
-        let said: Vec<&str> = sessions[&id]
+        let said: Vec<String> = agent.sessions.lock().unwrap()[&id]
             .session
             .conversation
             .iter()
-            .map(|s| s.text.as_str())
+            .map(|s| s.text.clone())
             .collect();
         assert_eq!(
             said,
@@ -1193,8 +1424,7 @@ pub(crate) mod tests {
                 "heard: and the price?"
             ]
         );
-        drop(sessions);
-        assert_eq!(agent.say("nope", "x"), Err(Refusal::NoSuchSession));
+        assert_eq!(agent.say("nope", "x").await, Err(Refusal::NoSuchSession));
     }
 
     #[tokio::test]
@@ -1207,21 +1437,22 @@ pub(crate) mod tests {
             tools(),
             prompt(),
             "test",
+            Default::default(),
         )
         .unwrap();
-        let id = agent.start("find a plumber");
+        let id = agent.start("find a plumber").await.unwrap();
         tokio::task::yield_now().await;
-        agent.stop(&id).unwrap();
-        assert_eq!(agent.stop(&id), Err(Refusal::NotRunning));
+        agent.stop(&id).await.unwrap();
+        assert_eq!(agent.stop(&id).await, Err(Refusal::NotRunning));
         gate.add_permits(1);
         tokio::time::sleep(Duration::from_millis(50)).await;
         let view = agent.view(&id).unwrap();
         assert_eq!((view.state, &view.result), (State::Stopped, &None));
         assert_eq!(log(&view), ["stopped"]);
         assert!(dir.join(format!("{id}.json")).exists());
-        agent.delete(&id).unwrap();
+        agent.delete(&id).await.unwrap();
         assert!(!dir.join(format!("{id}.json")).exists());
-        assert_eq!(agent.delete(&id), Err(Refusal::NoSuchSession));
+        assert_eq!(agent.delete(&id).await, Err(Refusal::NoSuchSession));
         assert!(agent.view(&id).is_none() && agent.list(false).sessions.is_empty());
     }
 
@@ -1261,12 +1492,20 @@ pub(crate) mod tests {
             gate: gate.clone(),
             panics: false.into(),
         };
-        let agent = Agent::open(&cfg(&dir), Box::new(llm), tools(), prompt(), "test").unwrap();
-        let id = agent.start("pick one");
+        let agent = Agent::open(
+            &cfg(&dir),
+            Box::new(llm),
+            tools(),
+            prompt(),
+            "test",
+            Default::default(),
+        )
+        .unwrap();
+        let id = agent.start("pick one").await.unwrap();
         tokio::task::yield_now().await;
         // Stopped while the run, about to ask, can't be cancelled at once.
         let run = agent.sessions.lock().unwrap()[&id].generation;
-        agent.stop(&id).unwrap();
+        agent.stop(&id).await.unwrap();
         let question = Question {
             id: String::new(),
             question: "Which?".into(),
@@ -1291,11 +1530,19 @@ pub(crate) mod tests {
             gate: Arc::new(Semaphore::new(0)),
             panics: true.into(),
         };
-        let agent = Agent::open(&cfg(&dir), Box::new(llm), tools(), prompt(), "test").unwrap();
-        let id = agent.start("pick one");
+        let agent = Agent::open(
+            &cfg(&dir),
+            Box::new(llm),
+            tools(),
+            prompt(),
+            "test",
+            Default::default(),
+        )
+        .unwrap();
+        let id = agent.start("pick one").await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(agent.view(&id).unwrap().state, State::Working);
-        agent.say(&id, "are you there?").unwrap();
+        agent.say(&id, "are you there?").await.unwrap();
         let view = until(&agent, &id, State::Done).await;
         assert_eq!(view.result.as_deref(), Some("heard it"));
     }
@@ -1332,8 +1579,8 @@ pub(crate) mod tests {
             skill_dirs: vec![],
         };
         let harness = Harness::build(&place, false).await.unwrap();
-        let agent = start(&place.config, &harness).unwrap().unwrap();
-        let id = agent.start("book a plumber");
+        let agent = start(&place.config, &harness).await.unwrap().unwrap();
+        let id = agent.start("book a plumber").await.unwrap();
         let view = until(&agent, &id, State::Done).await;
         assert_eq!(view.result.as_deref(), Some("Booked Riverside."));
         let body = bodies.recv().await.unwrap();
@@ -1362,21 +1609,29 @@ pub(crate) mod tests {
             dir.display()
         );
         let cfg = config::Config::from_table(toml::from_str(&toml).unwrap()).unwrap();
-        let err = start(&cfg, &harness).err().unwrap().to_string();
+        let err = start(&cfg, &harness).await.err().unwrap().to_string();
         assert!(err.contains("[agent.llm] has output = \"audio\""), "{err}");
     }
 
     #[tokio::test]
     async fn too_many_steps_fail() {
         let dir = crate::skills::tests::scratch("agent-endless");
-        let agent = Agent::open(&cfg(&dir), Box::new(Endless), tools(), prompt(), "test").unwrap();
-        let id = agent.start("count forever");
+        let agent = Agent::open(
+            &cfg(&dir),
+            Box::new(Endless),
+            tools(),
+            prompt(),
+            "test",
+            Default::default(),
+        )
+        .unwrap();
+        let id = agent.start("count forever").await.unwrap();
         let view = until(&agent, &id, State::Fail).await;
         assert_eq!(
             view.result.as_deref(),
             Some("too many steps: it stopped after 40 model rounds")
         );
-        let id = agent.start("a note about fail");
+        let id = agent.start("a note about fail").await.unwrap();
         let view = until(&agent, &id, State::Fail).await;
         assert!(view.result.unwrap().starts_with("too many steps"));
     }
@@ -1385,8 +1640,8 @@ pub(crate) mod tests {
     async fn notes_and_failures_from_the_mock() {
         let dir = crate::skills::tests::scratch("agent-states");
         let agent = mock(&dir);
-        let note = agent.start("a note on today");
-        let fail = agent.start("this one should fail");
+        let note = agent.start("a note on today").await.unwrap();
+        let fail = agent.start("this one should fail").await.unwrap();
         let view = until(&agent, &note, State::Note).await;
         assert!(view.result.unwrap().starts_with("# Note: a note on today"));
         let view = until(&agent, &fail, State::Fail).await;

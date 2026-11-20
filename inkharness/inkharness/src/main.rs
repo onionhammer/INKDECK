@@ -13,6 +13,7 @@ mod chat;
 mod config;
 mod device;
 mod harness;
+mod hc;
 mod http;
 mod js;
 mod llm;
@@ -74,6 +75,10 @@ enum Command {
         #[arg(long, value_name = "ADDR")]
         http: Option<String>,
     },
+    /// The MCP server a claude session's run starts (inkharness's own tools, through the
+    /// daemon). Not for people.
+    #[command(hide = true)]
+    McpBridge,
     /// Write a starter inkharness.toml to the global config folder.
     Init {
         /// Write it in this folder instead.
@@ -95,6 +100,10 @@ async fn main() {
 
 async fn run() -> Result<()> {
     let cli = Cli::parse();
+    if let Some(Command::McpBridge) = cli.command {
+        // Its stdout is the MCP connection: nothing else may go there.
+        return agent::bridge::mcp_stdio().await;
+    }
     let serving = matches!(cli.command, Some(Command::Serve { .. }));
     let level = match (cli.verbose, serving) {
         (0, false) => "warn",
