@@ -522,7 +522,8 @@ class StoriesScreen : public ui::Screen {
     const uint32_t g = news::generation();
     if (g != seenGen_) {
       seenGen_ = g;
-      rebuild(selected());
+      // At the top, new stories arriving land under the cursor; elsewhere it keeps its story.
+      rebuild(cursor_ == 0 ? 0 : selected());
       pending_ = true;
     }
     if (news::activity().text != shownActivity_) pending_ = true;
