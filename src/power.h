@@ -8,6 +8,10 @@
 //            INKDECK_STANDBY_WEATHER_HOURS (forecast.h) has it fetch the forecast.
 //   Book     a book's cover (apps/closed_book.h); wakes only for an alarm, and the next start
 //            opens the book again, whatever started the board.
+//   Agent    the Agent face (apps/agent_face.h); wakes to check in with inkharness, and for
+//            alarms. HOLD PWR opens the Agent.
+// Sleep, Standby and Book also wake when inkharness asks for a check-in (a schedule that wakes
+// the board).
 #pragma once
 #include <stdint.h>
 #include <time.h>
@@ -15,7 +19,7 @@
 namespace power {
 
 enum class Wake : uint8_t { Reset, PowerKey, Alarm, Usb, Other };
-enum class Mode : uint8_t { On, Sleep, Standby, Book };
+enum class Mode : uint8_t { On, Sleep, Standby, Book, Agent };
 
 // Early in setup(), after Wire.begin(), pmic::configure() and rtc::begin(): works out why the
 // board started and releases the RTC's interrupt (while it holds PWRON low, 4 s of that would

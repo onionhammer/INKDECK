@@ -22,6 +22,7 @@
 #include "apps/reader.h"
 #include "apps/sleep.h"
 #include "apps/agent.h"
+#include "apps/agent_face.h"
 #include "apps/board_tools.h"
 #include "audio.h"
 #include "board_pins.h"
@@ -66,8 +67,13 @@ void setup() {
   if (!screen::begin()) Serial.println("screen init failed");
   // A standby wake with no alarm due redraws the clock face and powers straight off again.
   apps::standbyWake();
+  // So does an agent check-in from the Agent face, Sleep or a closed book (apps/agent_face.h).
+  apps::agentWake();
   // Powered off behind a book's cover (apps/closed_book.h): this start opens the book again.
   const bool reopenBook = power::lastMode() == power::Mode::Book;
+  // Behind the Agent face, HOLD PWR (not an alarm) opens the Agent.
+  const bool reopenAgent =
+      power::lastMode() == power::Mode::Agent && power::wake() != power::Wake::Alarm;
   power::markOn();
   pmic::status();  // first read logs what the PMIC reports
   net::begin();  // TLS buffers in PSRAM
@@ -83,6 +89,11 @@ void setup() {
   if (reopenBook) {
     if (auto book = apps::resumeLastBook()) ui::nav::push(std::move(book));
   }
+#if INKDECK_AGENT
+  if (reopenAgent) apps::openGuarded(apps::Guarded::Agent, apps::makeAgent);  // the wheels first
+#else
+  (void)reopenAgent;
+#endif
   // Woken for an alarm: show the Clock, and pollAlarms() rings over it.
   if (power::wake() == power::Wake::Alarm) ui::nav::push(apps::makeClock());
   apps::lockNow();  // with a PIN and power_on (pin_places.h), every start asks (alarms ring over it)

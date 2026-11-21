@@ -43,6 +43,7 @@ const char *modeName(Mode m) {
     case Mode::Sleep: return "sleep";
     case Mode::Standby: return "standby";
     case Mode::Book: return "book";
+    case Mode::Agent: return "agent";
     case Mode::On: break;
   }
   return "-";
@@ -87,7 +88,7 @@ void begin() {
     cyclesLeft = prefs.getInt("cycles", 0);
     prefs.end();
   }
-  if (mode > Mode::Book) mode = Mode::On;
+  if (mode > Mode::Agent) mode = Mode::On;
   log_i("power: woke by %s (reset %d, PMIC 0x20 = %02X), last off: %s, armed %ld", wakeName(wakeReason),
         static_cast<int>(reset), bits, modeName(mode), static_cast<long>(armed));
 }

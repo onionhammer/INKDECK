@@ -132,6 +132,10 @@ void drawSparkline(Canvas &c, const Rect &r, const float *values, int count, flo
 Rect drawButton(Canvas &c, int right, int top, const std::string &glyph,
                 const std::string &label);
 
+// --- An off face's foot band (the closed book's cover, the Agent face): a paper rule, then ink
+// with "HOLD [PWR] TO RESUME" on the left and `right` on the right, in paper.
+void drawResumeBand(Canvas &c, const Rect &band, const std::string &right);
+
 // --- Stat cell: small key over a bold value, dashed rule under (Home preview, Music footer).
 void drawStat(Canvas &c, const Rect &r, const std::string &key, const std::string &value);
 

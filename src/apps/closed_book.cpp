@@ -1,3 +1,4 @@
+#include "apps/agent_face.h"
 #include "apps/closed_book.h"
 
 #include <Arduino.h>
@@ -25,9 +26,6 @@ using ui::Rect;
 using ui::TextStyle;
 
 constexpr int kBandH = 44;  // the Sleep screen's bottom strip, including its 3 px rule
-constexpr TextStyle kBand{&ui::fonts::kMono14Bold, 1};       // Sleep's "HOLD [PWR] TO BOOT"
-constexpr TextStyle kBandCap{&ui::fonts::kMono14ExtraBold, 0};
-constexpr int kCapH = 24;
 // A book without a cover picture: its title, set like one.
 constexpr int kPlainInset = 24;
 constexpr int kPlainPad = 28;
@@ -67,7 +65,8 @@ class ClosedBookScreen : public ui::Screen {
     // The first tick can come straight after the refresh; wait for the next, so a key has a
     // second to cancel.
     if (!drawn_ || ++ticks_ < 2) return false;
-    power::off(power::Mode::Book, wakeAt_);
+    // Also when inkharness asks for a check-in (a schedule that wakes the board).
+    power::off(power::Mode::Book, earliestWake(wakeAt_, agentCheckWake()));
     ui::nav::pop();  // still here: the power-off failed
     return true;
   }
@@ -88,22 +87,7 @@ class ClosedBookScreen : public ui::Screen {
  private:
   // "HOLD [PWR] TO RESUME" on ink, and the place in the book on the right.
   void drawBand(ui::Canvas &c, const Rect &band) const {
-    using namespace ui;
-    // A paper rule first, so a dark cover doesn't run into the band.
-    const Rect ink{band.x, band.y + kRule, band.w, band.h - kRule};
-    fill(c, ink, kInk);
-    const Rect line{ink.x + kPadX, ink.y + (ink.h - kCapH) / 2, ink.w - 2 * kPadX, kCapH};
-    const int base = baselineCentered(kBand, line.y, line.h);
-    int x = drawText(c, line.x, base, "HOLD", kBand, kPaper) + 8;
-    const int capW = textWidth(kBandCap, "PWR") + 14 + 4;
-    frame(c, {x, line.y, capW, line.h}, 2, kPaper);
-    drawText(c, x + 9, baselineCentered(kBandCap, line.y, line.h), "PWR", kBandCap, kPaper);
-    x += capW + 8;
-    x = drawText(c, x, base, "TO RESUME", kBand, kPaper);
-    if (percent_ >= 0) {
-      drawText(c, {x + 10, line.y, line.right() - x - 10, line.h}, std::to_string(percent_) + "%",
-               kBand, Align::Right, kPaper);
-    }
+    ui::drawResumeBand(c, band, percent_ >= 0 ? std::to_string(percent_) + "%" : std::string());
   }
 
   // No cover picture: a frame with a dithered shadow, "§ BOOK", and the title in the largest

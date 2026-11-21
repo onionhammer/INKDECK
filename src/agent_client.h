@@ -318,8 +318,10 @@ void checkSoon();
 // A poll is due or under way: the Reader shouldn't nap through it (apps/idle.cpp).
 bool polling();
 // From setup(), on an RTC wake (apps::agentWake()): joins, syncs, saves the summary and lets
-// go, within deadlineMs. Starts the agent task if it isn't. True if a list came.
-bool checkInNow(uint32_t deadlineMs);
+// go, within deadlineMs; when the newest result is a schedule's to show as a note, it gets that
+// session too (sessions().open). Starts the agent task if it isn't. abort, asked every 100 ms,
+// stops the wait (the check-in finishes in the background). True if a list came.
+bool checkInNow(uint32_t deadlineMs, bool (*abort)() = nullptr);
 
 // An Agent screen exists (from its constructor to its destructor; they nest). While any does,
 // the connection stays up, opening if need be, and the list is synced.

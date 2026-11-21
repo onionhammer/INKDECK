@@ -7,6 +7,7 @@
 
 #include <atomic>
 
+#include "apps/agent_face.h"
 #include "apps/clock.h"
 #include "apps/closed_book.h"
 #include "apps/lock.h"
@@ -111,6 +112,7 @@ void restartIfUsbStuck() {
 }  // namespace
 
 void pollPower() {
+  pollAgentFace();  // the dev tool's
   const int request = standbyRequest.exchange(-1);
   if (request >= 0) {
     stopNapping();
@@ -137,9 +139,12 @@ void pollPower() {
   stopNapping();
   const pmic::Status p = pmic::status();
   const bool low = p.percent >= 0 && p.percent < power::kLowBatteryPercent;
+  const bool agentFace = !low && agentFaceWanted();
   log_i("idle on battery (%d %%): %s", p.percent,
-        !low ? "standby" : book ? "closing the book" : "sleep");
-  if (!low) {
+        agentFace ? "the Agent face" : !low ? "standby" : book ? "closing the book" : "sleep");
+  if (agentFace) {
+    showAgentFace(false);
+  } else if (!low) {
     enterStandby(0);
   } else if (book) {
     closeBook();
@@ -149,14 +154,22 @@ void pollPower() {
 }
 
 void powerKey() {
-  if (wakeDesk() || reopenBook()) return;
+  if (wakeDesk() || reopenBook() || wakeAgentFace()) return;
+  // Whether the Agent's face is wanted, worked out before the PIN is forgotten.
+  const bool agentFace = agentFaceWanted();
   forgetGuard(Guarded::Agent);  // back from the desk face, the Agent asks for the PIN again
   const pmic::Status p = pmic::status();
   const ui::Screen *base = ui::nav::base();
   if (p.ok && p.vbus) {
-    enterDesk();
+    if (agentFace) {
+      showAgentFace(true);  // live, in place of the desk face
+    } else {
+      enterDesk();
+    }
   } else if (base && base->closesWhenIdle()) {
     closeBook();  // a book open in the Reader: off behind its cover, as the idle timeout does
+  } else if (agentFace) {
+    showAgentFace(false);
   } else {
     sleepNow();
   }

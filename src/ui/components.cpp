@@ -348,6 +348,29 @@ void drawStat(Canvas &c, const Rect &r, const std::string &key, const std::strin
 }
 
 
+// --- Resume band ---------------------------------------------------------------------------
+
+void drawResumeBand(Canvas &c, const Rect &band, const std::string &right) {
+  constexpr TextStyle kBand{&fonts::kMono14Bold, 1};
+  constexpr TextStyle kBandCap{&fonts::kMono14ExtraBold, 0};
+  constexpr int kCapH = 24;
+  // A paper rule first, so a dark picture above doesn't run into the band.
+  const Rect ink{band.x, band.y + kRule, band.w, band.h - kRule};
+  fill(c, ink, kInk);
+  const Rect line{ink.x + kPadX, ink.y + (ink.h - kCapH) / 2, ink.w - 2 * kPadX, kCapH};
+  const int base = baselineCentered(kBand, line.y, line.h);
+  int x = drawText(c, line.x, base, "HOLD", kBand, kPaper) + 8;
+  const int capW = textWidth(kBandCap, "PWR") + 14 + 4;
+  frame(c, {x, line.y, capW, line.h}, 2, kPaper);
+  drawText(c, x + 9, baselineCentered(kBandCap, line.y, line.h), "PWR", kBandCap, kPaper);
+  x += capW + 8;
+  x = drawText(c, x, base, "TO RESUME", kBand, kPaper);
+  if (!right.empty()) {
+    drawText(c, {x + 10, line.y, line.right() - x - 10, line.h}, right, kBand, Align::Right,
+             kPaper);
+  }
+}
+
 // --- Sparkline -----------------------------------------------------------------------------
 
 void drawSparkline(Canvas &c, const Rect &r, const float *values, int count, float minSpan) {

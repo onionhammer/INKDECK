@@ -1496,6 +1496,31 @@ void checkIn() {
     pump(50);
   }
   checkInOk = listCount != lists;
+  // A schedule's run to show as a note, new since the board last looked: get it whole.
+  std::string note;
+  uint32_t latestDone = 0;
+  {
+    Locked l;
+    note = agentShared.noteId;
+    latestDone = agentShared.latestDone;
+  }
+  uint32_t seenAsk = 0, seenDone = 0;
+  seen(seenAsk, seenDone);
+  if (checkInOk && !note.empty() && latestDone > seenDone) {
+    {
+      Locked l;
+      wantOpen = note;
+      agentShared.hasOpen = false;
+    }
+    bool have = false;
+    while (s.fd >= 0 && !have && static_cast<int32_t>(deadline - millis()) > 0) {
+      agentPump();
+      if (s.fd < 0) break;
+      pump(50);
+      Locked l;
+      have = agentShared.hasOpen && agentShared.open.id == note;
+    }
+  }
   if (!wantLink()) closeSession();
   if (checkInDone) xSemaphoreGive(checkInDone);
 }
@@ -1863,12 +1888,17 @@ bool polling() {
   return true;
 }
 
-bool checkInNow(uint32_t deadlineMs) {
+bool checkInNow(uint32_t deadlineMs, bool (*abort)()) {
   start();
   xSemaphoreTake(checkInDone, 0);  // a stale give from before
   checkInMs = deadlineMs;
   post(Event::CheckIn);
-  return xSemaphoreTake(checkInDone, pdMS_TO_TICKS(deadlineMs + 3000)) == pdTRUE && checkInOk;
+  const uint32_t until = millis() + deadlineMs + 3000;
+  while (static_cast<int32_t>(until - millis()) > 0) {
+    if (xSemaphoreTake(checkInDone, pdMS_TO_TICKS(100)) == pdTRUE) return checkInOk;
+    if (abort && abort()) return false;
+  }
+  return false;
 }
 
 namespace {

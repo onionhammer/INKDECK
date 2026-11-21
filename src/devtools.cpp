@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <string>
 
+#include "apps/agent_face.h"
 #include "apps/idle.h"
 #include "audio.h"
 #include "board_pins.h"
@@ -431,6 +432,7 @@ void task(void *) {
         case 'o': input::inject(Key::Power); break;
         case 'z': apps::requestStandby(2); break;
         case 'k': apps::requestCloseBook(); break;
+        case 'a': apps::requestAgentFace(); break;
         case 'h':
           Serial.printf("heap: internal %u free (largest %u, lowest %u), DMA %u free (largest %u), "
                         "PSRAM %u free\n",

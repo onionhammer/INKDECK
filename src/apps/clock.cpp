@@ -1,3 +1,4 @@
+#include "apps/agent_face.h"
 #include "apps/clock.h"
 
 #include <Arduino.h>
@@ -948,6 +949,7 @@ class StandbyScreen : public ui::Screen {
     // second to cancel.
     if (!drawn_ || ++ticks_ < 2) return false;
     saveFace(face_);
+    agentCheckWake();  // a check-in inkharness asks for rides a minute wake
     power::off(power::Mode::Standby, face_.now + 60, cycles_);
     ui::nav::pop();  // still here: the power-off failed
     return true;
@@ -1056,6 +1058,12 @@ bool standbyWake() {
   if (INKDECK_STANDBY_WEATHER_HOURS > 0) {
     net::begin();
     weather::syncInStandby(INKDECK_STANDBY_WEATHER_HOURS);
+  }
+  // A check-in inkharness asked for: a schedule's result to show as a note replaces the face,
+  // and the board sleeps under it (apps/agent_face.h).
+  if (agentStandbyCheck()) {
+    power::off(power::Mode::Sleep, alarms::next(time(nullptr)));
+    return false;
   }
   Face face = liveFace(-1);
   addStandbyStrip(face, haveOld ? &old : nullptr);
