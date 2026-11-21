@@ -523,8 +523,14 @@ pub fn list<'a>(
         {
             latest.ask = latest.ask.max(q.at);
         }
-        if let Some(at) = s.unread_result() {
-            latest.done = latest.done.max(at);
+        if let Some(at) = s.unread_result()
+            && at >= latest.done
+        {
+            latest.done = at;
+            // What the board does with that newest result, if it's a schedule's.
+            let sched = s.schedule.as_ref().filter(|_| s.state == State::Scheduled);
+            latest.say = sched.filter(|x| x.speak).map(|_| s.id.clone());
+            latest.note = sched.filter(|x| x.show_note).map(|_| s.id.clone());
         }
         if let Some(at) = s.expects(now) {
             check_at = earliest(check_at, at);
@@ -546,6 +552,9 @@ pub fn list<'a>(
     }
     let check_at = check_at.filter(|at| *at > now);
     if locked {
+        // Which sessions they are is for an unlocked connection.
+        latest.say = None;
+        latest.note = None;
         return SessionList {
             locked: true,
             counts,
@@ -916,6 +925,11 @@ pub(crate) mod tests {
         // The watch's next look comes first; the schedule wakes the board 300 s after its run.
         assert_eq!((list.check_at, list.next_at), (Some(10_300), Some(20_000)));
         assert_eq!(list.latest.done, 100);
+        // The schedule's newest run is to be shown as a note (not said); locked, it isn't named.
+        assert_eq!(
+            (list.latest.say.as_deref(), list.latest.note.as_deref()),
+            (None, Some("sch1"))
+        );
         let row = |id: &str| list.sessions.iter().find(|s| s.id == id).unwrap();
         assert_eq!(row("wat1").spark, [760.0, 712.0]);
         assert_eq!(
@@ -934,6 +948,7 @@ pub(crate) mod tests {
             (locked.check_at, locked.next_at, locked.ask),
             (Some(10_300), Some(20_000), None)
         );
+        assert_eq!(locked.latest.note, None);
         // A job nobody started goes after keep_days, like a finished session.
         assert!(expired(&all[5], 30, 50 + 31 * 86_400) && !expired(&all[0], 30, u64::MAX / 2));
     }

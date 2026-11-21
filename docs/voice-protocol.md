@@ -297,7 +297,9 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
 - `latest`: `ask`, when the newest waiting question was asked, and `done`, when the newest
   unread result came (a session that finished, or a schedule's run; herdr sessions, which
   finish after every task, don't count), both 0 for none. The board keeps the last values it
-  saw, and chirps when one grows (rising: a question, falling: a result).
+  saw, and chirps when one grows (rising: a question, falling: a result). Unlocked, `say` and
+  `note` name the session when that newest result is a schedule's run with `speak` (a board on
+  USB says it: `speak`) or `show_note` (a board that woke for it shows it as a note).
 - `ask`: the newest question waiting, in full (the `ask` message without its `type`), or
   absent: for the board's ask sheet, which may not have seen the `ask` message (it was off).
 - A row's `expect_at` (a working session's expected end), `next_at` (a schedule's next run or

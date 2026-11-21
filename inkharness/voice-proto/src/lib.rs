@@ -450,13 +450,21 @@ pub struct Counts {
 }
 
 /// `latest` in the list.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Latest {
     /// The newest waiting question's `at`.
     pub ask: u64,
     /// The newest unread result: a session that finished, or a schedule's run (herdr
     /// sessions, which finish after every task, don't count).
     pub done: u64,
+    /// Unlocked: the session whose newest unread result is a schedule's run to say aloud
+    /// (`speak`), for a board on USB.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub say: Option<String>,
+    /// Unlocked: the session whose newest unread result is a schedule's run to show as a note
+    /// (`show_note`), for a board that woke for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// A session in the list.
@@ -1090,6 +1098,7 @@ mod tests {
                 latest: Latest {
                     ask: 1795190000,
                     done: 0,
+                    ..Default::default()
                 },
                 ask: None,
                 older: 0,
@@ -1335,6 +1344,12 @@ mod tests {
         assert_eq!(
             (list.latest, list.next_at, list.ask),
             (Latest::default(), None, None)
+        );
+        let latest: Latest =
+            serde_json::from_str(r#"{"ask":1,"done":2,"say":"k7q2","note":"k7q2"}"#).unwrap();
+        assert_eq!(
+            (latest.say.as_deref(), latest.note.as_deref()),
+            (Some("k7q2"), Some("k7q2"))
         );
         let screen = SessionView {
             via: Via::Herdr,
