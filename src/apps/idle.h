@@ -27,7 +27,7 @@ namespace apps {
 void pollPower();
 
 // The PWR key (the navigator's handler): on USB the desk face; on battery Sleep, or with a book
-// open in the Reader its cover (closed_book.h). On News its morning edition (news_edition.h),
+// open in the Reader its cover (closed_book.h). On News its off face (news_edition.h),
 // on the Agent its face (agent_face.h), live on USB. On a face, wake.
 void powerKey();
 

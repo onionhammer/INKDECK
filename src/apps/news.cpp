@@ -493,6 +493,13 @@ class StoriesScreen : public ui::Screen {
     return n;
   }
 
+  std::vector<Uid> order() const {
+    std::vector<Uid> out;
+    out.reserve(stories_.size());
+    for (const StoryInfo &s : stories_) out.push_back(s.uid);
+    return out;
+  }
+
   void onEnter() override {
     // Back from a story: it's read now, and the cursor goes to the last one read (▼ goes on to
     // the next story from the last page).
@@ -507,10 +514,7 @@ class StoriesScreen : public ui::Screen {
       case Key::Down: return move(key == Key::Up ? -1 : 1);
       case Key::Select: {
         if (stories_.empty()) return false;
-        std::vector<Uid> order;
-        order.reserve(stories_.size());
-        for (const StoryInfo &s : stories_) order.push_back(s.uid);
-        ui::nav::push(std::make_unique<StoryScreen>(std::move(order), cursor_));
+        ui::nav::push(std::make_unique<StoryScreen>(order(), cursor_));
         return true;
       }
       case Key::SelectLong: openMenu(); return true;
@@ -1040,12 +1044,29 @@ std::unique_ptr<ui::Screen> makeFeeds() { return std::make_unique<FeedsScreen>()
 
 std::unique_ptr<ui::Screen> makeNews() { return makeStories(-1); }
 
+void openNewsStory(uint32_t uid) {
+  auto list = std::make_unique<StoriesScreen>(-1);
+  std::vector<Uid> order = list->order();
+  ui::nav::push(std::move(list));
+  StoryInfo info;
+  if (!uid || !news::story(uid, info)) return;
+  int index = -1;
+  for (size_t i = 0; i < order.size(); ++i) {
+    if (order[i] == uid) index = static_cast<int>(i);
+  }
+  if (index < 0) {  // not in the list as it's filtered (SHOW NEW, a story read since)
+    order.assign(1, uid);
+    index = 0;
+  }
+  ui::nav::push(std::make_unique<StoryScreen>(std::move(order), index));
+}
+
 void pollNews() {
   if (isNapping()) return;  // reading on battery: the radio waits for a key
   const pmic::Status p = pmic::status();
   const bool usb = p.ok && p.vbus;
   const ui::Screen *top = ui::nav::top();
-  // Not under the last frame before a power-off, which would cut it short; the edition on USB
+  // Not under the last frame before a power-off, which would cut it short; the off face on USB
   // stays up and wants its news.
   if (top && top->offFace() && !(usb && editionShowing())) return;
   static bool loaded = false;  // on USB the feeds sync without News being opened (read once)

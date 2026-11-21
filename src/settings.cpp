@@ -35,14 +35,14 @@ struct Values {
   std::string tailscaleName;  // "": the default
   bool tailscaleExitNode = false;
   bool agentFaceDetails = false;
-  int newsEdition = -1;  // minutes after midnight; -1: none
+  int newsFaceEvery = 5;  // minutes per story on News's off face
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
            wifiSsids == o.wifiSsids && shares == o.shares && lockMinutes == o.lockMinutes &&
            agentHost == o.agentHost && agentPort == o.agentPort && agentToken == o.agentToken &&
            tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode &&
-           agentFaceDetails == o.agentFaceDetails && newsEdition == o.newsEdition;
+           agentFaceDetails == o.agentFaceDetails && newsFaceEvery == o.newsFaceEvery;
   }
 };
 
@@ -158,10 +158,10 @@ constexpr const char *kTemplate =
     "; agent_face_details = off\n"
     "\n"
     "[news]\n"
-    "; A morning edition: PWR on a News screen leaves the board off behind a front page of the\n"
-    "; feeds in SD:/News/feeds.txt. With a time here, the board wakes at it each day, syncs the\n"
-    "; feeds and draws a new one (not below 15 % battery). off, or no line: no wakes.\n"
-    "; news_edition = 06:30\n"
+    "; PWR on a News screen leaves the board off behind the stories of the last 12 hours from the\n"
+    "; feeds in SD:/News/feeds.txt, one at a time, with the time and the weather. Minutes each\n"
+    "; story stays: 1, 5, 10 or 15.\n"
+    "; news_face_every = 5\n"
     "\n"
     "[tailscale]\n"
     "; Puts the board on your tailnet when something needs a machine there: an agent_host, a share's\n"
@@ -252,7 +252,7 @@ void loadNvs() {
   card.tailscaleName = nvsString(prefs, "tsname");
   card.tailscaleExitNode = prefs.getBool("tsexit", false);
   card.agentFaceDetails = prefs.getBool("afacedet", false);
-  card.newsEdition = prefs.getInt("nedition", -1);
+  card.newsFaceEvery = prefs.getInt("nfevery", 5);
   tailscaleKeySet = prefs.isKey("tskey");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
@@ -275,7 +275,7 @@ void saveNvs() {
   prefs.putString("tsname", card.tailscaleName.c_str());
   prefs.putBool("tsexit", card.tailscaleExitNode);
   prefs.putBool("afacedet", card.agentFaceDetails);
-  prefs.putInt("nedition", card.newsEdition);
+  prefs.putInt("nfevery", card.newsFaceEvery);
   prefs.end();
 }
 
@@ -626,15 +626,13 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
       if (!parseOnOff(value, v.agentFaceDetails)) {
         log_w("settings: %s: agent_face_details must be on or off", kFile);
       }
-    } else if (key == "news_edition") {
-      int h = -1, m = -1, used = 0;
-      if (isOff(value)) {
-        v.newsEdition = -1;
-      } else if (siscanf(value.c_str(), "%d:%d%n", &h, &m, &used) == 2 &&
-                 used == static_cast<int>(value.size()) && h >= 0 && h < 24 && m >= 0 && m < 60) {
-        v.newsEdition = h * 60 + m;
+    } else if (key == "news_face_every") {
+      int n = 0, used = 0;
+      if (siscanf(value.c_str(), "%d%n", &n, &used) == 1 &&
+          used == static_cast<int>(value.size()) && (n == 1 || n == 5 || n == 10 || n == 15)) {
+        v.newsFaceEvery = n;
       } else {
-        log_w("settings: %s: news_edition must be a time like 06:30, or off", kFile);
+        log_w("settings: %s: news_face_every must be 1, 5, 10 or 15", kFile);
       }
     } else if (key == "tailscale_exit_node") {
       if (!parseOnOff(value, v.tailscaleExitNode)) {
@@ -1052,9 +1050,9 @@ bool agentFaceDetails() {
   return card.agentFaceDetails;
 }
 
-int newsEdition() {
+int newsFaceEvery() {
   loadNvs();
-  return card.newsEdition;
+  return card.newsFaceEvery;
 }
 
 PinChange pendingPin() { return pending; }

@@ -1,5 +1,5 @@
 // News (the "News" design canvas, docs/ui-design.md): RSS and Atom feeds, read offline. The
-// library is news_library.h; the morning edition, its off face, is apps/news_edition.h.
+// library is news_library.h; its off face is apps/news_edition.h.
 //
 //   Stories:  every feed's stories in one list, newest first, grouped by day: a solid square and
 //             a bold headline for a new one, SAVED outlined. A card under the list shows the
@@ -18,6 +18,8 @@
 // A News screen opening syncs the feeds when the last sync is half an hour old; while one is
 // open, and on USB power, they sync every hour (pollNews()).
 #pragma once
+#include <stdint.h>
+
 #include <memory>
 
 #include "ui/nav.h"
@@ -26,10 +28,14 @@ namespace apps {
 
 std::unique_ptr<ui::Screen> makeNews();
 
+// Pushes News's story list and, over it, story `uid` (the one on the off face; 0: the list
+// alone).
+void openNewsStory(uint32_t uid);
+
 // From loop(): News's hourly syncs, while a News screen is open or the board is on USB power.
 void pollNews();
 
-// A News screen is the base (under a sheet or menu too): PWR shows the edition.
+// A News screen is the base (under a sheet or menu too): PWR shows its off face.
 bool newsOnScreen();
 
 }  // namespace apps

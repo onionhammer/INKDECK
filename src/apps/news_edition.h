@@ -1,46 +1,53 @@
-// The morning edition (the "Edition" artboard on the News design canvas): News's off face, the
-// way a closed book shows its cover.
+// News's off face (the "News Off Face" design canvas), the way Sleep shows its frog and a closed
+// book its cover: the stories of the last 12 hours, one at a time, with the time and the weather.
 //
-// PWR on a News screen (on battery; and the idle power-off from one) draws a front page of the
-// feeds, then powers off as power::Mode::Edition. No chrome: a masthead (NEWS, the date, the
-// edition's number and time, how many new stories, and the weather when the forecast reaches
-// today), the lead story (its feed and time, the headline in 28 px capitals, three lines of its
-// summary in Literata), four briefs in a 2 x 2 grid, from different feeds where it can, three
-// more headlines under // ALSO with how many more there are, and a band: HOLD [PWR] TO RESUME,
-// then NEXT EDITION SUN 06:30. New stories come first, newest first; then the rest.
+// Portrait, no chrome. The INKDECK/OS strip (NEWS, the date, the last sync); one short dark
+// block, the time in 80 px beside the forecast for now (its pixel icon, the temperature, the
+// sky, today's high and low, the next rain); the story in ink on paper (feed, time, NEW,
+// reading time, the headline in 28 px capitals, then its summary; one with no summary gets its
+// headline in 38 px); and a foot with a dot-matrix frog reading the paper, where the cycle is
+// (a cell a story), when the next fetch comes and HOLD [PWR] TO READ.
 //
-// With news_edition = 06:30 in inkdeck.ini (settings::newsEdition()), the RTC wakes the board at
-// that time each day: it syncs the feeds (90 s at most; PWR boots into News instead), draws the
-// next edition with a full refresh and powers off again. Below 15 % battery it skips the sync,
-// says EDITIONS PAUSED · BATTERY LOW on the band and stops waking. Alarms still boot the board,
-// and an agent check-in (apps/agent_face.h) still comes, then the edition carries on. HOLD PWR
-// from off opens News.
+// PWR on a News screen on battery (and the idle power-off from one) draws it and powers off as
+// power::Mode::Edition. The RTC wakes the board every minute, as standby does: the clock
+// redraws (a partial refresh, from what was drawn before: no card, no radio), and every
+// news_face_every minutes (settings.h; 5 by default) the next story comes up instead. When the
+// cycle has shown every story, the next wake fetches the feeds and the forecast (90 s at most;
+// PWR boots into News), unless the last fetch is under an hour old: then the cycle starts again,
+// and the fetch waits for the end of a lap after the hour. With nothing in the last 12 hours it
+// says NOTHING NEW and fetches hourly. Below 15 % battery: one last draw, STOPPED AT over the
+// time, and no wakes but alarms. HOLD PWR from off opens News on the story on the face.
 //
-// On USB the face stays up instead, LIVE on its band: it redraws as News syncs (hourly), and any
-// key wakes it.
+// On USB the face stays up instead, LIVE: the clock each minute, the stories in turn, and News's
+// hourly sync (pollNews()); any key wakes it.
 #pragma once
+#include <stdint.h>
 #include <time.h>
 
 namespace apps {
 
 // PWR's choice (apps::powerKey(), pollPower()): a News screen is the base.
 bool editionWanted();
-// Shows the front page: on battery it powers off behind it, on USB it stays live. devWake (dev
-// tools): on battery's path wherever it is, with the RTC a minute later.
+// Shows the face: on battery it powers off behind it, on USB it stays live. devWake (dev
+// tools): on battery's path wherever it is; after three minute wakes the board boots into News
+// on the story, as HOLD PWR does.
 void showEdition(bool usb, bool devWake = false);
 // PWR while the face is up (before its power-off, or on USB): back to what was under it.
 bool wakeEdition();
 bool editionShowing();
 
-// The next edition's wake as kept for it (0 for none), for an agent check-in from behind the
-// face to power off with.
+// The face's next minute wake (0 for none), for an agent check-in from behind it to power off
+// with.
 time_t editionWakeAt();
 
-// From setup(), right after agentWake(): an RTC wake from behind the edition. Draws the next
-// one and powers off again. True when PWR was pressed during the sync: boot into News.
+// The story on the face (0 for none): HOLD PWR from off opens News on it.
+uint32_t faceStory();
+
+// From setup(), right after agentWake(): an RTC wake from behind the face. Redraws it and powers
+// off again. True when PWR was pressed: boot into News.
 bool editionWake();
 
-// Dev tools (any task): the face's battery path now, with a wake a minute later.
+// Dev tools (any task): the face's battery path now, for three wakes.
 void requestEdition();
 void pollEdition();  // from pollPower(): acts on requestEdition()
 

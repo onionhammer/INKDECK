@@ -3,12 +3,15 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <math.h>
+#include <stdint.h>
+#include <string.h>
 #include <time.h>
 
 #include <algorithm>
 #include <atomic>
-#include <set>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "alarms.h"
@@ -18,18 +21,15 @@
 #include "apps/news.h"
 #include "audio.h"
 #include "board_pins.h"
-#include "fonts.h"
 #include "forecast.h"
 #include "netget.h"
 #include "news_library.h"
-#include "notedoc.h"
 #include "pmic.h"
 #include "power.h"
 #include "rtc.h"
 #include "screen.h"
 #include "sdcard.h"
 #include "settings.h"
-#include "timeutil.h"
 #include "ui/nav.h"
 #include "units.h"
 #include "wlan.h"
@@ -46,28 +46,146 @@ using ui::TextStyle;
 namespace glyph = ui::glyph;
 namespace jb = ui::fonts;
 
-constexpr const char *kNvs = "edition";
-constexpr uint32_t kSyncMs = 90 * 1000;     // an edition's sync, at most
-constexpr uint32_t kStopMs = 20 * 1000;     // then for the feed under way to finish
-constexpr time_t kFullEveryS = 30 * 60;     // live on USB: a full refresh this often at least
+constexpr const char *kNvs = "newsface";
+constexpr time_t kWindowS = 12 * 3600;    // the stories it cycles: published this recently
+constexpr time_t kAheadS = 10 * 60;       // a story dated this far ahead still counts
+constexpr time_t kFetchEveryS = 3600;     // fetches at most this often
+constexpr time_t kFullEveryS = 30 * 60;   // a full refresh this often at least (ghosting)
+constexpr time_t kFullGapS = 4 * 60;      // a new story gets a full refresh, this far apart
+constexpr uint32_t kSyncMs = 90 * 1000;   // a fetch from behind the face, at most
+constexpr uint32_t kStopMs = 20 * 1000;   // then for the feed under way to finish
 
-// The Edition artboard.
-constexpr int kBandH = 47;  // the foot band, its rule included
+// The News Off Face canvas.
+constexpr int kW = 480;
+constexpr int kStripH = 40;  // its 3 px rule included
+constexpr int kDarkH = 128;
+constexpr int kFootH = 153;  // its 3 px rule included
 constexpr int kPad = 18;
-constexpr int kMastH = 110;
-constexpr int kAlsoRowH = 32;
-constexpr int kAlsoRows = 3;
-constexpr int kLeadLines = 3;     // of the headline, at most
-constexpr int kSummaryLines = 3;
-constexpr int kSummaryLineH = 26;  // Literata 16/26 (fonts::kReader[0])
+constexpr int kStoryTop = kStripH + kDarkH;
+constexpr int kStoryBottom = 800 - kFootH;
+constexpr TextStyle kStripTag{&jb::kMono13ExtraBold, 1};
+constexpr TextStyle kStrip{&jb::kMono13Bold, 1};
+constexpr TextStyle kClock{&jb::kMono80ExtraBold, -4};  // digits and ":-"
+constexpr TextStyle kTemp{&jb::kMono40ExtraBold, -1};   // digits, minus, degree
+constexpr TextStyle kWx{&jb::kMono14Bold, 1};
+constexpr TextStyle kWxBold{&jb::kMono14ExtraBold, 1};
 constexpr TextStyle kLabel{&jb::kMono13Bold, 1};
-constexpr TextStyle kMasthead{&jb::kMono68ExtraBold, -2};  // capitals only
-constexpr TextStyle kLeadTitle{&jb::kMono28ExtraBold, 0};
-constexpr int kLeadLineH = 37;
-constexpr TextStyle kBrief{&jb::kMono15ExtraBold, 0};
-constexpr int kBriefLineH = 20;
-constexpr TextStyle kAlso{&jb::kMono14Medium, 0};
-constexpr TextStyle kBig{&jb::kMono38ExtraBold, 0};
+constexpr TextStyle kTag{&jb::kMono13ExtraBold, 1};
+constexpr TextStyle kHead{&jb::kMono28ExtraBold, 0};     // capitals
+constexpr int kHeadLineH = 36;
+constexpr int kHeadLines = 4;
+constexpr TextStyle kHeadBig{&jb::kMono38ExtraBold, 0};  // capitals
+constexpr int kHeadBigLineH = 46;
+constexpr int kHeadBigLines = 6;
+constexpr TextStyle kSummary{&jb::kMono15Bold, 0};
+constexpr int kSummaryLineH = 23;
+constexpr int kSummaryLines = 9;
+constexpr TextStyle kHold{&jb::kMono14Bold, 1};
+constexpr TextStyle kHoldCap{&jb::kMono14ExtraBold, 0};
+constexpr int kMaxCells = 16;  // more stories than this: a bar instead of a cell each
+
+// --- The pixel art ---------------------------------------------------------------------------
+
+// The frog, front on: bulging eyes looking down, a wide smile, the paper held up in both hands,
+// its feet under it. '#' ink, '+' 50 % dither (its skin), 'o' paper. In a field of 19 x 16
+// cells of 8 px, with an unlit dot in every empty cell and a 25 % shadow down and right, as on
+// Sleep.
+const char *const kFrog[] = {
+    "  ###     ###  ",  //
+    " #ooo#   #ooo# ",  //
+    " #o#o#####o#o# ",  //
+    "#+++++++++++++#",  //
+    "#+#+++++++++#+#",  //
+    "#++#########++#",  //
+    " #+++++++++++# ",  //
+    " ############# ",  //
+    "+#o#########o#+",  //
+    "+#ooooo#ooooo#+",  //
+    " #o+++o#o+++o# ",  //
+    " #o+++o#o+++o# ",  //
+    " ############# ",  //
+    " # # #   # # # ",  //
+};
+constexpr int kFrogRows = sizeof kFrog / sizeof *kFrog;
+constexpr int kFrogX = 2;  // its place in the field, in cells
+constexpr int kFrogY = 1;
+constexpr int kFieldCols = 19;
+constexpr int kFieldRows = 16;
+constexpr int kFieldCell = 8;
+
+// The forecast's icons, 8 x 7 cells of 6 px, paper on the dark block: '#' paper, '+' 50 %.
+constexpr int kIconCols = 8;
+constexpr int kIconRows = 7;
+constexpr int kIconCell = 6;
+const char *const kIconSun[] = {"   ++   ", " + ## + ", "  ####  ", "+######+",
+                                "  ####  ", " + ## + ", "   ++   "};
+const char *const kIconMoon[] = {"  ###   ", " ##     ", "##      ", "##      ",
+                                 "##      ", " ##     ", "  ###   "};
+const char *const kIconPartly[] = {" ++     ", "++++##  ", "++#  ## ", " #     #",
+                                   "#      #", "########", "        "};
+const char *const kIconCloud[] = {"        ", "   ##   ", "  #  ## ", " #     #",
+                                  "#      #", "########", "        "};
+const char *const kIconFog[] = {"   ##   ", "  #  ## ", " #     #", "########",
+                                "        ", "+++++++ ", " +++++++"};
+const char *const kIconRain[] = {"   ##   ", "  #  ## ", " #     #", "#      #",
+                                 "########", "  # # # ", " # # #  "};
+const char *const kIconSnow[] = {"   ##   ", "  #  ## ", " #     #", "#      #",
+                                 "########", " #   #  ", "   #   #"};
+const char *const kIconStorm[] = {"   ##   ", "  #  ## ", " #     #", "#      #",
+                                  "########", "   ##   ", "  ##    "};
+
+const char *const *iconFor(weather::Sky sky, bool day) {
+  switch (sky) {
+    case weather::Sky::Clear: return day ? kIconSun : kIconMoon;
+    case weather::Sky::Partly: return kIconPartly;
+    case weather::Sky::Fog: return kIconFog;
+    case weather::Sky::Showers:
+    case weather::Sky::Rain: return kIconRain;
+    case weather::Sky::Snow: return kIconSnow;
+    case weather::Sky::Storm: return kIconStorm;
+    default: return kIconCloud;
+  }
+}
+
+bool wet(weather::Sky s) {
+  return s == weather::Sky::Showers || s == weather::Sky::Rain || s == weather::Sky::Storm ||
+         s == weather::Sky::Snow;
+}
+
+// --- What the face shows, kept in NVS --------------------------------------------------------
+
+constexpr uint32_t kMagic = 0x4E464331;  // "NFC1"
+
+enum class Kind : uint8_t { Story, Quiet, NoFeeds, NoCard };
+enum class Mode : uint8_t { Live, Usb, Stopped };
+
+// The story on the face, and where it is in the cycle. Written when it changes, so the minute
+// wakes in between redraw it without the card.
+struct Card {
+  uint32_t magic;
+  uint32_t uid;
+  int64_t shown;  // when it came up (the start of that minute)
+  int16_t pos;
+  int16_t count;
+  Kind kind;
+  uint8_t fresh;  // not opened yet: NEW
+  char feed[40];
+  char when[16];
+  char len[12];
+  char title[240];
+  char summary[404];
+};
+
+// The rest of the face, each minute.
+struct Clock {
+  uint32_t magic;
+  int64_t now;
+  int64_t synced;    // the newest fetch of a feed (news::lastSync())
+  int64_t fetchAt;   // when the next one comes; 0 for none
+  int64_t lastFull;  // the last full refresh
+  Mode mode;
+  int8_t battery;    // %, for STOPPED
+};
 
 std::atomic<bool> requested{false};
 
@@ -86,12 +204,34 @@ void saveU32(const char *key, uint32_t v) {
   prefs.end();
 }
 
+template <typename T>
+bool loadBlob(const char *key, T &out) {
+  Preferences prefs;
+  if (!prefs.begin(kNvs, true)) return false;
+  const bool ok = prefs.getBytesLength(key) == sizeof(T) &&
+                  prefs.getBytes(key, &out, sizeof(T)) == sizeof(T);
+  prefs.end();
+  return ok && out.magic == kMagic;
+}
+
+template <typename T>
+void saveBlob(const char *key, const T &v) {
+  Preferences prefs;
+  if (!prefs.begin(kNvs, false)) return;
+  prefs.putBytes(key, &v, sizeof(T));
+  prefs.end();
+}
+
 bool batteryLow() {
   const pmic::Status p = pmic::status();
   return p.ok && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent;
 }
 
 bool pwrHeld() { return digitalRead(board::PWR_KEY_SENSE) == HIGH; }
+
+time_t every() { return std::max(1, settings::newsFaceEvery()) * 60; }
+
+time_t minuteStart(time_t t) { return t - t % 60; }
 
 std::string dot() { return std::string(" ") + glyph::kDot + " "; }
 
@@ -103,293 +243,390 @@ std::string fmt(time_t t, const char *pattern) {
   return ui::upper(buf);
 }
 
-// "05:12" today, "YDA" yesterday, else "18 NOV".
-std::string shortWhen(time_t t) {
-  const time_t now = time(nullptr);
+// "05:12" today, "YDA 23:50" yesterday, else "18 NOV".
+std::string shortWhen(time_t t, time_t now) {
   tm a, b, c;
   localtime_r(&t, &a);
   localtime_r(&now, &b);
   if (a.tm_year == b.tm_year && a.tm_yday == b.tm_yday) return fmt(t, "%H:%M");
   const time_t y = now - 86400;
   localtime_r(&y, &c);
-  if (a.tm_year == c.tm_year && a.tm_yday == c.tm_yday) return "YDA";
+  if (a.tm_year == c.tm_year && a.tm_yday == c.tm_yday) return fmt(t, "YDA %H:%M");
   return fmt(t, "%d %b");
 }
 
-// The next edition after now (a minute on at least): today's time, else tomorrow's. 0 if none.
-time_t nextEditionAt(time_t now) {
-  const int minutes = settings::newsEdition();
-  if (minutes < 0) return 0;
-  tm today;
-  localtime_r(&now, &today);
-  time_t t = timeutil::localAt(today, minutes / 60, minutes % 60);
-  if (t <= now + 60) {
-    const time_t later = now + 86400;
-    tm tomorrow;
-    localtime_r(&later, &tomorrow);
-    t = timeutil::localAt(tomorrow, minutes / 60, minutes % 60);
-  }
-  return t;
+// Copies at most n - 1 bytes, not splitting a UTF-8 character.
+void put(char *dst, size_t n, const std::string &s) {
+  size_t len = std::min(s.size(), n - 1);
+  while (len > 0 && len < s.size() && (static_cast<uint8_t>(s[len]) & 0xC0) == 0x80) --len;
+  memcpy(dst, s.data(), len);
+  dst[len] = 0;
 }
 
-// "1° FOG · HI 7°" when the forecast reaches now; "" if it doesn't.
-std::string weatherLine(time_t now) {
-  if (!rtc::timeValid()) return {};
-  weather::Forecast f;
-  if (!weather::get(f)) return {};
-  const weather::Hour *h = weather::at(f, now);
-  const weather::Day *days[1] = {};
-  const int n = weather::daysFrom(f, now, days, 1);
-  std::string out;
-  char buf[24];
-  if (h) {
-    const int t = static_cast<int>(lroundf(units::temperature(h->tempC)));
-    snprintf(buf, sizeof buf, "%d\xC2\xB0 ", t);
-    out = buf + std::string(weather::condition(h->code));
+// The stories of the last 12 hours, newest first. Not ones dated ahead (BBC News lists
+// programmes before they air), beyond a clock's worth of skew.
+std::vector<StoryInfo> recent(time_t now) {
+  std::vector<StoryInfo> out;
+  for (StoryInfo &s : news::stories(-1, news::Show::All)) {
+    if (s.published >= now - kWindowS && s.published <= now + kAheadS) out.push_back(std::move(s));
   }
-  if (n > 0) {
-    const int hi = static_cast<int>(lroundf(units::temperature(days[0]->hiC)));
-    snprintf(buf, sizeof buf, "HI %d\xC2\xB0", hi);
-    out += (out.empty() ? "" : dot()) + buf;
-  }
+  std::stable_sort(out.begin(), out.end(), [](const StoryInfo &a, const StoryInfo &b) {
+    return a.published > b.published;
+  });
   return out;
 }
 
-// --- What goes on the page -------------------------------------------------------------------
-
-struct Edition {
-  uint32_t number = 0;  // 0: not counted (a face before the first morning edition)
-  time_t at = 0;
-  bool card = true;
-  int feeds = 0;
-  int fresh = 0;
-  int more = 0;  // new stories not on the page
-  std::vector<StoryInfo> lead, briefs, also;
-  std::string weather;
-  std::string band;
-};
-
-Edition gather(const std::string &band, uint32_t number) {
-  Edition e;
-  e.at = time(nullptr);
-  e.number = number;
-  e.band = band;
-  e.card = sdcard::mounted();
-  e.feeds = news::feedCount();
-  e.fresh = news::freshCount();
-  e.weather = weatherLine(e.at);
-  std::vector<StoryInfo> all = news::stories(-1, news::Show::All);
-  // New stories first, then the rest; newest first in each.
-  std::stable_partition(all.begin(), all.end(), [](const StoryInfo &s) { return s.fresh; });
-  std::vector<bool> used(all.size(), false);
-  // The lead: the first that has a summary to show under it.
-  int lead = -1;
-  for (int i = 0; i < static_cast<int>(all.size()) && i < 8 && lead < 0; ++i) {
-    if (!all[i].summary.empty()) lead = i;
+// Story `pos` of the list, or why there's none.
+Card cardFor(const std::vector<StoryInfo> &list, int pos, time_t now) {
+  Card c = {};
+  c.magic = kMagic;
+  c.shown = minuteStart(now);
+  if (list.empty()) {
+    c.kind = !sdcard::mounted() ? Kind::NoCard : !news::hasFeeds() ? Kind::NoFeeds : Kind::Quiet;
+    return c;
   }
-  if (lead < 0 && !all.empty()) lead = 0;
-  std::set<int> feedsOnPage;
-  if (lead >= 0) {
-    e.lead.push_back(all[lead]);
-    used[lead] = true;
-    feedsOnPage.insert(all[lead].feed);
-  }
-  // Four briefs, from feeds not on the page yet while there are some.
-  for (int pass = 0; pass < 2 && e.briefs.size() < 4; ++pass) {
-    for (int i = 0; i < static_cast<int>(all.size()) && e.briefs.size() < 4; ++i) {
-      if (used[i] || (pass == 0 && feedsOnPage.count(all[i].feed))) continue;
-      e.briefs.push_back(all[i]);
-      used[i] = true;
-      feedsOnPage.insert(all[i].feed);
+  pos = std::max(0, std::min(pos, static_cast<int>(list.size()) - 1));
+  const StoryInfo &s = list[pos];
+  c.kind = Kind::Story;
+  c.uid = s.uid;
+  c.pos = static_cast<int16_t>(pos);
+  c.count = static_cast<int16_t>(std::min<size_t>(list.size(), INT16_MAX));
+  c.fresh = s.read ? 0 : 1;
+  put(c.feed, sizeof c.feed, ui::upper(s.feedTitle));
+  put(c.when, sizeof c.when, shortWhen(s.published, now));
+  put(c.len, sizeof c.len, std::to_string(std::max<uint32_t>(1, (s.words + 100) / 200)) + " MIN");
+  put(c.title, sizeof c.title, s.title);
+  put(c.summary, sizeof c.summary, s.summary);
+  return c;
+}
+
+// The story after `card`; at the end of a lap the newest again, with *lapEnd set.
+Card nextCard(const Card &card, time_t now, bool *lapEnd) {
+  const std::vector<StoryInfo> list = recent(now);
+  int next = 0;
+  bool end = card.kind != Kind::Story;
+  if (!end) {
+    int at = -1;
+    for (size_t i = 0; i < list.size(); ++i) {
+      if (list[i].uid == card.uid) at = static_cast<int>(i);
     }
+    // Gone from the list: it aged out at the old end, so the lap is over.
+    next = at >= 0 ? at + 1 : static_cast<int>(list.size());
+    end = next >= static_cast<int>(list.size());
   }
-  for (int i = 0; i < static_cast<int>(all.size()) && e.also.size() < kAlsoRows; ++i) {
-    if (used[i]) continue;
-    e.also.push_back(all[i]);
-    used[i] = true;
-  }
-  int shown = 0;
-  for (const auto *part : {&e.lead, &e.briefs, &e.also}) {
-    for (const StoryInfo &s : *part) shown += s.fresh ? 1 : 0;
-  }
-  e.more = std::max(0, e.fresh - shown);
-  return e;
+  if (lapEnd) *lapEnd = end;
+  return cardFor(list, end ? 0 : next, now);
+}
+
+time_t lastTry(time_t synced) { return std::max<time_t>(synced, loadU32("tried")); }
+
+// When the next fetch comes: the end of the first lap at least an hour after the last try. With
+// nothing to cycle, an hour after it. 0 with no feeds or no card.
+time_t fetchAtFor(const Card &card, time_t tried, time_t now) {
+  if (card.kind == Kind::NoFeeds || card.kind == Kind::NoCard) return 0;
+  const time_t earliest = tried + kFetchEveryS;
+  if (card.kind != Kind::Story) return std::max(earliest, minuteStart(now) + 60);
+  const time_t lap = static_cast<time_t>(card.count) * every();
+  time_t end = card.shown + static_cast<time_t>(card.count - card.pos) * every();
+  if (lap > 0 && end < earliest) end += ((earliest - end + lap - 1) / lap) * lap;
+  return end;
+}
+
+Clock clockFor(const Card &card, Mode mode, time_t now, time_t synced, time_t lastFull) {
+  Clock k = {};
+  k.magic = kMagic;
+  k.now = now;
+  k.mode = mode;
+  k.synced = synced;
+  k.fetchAt = mode == Mode::Live ? fetchAtFor(card, lastTry(synced), now) : 0;
+  k.lastFull = lastFull;
+  k.battery = static_cast<int8_t>(pmic::status().percent);
+  return k;
 }
 
 // --- Drawing ---------------------------------------------------------------------------------
 
-void drawMasthead(Canvas &c, const Rect &area, const Edition &e) {
-  using namespace ui;
-  const int x = area.x + kPad, right = area.right() - kPad;
-  int y = area.y + 16;
-  const std::string label =
-      e.number ? "// EDITION NO. " + std::to_string(e.number) : std::string("// EDITION");
-  const std::string date = rtc::timeValid() ? fmt(e.at, "%a %d %b %Y") : "";
-  const int dateW = textWidth(kLabel, date);
-  drawText(c, {right - dateW, y, dateW, 17}, date, kLabel);
-  drawText(c, {x, y, right - x - dateW - 12, 17}, label, kLabel);
-  y += 17 + 6;
-  const int base = y + capHeight(kMasthead) + 2;
-  const int nameW = drawText(c, x, base, "NEWS", kMasthead) - x;
-  // On the right, bottom-aligned with the name: the edition's time, the counts, the weather.
-  const int colX = x + nameW + 12, colW = right - colX;
-  const int lineH = 17;
-  int ly = base + 4 - 3 * lineH - 2;
-  const std::string pill = rtc::timeValid() ? fmt(e.at, "%H:%M") + " EDITION" : "EDITION";
-  const int pillW = tagWidth(pill, kLabel, 6);
-  drawTag(c, right - pillW, ly + lineH / 2, 19, pill, kLabel, TagKind::Inverted, 6);
-  ly += lineH + 2;
-  std::string counts = std::to_string(e.fresh) + " NEW" + dot() + std::to_string(e.feeds) +
-                       (e.feeds == 1 ? " FEED" : " FEEDS");
-  drawText(c, {colX, ly, colW, lineH}, counts, kLabel, Align::Right);
-  ly += lineH;
-  if (!e.weather.empty()) drawText(c, {colX, ly, colW, lineH}, e.weather, kLabel, Align::Right);
-  hrule(c, area.x, area.bottom() - kRule, area.w);
+std::string hhmm(time_t t) { return rtc::timeValid() ? fmt(t, "%H:%M") : "--:--"; }
+
+std::string tempText(float celsius) {
+  char buf[16];
+  snprintf(buf, sizeof buf, "%d\xC2\xB0", static_cast<int>(lroundf(units::temperature(celsius))));
+  return buf;
 }
 
-// The lead's height: its headline's lines and its summary's.
-int leadHeight(const StoryInfo &s, int w) {
-  const int lines =
-      static_cast<int>(ui::wrap(kLeadTitle, ui::upper(s.title), w, kLeadLines).size());
-  const int summary = s.summary.empty() ? 0 : 10 + kSummaryLines * kSummaryLineH;
-  return 14 + 19 + 10 + lines * kLeadLineH + summary + 16 + ui::kRule;
-}
-
-void drawLead(Canvas &c, const Rect &area, const StoryInfo &s) {
-  using namespace ui;
-  const int x = area.x + kPad, w = area.w - 2 * kPad;
-  int y = area.y + 14;
-  const int tagW = drawTag(c, x, y + 9, 19, "LEAD", kLabel, TagKind::Inverted, 6);
-  const std::string minutes = std::to_string(std::max<uint32_t>(1, (s.words + 100) / 200)) + " MIN";
-  const int minW = textWidth(kLabel, minutes);
-  drawText(c, {x + w - minW, y, minW, 19}, minutes, kLabel);
-  drawText(c, {x + tagW + 8, y, w - tagW - 8 - minW - 12, 19},
-           upper(s.feedTitle) + dot() + shortWhen(s.published), kLabel);
-  y += 19 + 10;
-  for (const std::string &line : wrap(kLeadTitle, upper(s.title), w, kLeadLines)) {
-    drawText(c, x, y + (kLeadLineH + capHeight(kLeadTitle)) / 2 - 2, line, kLeadTitle);
-    y += kLeadLineH;
-  }
-  if (!s.summary.empty()) {
-    y += 10;
-    NoteDoc doc;
-    doc.parse("", s.summary);
-    doc.layout(::fonts::kReader[0], w, kSummaryLines * kSummaryLineH);
-    doc.drawPage(c, 0, x, y);
-  }
-  hrule(c, area.x, area.bottom() - kRule, area.w);
-}
-
-void drawBriefs(Canvas &c, const Rect &area, const std::vector<StoryInfo> &briefs) {
-  using namespace ui;
-  const int n = static_cast<int>(briefs.size());
-  const int rows = (n + 1) / 2;
-  const int colW = (area.w - kRule) / 2;
-  const int rowH = area.h / rows;
-  for (int i = 0; i < n; ++i) {
-    const int col = i % 2, row = i / 2;
-    const Rect cell{area.x + col * (colW + kRule), area.y + row * rowH, colW, rowH};
-    if (row + 1 < rows) dashedH(c, cell.x, cell.bottom() - 1, cell.w);
-    const Rect in = cell.inset(16, 12);
-    const StoryInfo &s = briefs[i];
-    drawText(c, {in.x, in.y, in.w, 17}, upper(s.feedTitle) + dot() + shortWhen(s.published),
-             kLabel);
-    const int lines = (in.h - 17 - 8) / kBriefLineH;
-    int y = in.y + 17 + 8;
-    if (lines > 0) {
-      for (const std::string &line : wrap(kBrief, upper(s.title), in.w, lines)) {
-        drawText(c, in.x, y + (kBriefLineH + capHeight(kBrief)) / 2 - 1, line, kBrief);
-        y += kBriefLineH;
+// Paper pixel art on ink: '#' paper, '+' a 50 % tone.
+void drawIcon(Canvas &c, const char *const *rows, int x0, int y0) {
+  for (int y = 0; y < kIconRows; ++y) {
+    for (int x = 0; rows[y][x] && x < kIconCols; ++x) {
+      const Rect r{x0 + x * kIconCell, y0 + y * kIconCell, kIconCell, kIconCell};
+      if (rows[y][x] == '#') {
+        ui::fill(c, r, ui::kPaper);
+      } else if (rows[y][x] == '+') {
+        ui::fill(c, r, ui::kPaper);  // an ink checkerboard over paper
+        ui::dither50(c, r);
       }
     }
   }
-  if (n > 1) vrule(c, area.x + colW, area.y, area.h);
 }
 
-void drawAlso(Canvas &c, const Rect &area, const Edition &e) {
+char frogAt(int x, int y) {
+  x -= kFrogX;
+  y -= kFrogY;
+  if (y < 0 || y >= kFrogRows || x < 0 || x >= static_cast<int>(strlen(kFrog[y]))) return 0;
+  return kFrog[y][x] == ' ' ? 0 : kFrog[y][x];
+}
+
+void drawField(Canvas &c, int x0, int y0) {
   using namespace ui;
-  hrule(c, area.x, area.y, area.w);
-  Rect r{area.x, area.y + kRule, area.w, area.h - kRule};
-  drawSectionHeader(c, r.takeTop(kSectionH), "ALSO",
-                    e.more ? "+ " + std::to_string(e.more) + " MORE" : std::string());
-  for (size_t i = 0; i < e.also.size(); ++i) {
-    const Rect row = r.takeTop(kAlsoRowH);
-    if (i + 1 < e.also.size()) dashedH(c, row.x, row.bottom() - 1, row.w);
-    const std::string feed = upper(e.also[i].feedTitle);
-    const int feedW = std::min(textWidth(kLabel, feed), row.w / 3);
-    drawText(c, {row.right() - kPad - feedW, row.y, feedW, row.h}, feed, kLabel, Align::Right);
-    drawText(c, {row.x + kPad, row.y, row.w - 2 * kPad - feedW - 12, row.h}, e.also[i].title,
-             kAlso);
+  for (int y = 0; y < kFieldRows; ++y) {
+    for (int x = 0; x < kFieldCols; ++x) {
+      const int cx = x0 + x * kFieldCell, cy = y0 + y * kFieldCell;
+      const Rect cell{cx + 1, cy + 1, kFieldCell - 2, kFieldCell - 2};
+      const char ch = frogAt(x, y);
+      if (ch == '#') {
+        fill(c, cell, kInk);
+      } else if (ch == '+') {
+        dither50(c, cell);
+      } else if (!ch && frogAt(x - 1, y - 1)) {
+        dither25(c, cell);  // the shadow, one cell down and right
+      } else if (!ch) {
+        fill(c, {cx + 3, cy + 3, 2, 2}, kInk);  // unlit dot
+      }
+    }
   }
 }
 
-// No stories: why, large, and what to do.
-void drawNothing(Canvas &c, const Rect &area, const Edition &e) {
+void drawStrip(Canvas &c, const Clock &k) {
   using namespace ui;
-  const char *big = !e.card ? "NO CARD" : e.feeds == 0 ? "NO FEEDS" : "NOTHING YET";
-  const char *small = !e.card    ? "NEWS KEEPS ITS FEEDS ON THE MICROSD CARD"
-                      : e.feeds == 0 ? "ADD FEEDS TO SD:/NEWS/FEEDS.TXT"
-                                     : "OPEN NEWS TO SYNC THE FEEDS";
-  const int base = area.y + area.h / 2;
-  drawText(c, {area.x + kPad, base - 50, area.w - 2 * kPad, 50}, big, kBig, Align::Center);
-  drawText(c, {area.x + kPad, base + 10, area.w - 2 * kPad, 17}, small, kLabel, Align::Center);
+  const Rect top{0, 0, kW, kStripH - kRule};
+  const char *tag = "INKDECK/OS";
+  const int tagW = textWidth(kStripTag, tag) + 2 * kPadX;
+  fill(c, {top.x, top.y, tagW, top.h}, kInk);
+  drawText(c, {top.x + kPadX, top.y, tagW - 2 * kPadX, top.h}, tag, kStripTag, Align::Left,
+           kPaper);
+  std::string text = "NEWS";
+  if (rtc::timeValid()) text += dot() + fmt(k.now, "%a %d %b");
+  if (k.synced) text += dot() + "SYNCED " + shortWhen(k.synced, k.now);
+  drawText(c, {top.x + tagW + kPadX, top.y, top.w - tagW - 2 * kPadX, top.h}, text, kStrip);
+  hrule(c, 0, top.bottom(), kW);
 }
 
-void drawEdition(Canvas &c, const Edition &e) {
-  Rect r{0, 0, c.width(), c.height()};
-  ui::drawResumeBand(c, r.takeBottom(kBandH), e.band);
-  drawMasthead(c, r.takeTop(kMastH), e);
-  if (e.lead.empty()) {
-    drawNothing(c, r, e);
+// The dark block: the time, and the forecast for now beside it.
+void drawDark(Canvas &c, const Clock &k) {
+  using namespace ui;
+  const Rect area{0, kStripH, kW, kDarkH};
+  fill(c, area, kInk);
+  const bool stopped = k.mode == Mode::Stopped;
+  const int capH = capHeight(kClock);
+  constexpr int kTagH = 19, kTagGap = 8;
+  int y = area.y + (area.h - ((stopped ? kTagH + kTagGap : 0) + capH)) / 2;
+  if (stopped) {
+    drawTag(c, kPad, y + kTagH / 2, kTagH, "STOPPED AT", kTag, TagKind::Inverted, 6, kPaper);
+    y += kTagH + kTagGap;
+  }
+  const int clockRight = drawText(c, kPad, y + capH, hhmm(k.now), kClock, kPaper);
+
+  // The forecast: icon and temperature, the sky, high and low, the next rain.
+  if (!rtc::timeValid()) return;
+  std::unique_ptr<weather::Forecast> f(new weather::Forecast);
+  if (!weather::get(*f)) return;
+  const weather::Hour *h = weather::at(*f, k.now);
+  if (!h) return;
+  const weather::Sky sky = weather::sky(h->code);
+  std::vector<std::pair<std::string, const TextStyle *>> rows;
+  rows.push_back({weather::condition(h->code), &kWxBold});
+  const weather::Day *days[1] = {};
+  if (weather::daysFrom(*f, k.now, days, 1) > 0) {
+    rows.push_back({"HI " + tempText(days[0]->hiC) + dot() + "LO " + tempText(days[0]->loC), &kWx});
+  }
+  if (!wet(sky)) {
+    const weather::Hour *next[12] = {};
+    const int n = weather::hoursAfter(*f, k.now, next, 12);
+    for (int i = 0; i < n; ++i) {
+      const weather::Sky s = weather::sky(next[i]->code);
+      if (!wet(s)) continue;
+      rows.push_back({std::string(s == weather::Sky::Snow ? "SNOW " : "RAIN ") +
+                          fmt(next[i]->time, "%H:%M"),
+                      &kWx});
+      break;
+    }
+  }
+  const std::string temp = tempText(h->tempC);
+  constexpr int kIconW = kIconCols * kIconCell, kIconH = kIconRows * kIconCell;
+  int colW = kIconW + 12 + textWidth(kTemp, temp);
+  for (const auto &r : rows) colW = std::max(colW, textWidth(*r.second, r.first));
+  const int colX = std::max(clockRight + 16, area.right() - kPad - colW);
+  const int w = area.right() - kPad - colX;
+  if (w < kIconW) return;
+  constexpr int kRowH = 17, kRowGap = 3;
+  const int rowsH = kIconH + 6 + static_cast<int>(rows.size()) * (kRowH + kRowGap) - kRowGap;
+  int ry = area.y + (area.h - rowsH) / 2;
+  drawIcon(c, iconFor(sky, h->day), colX, ry);
+  drawText(c, colX + kIconW + 12, ry + (kIconH + capHeight(kTemp)) / 2, temp, kTemp, kPaper);
+  ry += kIconH + 6;
+  for (const auto &r : rows) {
+    drawText(c, {colX, ry, w, kRowH}, r.first, *r.second, Align::Left, kPaper);
+    ry += kRowH + kRowGap;
+  }
+}
+
+// The story, ink on paper; or why there's none.
+void drawStory(Canvas &c, const Card &card, const Clock &k) {
+  using namespace ui;
+  const int x = kPad, w = kW - 2 * kPad;
+  int y = kStoryTop + 18;
+  auto drawLines = [&](const std::vector<std::string> &lines, const TextStyle &s, int lineH) {
+    for (const std::string &line : lines) {
+      drawText(c, x, y + (lineH + capHeight(s)) / 2 - 1, line, s);
+      y += lineH;
+    }
+  };
+  auto shortRule = [&] {
+    y += 10;
+    hrule(c, x, y, 96);
+    y += kRule + 14;
+  };
+  if (card.kind != Kind::Story) {
+    const char *label = card.kind == Kind::Quiet ? "// LAST 12 HOURS" : "// NEWS";
+    const char *big = card.kind == Kind::Quiet     ? "NOTHING NEW"
+                      : card.kind == Kind::NoFeeds ? "NO FEEDS"
+                                                   : "NO CARD";
+    std::string text;
+    if (card.kind == Kind::Quiet) {
+      text = "No story in your feeds since " + hhmm(k.now - kWindowS) + ".";
+      if (k.fetchAt) text += " The frog checks again at " + hhmm(k.fetchAt) + ".";
+    } else if (card.kind == Kind::NoFeeds) {
+      text = "Add feeds to SD:/News/feeds.txt, one address a line.";
+    } else {
+      text = "News keeps its feeds on the microSD card.";
+    }
+    drawText(c, {x, y, w, 18}, label, kLabel);
+    y += 18 + 12;
+    drawLines({big}, kHeadBig, kHeadBigLineH);
+    shortRule();
+    drawLines(wrap(kSummary, text, w, kSummaryLines), kSummary, kSummaryLineH);
     return;
   }
-  drawLead(c, r.takeTop(leadHeight(e.lead[0], r.w - 2 * kPad)), e.lead[0]);
-  Rect also;
-  if (!e.also.empty()) {
-    also = r.takeBottom(ui::kRule + ui::kSectionH + static_cast<int>(e.also.size()) * kAlsoRowH);
+
+  // Feed and time; NEW and the reading time on the right.
+  const std::string len = card.len;
+  const int lenW = textWidth(kLabel, len);
+  int right = x + w - lenW;
+  drawText(c, {right, y, lenW, 18}, len, kLabel);
+  if (card.fresh) {
+    right -= 8 + tagWidth("NEW", kTag, 6);
+    drawTag(c, right, y + 9, 19, "NEW", kTag, TagKind::Inverted, 6);
   }
-  if (!e.briefs.empty()) drawBriefs(c, r, e.briefs);
-  if (!e.also.empty()) drawAlso(c, also, e);
+  drawText(c, {x, y, right - 10 - x, 18}, std::string(card.feed) + dot() + card.when, kLabel);
+  y += 18 + 12;
+
+  const std::string title = upper(card.title);
+  if (!card.summary[0]) {  // a feed with no summary: the headline larger
+    drawLines(wrap(kHeadBig, title, w, kHeadBigLines), kHeadBig, kHeadBigLineH);
+    shortRule();
+    drawText(c, {x, y, w, 18}, "NO SUMMARY IN THE FEED", kLabel);
+    return;
+  }
+  drawLines(wrap(kHead, title, w, kHeadLines), kHead, kHeadLineH);
+  shortRule();
+  const int lines = std::min(kSummaryLines, (kStoryBottom - 16 - y) / kSummaryLineH);
+  if (lines > 0) drawLines(wrap(kSummary, card.summary, w, lines), kSummary, kSummaryLineH);
 }
 
-// "NEXT EDITION SUN 06:30", "PAUSED · BATTERY LOW", "LIVE · SYNCED 14:20"...
-std::string bandText(bool usb, time_t wakeAt) {
-  const time_t synced = news::lastSync();
-  if (usb) return "LIVE" + (synced ? dot() + "SYNCED " + shortWhen(synced) : std::string());
-  if (batteryLow()) return "PAUSED" + dot() + "BATTERY LOW";
-  if (wakeAt) return "NEXT EDITION " + fmt(wakeAt, "%a %H:%M");
-  return synced ? "SYNCED " + shortWhen(synced) : std::string();
+// The foot: the frog, the cycle, the next fetch, the way back.
+void drawFoot(Canvas &c, const Card &card, const Clock &k) {
+  using namespace ui;
+  const int top = kStoryBottom;
+  hrule(c, 0, top, kW);
+  const int inY = top + kRule + 11, inH = kFootH - kRule - 22;
+  drawField(c, kPad, inY + (inH - kFieldRows * kFieldCell) / 2);
+  const int x = kPad + kFieldCols * kFieldCell + kPad, w = kW - kPad - x;
+  int y = inY + 4;
+  constexpr int kRowH = 17, kGap = 10;
+
+  // Where the cycle is: a cell a story (the one up taller), or a bar for many.
+  if (card.kind == Kind::Story) {
+    int tx = x;
+    if (card.count <= kMaxCells) {
+      for (int i = 0; i < card.count; ++i) {
+        if (i < card.pos) {
+          fill(c, {tx, y + 4, 9, 9}, kInk);
+        } else if (i == card.pos) {
+          fill(c, {tx, y, 9, kRowH}, kInk);
+        } else {
+          frame(c, {tx, y + 4, 9, 9}, 2);
+        }
+        tx += 12;
+      }
+    } else {
+      drawProgress(c, {tx, y + 3, 150, 11}, (card.pos + 1) / static_cast<float>(card.count));
+      tx += 150 + 3;
+    }
+    char pos[16];
+    snprintf(pos, sizeof pos, "%02d/%02d", card.pos + 1, card.count);
+    drawText(c, {tx + 7, y, x + w - tx - 7, kRowH}, pos, kLabel);
+  } else if (card.kind == Kind::Quiet) {
+    drawText(c, {x, y, w, kRowH}, "NONE IN 12 H", kLabel);
+  }
+  y += kRowH + kGap;
+
+  std::string next;
+  if (k.mode == Mode::Stopped) {
+    next = "NO MORE FETCHES";
+  } else if (k.mode == Mode::Usb) {
+    next = "FETCHES HOURLY";
+  } else if (k.fetchAt) {
+    next = "FETCH " + hhmm(k.fetchAt);
+  }
+  if (!next.empty()) drawText(c, {x, y, w, kRowH}, next, kLabel);
+  y += kRowH + kGap;
+
+  std::string band;
+  if (k.mode == Mode::Usb) band = "LIVE" + dot() + "USB";
+  if (k.mode == Mode::Stopped && k.battery >= 0) {
+    band = "BATTERY " + std::to_string(k.battery) + "%";
+  }
+  if (!band.empty()) drawTag(c, x, y + 9, 19, band, kTag, TagKind::Inverted, 6);
+
+  // HOLD [PWR] TO READ, at the bottom.
+  const Rect line{x, inY + inH - 24, w, 24};
+  const int base = baselineCentered(kHold, line.y, line.h);
+  int hx = drawText(c, line.x, base, "HOLD", kHold) + 8;
+  const int capW = textWidth(kHoldCap, "PWR") + 14 + 4;
+  frame(c, {hx, line.y, capW, line.h}, 2);
+  drawText(c, hx + 9, baselineCentered(kHoldCap, line.y, line.h), "PWR", kHoldCap);
+  hx += capW + 8;
+  drawText(c, hx, base, "TO READ", kHold);
 }
 
-// Draws an edition straight to the panel, with a full refresh (the RTC wake's path).
-void presentNow(const Edition &e) {
-  Canvas &c = screen::canvas();
-  screen::lock();
-  screen::setLandscape(false);
-  screen::clear();
-  drawEdition(c, e);
-  screen::sleepWhileBusy(!pmic::status().vbus);
-  screen::present(true);
-  screen::sleepWhileBusy(false);
-  screen::unlock();
+void drawFace(Canvas &c, const Clock &k, const Card &card) {
+  drawStrip(c, k);
+  drawDark(c, k);
+  drawStory(c, card, k);
+  drawFoot(c, card, k);
 }
+
+bool sameStory(const Card &a, const Card &b) { return a.kind == b.kind && a.uid == b.uid; }
 
 // --- The face, awake -------------------------------------------------------------------------
 
-class EditionScreen;
-EditionScreen *face = nullptr;
+class FaceScreen;
+FaceScreen *face = nullptr;
 
-class EditionScreen : public ui::Screen {
+class FaceScreen : public ui::Screen {
  public:
-  EditionScreen(bool usb, bool devWake) : usb_(usb), devWake_(devWake) {
+  FaceScreen(bool usb, bool devWake) : usb_(usb), devWake_(devWake) {
     face = this;
-    plan();
+    const time_t now = time(nullptr);
+    card_ = cardFor(recent(now), 0, now);
+    clock_ = clockFor(card_, mode(), now, news::lastSync(), now);
+    gen_ = news::generation();
   }
-  ~EditionScreen() override {
+  ~FaceScreen() override {
     if (face == this) face = nullptr;
   }
 
-  std::string tag() const override { return "EDITION"; }
+  std::string tag() const override { return "NEWS"; }
   bool chrome() const override { return false; }
   bool offFace() const override { return true; }
   bool onKey(Key) override {  // a key: awake again (before the power-off, or on USB)
@@ -398,58 +635,97 @@ class EditionScreen : public ui::Screen {
   }
 
   bool onTick() override {
+    const time_t now = time(nullptr);
     if (usb_) {
       const pmic::Status p = pmic::status();
       if (p.ok && !p.vbus) {  // unplugged: off behind it, as on battery
         usb_ = false;
-        plan();
+        ticks_ = 0;
+        clock_ = clockFor(card_, mode(), now, news::lastSync(), now);
+        ui::nav::invalidate(ui::Refresh::Full);
         return true;
       }
-      // Live: a new page once a sync has brought something.
-      if (news::busy() || news::generation() == drawnGen_) return false;
-      if (time(nullptr) - lastFull_ > kFullEveryS) {
-        lastFull_ = time(nullptr);
+      // Live: the clock each minute, the next story when it's time, NOTHING NEW until a sync
+      // brings something.
+      const uint32_t gen = news::generation();
+      const bool minute = minuteStart(now) != minuteStart(clock_.now);
+      if (!minute && gen == gen_) return false;
+      Card next = card_;
+      if (card_.kind != Kind::Story && gen != gen_) {
+        next = cardFor(recent(now), 0, now);
+      } else if (card_.kind == Kind::Story && now >= card_.shown + every() - 30) {
+        next = nextCard(card_, now, nullptr);
+      }
+      gen_ = gen;
+      const bool changed = !sameStory(next, card_);
+      if (!minute && !changed) return false;
+      card_ = next;
+      time_t lastFull = clock_.lastFull;
+      if ((changed && now - lastFull >= kFullGapS) || now - lastFull >= kFullEveryS) {
+        lastFull = now;
         ui::nav::invalidate(ui::Refresh::Full);
       }
+      clock_ = clockFor(card_, mode(), now, news::lastSync(), lastFull);
       return true;
     }
-    // On battery: the second tick after it's drawn, off.
+    // On battery: the second tick after it's drawn, off, with a wake the next minute.
     if (!drawn_ || ++ticks_ < 2) return false;
-    const time_t now = time(nullptr);
     const time_t alarm = rtc::timeValid() ? alarms::next(now) : 0;
-    saveU32("next", static_cast<uint32_t>(wakeAt_));
-    if (devWake_) saveU32("dev", 1);  // the dev tool's: one edition, then the board stays on
-    power::off(power::Mode::Edition, earliestWake(earliestWake(alarm, wakeAt_), agentCheckWake()));
+    const time_t wakeAt =
+        clock_.mode == Mode::Stopped || !rtc::timeValid() ? 0 : minuteStart(now) + 60;
+    saveBlob("card", card_);
+    saveBlob("clock", clock_);
+    saveU32("next", static_cast<uint32_t>(wakeAt));
+    if (devWake_) saveU32("dev", 3);  // the dev tool's: three wakes, then into News
+    power::off(power::Mode::Edition, earliestWake(earliestWake(alarm, wakeAt), agentCheckWake()));
     ui::nav::pop();  // still here: the power-off failed
     return true;
   }
 
   void draw(Canvas &c, const Rect &) override {
-    drawnGen_ = news::generation();
-    drawEdition(c, gather(bandText(usb_, wakeAt_), loadU32("num")));
+    drawFace(c, clock_, card_);
     drawn_ = true;
-    if (!lastFull_) lastFull_ = time(nullptr);
   }
 
+  uint32_t story() const { return card_.kind == Kind::Story ? card_.uid : 0; }
+
  private:
-  void plan() {
-    ticks_ = 0;
-    const time_t now = time(nullptr);
-    if (usb_ || batteryLow() || !rtc::timeValid()) {
-      wakeAt_ = 0;
-    } else {
-      wakeAt_ = devWake_ ? now + 60 : nextEditionAt(now);
-    }
-  }
+  Mode mode() const { return usb_ ? Mode::Usb : batteryLow() ? Mode::Stopped : Mode::Live; }
 
   bool usb_;
   bool devWake_;
-  time_t wakeAt_ = 0;
-  uint32_t drawnGen_ = 0;
+  Card card_ = {};
+  Clock clock_ = {};
+  uint32_t gen_ = 0;
   bool drawn_ = false;
   int ticks_ = 0;
-  time_t lastFull_ = 0;
 };
+
+// A fetch from behind the face: the feeds, then the forecast. True if PWR was pressed (boot
+// into News; the sync finishes in the background).
+bool fetchNow() {
+  saveU32("tried", static_cast<uint32_t>(time(nullptr)));
+  if (!news::hasFeeds() || !wlan::configured()) return false;
+  net::begin();
+  news::sync();
+  const uint32_t start = millis();
+  bool stopping = false;
+  while (news::busy()) {
+    if (pwrHeld()) return true;
+    const uint32_t took = millis() - start;
+    if (!stopping && took > kSyncMs) {
+      news::cancel();
+      stopping = true;
+    }
+    if (took > kSyncMs + kStopMs) break;
+    delay(100);
+  }
+  log_i("news face: fetched in %lu ms (%s)", static_cast<unsigned long>(millis() - start),
+        news::activity().text.c_str());
+  if (pwrHeld()) return true;
+  if (weather::configured()) weather::syncInStandby(1);
+  return pwrHeld();
+}
 
 }  // namespace
 
@@ -460,7 +736,7 @@ void showEdition(bool usb, bool devWake) {
   if ((top && top->offFace()) || deskShowing() || face) return;
   if (audio::status().state == audio::State::Playing) audio::togglePause();  // "off" is quiet
   lockNow();  // under the face: waking it lands on the lock (power_on)
-  ui::nav::push(std::make_unique<EditionScreen>(usb, devWake));
+  ui::nav::push(std::make_unique<FaceScreen>(usb, devWake));
   ui::nav::invalidate(ui::Refresh::Full);
 }
 
@@ -474,6 +750,12 @@ bool wakeEdition() {
 bool editionShowing() { return face != nullptr; }
 
 time_t editionWakeAt() { return static_cast<time_t>(loadU32("next")); }
+
+uint32_t faceStory() {
+  if (face) return face->story();
+  Card card;
+  return loadBlob("card", card) && card.kind == Kind::Story ? card.uid : 0;
+}
 
 bool editionWake() {
   if (power::wake() != power::Wake::Alarm || !rtc::timeValid()) return false;
@@ -489,48 +771,73 @@ bool editionWake() {
     return false;
   }
   pinMode(board::PWR_KEY_SENSE, INPUT);
-  sdcard::mount();
-  news::load(false);
-  uint32_t number = loadU32("num");
-  if (batteryLow()) {
-    log_i("edition: battery low, no sync and no more wakes");
-    saveU32("next", 0);
-    presentNow(gather(bandText(false, 0), number));
-    power::off(power::Mode::Edition, ring);
-    return false;
-  }
-  if (news::hasFeeds() && wlan::configured()) {
-    net::begin();
-    news::sync();
-    const uint32_t start = millis();
-    bool stopping = false;
-    while (news::busy()) {
-      if (pwrHeld()) return true;  // PWR: boot into News (the sync finishes in the background)
-      const uint32_t took = millis() - start;
-      if (!stopping && took > kSyncMs) {
-        news::cancel();
-        stopping = true;
-      }
-      if (took > kSyncMs + kStopMs) break;
-      delay(100);
+  if (pwrHeld()) return true;
+
+  Card oldCard = {};
+  Clock old = {};
+  const bool haveCard = loadBlob("card", oldCard);
+  const bool haveOld = haveCard && loadBlob("clock", old);
+  Card card = oldCard;
+  const bool low = batteryLow();
+  time_t synced = haveOld ? old.synced : 0;
+
+  // The next story when it's time, or with nothing to show an hourly fetch. Only then the card:
+  // the minutes in between redraw from NVS.
+  const bool due2 = !haveCard ||
+                    (card.kind == Kind::Story && now >= card.shown + every() - 30) ||
+                    (card.kind == Kind::Quiet && now >= lastTry(synced) + kFetchEveryS - 30);
+  const bool library = !haveCard || (due2 && !low);
+  if (library) {
+    sdcard::mount();
+    news::load(false);
+    bool lapEnd = false;
+    card = haveCard ? nextCard(oldCard, now, &lapEnd) : cardFor(recent(now), 0, now);
+    if (!low && lapEnd && now >= lastTry(news::lastSync()) + kFetchEveryS - 30) {
+      if (fetchNow()) return true;
+      const time_t t = time(nullptr);
+      card = cardFor(recent(t), 0, t);
     }
-    log_i("edition: synced in %lu ms (%s)", static_cast<unsigned long>(millis() - start),
-          news::activity().text.c_str());
+    synced = news::lastSync();
   }
   if (pwrHeld()) return true;
-  saveU32("num", ++number);
-  const bool dev = loadU32("dev") != 0;
-  const time_t next = dev ? 0 : nextEditionAt(time(nullptr));
-  presentNow(gather(bandText(false, next), number));
-  if (dev) {
+
+  const time_t t = time(nullptr);
+  const bool changed = !haveCard || !sameStory(card, oldCard);
+  time_t lastFull = haveOld ? old.lastFull : 0;
+  const bool full =
+      !haveOld || (changed && t - lastFull >= kFullGapS) || t - lastFull >= kFullEveryS;
+  if (full) lastFull = t;
+  const Clock k = clockFor(card, low ? Mode::Stopped : Mode::Live, t, synced, lastFull);
+
+  // The panel still shows the last face: draw it as the base, so this is a partial refresh.
+  Canvas &c = screen::canvas();
+  const pmic::Status p = pmic::status();
+  screen::lock();
+  screen::setLandscape(false);
+  if (!full) {
+    screen::clear();
+    drawFace(c, old, oldCard);
+    screen::assumeShown();
+  }
+  screen::clear();
+  drawFace(c, k, card);
+  screen::sleepWhileBusy(!p.vbus);
+  screen::present(full);
+  screen::sleepWhileBusy(false);
+  screen::unlock();
+  if (changed) saveBlob("card", card);
+  saveBlob("clock", k);
+
+  const uint32_t dev = loadU32("dev");
+  if (dev == 1) {  // the dev tool's last wake: as HOLD PWR, into News on the story
     saveU32("dev", 0);
     saveU32("next", 0);
-    log_i("edition: dev wake done, staying on");
-    return false;
+    log_i("news face: dev wakes done, opening the story");
+    return true;
   }
+  if (dev > 1) saveU32("dev", dev - 1);
+  const time_t next = low ? 0 : minuteStart(t) + 60;
   saveU32("next", static_cast<uint32_t>(next));
-  log_i("edition: no. %lu drawn, next %ld", static_cast<unsigned long>(number),
-        static_cast<long>(next));
   power::off(power::Mode::Edition, earliestWake(earliestWake(ring, next), agentCheckWake()));
   return false;
 }

@@ -10,8 +10,8 @@
 //            opens the book again, whatever started the board.
 //   Agent    the Agent face (apps/agent_face.h); wakes to check in with inkharness, and for
 //            alarms. HOLD PWR opens the Agent.
-//   Edition  News's morning edition (apps/news_edition.h); wakes at news_edition each day to sync
-//            the feeds and draw the next one, and for alarms. HOLD PWR opens News.
+//   Edition  News's off face (apps/news_edition.h); wakes every minute to redraw the clock, show
+//            the next story or fetch the feeds, and for alarms. HOLD PWR opens News on the story.
 // Sleep, Standby, Book and Edition also wake when inkharness asks for a check-in (a schedule that
 // wakes the board).
 #pragma once

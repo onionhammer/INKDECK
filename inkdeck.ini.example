@@ -85,10 +85,10 @@ nfs = nfs://nas.local/volume1/books
 ; agent_face_details = off
 
 [news]
-; A morning edition: PWR on a News screen leaves the board off behind a front page of the
-; feeds in SD:/News/feeds.txt. With a time here, the board wakes at it each day, syncs the
-; feeds and draws a new one (not below 15 % battery). off, or no line: no wakes.
-; news_edition = 06:30
+; PWR on a News screen leaves the board off behind the stories of the last 12 hours from the
+; feeds in SD:/News/feeds.txt, one at a time, with the time and the weather. Minutes each
+; story stays: 1, 5, 10 or 15.
+; news_face_every = 5
 
 [tailscale]
 ; Puts the board on your tailnet when something needs a machine there: an agent_host, a share's

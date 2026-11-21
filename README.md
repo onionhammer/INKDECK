@@ -21,7 +21,7 @@ board instead, and the wheel keeps its portrait sense there.
 | --- | --- |
 | **Reader** | EPUB 2/3 from microSD in Literata (three sizes), justified, with drop caps and line breaks at soft hyphens and dashes. Shows pictures (JPEG/PNG, dithered), the table of contents, and the cover as a page and on Home. Honours `display:none`. Resumes each book where you left it, even after a power loss. The **library** lists every book in `SD:/Books` (and its folders) under its author, authors by surname and each author's books by title, with how far each is read; titles and authors are read from each book once and cached on the card |
 | **Podcasts** | RSS feeds over Wi-Fi plus folders of MP3s. Downloads resume after a reset. Playback resumes where you stopped, and played episodes are marked |
-| **News** | RSS 2.0, RSS 1.0 and Atom feeds, listed one URL a line in `SD:/News/feeds.txt` (`src/apps/news.h`). Every feed's stories in one list, newest first, grouped by day; a new story (not opened, from the last three days) has a solid square and a bold headline, and a card under the list shows the selected one's headline and summary. A story reads like a note: the headline in capitals, the byline and its length, then the text in Literata a page at a time, paragraphs, headings, lists and quotes kept; ▼ past the last page opens the next story. A feed that sends only summaries says so, with the story's address. HOLD ● on the list: save a story, show all, new or saved ones, sync now, the feeds (each with its new stories, `!` and the reason for one that fails), mark all read. Stories and their text are kept on the card (the newest 50 a feed, and saved ones), so News opens offline; it syncs when opened (if the last sync is half an hour old), hourly while open and on USB. PWR on News powers off behind a **morning edition**: a front page with the lead story, four briefs, three more headlines and the weather. With `news_edition = 06:30` in `inkdeck.ini`, the RTC wakes the board at that time each day to sync and draw a new one (`src/apps/news_edition.h`) |
+| **News** | RSS 2.0, RSS 1.0 and Atom feeds, listed one URL a line in `SD:/News/feeds.txt` (`src/apps/news.h`). Every feed's stories in one list, newest first, grouped by day; a new story (not opened, from the last three days) has a solid square and a bold headline, and a card under the list shows the selected one's headline and summary. A story reads like a note: the headline in capitals, the byline and its length, then the text in Literata a page at a time, paragraphs, headings, lists and quotes kept; ▼ past the last page opens the next story. A feed that sends only summaries says so, with the story's address. HOLD ● on the list: save a story, show all, new or saved ones, sync now, the feeds (each with its new stories, `!` and the reason for one that fails), mark all read. Stories and their text are kept on the card (the newest 50 a feed, and saved ones), so News opens offline; it syncs when opened (if the last sync is half an hour old), hourly while open and on USB. PWR on News powers off behind its **off face**: the stories of the last 12 hours one at a time (headline and summary), with the time, the weather and a frog reading the paper. The RTC wakes the board every minute for the clock, every `news_face_every` minutes (5) for the next story, and once the cycle has shown them all, to fetch more, at most hourly. HOLD PWR opens the story on the face (`src/apps/news_edition.h`) |
 | **Music** | MP3 and WAV from the card through the codec and speaker, with a waveform overview, queue and volume. Playback continues on any screen; while it plays, HOLD BOOT raises a player sheet over any screen (what's playing, pause / play, next, volume; BOOT closes it) |
 | **Weather** | Open-Meteo forecast: now, 12 hours and 6 days, with a detail sheet per day. Synced hourly (every half hour on USB; while the Reader naps, at the next page turn) and cached for offline use |
 | **Clock** | Landscape desk clock: calendar, sunrise and sunset, a weather strip, now-playing, and three alarms. An alarm can boot the board from power-off |
@@ -59,11 +59,15 @@ the same way round in both. Phone photos come out upright (EXIF orientation), an
   rings or records. The PMIC outputs nothing uses stay off.
 - On USB, PWR shows the clock face instead and the board stays on, and on the tailnet if it has
   a Tailscale key (Tailnet, below).
-- PWR on News (or 10 idle minutes there on battery) powers off behind its morning edition, a
-  front page of the feeds. With `news_edition` set, the RTC wakes the board once a day at that
-  time: it joins Wi-Fi, syncs the feeds (90 s at most), draws the next edition and powers off
-  again. Not below 15 % battery. HOLD PWR opens News. On USB the edition stays up and redraws as
-  News syncs every hour.
+- PWR on News (or 10 idle minutes there on battery) powers off behind its off face, one story
+  of the last 12 hours at a time with the clock and the weather. The RTC wakes the board every
+  minute, as standby does: the clock redraws from what NVS keeps (a partial refresh, no card, no
+  radio; about 0.8 s on), and every `news_face_every` minutes the next story comes up from the
+  card (about 1.2 s). When the cycle has shown every story and the last fetch is an hour old,
+  that wake joins Wi-Fi and fetches the feeds and the forecast (90 s at most); otherwise the
+  cycle starts again. Below 15 % battery it stops: STOPPED AT over the time, no wakes but alarms.
+  HOLD PWR (or PWR during a wake) opens News on the story the face showed. On USB the face stays
+  up, live.
 
 **Lock:** with a PIN set (System → PIN LOCK, or `inkdeck.ini` below), the board asks for it in
 the places the build names in `INKDECK_PIN_ON` (`platformio.ini`, set to `files,agent`; all four
@@ -162,7 +166,7 @@ free); traffic through it isn't tested yet.
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
 Wi-Fi network, time zone and location without a rebuild, sets the lock, lists network shares,
-sets News's morning edition and puts the board on your tailnet (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
+sets how long News's off face shows each story and puts the board on your tailnet (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
 the card has none, it writes one with every line commented out. It can list up to 8 Wi-Fi
 networks, each `ssid` line with its `password` under it: the board tries the one it last joined
 first, then the others in the file's order, moving on as soon as one is out of range (about
@@ -197,7 +201,7 @@ lock_minutes = 5                      ; also lock after 5 minutes without a key
 agent_host = macbook                  ; inkharness, here on the tailnet
 agent_token = something-long
 [news]
-news_edition = 06:30                  ; wake each day to sync News and draw a front page
+news_face_every = 5                   ; minutes per story on News's off face (1, 5, 10, 15)
 [tailscale]
 tailscale_key = tskey-auth-...        ; the board keeps it and replaces the line with a note
 tailscale_name = inkdeck              ; its name on the tailnet

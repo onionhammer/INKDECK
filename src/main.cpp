@@ -71,14 +71,14 @@ void setup() {
   apps::standbyWake();
   // So does an agent check-in from the Agent face, Sleep or a closed book (apps/agent_face.h).
   apps::agentWake();
-  // And the morning edition's wake (apps/news_edition.h); true if PWR cut its sync short.
+  // And News's off face, each minute (apps/news_edition.h); true if PWR was pressed.
   const bool editionPwr = apps::editionWake();
   // Powered off behind a book's cover (apps/closed_book.h): this start opens the book again.
   const bool reopenBook = power::lastMode() == power::Mode::Book;
   // Behind the Agent face, HOLD PWR (not an alarm) opens the Agent.
   const bool reopenAgent =
       power::lastMode() == power::Mode::Agent && power::wake() != power::Wake::Alarm;
-  // Behind the edition, HOLD PWR opens News (so does PWR during an edition's sync).
+  // Behind News's face, HOLD PWR opens News on the story it showed (so does PWR during a wake).
   const bool reopenNews = power::lastMode() == power::Mode::Edition &&
                           (power::wake() != power::Wake::Alarm || editionPwr);
   power::markOn();
@@ -101,7 +101,7 @@ void setup() {
 #else
   (void)reopenAgent;
 #endif
-  if (reopenNews) ui::nav::push(apps::makeNews());
+  if (reopenNews) apps::openNewsStory(apps::faceStory());
   // Woken for an alarm: show the Clock, and pollAlarms() rings over it.
   if (power::wake() == power::Wake::Alarm && !editionPwr) ui::nav::push(apps::makeClock());
   apps::lockNow();  // with a PIN and power_on (pin_places.h), every start asks (alarms ring over it)
