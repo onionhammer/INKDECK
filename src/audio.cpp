@@ -620,12 +620,24 @@ void stepWav() {
 // Stream playback (audio task only): mono PCM from streamBuf as it arrives over the network.
 // Playing waits until 200 ms is buffered (again after running dry), so a Wi-Fi stall is a
 // pause between words rather than a stutter.
+//
+// Streams play louder than files. Speech from the assistant arrives at about -19 dBFS RMS with
+// peaks near -5 dBFS (both OpenRouter voices, measured 2026-11-21), and VOL 100 is the DAC at
+// 0 dB, which is quiet through this speaker. So stream samples get a fixed boost, and a peak
+// limiter holds whatever would clip at -1 dBFS: the gain drops at once on a loud sample and
+// recovers over about 100 ms. Files, the alarm and the beeps play unchanged.
+
+constexpr float kStreamBoost = 3.16f;          // +10 dB
+constexpr float kStreamCeiling = 0.89f * 32767;  // -1 dBFS
+constexpr float kStreamReleaseMs = 100;
 
 struct Stream {
   bool on = false;
   bool primed = false;  // enough is buffered to play
   uint32_t rate = 0;
   int carry = -1;  // the first byte of a sample the ring handed over split in two
+  float limit = 1;    // the limiter's gain, on top of kStreamBoost
+  float release = 0;  // per sample, how far `limit` moves back towards 1
 } strm;
 
 void streamStop() {
@@ -651,6 +663,7 @@ bool streamBegin(uint32_t rate) {
   strm = Stream{};
   strm.on = true;
   strm.rate = rate;
+  strm.release = 1 - expf(-1000.0f / (kStreamReleaseMs * rate));
   streamOn = true;
   return true;
 }
@@ -695,7 +708,11 @@ void streamStep() {
   }
   const int frames = static_cast<int>(n / 2);
   for (int i = 0; i < frames; ++i) {  // the DAC plays the left slot: mono into both
-    const int16_t v = static_cast<int16_t>(in[2 * i] | in[2 * i + 1] << 8);
+    const float x = static_cast<int16_t>(in[2 * i] | in[2 * i + 1] << 8) * kStreamBoost;
+    const float a = fabsf(x);
+    if (a * strm.limit > kStreamCeiling) strm.limit = kStreamCeiling / a;
+    const auto v = static_cast<int16_t>(x * strm.limit);
+    strm.limit += (1 - strm.limit) * strm.release;
     p.pcm[2 * i] = p.pcm[2 * i + 1] = v;
   }
   size_t written = 0;

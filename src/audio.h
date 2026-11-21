@@ -114,7 +114,8 @@ bool capturing();
 size_t captureRead(uint8_t *out, size_t max, uint32_t timeoutMs);
 float captureLevelDb();  // loudest sample of the last second, dBFS; -96 when not capturing
 
-// Opens the output at `rate` for a stream. Returns once it is ready; false if it couldn't.
+// Opens the output at `rate` for a stream. Returns once it is ready; false if it couldn't. A
+// stream plays 10 dB louder than a file at the same volume, through a limiter (audio.cpp).
 bool streamStart(uint32_t rate);
 // Queues PCM (little-endian; a sample may be split between calls). Blocks up to timeoutMs
 // while the ring (5 s at 24 kHz) is full. Returns the bytes taken; 0 once the stream is off.
