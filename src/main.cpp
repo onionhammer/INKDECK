@@ -40,6 +40,7 @@
 #include "trackinfo.h"
 #include "ui/nav.h"
 #include "forecast.h"
+#include "tailnet.h"
 #include "wlan.h"
 
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);  // XML scanning + layout; the default 8 KB is tight
@@ -91,6 +92,7 @@ void setup() {
     log_i("RTC unset: syncing the time from NTP");
     timesync::start();
   }
+  tailnet::begin();  // on USB, the board stays on the tailnet (tailnet.h)
   // Made it through setup() with a frame on the panel: if this is the first boot after an
   // update over Wi-Fi, keep the new image (until now a reset would have rolled it back).
   ota::confirmBoot();

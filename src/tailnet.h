@@ -11,7 +11,9 @@
 //   - a share in Files whose server is (shares.h);
 //   - an HTTP fetch from a host that is (netget.h): a feed on a home server;
 //   - Wi-Fi Drive and Update over Wi-Fi while they're open, so the board answers there too
-//     (webdav.h, ota.h).
+//     (webdav.h, ota.h);
+//   - USB power (begin()): plugged in, the board stays on the tailnet, Wi-Fi with it, so the
+//     other machines always find it; on battery it joins only for the above.
 //
 // A host is on the tailnet (routes()) when it's a Tailscale address (100.64.0.0/10), a MagicDNS
 // name (*.ts.net) or a name without dots, which is how the tailnet names its machines. The voice
@@ -33,6 +35,10 @@
 namespace tailnet {
 
 bool configured();  // the board has an auth key
+
+// Starts the watcher that holds the tailnet while the board is on USB power and lets it go when
+// it's unplugged. After settings::loadCard(); does nothing without an auth key.
+void begin();
 
 bool routes(const std::string &host);  // reached through the tailnet (above); false unless configured()
 

@@ -55,7 +55,8 @@ the same way round in both. Phone photos come out upright (EXIF orientation), an
   IMU's wake on motion wakes it when you turn the board.
 - Audio hardware (amp, codec, the codec's and mic's supply) is on only while something plays,
   rings or records. The PMIC outputs nothing uses stay off.
-- On USB, PWR shows the clock face instead and the board stays on.
+- On USB, PWR shows the clock face instead and the board stays on, and on the tailnet if it has
+  a Tailscale key (Tailnet, below).
 
 **Lock:** with a PIN set (System → PIN LOCK, or `inkdeck.ini` below), the board asks for it in
 the places the build names in `INKDECK_PIN_ON` (`platformio.ini`, set to `files`; all three
@@ -121,8 +122,10 @@ the same way (`smb://erik@macbook/share`), and a podcast feed can be on a tailne
 tailnet too, at `http://inkdeck` or its 100.x address (the screen shows it), so you can copy
 books or push an update from elsewhere. A host counts as on the tailnet when it's a
 100.64.0.0/10 address, ends in `.ts.net`, or has no dots (a machine's name there); the board
-looks such names up in the tailnet's list of machines. It leaves the tailnet a minute after the
-last thing using it lets go, and System's TAILNET row says whether it's on and at what address.
+looks such names up in the tailnet's list of machines. On battery it leaves the tailnet a minute
+after the last thing using it lets go. **On USB power it stays on the tailnet**, Wi-Fi with it, so
+your other machines always find it; unplugged, it goes back to joining only when needed. System's
+TAILNET row says whether it's on and at what address.
 Make the key in Tailscale's admin console (Settings → Keys): reusable and not ephemeral, since
 the board is offline most of the time and Tailscale removes an ephemeral machine soon after it
 goes. Once the board shows up in Machines, turn off its key expiry, or it has to join again with

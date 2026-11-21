@@ -25,6 +25,7 @@
 
 #include "microlink.h"
 #include "ml_inkdeck.h"  // lib/microlink/port: wake a peer, ask whether its session is up
+#include "pmic.h"
 #include "wlan.h"
 
 namespace tailnet {
@@ -42,6 +43,12 @@ constexpr uint32_t kWakeAgainMs = 5000;
 constexpr const char *kNamespace = "tailnet";
 // How long the first join of a boot may take to join again from another relay region.
 constexpr uint32_t kRegionRejoinMs = 15000;
+// The USB watcher (begin()): how often it looks at the power source (pmic::status() caches it
+// for 5 s anyway), and how long it waits after a join that failed: a minute, or 15 for a key the
+// control plane refused, which won't change until a new one is on the card.
+constexpr uint32_t kUsbPollMs = 5000;
+constexpr uint32_t kUsbRetryMs = 60000;
+constexpr uint32_t kUsbRefusedRetryMs = 15 * 60000;
 constexpr int kMaxLanHosts = 8;      // remembered in "lan"; the oldest goes
 constexpr int kMaxLanAddresses = 4;  // kept, and tried at once, per host
 
@@ -275,6 +282,36 @@ void stopNow() {
   }
 }
 
+// On USB power the board holds the tailnet; unplugged, it lets go (and leaves kLingerMs later).
+void usbTask(void *) {
+  bool held = false;
+  uint32_t waitFrom = 0, waitMs = 0;  // after a failed join
+  for (;;) {
+    const pmic::Status p = pmic::status();
+    const bool onUsb = p.ok && p.vbus;
+    if (onUsb && !held && millis() - waitFrom >= waitMs) {
+      std::string error;
+      held = hold(30000, error);
+      if (held) {
+        log_i("tailnet: on USB: staying on the tailnet");
+        waitMs = 0;
+      } else {
+        waitFrom = millis();
+        waitMs = error.find("KEY") != std::string::npos ? kUsbRefusedRetryMs : kUsbRetryMs;
+        log_w("tailnet: on USB, but %s; trying again in %lu min", error.c_str(),
+              static_cast<unsigned long>(waitMs / 60000));
+      }
+    } else if (!onUsb && held) {
+      held = false;
+      release();
+      log_i("tailnet: off USB: leaving the tailnet unless something else needs it");
+    } else if (!onUsb) {
+      waitMs = 0;  // plugging in again tries at once
+    }
+    vTaskDelay(pdMS_TO_TICKS(kUsbPollMs));
+  }
+}
+
 const char *stateError(microlink_state_t s) {
   switch (s) {
     case ML_STATE_AUTH_FAILED: return "TAILSCALE KEY REFUSED";
@@ -367,6 +404,12 @@ void backgroundTask(void *) {
 }  // namespace
 
 bool configured() { return settings::hasTailscale(); }
+
+void begin() {
+  static bool started = false;
+  if (started || !configured()) return;
+  started = xTaskCreate(usbTask, "tailnet-usb", 4096, nullptr, 1, nullptr) == pdPASS;
+}
 
 bool routes(const std::string &host) {
   if (host.empty() || !configured()) return false;
@@ -653,6 +696,7 @@ extern "C" int lwip_hook_netconn_external_resolve(const char *name, ip_addr_t *a
 namespace tailnet {
 
 bool configured() { return false; }
+void begin() {}
 bool routes(const std::string &) { return false; }
 bool hold(uint32_t, std::string &error) {
   error = "NO TAILNET IN THIS BUILD";
