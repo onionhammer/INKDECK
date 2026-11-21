@@ -23,6 +23,7 @@ mod claude;
 mod herdr;
 mod lock;
 mod mock;
+mod schedule;
 pub mod store;
 mod tools;
 
@@ -34,7 +35,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tokio::sync::{Notify, broadcast, mpsc, oneshot};
 use tokio::task::AbortHandle;
-use voice_proto::{AgentHello, AskView, Backend, SessionList, SessionView, State};
+use voice_proto::{AgentHello, AskView, Backend, OnDeadline, SessionList, SessionView, State};
 
 use crate::config;
 use crate::harness::Harness;
@@ -52,10 +53,18 @@ pub use lock::Unlock;
 pub use lock::sha256_hex;
 use store::{Question, Session, Who};
 pub use tools::Answer;
+pub use tools::ProposeTool;
 use tools::SessionTools;
 
 /// How often finished sessions past `keep_days` are looked for.
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
+/// The scheduler looks at least this often (seconds), whatever is due: a clock change can move
+/// a schedule's time.
+const TICK_MAX: u64 = 300;
+/// A run missed by more than this (the daemon was down) is skipped, not run late.
+const MISSED_AFTER: u64 = 3600;
+/// What this daemon can do beyond the first version, for the board (AgentHello::features).
+pub const FEATURES: &[&str] = &["pause", "run", "jobs", "schedule", "watch", "deadline"];
 /// How long words for a herdr session wait for the board to send them.
 #[cfg(not(test))]
 const DRAFT_TTL: Duration = Duration::from_secs(120);
@@ -97,6 +106,8 @@ pub struct Agent {
     /// Drafts by id, and when each was made.
     drafts: Mutex<HashMap<String, (Draft, std::time::Instant)>>,
     next_draft: std::sync::atomic::AtomicU64,
+    /// Wakes the scheduler (tick) after any change: a new schedule, a deadline, a pause.
+    clock: Arc<Notify>,
 }
 
 /// What sessions can run on besides the api backend, built at startup (agent::start).
@@ -121,6 +132,9 @@ struct Live {
     /// A herdr session's last lines of screen, and until when someone is looking at them.
     screen: Option<Vec<String>>,
     watched: Option<std::time::Instant>,
+    /// It was paused and resumed while it asked: the run that asked is gone, and an answer
+    /// starts a new one that is told so.
+    after_pause: bool,
 }
 
 impl Live {
@@ -133,6 +147,7 @@ impl Live {
             wake: Arc::new(Notify::new()),
             screen: None,
             watched: None,
+            after_pause: false,
         }
     }
 
@@ -210,6 +225,13 @@ pub enum Said {
     },
     /// They were typed into a program in a herdr terminal.
     Typed { program: String, place: String },
+}
+
+/// Why a run starts again without its tool results: what it is told (resume_note).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Why {
+    Restart,
+    Pause,
 }
 
 /// The session model for `cfg`: the mock plays a whole session (mock.rs).
@@ -407,6 +429,7 @@ impl Agent {
             herdr: OnceLock::new(),
             drafts: Mutex::default(),
             next_draft: Default::default(),
+            clock: Arc::new(Notify::new()),
         });
         if agent.claude.is_some() {
             let bridge = bridge::Bridge::start(Arc::downgrade(&agent))?;
@@ -419,7 +442,7 @@ impl Agent {
             for live in sessions.values_mut() {
                 // herdr sessions aren't run by the daemon: herdr.rs catches up with them.
                 if live.session.state == State::Working && live.session.backend != Backend::Herdr {
-                    let note = resume_note(&live.session, None);
+                    let note = resume_note(&live.session, Why::Restart, None);
                     live.session.inbox.push(note);
                     agent.save(&live.session);
                     agent.spawn_run(live);
@@ -445,6 +468,24 @@ impl Agent {
                 agent.prune(store::now());
             }
         });
+        // The scheduler: schedules, watches and deadlines, at the earliest due, or sooner when
+        // something changes.
+        let (weak, clock) = (Arc::downgrade(&agent), agent.clock.clone());
+        tokio::spawn(async move {
+            loop {
+                let wait = {
+                    let Some(agent) = weak.upgrade() else { return };
+                    let now = store::now();
+                    agent
+                        .tick(now)
+                        .map_or(TICK_MAX, |due| due.saturating_sub(now).clamp(1, TICK_MAX))
+                };
+                tokio::select! {
+                    () = tokio::time::sleep(Duration::from_secs(wait)) => {}
+                    () = clock.notified() => {}
+                }
+            }
+        });
         Ok(agent)
     }
 
@@ -453,6 +494,7 @@ impl Agent {
             place: self.place.clone(),
             pin: self.lock.has_pin(),
             unlocked,
+            features: FEATURES.iter().map(|f| f.to_string()).collect(),
         }
     }
 
@@ -485,7 +527,12 @@ impl Agent {
     /// The list; `locked`, only the counts.
     pub fn list(&self, locked: bool) -> SessionList {
         let sessions = self.sessions.lock().unwrap();
-        store::list(sessions.values().map(|l| &l.session), &self.place, locked)
+        store::list(
+            sessions.values().map(|l| &l.session),
+            &self.place,
+            locked,
+            store::now(),
+        )
     }
 
     /// One session in full. Looking at a herdr session keeps its screen fresh for a while.
@@ -512,6 +559,12 @@ impl Agent {
     fn backend_of(&self, id: &str) -> Option<Backend> {
         let sessions = self.sessions.lock().unwrap();
         sessions.get(id).map(|l| l.session.backend)
+    }
+
+    /// What a session is doing (None: no such session).
+    fn state_of(&self, id: &str) -> Option<State> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions.get(id).map(|l| l.session.state)
     }
 
     /// The session's pending question.
@@ -571,6 +624,20 @@ impl Agent {
     /// Talks into a session: answers its question in words, joins its work, or starts it again
     /// if it had finished. Into a herdr session, the words are typed.
     pub async fn say(self: &Arc<Self>, id: &str, text: &str) -> Result<Said, Refusal> {
+        if self.state_of(id) == Some(State::Proposed) {
+            let title = self
+                .sessions
+                .lock()
+                .unwrap()
+                .get(id)
+                .map(|l| l.session.title.clone())
+                .unwrap_or_default();
+            self.approve(id, Some(text)).await?;
+            return Ok(Said::Added {
+                title,
+                now: "starting it".into(),
+            });
+        }
         match self.backend_of(id).ok_or(Refusal::NoSuchSession)? {
             Backend::Herdr => {
                 let herdr = self.herdr.get().ok_or_else(no_herdr)?;
@@ -610,7 +677,37 @@ impl Agent {
                     now: live.session.sub(),
                 }
             }
-            _ => {
+            State::Paused => {
+                // Words for a paused session pick it up again.
+                live.session.inbox.push(text.to_string());
+                live.session.add_log(&format!("you: {text}"), now);
+                self.resume_live(live, now);
+                Said::Added {
+                    title: live.session.title.clone(),
+                    now: live.session.sub(),
+                }
+            }
+            State::Scheduled | State::Watch => {
+                // Changing it by voice: a leg that hears the words and can call schedule or
+                // watch again. It isn't a run, and it leaves the last run's result alone.
+                let s = &mut live.session;
+                s.inbox.push(text.to_string());
+                s.add_log(&format!("you: {text}"), now);
+                s.state = State::Working;
+                s.updated = now;
+                self.spawn_run(live);
+                Said::Added {
+                    title: live.session.title.clone(),
+                    now: "waiting for its next run".into(),
+                }
+            }
+            State::Proposed => return Err(Refusal::Other("it waits to be started".into())),
+            State::Done
+            | State::Note
+            | State::Fail
+            | State::Stopped
+            | State::Idle
+            | State::Unknown => {
                 let said = Said::Resumed {
                     title: live.session.title.clone(),
                     result: live.session.result.clone(),
@@ -741,7 +838,12 @@ impl Agent {
             None => Some(answer),
         };
         if let Some(answer) = unsent {
-            let note = resume_note(&live.session, Some((&question, &answer)));
+            let why = if std::mem::take(&mut live.after_pause) {
+                Why::Pause
+            } else {
+                Why::Restart
+            };
+            let note = resume_note(&live.session, why, Some((&question, &answer)));
             live.session.inbox.push(note);
             if live.running() {
                 live.wake.notify_one();
@@ -760,7 +862,10 @@ impl Agent {
         }
         let mut sessions = self.sessions.lock().unwrap();
         let live = sessions.get_mut(id).ok_or(Refusal::NoSuchSession)?;
-        if !matches!(live.session.state, State::Working | State::Ask) {
+        if !matches!(
+            live.session.state,
+            State::Working | State::Ask | State::Paused | State::Scheduled | State::Watch
+        ) {
             return Err(Refusal::NotRunning);
         }
         if live.session.backend == Backend::Claude {
@@ -823,6 +928,7 @@ impl Agent {
             tracing::warn!(session = %id, "couldn't delete its file: {e}");
         }
         let _ = std::fs::remove_file(self.dir.join(format!("{id}.mcp.json")));
+        let _ = std::fs::remove_dir_all(self.work_dir(id));
         tracing::info!(session = %id, "deleted");
         self.notify(id, false);
         Ok(())
@@ -841,6 +947,340 @@ impl Agent {
             let _ = store::remove(&self.dir, &id);
             self.notify(&id, false);
         }
+    }
+
+    /// Pauses a working or asking session, a schedule or a watch: its run stops (a claude
+    /// run's process ends), and it keeps its plan, its inbox and its question. herdr sessions
+    /// can't be paused.
+    pub fn pause(self: &Arc<Self>, id: &str) -> Result<(), Refusal> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let live = sessions.get_mut(id).ok_or(Refusal::NoSuchSession)?;
+        if live.session.backend == Backend::Herdr {
+            return Err(Refusal::Other("a herdr session can't be paused".into()));
+        }
+        match live.session.state {
+            State::Working | State::Ask | State::Scheduled | State::Watch => {}
+            State::Paused => return Ok(()),
+            _ => return Err(Refusal::NotRunning),
+        }
+        if live.session.backend == Backend::Claude {
+            live.wake.notify_one(); // the run sees it isn't its session's any more
+        } else if let Some(run) = live.run.take() {
+            run.abort();
+        }
+        live.generation += 1;
+        live.waiting = None;
+        let now = store::now();
+        let s = &mut live.session;
+        s.paused_from = Some(s.state);
+        s.state = State::Paused;
+        s.updated = now;
+        s.add_log("paused", now);
+        tracing::info!(session = %id, "paused");
+        self.save(&live.session);
+        self.notify(id, false);
+        Ok(())
+    }
+
+    /// Picks a paused session up where it was.
+    pub fn resume(self: &Arc<Self>, id: &str) -> Result<(), Refusal> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let live = sessions.get_mut(id).ok_or(Refusal::NoSuchSession)?;
+        if live.session.state != State::Paused {
+            return Err(Refusal::Other("not paused".into()));
+        }
+        let now = store::now();
+        live.session.add_log("resumed", now);
+        self.resume_live(live, now);
+        tracing::info!(session = %id, state = ?live.session.state, "resumed");
+        self.save(&live.session);
+        self.notify(id, false);
+        Ok(())
+    }
+
+    /// Back to what it was doing before it was paused.
+    fn resume_live(self: &Arc<Self>, live: &mut Live, now: u64) {
+        let s = &mut live.session;
+        s.updated = now;
+        match s.paused_from.take().unwrap_or(State::Working) {
+            State::Ask if s.ask.is_some() => {
+                // The run that asked is gone: the answer starts a new one.
+                s.state = State::Ask;
+                live.after_pause = true;
+                if !s.inbox.is_empty() {
+                    // Words said while paused answer it.
+                    let text = std::mem::take(&mut s.inbox).join("\n\n");
+                    self.deliver(live, Answer::Text(text));
+                }
+            }
+            State::Scheduled if s.schedule.is_some() => {
+                s.state = State::Scheduled;
+                if let Some(sched) = &mut s.schedule {
+                    sched.next_run = schedule::next_run(
+                        schedule::parse_at(&sched.at).unwrap_or((0, 0)),
+                        sched.days,
+                        now,
+                    );
+                }
+            }
+            State::Watch if s.watch.is_some() => {
+                s.state = State::Watch;
+                if let Some(watch) = &mut s.watch {
+                    watch.next_look = now + watch.every_minutes * 60;
+                }
+            }
+            _ => {
+                s.state = State::Working;
+                let note = resume_note(s, Why::Pause, None);
+                s.inbox.insert(0, note);
+                self.spawn_run(live);
+            }
+        }
+    }
+
+    /// Files a job for later (talk's `propose_job`): a session that waits, with no run, until
+    /// someone behind the PIN starts it. Its id.
+    pub fn propose(&self, prompt: &str, title: Option<&str>) -> String {
+        let mut sessions = self.sessions.lock().unwrap();
+        let id = store::new_id(|id| sessions.contains_key(id));
+        let now = store::now();
+        let mut session = Session::new(id.clone(), prompt, now);
+        session.state = State::Proposed;
+        if let Some(title) = title.map(str::trim).filter(|t| !t.is_empty()) {
+            session.title = store::one_line(title, store::TITLE_CHARS);
+        }
+        session.add_log("filed by talk: waiting to be started", now);
+        session.unread = true;
+        tracing::info!(session = %id, title = %session.title, "a job filed by talk");
+        self.save(&session);
+        sessions.insert(id.clone(), Live::new(session));
+        self.notify(&id, false);
+        id
+    }
+
+    /// Starts a job talk filed, with more words if there are any: on the backend new sessions
+    /// run on (with herdr, a program of its own, and the job's placeholder goes). Its id.
+    pub async fn approve(
+        self: &Arc<Self>,
+        id: &str,
+        more: Option<&str>,
+    ) -> Result<String, Refusal> {
+        let prompt = {
+            let mut sessions = self.sessions.lock().unwrap();
+            let live = sessions.get_mut(id).ok_or(Refusal::NoSuchSession)?;
+            if live.session.state != State::Proposed {
+                return Err(Refusal::Other("not a job waiting to be started".into()));
+            }
+            let more = more.map(str::trim).filter(|m| !m.is_empty());
+            if self.backend != Backend::Herdr {
+                let now = store::now();
+                let s = &mut live.session;
+                s.state = State::Working;
+                s.backend = self.backend;
+                if self.backend == Backend::Claude {
+                    s.program = Some(claude::PROGRAM.into());
+                }
+                if let Some(more) = more {
+                    s.inbox.push(more.to_string());
+                    s.add_log(&format!("you: {more}"), now);
+                }
+                s.add_log("started", now);
+                s.unread = false;
+                s.updated = now;
+                self.spawn_run(live);
+                tracing::info!(session = %id, "a filed job started");
+                self.save(&live.session);
+                self.notify(id, false);
+                return Ok(id.to_string());
+            }
+            match more {
+                Some(more) => format!("{}\n\n{more}", live.session.prompt),
+                None => live.session.prompt.clone(),
+            }
+        };
+        let herdr = self.herdr.get().ok_or_else(no_herdr)?;
+        let started = herdr.start_default(self, &prompt).await?;
+        let _ = self.delete(id).await;
+        Ok(started)
+    }
+
+    /// Runs a schedule now, or has a watch look now.
+    pub fn run_now(self: &Arc<Self>, id: &str) -> Result<(), Refusal> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let live = sessions.get_mut(id).ok_or(Refusal::NoSuchSession)?;
+        let now = store::now();
+        match live.session.state {
+            State::Scheduled if live.session.schedule.is_some() => self.start_scheduled(live, now),
+            State::Watch if live.session.watch.is_some() => self.start_look(live, now),
+            _ => {
+                return Err(Refusal::Other(
+                    "only a schedule or a watch can run now".into(),
+                ));
+            }
+        }
+        self.save(&live.session);
+        self.notify(id, false);
+        Ok(())
+    }
+
+    /// What is due: schedules' runs, watches' looks, questions past their deadline. Returns
+    /// when the next thing is due.
+    pub fn tick(self: &Arc<Self>, now: u64) -> Option<u64> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let mut next: Option<u64> = None;
+        let ids: Vec<String> = sessions.keys().cloned().collect();
+        for id in ids {
+            let Some(live) = sessions.get_mut(&id) else {
+                continue;
+            };
+            let (changed, asked) = self.tick_one(live, now);
+            if changed {
+                self.save(&live.session);
+                self.notify(&id, asked);
+            }
+            let s = &live.session;
+            let due = match s.state {
+                State::Scheduled => s.schedule.as_ref().map(|x| x.next_run),
+                State::Watch => s.watch.as_ref().map(|x| x.next_look),
+                State::Ask => s.ask.as_ref().and_then(|q| q.deadline).map(|d| d.at),
+                _ => None,
+            };
+            if let Some(due) = due {
+                next = Some(next.map_or(due, |n| n.min(due)));
+            }
+        }
+        next
+    }
+
+    /// One session's part of tick: whether it changed, and whether it asks again.
+    fn tick_one(self: &Arc<Self>, live: &mut Live, now: u64) -> (bool, bool) {
+        let s = &mut live.session;
+        match s.state {
+            State::Scheduled => {
+                let Some(sched) = &mut s.schedule else {
+                    return (false, false);
+                };
+                if sched.next_run > now {
+                    return (false, false);
+                }
+                if now > sched.next_run + MISSED_AFTER {
+                    let missed = sched.next_run;
+                    let at = schedule::parse_at(&sched.at).unwrap_or((0, 0));
+                    sched.next_run = schedule::next_run(at, sched.days, now);
+                    s.add_log(
+                        &format!("missed the run at {}", schedule::local_text(missed)),
+                        now,
+                    );
+                    return (true, false);
+                }
+                self.start_scheduled(live, now);
+                (true, false)
+            }
+            State::Watch => match &s.watch {
+                Some(watch) if watch.next_look <= now => {
+                    self.start_look(live, now);
+                    (true, false)
+                }
+                _ => (false, false),
+            },
+            State::Ask => {
+                let Some(q) = s.ask.as_mut() else {
+                    return (false, false);
+                };
+                let Some(deadline) = q.deadline.filter(|d| d.at <= now) else {
+                    return (false, false);
+                };
+                match deadline.then {
+                    OnDeadline::AskAgain => {
+                        q.at = now;
+                        q.deadline = Some(store::QuestionDeadline {
+                            at: now + deadline.minutes.max(1) * 60,
+                            ..deadline
+                        });
+                        let question = q.question.clone();
+                        s.unread = true;
+                        s.updated = now;
+                        s.add_log(&format!("asked again: {question}"), now);
+                        (true, true)
+                    }
+                    OnDeadline::Recommend if q.recommend.is_some() => {
+                        let choice = q.recommend.unwrap_or_default();
+                        let title = q
+                            .options
+                            .get(choice)
+                            .map(|o| o.title.clone())
+                            .unwrap_or_default();
+                        s.add_log("nobody answered in time: took the recommendation", now);
+                        self.deliver(live, Answer::Choice { choice, title });
+                        (true, false)
+                    }
+                    OnDeadline::Recommend | OnDeadline::GiveUp => {
+                        s.add_log("nobody answered in time", now);
+                        self.deliver(
+                            live,
+                            Answer::Text(
+                                "(Nobody answered in time. Give up on this choice and finish \
+                                 with what you have, saying so.)"
+                                    .into(),
+                            ),
+                        );
+                        (true, false)
+                    }
+                }
+            }
+            _ => (false, false),
+        }
+    }
+
+    /// Starts a schedule's run: a fresh run (no conversation, plan or Claude Code session from
+    /// the last one) told to do its prompt now.
+    fn start_scheduled(self: &Arc<Self>, live: &mut Live, now: u64) {
+        let Some(sched) = &mut live.session.schedule else {
+            return;
+        };
+        sched.running_since = Some(now);
+        let prompt = format!(
+            "(A scheduled run, {}: do the task below now, and end with the result as it should \
+             read on the board. The schedule stays as it is: don't call schedule.)\n\n{}",
+            schedule::local_text(now),
+            sched.prompt
+        );
+        tracing::info!(session = %live.session.id, "a scheduled run");
+        self.fresh_run(live, prompt, now);
+    }
+
+    /// Starts a watch's look, fresh like a scheduled run.
+    fn start_look(self: &Arc<Self>, live: &mut Live, now: u64) {
+        let Some(watch) = &mut live.session.watch else {
+            return;
+        };
+        watch.looking_since = Some(now);
+        let prompt = format!(
+            "(A look for your watch, which looks every {} minutes until: {}. Look now: {}. \
+             Then call watch with value set to the reading to chart, if there is a number, or \
+             with met set to true if the condition holds now, and end with one line on what \
+             you found.)",
+            watch.every_minutes, watch.condition, watch.prompt
+        );
+        self.fresh_run(live, prompt, now);
+    }
+
+    fn fresh_run(self: &Arc<Self>, live: &mut Live, prompt: String, now: u64) {
+        let s = &mut live.session;
+        s.claude = None;
+        s.conversation.clear();
+        s.plan = None;
+        s.ask = None;
+        s.expect_at = None;
+        s.inbox = vec![prompt];
+        s.state = State::Working;
+        s.updated = now;
+        self.spawn_run(live);
+    }
+
+    /// Where a session's files are (the files tools).
+    fn work_dir(&self, id: &str) -> PathBuf {
+        self.dir.join("work").join(id)
     }
 
     // What the runs and their tools do.
@@ -885,6 +1325,7 @@ impl Agent {
                 async { tokio::join!(self.llm.respond(request, tx), self.follow(&id, run, rx)) };
             let ((outcome, written), charges) = meter::measure(leg).await;
             let (cost, unpriced) = meter::total(&charges);
+            self.add_cost(&id, run, cost, false);
             tracing::info!(
                 session = %id,
                 ok = outcome.is_ok(),
@@ -987,7 +1428,7 @@ impl Agent {
                     }
                     stretch.clear();
                     // The plan and the question show for themselves.
-                    if name != tools::ASK_TOOL && name != tools::PLAN_TOOL {
+                    if !tools::shows_itself(&name) {
                         self.log(id, run, &tools::short_call(&name, &input));
                     }
                 }
@@ -1020,6 +1461,10 @@ impl Agent {
         }
         let now = store::now();
         let result = written.result.trim();
+        if self.end_planned(live, result, None, now) {
+            return false;
+        }
+        let s = &mut live.session;
         s.state = if result.starts_with("# ") {
             State::Note
         } else {
@@ -1043,6 +1488,72 @@ impl Agent {
         false
     }
 
+    /// The end of a leg of a schedule or a watch (`failed`: why it failed): the run is
+    /// recorded and it waits for the next. False if it is neither, or a watch whose condition
+    /// held (that ends as any session does).
+    fn end_planned(&self, live: &mut Live, result: &str, failed: Option<&str>, now: u64) -> bool {
+        let s = &mut live.session;
+        let first =
+            |text: &str| store::plain(text.lines().find(|l| !l.trim().is_empty()).unwrap_or(""));
+        if let Some(mut sched) = s.schedule.take() {
+            if let Some(since) = sched.running_since.take() {
+                let state = match failed {
+                    Some(_) => State::Fail,
+                    None if result.starts_with("# ") => State::Note,
+                    None => State::Done,
+                };
+                sched.runs.push(store::Run {
+                    at: since,
+                    state,
+                    secs: now.saturating_sub(since),
+                });
+                let extra = sched.runs.len().saturating_sub(store::RUNS_KEPT);
+                sched.runs.drain(..extra);
+                s.result = Some(match failed {
+                    Some(message) => store::cut_bytes(message, store::RESULT_BYTES),
+                    None if result.is_empty() => "Finished, with nothing to report.".into(),
+                    None => store::cut_bytes(result, store::RESULT_BYTES),
+                });
+                s.unread = true;
+            } else {
+                // Words said into it, or the leg that made it: the reply goes to the log.
+                match failed {
+                    Some(message) => s.add_log(&format!("failed: {message}"), now),
+                    None => s.add_log(&first(result), now),
+                }
+            }
+            let at = schedule::parse_at(&sched.at).unwrap_or((0, 0));
+            sched.next_run = schedule::next_run(at, sched.days, now);
+            s.schedule = Some(sched);
+            s.state = State::Scheduled;
+        } else if let Some(mut watch) = s.watch.take() {
+            if watch.met && failed.is_none() {
+                s.watch = Some(watch);
+                return false;
+            }
+            watch.looking_since = None;
+            watch.met = false;
+            match failed {
+                Some(message) => s.add_log(&format!("failed: {message}"), now),
+                None => s.add_log(&first(result), now),
+            }
+            watch.next_look = now + watch.every_minutes * 60;
+            s.watch = Some(watch);
+            s.state = State::Watch;
+        } else {
+            return false;
+        }
+        s.plan = None;
+        s.expect_at = None;
+        s.updated = now;
+        live.run = None;
+        live.waiting = None;
+        tracing::info!(session = %s.id, state = ?s.state, "waits for its next run");
+        self.save(&live.session);
+        self.notify(&live.session.id, false);
+        true
+    }
+
     fn fail(&self, id: &str, run: u64, error: &anyhow::Error) {
         let mut sessions = self.sessions.lock().unwrap();
         let Some(live) = own(&mut sessions, id, run) else {
@@ -1061,6 +1572,9 @@ impl Agent {
         };
         tracing::warn!(session = %id, "session failed: {message}");
         let now = store::now();
+        if self.end_planned(live, "", Some(&message), now) {
+            return;
+        }
         let s = &mut live.session;
         s.add_log(&format!("failed: {message}"), now);
         s.state = State::Fail;
@@ -1090,6 +1604,9 @@ impl Agent {
         s.asked += 1;
         question.id = format!("a{}", s.asked);
         question.at = now;
+        if let Some(deadline) = &mut question.deadline {
+            deadline.at = now + deadline.minutes * 60;
+        }
         s.add_log(&format!("asked: {}", question.question), now);
         s.ask = Some(question);
         s.state = State::Ask;
@@ -1111,18 +1628,114 @@ impl Agent {
         steps: Vec<String>,
         current: usize,
         title: Option<String>,
+        expect_minutes: Option<u64>,
     ) -> Result<(), String> {
         let mut sessions = self.sessions.lock().unwrap();
         let live = own(&mut sessions, id, run).ok_or("the session was stopped")?;
         let s = &mut live.session;
+        let now = store::now();
         s.plan = Some(store::Plan { steps, current });
         if let Some(title) = title {
             s.title = title;
         }
+        if let Some(minutes) = expect_minutes {
+            s.expect_at = Some(now + minutes.max(1) * 60);
+        }
+        s.updated = now;
+        self.save(s);
+        self.notify(id, false);
+        Ok(())
+    }
+
+    /// schedule: makes the session a schedule (or changes it), keeping the runs it had.
+    fn set_schedule(&self, id: &str, run: u64, mut sched: store::Schedule) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let live = own(&mut sessions, id, run).ok_or("the session was stopped")?;
+        let s = &mut live.session;
+        if let Some(old) = s.schedule.take() {
+            sched.runs = old.runs;
+            sched.running_since = old.running_since;
+        }
+        s.add_log(
+            &format!(
+                "scheduled {} at {}",
+                schedule::days_words(sched.days),
+                sched.at
+            ),
+            store::now(),
+        );
+        s.schedule = Some(sched);
         s.updated = store::now();
         self.save(s);
         self.notify(id, false);
         Ok(())
+    }
+
+    /// schedule with cancel: the session is a schedule no more, and ends as any session does.
+    fn cancel_schedule(&self, id: &str, run: u64) -> Result<bool, String> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let live = own(&mut sessions, id, run).ok_or("the session was stopped")?;
+        let had = live.session.schedule.take().is_some();
+        if had {
+            live.session.add_log("schedule cancelled", store::now());
+            self.save(&live.session);
+            self.notify(id, false);
+        }
+        Ok(had)
+    }
+
+    /// watch, set up: makes the session a watch (or changes it), keeping its readings.
+    fn set_watch(&self, id: &str, run: u64, mut watch: store::Watch) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let live = own(&mut sessions, id, run).ok_or("the session was stopped")?;
+        let s = &mut live.session;
+        if let Some(old) = s.watch.take() {
+            watch.values = old.values;
+            watch.looking_since = old.looking_since;
+        }
+        s.add_log(
+            &format!(
+                "watching every {} min: {}",
+                watch.every_minutes, watch.condition
+            ),
+            store::now(),
+        );
+        s.watch = Some(watch);
+        s.updated = store::now();
+        self.save(s);
+        self.notify(id, false);
+        Ok(())
+    }
+
+    /// watch, at a look: a reading, and whether the condition holds. Err if it isn't a watch.
+    fn watch_reading(
+        &self,
+        id: &str,
+        run: u64,
+        value: Option<f64>,
+        met: bool,
+    ) -> Result<(), String> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let live = own(&mut sessions, id, run).ok_or("the session was stopped")?;
+        let watch = live.session.watch.as_mut().ok_or(
+            "this task isn't a watch yet: give every_minutes and condition to make it one",
+        )?;
+        if let Some(value) = value.filter(|v| v.is_finite()) {
+            watch.values.push(value);
+            let extra = watch.values.len().saturating_sub(store::VALUES_KEPT);
+            watch.values.drain(..extra);
+        }
+        watch.met |= met;
+        live.session.updated = store::now();
+        self.save(&live.session);
+        self.notify(id, false);
+        Ok(())
+    }
+
+    /// Whether a session is a watch (for the tool, which sets one up or takes a reading).
+    fn is_watch(&self, id: &str) -> bool {
+        let sessions = self.sessions.lock().unwrap();
+        sessions.get(id).is_some_and(|l| l.session.watch.is_some())
     }
 
     /// Adds a line to the session's log, from its run.
@@ -1138,6 +1751,19 @@ impl Agent {
         self.notify(id, false);
     }
 
+    /// Adds what a leg's model requests cost.
+    fn add_cost(&self, id: &str, run: u64, usd: f64, notional: bool) {
+        if usd <= 0.0 {
+            return;
+        }
+        let mut sessions = self.sessions.lock().unwrap();
+        if let Some(live) = own(&mut sessions, id, run) {
+            live.session.cost += usd;
+            live.session.cost_notional |= notional;
+            self.save(&live.session);
+        }
+    }
+
     fn save(&self, session: &Session) {
         if let Err(e) = store::save(&self.dir, session) {
             tracing::warn!(session = %session.id, "couldn't save it: {e}");
@@ -1150,6 +1776,8 @@ impl Agent {
             session: id.to_string(),
             asked,
         });
+        // Something changed: what is due may have too.
+        self.clock.notify_one();
     }
 
     /// Stops every run, as a daemon that quits does (for tests of a restart).
@@ -1167,19 +1795,29 @@ fn no_herdr() -> Refusal {
     Refusal::Other("no [herdr] on this daemon".into())
 }
 
-/// What a new run is told when the daemon restarted under the session: that the tool results
-/// are gone, its plan and what it did, and the answer to its question if that is what it was
-/// waiting for.
-fn resume_note(s: &Session, answered: Option<(&Question, &Answer)>) -> String {
-    let mut note = format!(
-        "(inkharness restarted while this task {}, so the results of the tool calls before \
-         that are gone.",
-        if answered.is_some() {
-            "waited for an answer"
-        } else {
-            "was being worked on"
+/// What a new run is told when it starts without the last one's tool results (the daemon
+/// restarted, or the user paused it): its plan and what it did, and the answer to its question
+/// if that is what it was waiting for.
+fn resume_note(s: &Session, why: Why, answered: Option<(&Question, &Answer)>) -> String {
+    let when = if answered.is_some() {
+        "waited for an answer"
+    } else {
+        "was being worked on"
+    };
+    let mut note = match why {
+        Why::Restart => format!(
+            "(inkharness restarted while this task {when}, so the results of the tool calls \
+             before that are gone."
+        ),
+        // A claude run resumes its own session, tool results and all.
+        Why::Pause if s.backend == Backend::Claude => {
+            format!("(The user paused this task while it {when}, and has resumed it.")
         }
-    );
+        Why::Pause => format!(
+            "(The user paused this task while it {when}, and has resumed it. The results of \
+             the tool calls before the pause are gone."
+        ),
+    };
     if let Some(plan) = &s.plan {
         let steps: Vec<String> = plan
             .steps
@@ -1261,6 +1899,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::llm::{Outcome, Request};
+    use tools::PROPOSE_TOOL;
 
     pub fn cfg(dir: &Path) -> config::Agent {
         config::Agent {
@@ -1612,6 +2251,7 @@ pub(crate) mod tests {
             options: vec![],
             recommend: None,
             at: 0,
+            deadline: None,
         };
         assert!(agent.put_question(&id, run, question).is_err());
         agent.log(&id, run, "a late line");
@@ -1772,5 +2412,289 @@ pub(crate) mod tests {
         assert!(!dir.join("old1.json").exists());
         agent.prune(now + 2 * day);
         assert!(agent.view("kept1").is_none() && agent.view("ask1").is_some());
+    }
+
+    /// Whether the session's log has a line containing `text`.
+    fn logged(view: &SessionView, text: &str) -> bool {
+        view.log.iter().any(|l| l.text.contains(text))
+    }
+
+    #[tokio::test]
+    async fn paused_sessions_pick_up_where_they_were() {
+        let dir = crate::skills::tests::scratch("agent-pause");
+        let agent = mock(&dir);
+
+        // Asking: paused, the question stays; resumed, it asks again, and the answer starts a
+        // new run that is told it was paused.
+        let id = agent.start("ask me which plumber").await.unwrap();
+        until(&agent, &id, State::Ask).await;
+        agent.pause(&id).unwrap();
+        let view = agent.view(&id).unwrap();
+        assert_eq!(view.state, State::Paused);
+        assert!(view.ask.is_some());
+        assert_eq!(agent.list(false).counts.ask, 0);
+        agent.resume(&id).unwrap();
+        let view = until(&agent, &id, State::Ask).await;
+        agent.answer(&id, &view.ask.unwrap().id, 1).await.unwrap();
+        let view = until(&agent, &id, State::Done).await;
+        let result = view.result.unwrap();
+        assert!(
+            result.contains("paused this task") && result.contains("Northgate"),
+            "{result}"
+        );
+
+        // Working: resumed, it starts again, told so.
+        let id = agent.start("a slow job").await.unwrap();
+        until(&agent, &id, State::Working).await;
+        agent.pause(&id).unwrap();
+        assert_eq!(agent.view(&id).unwrap().state, State::Paused);
+        agent.resume(&id).unwrap();
+        let view = until(&agent, &id, State::Done).await;
+        assert!(view.result.unwrap().contains("paused this task"));
+
+        // Finished: nothing to pause or resume.
+        assert_eq!(agent.pause(&id), Err(Refusal::NotRunning));
+        assert!(agent.resume(&id).is_err());
+
+        // Words for a paused session pick it up.
+        let id = agent.start("another slow job").await.unwrap();
+        until(&agent, &id, State::Working).await;
+        agent.pause(&id).unwrap();
+        agent.say(&id, "carry on please").await.unwrap();
+        let view = until(&agent, &id, State::Done).await;
+        assert!(view.result.unwrap().contains("carry on please"));
+    }
+
+    #[tokio::test]
+    async fn a_schedule_runs_records_each_run_and_waits_again() {
+        let dir = crate::skills::tests::scratch("agent-schedule");
+        let agent = mock(&dir);
+        let id = agent.start("schedule a morning brief").await.unwrap();
+        let view = until(&agent, &id, State::Scheduled).await;
+        let sched = view.schedule.clone().unwrap();
+        assert_eq!(
+            (sched.at.as_str(), sched.days.as_str()),
+            ("07:00", "MTWTF..")
+        );
+        assert!(sched.wake_board && sched.runs.is_empty() && sched.next > store::now());
+        assert_eq!(view.result, None);
+        assert!(logged(&view, "Scheduled weekdays at 07:00"));
+        let list = agent.list(false);
+        assert_eq!((list.counts.planned, list.next_at), (1, Some(sched.next)));
+        // It wakes the board once the run should be done: a minute after it starts.
+        assert_eq!(list.check_at, Some(sched.next + 60));
+        assert_eq!(list.sessions[0].next_at, Some(sched.next));
+
+        // A run: fresh (no Claude Code session to resume), recorded, its result kept.
+        agent
+            .sessions
+            .lock()
+            .unwrap()
+            .get_mut(&id)
+            .unwrap()
+            .session
+            .claude = Some("old".into());
+        agent.run_now(&id).unwrap();
+        assert_eq!(agent.sessions.lock().unwrap()[&id].session.claude, None);
+        let view = until(&agent, &id, State::Scheduled).await;
+        let runs = &view.schedule.as_ref().unwrap().runs;
+        assert_eq!((runs.len(), runs[0].state), (1, State::Done));
+        let result = view.result.clone().unwrap();
+        assert!(result.starts_with("**Brief:**"), "{result}");
+        let list = agent.list(false);
+        assert_eq!(list.latest.done, view.updated);
+        assert!(list.sessions[0].unread);
+
+        // Changed by voice: a leg, not a run; the result stays.
+        agent.say(&id, "make it eight").await.unwrap();
+        let view = until(&agent, &id, State::Scheduled).await;
+        assert_eq!(view.result.as_deref(), Some(result.as_str()));
+        assert_eq!(view.schedule.as_ref().unwrap().runs.len(), 1);
+        assert!(logged(&view, "You said: make it eight"));
+
+        // Its time comes: the scheduler runs it.
+        let next = view.schedule.as_ref().unwrap().next;
+        agent.tick(next);
+        let view = until(&agent, &id, State::Scheduled).await;
+        assert_eq!(view.schedule.as_ref().unwrap().runs.len(), 2);
+
+        // A run missed by more than an hour (the daemon was down) is skipped.
+        let next = view.schedule.as_ref().unwrap().next;
+        agent.tick(next + 2 * 3600);
+        let view = agent.view(&id).unwrap();
+        assert_eq!(view.state, State::Scheduled);
+        assert_eq!(view.schedule.as_ref().unwrap().runs.len(), 2);
+        assert!(logged(&view, "missed the run"));
+
+        // Stopped, it runs no more.
+        agent.stop(&id).await.unwrap();
+        assert_eq!(agent.view(&id).unwrap().state, State::Stopped);
+        assert!(agent.run_now(&id).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_failed_scheduled_run_keeps_the_schedule() {
+        let dir = crate::skills::tests::scratch("agent-schedule-fail");
+        let agent = mock(&dir);
+        let id = agent
+            .start("schedule a brief that will fail")
+            .await
+            .unwrap();
+        until(&agent, &id, State::Scheduled).await;
+        agent.run_now(&id).unwrap();
+        let view = until(&agent, &id, State::Scheduled).await;
+        let runs = &view.schedule.as_ref().unwrap().runs;
+        assert_eq!((runs.len(), runs[0].state), (1, State::Fail));
+        assert!(view.result.unwrap().contains("failed"));
+        // Paused, it waits; resumed, its next run is in the future again.
+        agent.pause(&id).unwrap();
+        assert_eq!(agent.view(&id).unwrap().state, State::Paused);
+        agent.tick(store::now() + 30 * 86_400);
+        assert_eq!(agent.view(&id).unwrap().state, State::Paused);
+        agent.resume(&id).unwrap();
+        let view = agent.view(&id).unwrap();
+        assert_eq!(view.state, State::Scheduled);
+        assert!(view.schedule.unwrap().next > store::now());
+    }
+
+    #[tokio::test]
+    async fn a_watch_looks_until_its_condition_holds() {
+        let dir = crate::skills::tests::scratch("agent-watch");
+        let agent = mock(&dir);
+        let id = agent.start("watch the fare to Lisbon").await.unwrap();
+        let view = until(&agent, &id, State::Watch).await;
+        let watch = view.watch.clone().unwrap();
+        assert_eq!(watch.every_minutes, 5);
+        let next = watch.next.unwrap();
+        assert!(next > store::now() + 250);
+        assert_eq!(agent.list(false).check_at, Some(next));
+
+        // A look: a reading, and it waits again.
+        agent.tick(next);
+        let view = until(&agent, &id, State::Watch).await;
+        assert_eq!(view.watch.as_ref().unwrap().values, [712.0]);
+        assert_eq!(agent.list(false).sessions[0].spark, [712.0]);
+        assert!(logged(&view, "Looked: $712."));
+        assert!(!agent.list(false).sessions[0].unread);
+
+        // The condition holds: done, and the board is told.
+        let id = agent.start("watch until DROPPED").await.unwrap();
+        until(&agent, &id, State::Watch).await;
+        agent.run_now(&id).unwrap();
+        let view = until(&agent, &id, State::Done).await;
+        assert!(view.watch.as_ref().unwrap().met);
+        assert_eq!(agent.list(false).latest.done, view.updated);
+    }
+
+    #[tokio::test]
+    async fn a_question_past_its_deadline() {
+        let dir = crate::skills::tests::scratch("agent-deadline");
+        let agent = mock(&dir);
+        let later = store::now() + 120;
+
+        // The recommendation, by default.
+        let id = agent.start("a deadline").await.unwrap();
+        let view = until(&agent, &id, State::Ask).await;
+        let deadline = view.ask.unwrap().deadline.unwrap();
+        assert_eq!(deadline.then, OnDeadline::Recommend);
+        agent.tick(later);
+        let view = until(&agent, &id, State::Done).await;
+        assert!(view.result.unwrap().contains("Riverside"));
+
+        // Giving up.
+        let id = agent.start("a deadline, then give up").await.unwrap();
+        until(&agent, &id, State::Ask).await;
+        agent.tick(later);
+        let view = until(&agent, &id, State::Done).await;
+        assert!(view.result.unwrap().contains("Nobody answered in time"));
+
+        // Asking again: the same question, asked anew, with a new deadline.
+        let id = agent.start("a deadline, ask again").await.unwrap();
+        until(&agent, &id, State::Ask).await;
+        let mut events = agent.subscribe();
+        agent.tick(later);
+        let ask = agent.view(&id).unwrap().ask.unwrap();
+        assert_eq!((ask.at, ask.deadline.unwrap().at), (later, later + 60));
+        let event = events.recv().await.unwrap();
+        assert!(event.asked && event.session == id);
+        assert_eq!(agent.list(true).latest.ask, later);
+
+        // Paused, nothing happens at the deadline.
+        agent.pause(&id).unwrap();
+        agent.tick(later + 3600);
+        assert_eq!(agent.view(&id).unwrap().state, State::Paused);
+    }
+
+    #[tokio::test]
+    async fn jobs_filed_by_talk_wait_to_be_started() {
+        let dir = crate::skills::tests::scratch("agent-jobs");
+        let agent = mock(&dir);
+        let id = agent.propose("compare three plumbers", Some("Plumbers"));
+        let view = agent.view(&id).unwrap();
+        assert_eq!(
+            (view.state, view.title.as_str()),
+            (State::Proposed, "Plumbers")
+        );
+        let list = agent.list(false);
+        assert_eq!(
+            (list.counts.proposed, list.sessions[0].id.as_str()),
+            (1, id.as_str())
+        );
+        assert_eq!(list.sessions[0].sub, "compare three plumbers");
+        // Nothing runs it until it's started.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(agent.view(&id).unwrap().state, State::Proposed);
+        assert_eq!(agent.approve(&id, None).await.unwrap(), id);
+        let view = until(&agent, &id, State::Done).await;
+        assert!(view.result.unwrap().contains("compare three plumbers"));
+        assert!(agent.approve(&id, None).await.is_err());
+
+        // Said into, it starts with the words.
+        let id = agent.propose("find a plumber", None);
+        agent.say(&id, "for Saturday").await.unwrap();
+        until(&agent, &id, State::Done).await;
+
+        // Talk's tool files one; [talk] tools can leave it out.
+        let tools = tools().with_extra(Arc::new(ProposeTool {
+            agent: agent.clone(),
+        }));
+        let names = |t: &ToolSet| t.defs().iter().map(|d| d.name.clone()).collect::<Vec<_>>();
+        assert!(names(&tools).contains(&PROPOSE_TOOL.to_string()));
+        let narrowed = tools.only(&["run_js".into()]);
+        assert!(!names(&narrowed).contains(&PROPOSE_TOOL.to_string()));
+        assert!(
+            narrowed
+                .call(PROPOSE_TOOL, serde_json::json!({"prompt": "x"}))
+                .await
+                .is_err()
+        );
+        let before = agent.list(false).counts.proposed;
+        tools
+            .call(PROPOSE_TOOL, serde_json::json!({"prompt": "book a table"}))
+            .await
+            .unwrap();
+        assert_eq!(agent.list(false).counts.proposed, before + 1);
+    }
+
+    #[tokio::test]
+    async fn a_session_says_when_it_expects_to_be_done() {
+        let dir = crate::skills::tests::scratch("agent-expect");
+        let agent = mock(&dir);
+        let id = agent
+            .start("ask, and expect it to take a while")
+            .await
+            .unwrap();
+        until(&agent, &id, State::Ask).await;
+        let at = agent.sessions.lock().unwrap()[&id]
+            .session
+            .expect_at
+            .unwrap();
+        assert!(at > store::now() + 25 * 60);
+        // Only while it works.
+        assert_eq!(agent.list(false).check_at, None);
+        let ask = agent.view(&id).unwrap().ask.unwrap();
+        agent.answer(&id, &ask.id, 0).await.unwrap();
+        until(&agent, &id, State::Done).await;
+        assert_eq!(agent.list(false).check_at, None);
     }
 }

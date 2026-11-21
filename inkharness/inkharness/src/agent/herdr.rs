@@ -804,7 +804,7 @@ impl Agent {
         let now = store::now();
         let mut sessions = self.sessions.lock().unwrap();
         let finished = t["state"] == "finished";
-        if !counts && !(finished && sessions.contains_key(&id)) {
+        if !counts && (!finished || !sessions.contains_key(&id)) {
             // A session whose program has gone (Claude Code ended, its shell is back).
             if let Some(live) = sessions.get_mut(&id)
                 && !live.session.state.finished()
@@ -883,6 +883,7 @@ impl Agent {
                         options: Vec::new(),
                         recommend: None,
                         at: now,
+                        deadline: None,
                     });
                     s.unread = true;
                     ask_now = Some((side.clone(), msg.clone().unwrap_or_default()));

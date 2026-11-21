@@ -28,6 +28,10 @@
 //! POST   /sessions/{id}/drop_draft {"draft"}
 //! POST   /sessions/{id}/answer {"ask", "choice"}
 //! POST   /sessions/{id}/stop
+//! POST   /sessions/{id}/pause           pauses it (a schedule or a watch: stops running)
+//! POST   /sessions/{id}/resume          picks it up where it was
+//! POST   /sessions/{id}/run             a schedule: runs now; a watch: looks now
+//! POST   /sessions/{id}/approve         starts a job talk filed: {"session": "k7q2"}
 //! POST   /sessions/{id}/kill            a herdr session: end its program ([herdr] kill)
 //! DELETE /sessions/{id}
 //! ```
@@ -142,6 +146,10 @@ pub async fn serve(listener: TcpListener, api: Arc<Api>) -> Result<()> {
         .route("/sessions/{id}/say", post(say_session))
         .route("/sessions/{id}/answer", post(answer_session))
         .route("/sessions/{id}/stop", post(stop_session))
+        .route("/sessions/{id}/pause", post(pause_session))
+        .route("/sessions/{id}/resume", post(resume_session))
+        .route("/sessions/{id}/run", post(run_session))
+        .route("/sessions/{id}/approve", post(approve_session))
         .route("/sessions/{id}/kill", post(kill_session))
         .route("/sessions/{id}/send_draft", post(send_draft))
         .route("/sessions/{id}/drop_draft", post(drop_draft))
@@ -390,6 +398,53 @@ async fn stop_session(
 ) -> Response {
     match sessions(&api, &headers) {
         Ok(agent) => done(agent.stop(&id).await),
+        Err(response) => *response,
+    }
+}
+
+async fn pause_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => done(agent.pause(&id)),
+        Err(response) => *response,
+    }
+}
+
+async fn resume_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => done(agent.resume(&id)),
+        Err(response) => *response,
+    }
+}
+
+async fn run_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => done(agent.run_now(&id)),
+        Err(response) => *response,
+    }
+}
+
+async fn approve_session(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => match agent.approve(&id, None).await {
+            Ok(id) => Json(json!({"session": id})).into_response(),
+            Err(refusal) => refused(refusal),
+        },
         Err(response) => *response,
     }
 }

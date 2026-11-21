@@ -176,6 +176,8 @@ There are two kinds of turn, and the daemon keeps them apart, whatever else the 
 - **Talk** (`listen_start` with no `mode`, as every board before sessions sends it, or
   `"mode": "talk"`): today's voice, with its own short conversation per connection and the tools
   `[talk] tools` leaves it (the device's always stay). It never sees, starts or answers a session.
+  Its one way into the Agent is `propose_job`: it files a job, a `proposed` session that waits on
+  the list until someone behind the PIN starts it (`approve`).
 - **Agent** (`"mode": "agent"`): starts a session, or talks into the one in `session`.
 
 Sessions are offered only on encrypted connections (protocol 2). On a protocol 1 connection the
@@ -187,13 +189,19 @@ The daemon's `hello` gains `agent` when it has sessions:
 
 ```json
 {"type": "hello", "proto": 2, "session": "s1",
- "agent": {"place": "ONIONSERVE", "pin": true, "unlocked": false}}
+ "agent": {"place": "ONIONSERVE", "pin": true, "unlocked": false,
+           "features": ["pause", "run", "jobs", "schedule", "watch", "deadline"]}}
 ```
 
 - `place`: the name the board shows for where sessions run (`[agent] place`, or the host's
   name, uppercased).
 - `pin`: whether a PIN guards the sessions (`[agent] pin_sha256`).
 - `unlocked`: whether this connection may use them now: true from the start when no PIN is set.
+- `features`: what this daemon can do beyond the first version of sessions: `pause` (`pause`,
+  `resume`), `run` (`run`), `jobs` (`approve`, the `proposed` state), `schedule`, `watch`,
+  `deadline`, `panel` (`panel_choice`), `speak` (`speak`). A daemon from before them sends no
+  `features`, and drops a request it doesn't know with no answer, so the board offers only
+  what is listed.
 - No `agent`: no sessions on this daemon.
 
 ### Device → daemon
@@ -206,7 +214,11 @@ The daemon's `hello` gains `agent` when it has sessions:
 | `open` | `session` | Send `session` for it now and whenever it changes (at most once a second), until another `open` or a `close`. Marks it seen (clears `unread`), and keeps it seen while open |
 | `close` | | Stop sending `session` updates |
 | `answer` | `session`, `ask` (the question's id), `choice` (an index into its `options`) | Answers a question. The session carries on |
-| `stop` | `session` | Stops a working or asking session (state `stopped`) |
+| `stop` | `session` | Stops a working or asking session, a schedule or a watch (state `stopped`) |
+| `pause` | `session` | Pauses a working or asking session, a schedule or a watch (state `paused`): its run stops, and it keeps its plan, what it was told and its question. A deadline doesn't run out while paused. Not for herdr sessions |
+| `resume` | `session` | Picks a paused session up where it was: an asking one asks again, a working one starts a new run that is told it was paused, a schedule or a watch waits for its next time |
+| `run` | `session` | A schedule: runs now. A watch: looks now |
+| `approve` | `session` | Starts a job talk filed (a `proposed` session). With `[agent] backend = "herdr"`, it starts as a program of its own, under a new id, and the job goes |
 | `delete` | `session` | Deletes a session for good |
 | `send_draft` | `session`, `draft` (the `draft` message's `id`) | Types a herdr session's draft into its program ([Drafts](#drafts)) |
 | `drop_draft` | `session`, `draft` | Throws a draft away |
@@ -215,13 +227,13 @@ The daemon's `hello` gains `agent` when it has sessions:
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `sessions` | `locked`, `counts`, `check_at`, `sessions`, `older` | The list ([below](#sessions)) |
+| `sessions` | `locked`, `counts`, `check_at`, `next_at`, `latest`, `ask`, `sessions`, `older` | The list ([below](#sessions)) |
 | `session` | one session in full | [Below](#session) |
 | `ask` | a question | A new question appeared, for the board's ask sheet ([below](#ask)). Also inside `session` |
 | `started` | `session` | During an agent turn: the session the utterance went to (new or existing), once the daemon knows, before `reply_start` |
 | `draft` | `session`, `id`, `text` | During an agent turn into a herdr session, in place of `started` and the reply: the words, waiting for the board to send them ([Drafts](#drafts)) |
 | `unlocked` | `ok`, `ticket` (when ok), `ttl_s` (when ok), `wait_s` (when further tries are refused for a while) | The answer to `unlock` ([Unlock](#unlock)) |
-| `refused` | `request` (the refused message's `type`), `session` (if it named one), `message` | A request that isn't a turn and can't be done. `message` is one of `locked`, `no such session`, `already answered`, `no such choice`, `not running`, `no sessions on this daemon`, and for herdr sessions `not waiting any more`, `it's busy`, `not allowed by [herdr]`, `herdr is not reachable`, `no such draft`, `the draft has expired`, or a sentence |
+| `refused` | `request` (the refused message's `type`), `session` (if it named one), `message` | A request that isn't a turn and can't be done. `message` is one of `locked`, `no such session`, `already answered`, `no such choice`, `not running`, `not paused`, `no sessions on this daemon`, and for herdr sessions `not waiting any more`, `it's busy`, `not allowed by [herdr]`, `herdr is not reachable`, `no such draft`, `the draft has expired`, or a sentence |
 
 `sessions`, `session` and `ask` come whenever something changes, so they can arrive at any
 time: between turns, and in the middle of one (between a reply's `text` and its audio frames).
@@ -237,8 +249,10 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
 
 ```json
 {"type": "sessions", "locked": false,
- "counts": {"ask": 2, "running": 4, "planned": 0, "unread": 1, "idle": 1},
- "check_at": null,
+ "counts": {"ask": 2, "running": 4, "planned": 1, "unread": 1, "idle": 1, "proposed": 0},
+ "check_at": 1795190300, "next_at": 1795237200,
+ "latest": {"ask": 1795190000, "done": 1795189500},
+ "ask": {"session": "k7q2", "id": "a1", "…": "the ask message without its type"},
  "older": 0,
  "sessions": [
    {"id": "k7q2", "title": "Plumber · kitchen leak", "state": "ask",
@@ -249,24 +263,44 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
    {"id": "h3kq9mtc", "title": "Fix the build", "state": "working",
     "place": "DESKTOP", "via": "herdr", "program": "codex",
     "sub": "Running cargo test", "step": null, "steps": null, "progress": 40,
-    "updated": 1795190100, "unread": false}
+    "updated": 1795190100, "unread": false},
+   {"id": "w2fd", "title": "Lisbon fare", "state": "watch",
+    "place": "ONIONSERVE", "via": "inkharness", "program": null,
+    "sub": "the fare to Lisbon under $700", "step": null, "steps": null, "progress": null,
+    "updated": 1795190000, "unread": false,
+    "next_at": 1795190300, "spark": [760, 741, 712]}
  ]}
 ```
 
 - `state`: `working`, `ask` (waiting on an answer), `idle` (ready for more, nothing to do: a
   herdr session), `done` (finished with a result), `note` (finished; the result is meant to be
-  read as a note), `fail` (gave up or failed; the result says why), `stopped`. Later versions
-  add `watch` and `scheduled`: treat a state you don't know as finished (right enough for
-  `idle` too).
+  read as a note), `fail` (gave up or failed; the result says why), `stopped`, `scheduled` (a
+  schedule waiting for its next run), `watch` (a watch waiting for its next look), `paused`,
+  `proposed` (a job talk filed, waiting for someone to start it). Treat a state you don't know
+  as finished; a board from before the last four does, and shows the word as it is.
 - `via`: who runs it, `"inkharness"` (the api and claude backends) or `"herdr"` (a program in a
   herdr terminal; the board draws an outlined `[hc]` mark before `place`). Absent means
   `"inkharness"`. `program`: what runs it, lowercase (`"claude code"`, `"codex"`, `"bash"`), or
   null for the api backend; the board shows it after the place (`DESKTOP · CLAUDE CODE · …`).
 - `place`: where it runs: the daemon's place, or a herdr session's machine (uppercased).
 - `counts`: over all sessions, not only those listed. `ask`: asking; `running`: working, of
-  every kind; `idle`: ready for more; `planned`: scheduled (always 0 for now); `unread`:
-  finished or asking, and not opened since.
-- `check_at`: when the board should check in next (Unix seconds), or null. Always null for now.
+  every kind; `idle`: ready for more; `planned`: schedules and watches; `proposed`: jobs
+  waiting to be started; `unread`: finished or asking, and not opened since.
+- `check_at`: when the board should check in next (Unix seconds), or null: the earliest of a
+  working session's `expect_at` (still in the future), a watch's next look, and a schedule that
+  wakes the board (its next run, plus as long as its last run took, at least a minute). Always
+  in the future when sent; the board keeps its own floor (it doesn't wake more often than every
+  5 minutes when off).
+- `next_at`: the next scheduled run (Unix seconds), or absent: Home's NEXT.
+- `latest`: `ask`, when the newest waiting question was asked, and `done`, when the newest
+  unread result came (a session that finished, or a schedule's run; herdr sessions, which
+  finish after every task, don't count), both 0 for none. The board keeps the last values it
+  saw, and chirps when one grows (rising: a question, falling: a result).
+- `ask`: the newest question waiting, in full (the `ask` message without its `type`), or
+  absent: for the board's ask sheet, which may not have seen the `ask` message (it was off).
+- A row's `expect_at` (a working session's expected end), `next_at` (a schedule's next run or
+  a watch's next look) and `spark` (a watch's last readings, oldest first, at most 24) are
+  there only when they apply.
 - `step`, `steps`: the plan's progress, when the session has a plan: the current step (from 1)
   and the number of steps. `progress`: 0–100 when known (a herdr program that reports it),
   else null.
@@ -275,11 +309,13 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
 - `title`: at most 40 characters, from the model (with its first plan) or, until then, from the
   prompt. The board uppercases it.
 - `updated`: when the session last changed. All times are Unix seconds (UTC).
-- Order: asking first (the oldest question first), then working (the most recently active
-  first), then idle, then the rest, newest first. At most 40; `older` counts the rest.
+- Order: asking and proposed first (the oldest question first), then working (the most
+  recently active first), then idle and paused, then schedules and watches, then the rest,
+  newest first. At most 40; `older` counts the rest.
 - **Locked** (a PIN is set and this connection hasn't unlocked): `"locked": true` with the
-  counts and `check_at`, `"sessions": []` and `"older": 0`. That is enough for Home's row, the
-  status bar's `?2`, the Agent face and the chirps, and says nothing of what the sessions are.
+  counts, `check_at`, `next_at` and `latest`, no `ask`, `"sessions": []` and `"older": 0`. That
+  is enough for Home's row, the status bar's `?2`, the Agent face and the chirps, and says
+  nothing of what the sessions are.
 
 ### `session`
 
@@ -295,7 +331,9 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
  "log": [{"at": 1795190000, "text": "web_search plumbers open Saturday"}],
  "result": null,
  "ask": null,
- "screen": null}
+ "screen": null,
+ "expect_at": 1795191800,
+ "cost": {"usd": 0.0412, "notional": false}}
 ```
 
 - `via`, `program`, `place`: as in the list.
@@ -313,6 +351,34 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
 - `screen`: a herdr session's last lines of screen (at most 12, plain text, each at most 80
   characters), or null. It is read while a board has the session open (and while HTTP looks),
   at most every 2 s, and a new `session` follows when it changes.
+- `expect_at`: when a working session expects to be done (the model's `plan` with
+  `expect_minutes`), absent otherwise.
+- `cost`: what its model requests have cost so far, in US dollars (`notional`: on a
+  subscription, what it would have cost), absent before the first.
+- `schedule` (a schedule): `at` (local time on the daemon, `"07:00"`), `days` (Monday first, a
+  letter for each day it runs: `"MTWTF.."`), `next` (the next run), `prompt` (what each run
+  does), `wake_board`, `show_note` and `speak` (what the board does with a result), and `runs`
+  (the last 10, newest first: `at`, `state` `done`, `note` or `fail`, `secs`). The session's
+  `result` is the last run's.
+- `watch` (a watch): `condition`, `every_minutes`, `next` (the next look; null once met),
+  `values` (the last readings, oldest first) and `met`.
+
+### Schedules and watches
+
+A session becomes a **schedule** when its model calls `schedule {at, days, prompt, wake_board,
+show_note, speak}` ("every weekday at seven, brief me"). It then waits (`scheduled`) for its
+next run, at `at` local time on the daemon on one of `days`. A run is a fresh run of `prompt`:
+no conversation, plan or Claude Code session from the one before. It ends back in `scheduled`,
+with its result as the session's `result`, `unread`, and recorded in `runs`; a failed run is
+recorded too, and the schedule stays. Words said into a schedule (an agent turn into it) can
+change it: the model calls `schedule` again, or with `cancel`. That isn't a run, and it leaves
+the last result. A run missed by more than an hour (the daemon was down) is skipped and
+logged. `stop` ends a schedule; `pause` suspends it.
+
+A session becomes a **watch** when its model calls `watch {every_minutes, condition}`: every
+so often (at least 5 minutes; 30 on the claude backend) a fresh run looks, records a reading
+(`watch {value}`) and waits again (`watch`), until a look finds the condition holds (`watch
+{met: true}`). Then it finishes (`done` or `note`) with what it found, and the board is told.
 
 ### `ask`
 
@@ -321,9 +387,14 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
  "question": "Which plumber should I book?", "detail": "Three can come before the weekend.",
  "options": [{"title": "Riverside · Thu 08:00", "right": "$145", "detail": "4.8 ★ (212)…"},
              {"title": "Northgate · Wed 13:00", "right": "$120", "detail": null}],
- "recommend": 0, "at": 1795190000}
+ "recommend": 0, "at": 1795190000,
+ "deadline": {"at": 1795197200, "then": "recommend"}}
 ```
 
+- `deadline` (when the model gave one): `at` (Unix seconds) and `then`, what happens if nobody
+  answers by then: `ask_again` (the same question, with a new `at`, and `ask` again),
+  `recommend` (the recommended option is taken) or `give_up` (the session is told nobody
+  answered, and finishes with what it has). Absent: it waits as long as it takes.
 - The model asks with its `ask_choice` tool, which only sessions have. 2 to 6 options; an
   option's `title` is at most 32 characters, `right` (a price, a time) at most 12, `detail` at
   most 400; the question at most 200 and its `detail` at most 400. Absent fields are null.
@@ -489,7 +560,8 @@ device                                   daemon
 
 The same sessions, with the same JSON, are at `/sessions` on the daemon's HTTP port, for scripts
 and for testing without a board; with a PIN set, each request sends it in `X-Inkharness-Pin`
-(inkharness/README.md, "Agent sessions").
+(inkharness/README.md, "Agent sessions"). `pause`, `resume`, `run` and `approve` are
+`POST /sessions/{id}/pause` and so on.
 
 ## Protocol 1
 

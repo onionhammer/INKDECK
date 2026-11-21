@@ -7,8 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use voice_proto::{
-    AskOption, AskView, Backend, Counts, LogLine, PlanItem, SessionList, SessionRow, SessionView,
-    State, StepState, Via,
+    AskOption, AskView, Backend, Cost, Counts, Deadline, Latest, LogLine, OnDeadline, Panel,
+    PlanItem, RunView, ScheduleView, SessionList, SessionRow, SessionView, State, StepState, Via,
+    WatchView,
 };
 
 /// Sessions listed; the rest are counted in `older`.
@@ -25,6 +26,9 @@ pub const RESULT_BYTES: usize = 8 * 1024;
 const PROMPT_CHARS: usize = 2000;
 /// Messages of the conversation kept for the next run, besides the first.
 const CONVERSATION_KEPT: usize = 40;
+/// A schedule's runs kept, and a watch's readings.
+pub const RUNS_KEPT: usize = 10;
+pub const VALUES_KEPT: usize = 24;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -75,6 +79,78 @@ pub struct Session {
     /// The herdr backend: its terminal, and what the pending question's choices send.
     #[serde(default)]
     pub herdr: Option<HerdrSide>,
+    /// Paused: the state it was in, to go back to.
+    #[serde(default)]
+    pub paused_from: Option<State>,
+    /// When it expects to be done, as the model said (`plan`'s expect_minutes).
+    #[serde(default)]
+    pub expect_at: Option<u64>,
+    /// What its model requests have cost, in US dollars, and whether that is notional (a
+    /// subscription).
+    #[serde(default)]
+    pub cost: f64,
+    #[serde(default)]
+    pub cost_notional: bool,
+    /// A schedule: when it runs, and its last runs.
+    #[serde(default)]
+    pub schedule: Option<Schedule>,
+    /// A watch: how often it looks, for what, and what it saw.
+    #[serde(default)]
+    pub watch: Option<Watch>,
+    /// The screen it drew last (`show_panel`).
+    #[serde(default)]
+    pub panel: Option<Panel>,
+}
+
+/// A schedule (the `schedule` tool): a session that runs its prompt at a time of day.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Schedule {
+    /// The local time, "07:00".
+    pub at: String,
+    /// The days it runs, Monday in bit 0.
+    pub days: u8,
+    /// What each run does.
+    pub prompt: String,
+    #[serde(default)]
+    pub wake_board: bool,
+    #[serde(default)]
+    pub show_note: bool,
+    #[serde(default)]
+    pub speak: bool,
+    /// The next run (Unix seconds).
+    pub next_run: u64,
+    /// The last runs, oldest first.
+    #[serde(default)]
+    pub runs: Vec<Run>,
+    /// A run is under way, since then: its end is recorded as a run.
+    #[serde(default)]
+    pub running_since: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Run {
+    pub at: u64,
+    pub state: State,
+    pub secs: u64,
+}
+
+/// A watch (the `watch` tool): a session that looks every so often until a condition holds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Watch {
+    pub every_minutes: u64,
+    pub condition: String,
+    /// What to do at each look.
+    pub prompt: String,
+    pub next_look: u64,
+    /// Readings, oldest first.
+    #[serde(default)]
+    pub values: Vec<f64>,
+    /// A look is under way, since then.
+    #[serde(default)]
+    pub looking_since: Option<u64>,
+    /// The condition held.
+    #[serde(default)]
+    pub met: bool,
 }
 
 /// What a herdr session keeps of its terminal.
@@ -113,6 +189,17 @@ pub struct Question {
     pub options: Vec<AskOption>,
     pub recommend: Option<usize>,
     pub at: u64,
+    /// What happens if nobody answers in time.
+    #[serde(default)]
+    pub deadline: Option<QuestionDeadline>,
+}
+
+/// A question's deadline, and how long it was (asking again waits as long again).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct QuestionDeadline {
+    pub at: u64,
+    pub minutes: u64,
+    pub then: OnDeadline,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -159,6 +246,13 @@ impl Session {
             progress: None,
             claude: None,
             herdr: None,
+            paused_from: None,
+            expect_at: None,
+            cost: 0.0,
+            cost_notional: false,
+            schedule: None,
+            watch: None,
+            panel: None,
         }
     }
 
@@ -216,12 +310,46 @@ impl Session {
                 Some(line) => line.text.clone(),
                 None => "Ready".into(),
             },
-            _ => match &self.result {
-                Some(result) => plain(&first_line(result)),
+            State::Proposed => self.prompt.clone(),
+            State::Paused => match &self.ask {
+                Some(q) => q.question.clone(),
                 None => last_log(),
             },
+            State::Scheduled => match &self.result {
+                Some(result) => plain(&first_line(result)),
+                None => self
+                    .schedule
+                    .as_ref()
+                    .map(|s| s.prompt.clone())
+                    .unwrap_or_default(),
+            },
+            State::Watch => match &self.watch {
+                Some(w) => w.condition.clone(),
+                None => last_log(),
+            },
+            State::Done | State::Note | State::Fail | State::Stopped | State::Unknown => {
+                match &self.result {
+                    Some(result) => plain(&first_line(result)),
+                    None => last_log(),
+                }
+            }
         };
         one_line(&text, SUB_CHARS)
+    }
+
+    /// When the board should next hear from it: a schedule's next run, a watch's next look.
+    pub fn next_at(&self) -> Option<u64> {
+        match self.state {
+            State::Scheduled => self.schedule.as_ref().map(|s| s.next_run),
+            State::Watch => self.watch.as_ref().map(|w| w.next_look),
+            _ => None,
+        }
+    }
+
+    /// When it expects to be done, while it works.
+    pub fn expects(&self, now: u64) -> Option<u64> {
+        self.expect_at
+            .filter(|at| *at > now && self.state == State::Working)
     }
 
     /// Who runs it.
@@ -237,7 +365,7 @@ impl Session {
         self.place.as_deref().unwrap_or(place)
     }
 
-    pub fn row(&self, place: &str) -> SessionRow {
+    pub fn row(&self, place: &str, now: u64) -> SessionRow {
         let step = self.step();
         SessionRow {
             id: self.id.clone(),
@@ -252,6 +380,12 @@ impl Session {
             progress: self.progress,
             updated: self.updated,
             unread: self.unread,
+            expect_at: self.expects(now),
+            next_at: self.next_at(),
+            spark: match (&self.watch, self.state) {
+                (Some(w), State::Watch | State::Done | State::Paused) => w.values.clone(),
+                _ => Vec::new(),
+            },
         }
     }
 
@@ -292,6 +426,38 @@ impl Session {
             result: self.result.clone(),
             ask: self.question(),
             screen,
+            expect_at: self.expects(now()),
+            cost: (self.cost > 0.0).then_some(Cost {
+                usd: self.cost,
+                notional: self.cost_notional,
+            }),
+            schedule: self.schedule.as_ref().map(|s| ScheduleView {
+                at: s.at.clone(),
+                days: super::schedule::days_text(s.days),
+                next: s.next_run,
+                prompt: cut(&s.prompt, PROMPT_CHARS),
+                wake_board: s.wake_board,
+                show_note: s.show_note,
+                speak: s.speak,
+                runs: s
+                    .runs
+                    .iter()
+                    .rev()
+                    .map(|r| RunView {
+                        at: r.at,
+                        state: r.state,
+                        secs: r.secs,
+                    })
+                    .collect(),
+            }),
+            watch: self.watch.as_ref().map(|w| WatchView {
+                condition: w.condition.clone(),
+                every_minutes: w.every_minutes,
+                next: (!w.met).then_some(w.next_look),
+                values: w.values.clone(),
+                met: w.met,
+            }),
+            panel: self.panel.clone(),
         }
     }
 
@@ -307,43 +473,101 @@ impl Session {
             options: q.options.clone(),
             recommend: q.recommend,
             at: q.at,
+            deadline: q.deadline.map(|d| Deadline {
+                at: d.at,
+                then: d.then,
+            }),
         })
+    }
+
+    /// When its last result came, if it is one the board hasn't seen (latest.done): a
+    /// finished session's, or a schedule's last run. herdr sessions finish after every task,
+    /// so they don't count.
+    fn unread_result(&self) -> Option<u64> {
+        if !self.unread || self.backend == Backend::Herdr {
+            return None;
+        }
+        let ran = self.state == State::Scheduled
+            && self.schedule.as_ref().is_some_and(|s| !s.runs.is_empty());
+        (self.state.finished() || ran).then_some(self.updated)
     }
 }
 
-/// The list as a board gets it: asking first (the oldest question first), then working (the
-/// most recently active first), then idle, then the rest, newest first; LISTED of them, the
-/// rest counted in `older`. Locked, it is the counts alone.
+/// The list as a board gets it: asking and proposed first (the oldest question first), then
+/// working (the most recently active first), idle and paused, then schedules and watches,
+/// then the rest, newest first; LISTED of them, the rest counted in `older`. Locked, it is the
+/// counts and times alone: no titles, no question.
 pub fn list<'a>(
     sessions: impl Iterator<Item = &'a Session>,
     place: &str,
     locked: bool,
+    now: u64,
 ) -> SessionList {
     let mut all: Vec<&Session> = sessions.collect();
     let mut counts = Counts::default();
+    let mut latest = Latest::default();
+    let (mut check_at, mut next_at): (Option<u64>, Option<u64>) = (None, None);
+    let earliest = |a: Option<u64>, b: u64| Some(a.map_or(b, |a| a.min(b)));
     for s in &all {
         match s.state {
             State::Ask => counts.ask += 1,
             State::Working => counts.running += 1,
             State::Idle => counts.idle += 1,
+            State::Scheduled | State::Watch => counts.planned += 1,
+            State::Proposed => counts.proposed += 1,
             _ => {}
         }
         counts.unread += s.unread as usize;
+        if s.state == State::Ask
+            && let Some(q) = &s.ask
+        {
+            latest.ask = latest.ask.max(q.at);
+        }
+        if let Some(at) = s.unread_result() {
+            latest.done = latest.done.max(at);
+        }
+        if let Some(at) = s.expects(now) {
+            check_at = earliest(check_at, at);
+        }
+        match (s.state, &s.schedule, &s.watch) {
+            (State::Scheduled, Some(sched), _) => {
+                next_at = earliest(next_at, sched.next_run);
+                if sched.wake_board {
+                    // Done by then, give or take: as long as the last run took.
+                    let took = sched.runs.last().map_or(0, |r| r.secs).max(60);
+                    check_at = earliest(check_at, sched.next_run + took);
+                }
+            }
+            (State::Watch, _, Some(watch)) if watch.next_look > now => {
+                check_at = earliest(check_at, watch.next_look);
+            }
+            _ => {}
+        }
     }
+    let check_at = check_at.filter(|at| *at > now);
     if locked {
         return SessionList {
             locked: true,
             counts,
-            check_at: None,
+            check_at,
+            next_at,
+            latest,
+            ask: None,
             sessions: Vec::new(),
             older: 0,
         };
     }
+    let ask = all
+        .iter()
+        .filter(|s| s.state == State::Ask)
+        .filter_map(|s| s.question())
+        .max_by_key(|q| q.at);
     let group = |s: &Session| match s.state {
-        State::Ask => 0,
+        State::Ask | State::Proposed => 0,
         State::Working => 1,
-        State::Idle => 2,
-        _ => 3,
+        State::Idle | State::Paused => 2,
+        State::Scheduled | State::Watch => 3,
+        State::Done | State::Note | State::Fail | State::Stopped | State::Unknown => 4,
     };
     all.sort_by(|a, b| {
         group(a).cmp(&group(b)).then_with(|| match a.state {
@@ -358,8 +582,11 @@ pub fn list<'a>(
     SessionList {
         locked: false,
         counts,
-        check_at: None,
-        sessions: all.iter().take(LISTED).map(|s| s.row(place)).collect(),
+        check_at,
+        next_at,
+        latest,
+        ask,
+        sessions: all.iter().take(LISTED).map(|s| s.row(place, now)).collect(),
         older,
     }
 }
@@ -533,9 +760,11 @@ pub fn load_all(dir: &Path) -> Vec<Session> {
     sessions
 }
 
-/// True if the session finished more than `keep_days` ago.
+/// True if the session finished (or was filed by talk and never started) more than
+/// `keep_days` ago.
 pub fn expired(session: &Session, keep_days: u64, now: u64) -> bool {
-    session.state.finished() && session.updated.saturating_add(keep_days * 86_400) < now
+    (session.state.finished() || session.state == State::Proposed)
+        && session.updated.saturating_add(keep_days * 86_400) < now
 }
 
 #[cfg(test)]
@@ -567,6 +796,7 @@ pub(crate) mod tests {
             options: vec![],
             recommend: None,
             at: 200,
+            deadline: None,
         });
         sessions[5].ask = Some(Question {
             at: 300,
@@ -581,7 +811,7 @@ pub(crate) mod tests {
         idle.program = Some("codex".into());
         idle.progress = Some(40);
         let sessions: Vec<Session> = sessions.into_iter().chain([idle]).collect();
-        let list = list(sessions.iter(), "HOME", false);
+        let list = list(sessions.iter(), "HOME", false, 1000);
         let ids: Vec<&str> = list.sessions.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -621,14 +851,91 @@ pub(crate) mod tests {
         assert_eq!(list.sessions[0].place, "HOME");
 
         // Locked: the counts, and nothing that says what they are.
-        let locked = super::list(sessions.iter(), "HOME", true);
+        let locked = super::list(sessions.iter(), "HOME", true, 1000);
         assert!(locked.locked && locked.sessions.is_empty());
         assert_eq!(locked.counts, list.counts);
+        // When the newest question came and the newest result: times, not what they are.
         assert_eq!(
             serde_json::to_value(&locked).unwrap(),
-            serde_json::json!({"locked": true, "counts": {"ask": 2, "running": 2, "planned": 0, "unread": 2, "idle": 1},
-                               "check_at": null, "sessions": [], "older": 0})
+            serde_json::json!({"locked": true,
+                               "counts": {"ask": 2, "running": 2, "planned": 0, "unread": 2, "idle": 1, "proposed": 0},
+                               "check_at": null, "latest": {"ask": 300, "done": 100},
+                               "sessions": [], "older": 0})
         );
+        // Unlocked, the newest question comes whole.
+        assert_eq!(list.ask.as_ref().map(|q| q.session.as_str()), Some("ask2"));
+    }
+
+    #[test]
+    fn schedules_watches_jobs_and_pauses_in_the_list() {
+        let now = 10_000;
+        let mut sched = session("sch1", State::Scheduled, 100);
+        sched.schedule = Some(Schedule {
+            at: "07:00".into(),
+            days: super::super::schedule::WEEKDAYS,
+            prompt: "brief me".into(),
+            wake_board: true,
+            show_note: true,
+            speak: false,
+            next_run: 20_000,
+            runs: vec![Run {
+                at: 5_000,
+                state: State::Done,
+                secs: 300,
+            }],
+            running_since: None,
+        });
+        sched.unread = true;
+        let mut watch = session("wat1", State::Watch, 200);
+        watch.watch = Some(Watch {
+            every_minutes: 5,
+            condition: "the fare under $700".into(),
+            prompt: "the fare under $700".into(),
+            next_look: 10_300,
+            values: vec![760.0, 712.0],
+            looking_since: None,
+            met: false,
+        });
+        let mut work = session("wrk1", State::Working, 300);
+        work.expect_at = Some(15_000);
+        let mut late = session("wrk2", State::Working, 310);
+        late.expect_at = Some(9_000); // past: it says nothing about when to look
+        let mut paused = session("pau1", State::Paused, 400);
+        paused.paused_from = Some(State::Working);
+        let job = session("job1", State::Proposed, 50);
+        let done = session("don1", State::Done, 600);
+        let all = [sched, watch, work, late, paused, job, done];
+        let list = list(all.iter(), "HOME", false, now);
+        let ids: Vec<&str> = list.sessions.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["job1", "wrk2", "wrk1", "pau1", "wat1", "sch1", "don1"]
+        );
+        let c = &list.counts;
+        assert_eq!((c.running, c.planned, c.proposed), (2, 2, 1));
+        // The watch's next look comes first; the schedule wakes the board 300 s after its run.
+        assert_eq!((list.check_at, list.next_at), (Some(10_300), Some(20_000)));
+        assert_eq!(list.latest.done, 100);
+        let row = |id: &str| list.sessions.iter().find(|s| s.id == id).unwrap();
+        assert_eq!(row("wat1").spark, [760.0, 712.0]);
+        assert_eq!(
+            (row("wat1").next_at, row("sch1").next_at),
+            (Some(10_300), Some(20_000))
+        );
+        assert_eq!(
+            (row("wrk1").expect_at, row("wrk2").expect_at),
+            (Some(15_000), None)
+        );
+        assert_eq!(row("wat1").sub, "the fare under $700");
+        assert_eq!(row("sch1").sub, "brief me");
+        // Locked: the times, never what they are.
+        let locked = super::list(all.iter(), "HOME", true, now);
+        assert_eq!(
+            (locked.check_at, locked.next_at, locked.ask),
+            (Some(10_300), Some(20_000), None)
+        );
+        // A job nobody started goes after keep_days, like a finished session.
+        assert!(expired(&all[5], 30, 50 + 31 * 86_400) && !expired(&all[0], 30, u64::MAX / 2));
     }
 
     #[test]
@@ -636,7 +943,7 @@ pub(crate) mod tests {
         let sessions: Vec<Session> = (0..45)
             .map(|i| session(&format!("s{i}"), State::Done, i))
             .collect();
-        let list = list(sessions.iter(), "HOME", false);
+        let list = list(sessions.iter(), "HOME", false, 1000);
         assert_eq!((list.sessions.len(), list.older), (LISTED, 5));
         assert_eq!(list.sessions[0].id, "s44");
     }

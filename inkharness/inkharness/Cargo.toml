@@ -10,6 +10,8 @@ async-trait = "0.1.92"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json"] }
 base64 = "0.23.1"
 bytes = "1.12.1"
+# Schedules in local time (already in the tree through rmcp and schemars).
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.6.7", features = ["derive"] }
 eventsource-stream = "0.2.3"
 futures-util = "0.3.34"

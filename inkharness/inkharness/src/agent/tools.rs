@@ -1,19 +1,29 @@
 //! The tools only sessions get: `ask_choice`, which puts a question to the user and waits for
-//! the answer, and `plan`, the checklist a board shows as a meter.
+//! the answer, `plan`, the checklist a board shows as a meter, and `schedule` and `watch`,
+//! which turn a session into one that runs at a time of day or looks every so often. And the
+//! one talk gets: `propose_job`, which files a job for someone behind the PIN to start.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use voice_proto::AskOption;
+use voice_proto::{AskOption, Backend, OnDeadline};
 
-use super::Agent;
-use super::store::{LOG_CHARS, Question, TITLE_CHARS, cut, one_line};
+use super::store::{self, LOG_CHARS, Question, TITLE_CHARS, cut, one_line};
+use super::{Agent, schedule};
 use crate::tools::{Extra, ToolDef};
 
 pub const ASK_TOOL: &str = "ask_choice";
 pub const PLAN_TOOL: &str = "plan";
+pub const SCHEDULE_TOOL: &str = "schedule";
+pub const WATCH_TOOL: &str = "watch";
+pub const PROPOSE_TOOL: &str = "propose_job";
+
+/// Tools that show for themselves (the plan, the question, the schedule): kept out of the log.
+pub fn shows_itself(name: &str) -> bool {
+    [ASK_TOOL, PLAN_TOOL, SCHEDULE_TOOL, WATCH_TOOL].contains(&name)
+}
 
 const MIN_OPTIONS: usize = 2;
 const MAX_OPTIONS: usize = 6;
@@ -24,6 +34,13 @@ const QUESTION_CHARS: usize = 200;
 const DETAIL_CHARS: usize = 400;
 const MAX_STEPS: usize = 12;
 const STEP_CHARS: usize = 60;
+const PROMPT_CHARS: usize = 2000;
+const CONDITION_CHARS: usize = 120;
+/// How often a watch may look at most: each look is a model run (a claude run costs more).
+const WATCH_FLOOR_API: u64 = 5;
+const WATCH_FLOOR_CLAUDE: u64 = 30;
+/// The longest a question's deadline can be: a week.
+const MAX_DEADLINE_MINUTES: u64 = 7 * 24 * 60;
 
 /// How a question was answered.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,7 +81,12 @@ pub struct SessionTools {
 #[async_trait]
 impl Extra for SessionTools {
     fn defs(&self) -> Vec<ToolDef> {
-        let mut defs = vec![plan_definition(), ask_definition()];
+        let mut defs = vec![
+            plan_definition(),
+            ask_definition(),
+            schedule_definition(),
+            watch_definition(),
+        ];
         if self.agent.herdr.get().is_some_and(|h| h.runs()) {
             defs.push(run_definition());
         }
@@ -79,6 +101,8 @@ impl Extra for SessionTools {
             },
             ASK_TOOL => self.ask(input).await,
             PLAN_TOOL => self.plan(input),
+            SCHEDULE_TOOL => self.schedule(input),
+            WATCH_TOOL => self.watch(input),
             _ => return None,
         })
     }
@@ -91,6 +115,8 @@ struct AskInput {
     detail: Option<String>,
     options: Vec<OptionInput>,
     recommend: Option<usize>,
+    deadline_minutes: Option<u64>,
+    then: Option<OnDeadline>,
 }
 
 #[derive(Deserialize)]
@@ -107,6 +133,34 @@ struct PlanInput {
     steps: Vec<String>,
     current: Option<usize>,
     title: Option<String>,
+    expect_minutes: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScheduleInput {
+    at: Option<String>,
+    days: Option<Value>,
+    prompt: Option<String>,
+    #[serde(default)]
+    wake_board: bool,
+    #[serde(default)]
+    show_note: bool,
+    #[serde(default)]
+    speak: bool,
+    #[serde(default)]
+    cancel: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WatchInput {
+    every_minutes: Option<u64>,
+    condition: Option<String>,
+    prompt: Option<String>,
+    value: Option<f64>,
+    #[serde(default)]
+    met: bool,
 }
 
 /// Text that is there: trimmed, empty as None.
@@ -139,13 +193,30 @@ impl SessionTools {
                 detail: given(option.detail).map(|d| cut(&d, OPTION_DETAIL_CHARS)),
             });
         }
+        let recommend = input.recommend.filter(|r| *r < options.len());
+        let deadline = match input.deadline_minutes {
+            Some(0) => return Err("invalid input: deadline_minutes is at least 1".into()),
+            Some(minutes) => Some(store::QuestionDeadline {
+                at: 0, // from when it is asked
+                minutes: minutes.min(MAX_DEADLINE_MINUTES),
+                then: input.then.unwrap_or(match recommend {
+                    Some(_) => OnDeadline::Recommend,
+                    None => OnDeadline::GiveUp,
+                }),
+            }),
+            None if input.then.is_some() => {
+                return Err("invalid input: then needs deadline_minutes".into());
+            }
+            None => None,
+        };
         let question = Question {
             id: String::new(), // the agent numbers it
             question,
             detail: given(input.detail).map(|d| cut(&d, DETAIL_CHARS)),
-            recommend: input.recommend.filter(|r| *r < options.len()),
+            recommend,
             options,
             at: 0,
+            deadline,
         };
         let answer = self.agent.put_question(&self.id, self.run, question)?;
         match answer.await {
@@ -170,13 +241,146 @@ impl SessionTools {
         let n = steps.len();
         let current = input.current.unwrap_or(1).max(1);
         let title = given(input.title).map(|t| one_line(&t, TITLE_CHARS));
-        self.agent
-            .set_plan(&self.id, self.run, steps, current, title)?;
+        self.agent.set_plan(
+            &self.id,
+            self.run,
+            steps,
+            current,
+            title,
+            input.expect_minutes,
+        )?;
         Ok(if current > n {
             format!("Plan saved: all {n} steps done.")
         } else {
             format!("Plan saved: step {current} of {n}.")
         })
+    }
+}
+
+impl SessionTools {
+    fn schedule(&self, input: &Value) -> Result<String, String> {
+        let input: ScheduleInput =
+            serde_json::from_value(input.clone()).map_err(|e| format!("invalid input: {e}"))?;
+        if input.cancel {
+            return Ok(if self.agent.cancel_schedule(&self.id, self.run)? {
+                "The schedule is cancelled. End with a line saying so.".into()
+            } else {
+                "This task wasn't a schedule.".into()
+            });
+        }
+        let at = schedule::parse_at(input.at.as_deref().ok_or("invalid input: at is required")?)?;
+        let days = schedule::parse_days(input.days.as_ref())?;
+        let prompt = given(input.prompt)
+            .map(|p| cut(&p, PROMPT_CHARS))
+            .ok_or("invalid input: prompt is required: what each run does")?;
+        let next_run = schedule::next_run(at, days, store::now());
+        let sched = store::Schedule {
+            at: schedule::at_text(at),
+            days,
+            prompt,
+            wake_board: input.wake_board,
+            show_note: input.show_note,
+            speak: input.speak,
+            next_run,
+            runs: Vec::new(),
+            running_since: None,
+        };
+        let words = format!(
+            "{} at {}, next {}",
+            schedule::days_words(days),
+            sched.at,
+            schedule::local_text(next_run)
+        );
+        self.agent.set_schedule(&self.id, self.run, sched)?;
+        Ok(format!(
+            "Scheduled {words}. Each run does the prompt on its own. End now with one line \
+             saying so."
+        ))
+    }
+
+    fn watch(&self, input: &Value) -> Result<String, String> {
+        let input: WatchInput =
+            serde_json::from_value(input.clone()).map_err(|e| format!("invalid input: {e}"))?;
+        let setting_up = input.every_minutes.is_some() || input.condition.is_some();
+        if !setting_up && self.agent.is_watch(&self.id) {
+            self.agent
+                .watch_reading(&self.id, self.run, input.value, input.met)?;
+            return Ok(if input.met {
+                "Noted: the condition holds, so the watch ends. End with what you found: the \
+                 user is told."
+                    .into()
+            } else {
+                "Noted. End with one line on what you found.".into()
+            });
+        }
+        let floor = match self.agent.backend_of(&self.id) {
+            Some(Backend::Claude) => WATCH_FLOOR_CLAUDE,
+            _ => WATCH_FLOOR_API,
+        };
+        let every = input
+            .every_minutes
+            .ok_or("invalid input: every_minutes is required")?;
+        if every < floor {
+            return Err(format!(
+                "invalid input: every_minutes is at least {floor} (each look is a model run)"
+            ));
+        }
+        let condition = given(input.condition)
+            .map(|c| one_line(&c, CONDITION_CHARS))
+            .ok_or("invalid input: condition is required: what to watch for")?;
+        let prompt = given(input.prompt)
+            .map(|p| cut(&p, PROMPT_CHARS))
+            .unwrap_or_else(|| condition.clone());
+        let next_look = store::now() + every * 60;
+        self.agent.set_watch(
+            &self.id,
+            self.run,
+            store::Watch {
+                every_minutes: every,
+                condition: condition.clone(),
+                prompt,
+                next_look,
+                values: Vec::new(),
+                looking_since: None,
+                met: input.met,
+            },
+        )?;
+        Ok(format!(
+            "Watching every {every} minutes until: {condition}. The first look is at {}. If \
+             you have a reading now, call watch again with value. End now with one line \
+             saying so.",
+            schedule::local_text(next_look)
+        ))
+    }
+}
+
+/// Talk's one way into the Agent: files a job that waits on the list until someone behind the
+/// PIN starts it. Talk sees nothing of the sessions, this one included.
+pub struct ProposeTool {
+    pub agent: Arc<Agent>,
+}
+
+#[async_trait]
+impl Extra for ProposeTool {
+    fn defs(&self) -> Vec<ToolDef> {
+        vec![propose_definition()]
+    }
+
+    async fn call(&self, name: &str, input: &Value) -> Option<Result<String, String>> {
+        if name != PROPOSE_TOOL {
+            return None;
+        }
+        let prompt = input["prompt"].as_str().map(str::trim).unwrap_or_default();
+        if prompt.is_empty() {
+            return Some(Err("invalid input: prompt is required".into()));
+        }
+        self.agent
+            .propose(&cut(prompt, PROMPT_CHARS), input["title"].as_str());
+        Some(Ok(
+            "Filed. It waits on the Agent list until someone starts it there. Say so in a few \
+             words; you can't see or change it."
+                .into(),
+        ))
     }
 }
 
@@ -221,7 +425,8 @@ fn plan_definition() -> ToolDef {
             "properties": {
                 "steps": {"type": "array", "items": {"type": "string"}, "description": "The steps, in order"},
                 "current": {"type": "integer", "minimum": 1, "description": "The step being worked on now, from 1"},
-                "title": {"type": "string", "description": "A short title for the task"}
+                "title": {"type": "string", "description": "A short title for the task"},
+                "expect_minutes": {"type": "integer", "minimum": 1, "description": "For a long job: how many minutes from now you expect to be done. The board checks back then"}
             },
             "required": ["steps"],
             "additionalProperties": false
@@ -283,9 +488,81 @@ fn ask_definition() -> ToolDef {
                         "additionalProperties": false
                     }
                 },
-                "recommend": {"type": "integer", "minimum": 0, "description": "The option you recommend, from 0"}
+                "recommend": {"type": "integer", "minimum": 0, "description": "The option you recommend, from 0"},
+                "deadline_minutes": {"type": "integer", "minimum": 1, "description": "When the choice can't wait: minutes to wait for an answer"},
+                "then": {"type": "string", "enum": ["ask_again", "recommend", "give_up"], "description": "What happens at the deadline: ask again, take your recommendation (the default with one), or give up (the default without)"}
             },
             "required": ["question", "options"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn schedule_definition() -> ToolDef {
+    ToolDef {
+        name: SCHEDULE_TOOL.into(),
+        description: "Makes this task a schedule: from now on it runs the prompt at a time of \
+            day, on the days given, each run on its own, and the user sees each result on their \
+            board. Use it when they ask for something every day or every week (\"every weekday \
+            at seven, brief me\"). Call it again to change it, or with cancel to end it. Then \
+            end this turn with one line saying what was scheduled."
+            .into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "at": {"type": "string", "description": "The time of day, 24-hour, such as \"07:00\""},
+                "days": {"description": "daily (the default), weekdays, weekends, or a list such as [\"mon\", \"thu\"]",
+                         "anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+                "prompt": {"type": "string", "description": "What each run does, as a task in its own right: \"Brief me on today's calendar, the weather and the news\""},
+                "wake_board": {"type": "boolean", "description": "Wake the board to show the result when it's ready (a morning brief)"},
+                "show_note": {"type": "boolean", "description": "Show the result on the board as a note"},
+                "speak": {"type": "boolean", "description": "Say the result aloud when the board is on USB"},
+                "cancel": {"type": "boolean", "description": "End the schedule"}
+            },
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn watch_definition() -> ToolDef {
+    ToolDef {
+        name: WATCH_TOOL.into(),
+        description: format!(
+            "Makes this task a watch: it looks again every so often until a condition holds \
+             (a fare under $700, a parcel delivered), then the user is told. Set it up with \
+             every_minutes (at least {WATCH_FLOOR_API}) and condition. At each look, call it \
+             with value (a number to chart, such as the price) or with met: true once the \
+             condition holds."
+        ),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "every_minutes": {"type": "integer", "minimum": WATCH_FLOOR_API, "description": "How often to look"},
+                "condition": {"type": "string", "description": "What it waits for, in a few words: \"the fare to Lisbon under $700\""},
+                "prompt": {"type": "string", "description": "What to do at each look, if more than checking the condition"},
+                "value": {"type": "number", "description": "At a look: the reading, for the chart"},
+                "met": {"type": "boolean", "description": "At a look: the condition holds now"}
+            },
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn propose_definition() -> ToolDef {
+    ToolDef {
+        name: PROPOSE_TOOL.into(),
+        description: "Files a job for the agent, which works through longer tasks on its own: \
+            research, comparisons, bookings, anything with many steps. You can't run it or see \
+            it: it waits on the board's Agent list until the user starts it there. Use it when \
+            they ask for something like that, or say \"make that a job\"."
+            .into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "The job, in full, as the agent should get it"},
+                "title": {"type": "string", "description": format!("A short title, at most {TITLE_CHARS} characters")}
+            },
+            "required": ["prompt"],
             "additionalProperties": false
         }),
     }

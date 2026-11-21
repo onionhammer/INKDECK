@@ -34,8 +34,9 @@ pub struct ToolDef {
     pub schema: Value,
 }
 
-/// Tools a front-end adds for itself, such as an agent session's `ask_choice` and `plan`. The
-/// model gets them; scripts don't, and `[talk]` doesn't filter them.
+/// Tools a front-end adds for itself, such as an agent session's `ask_choice` and `plan`, or
+/// talk's `propose_job`. The model gets them, scripts don't, and an allow list (`[talk]
+/// tools`) filters them like any other.
 #[async_trait]
 pub trait Extra: Send + Sync {
     fn defs(&self) -> Vec<ToolDef>;
@@ -172,7 +173,7 @@ impl ToolSet {
             defs.push(think_definition());
         }
         if let Some(extra) = &self.extra {
-            defs.extend(extra.defs());
+            defs.extend(extra.defs().into_iter().filter(|d| self.allows(&d.name)));
         }
         self.defs = defs;
     }
@@ -253,6 +254,7 @@ impl ToolSet {
     /// Runs a tool. `Err` is a message for the model (bad input, or the call failed).
     pub async fn call(&self, name: &str, input: Value) -> Result<String, String> {
         if let Some(extra) = &self.extra
+            && self.allows(name)
             && let Some(result) = extra.call(name, &input).await
         {
             return result;

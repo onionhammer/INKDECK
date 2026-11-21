@@ -4,8 +4,8 @@
 //! did (protocol 1).
 //!
 //! It can also drive agent sessions as a board does (docs/voice-protocol.md, "Agent sessions"):
-//! unlock with the PIN or a ticket, follow the list or one session, answer, stop and delete,
-//! and talk in agent turns.
+//! unlock with the PIN or a ticket, follow the list or one session, answer, stop, pause,
+//! resume, run, approve and delete, answer a panel's choice, and talk in agent turns.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -84,6 +84,24 @@ struct Args {
     /// Delete a session.
     #[arg(long, value_name = "ID")]
     delete: Option<String>,
+    /// Pause a session (a schedule or a watch: stop running).
+    #[arg(long, value_name = "ID")]
+    pause: Option<String>,
+    /// Resume a paused session.
+    #[arg(long, value_name = "ID")]
+    resume: Option<String>,
+    /// Run a schedule now, or have a watch look now.
+    #[arg(long, value_name = "ID")]
+    run: Option<String>,
+    /// Start a job talk filed (a proposed session).
+    #[arg(long, value_name = "ID")]
+    approve: Option<String>,
+    /// Answer a choice block on a session's panel: the session, the block's id, the option.
+    #[arg(long, value_name = "SESSION:BLOCK:N")]
+    panel_choice: Option<String>,
+    /// Have a session's last result said (a schedule with speak): saved as the reply.
+    #[arg(long, value_name = "ID")]
+    speak: Option<String>,
     /// Type a herdr session's draft (from a `draft` message) into it.
     #[arg(long, value_name = "SESSION:DRAFT")]
     send_draft: Option<String>,
@@ -123,12 +141,19 @@ async fn main() -> Result<()> {
         || args.answer.is_some()
         || args.stop.is_some()
         || args.delete.is_some()
+        || args.pause.is_some()
+        || args.resume.is_some()
+        || args.run.is_some()
+        || args.approve.is_some()
+        || args.panel_choice.is_some()
+        || args.speak.is_some()
         || args.send_draft.is_some()
         || args.drop_draft.is_some();
     if utterance.is_none() && !requests {
         bail!(
             "give --wav FILE or --silence SECONDS, or a session request (--sync, --open, \
-             --answer, --stop, --delete, --send-draft, --drop-draft, --unlock, --ticket)"
+             --answer, --stop, --pause, --resume, --run, --approve, --panel-choice, --speak, \
+             --delete, --send-draft, --drop-draft, --unlock, --ticket)"
         );
     }
     let send_draft = args.send_draft.as_deref().map(parse_draft).transpose()?;
@@ -291,6 +316,36 @@ async fn main() -> Result<()> {
             &mut writer,
             &ClientMsg::Delete {
                 session: session.clone(),
+            },
+        )
+        .await?;
+    }
+    for (id, make) in [
+        (
+            &args.pause,
+            (|session| ClientMsg::Pause { session }) as fn(String) -> ClientMsg,
+        ),
+        (&args.resume, |session| ClientMsg::Resume { session }),
+        (&args.run, |session| ClientMsg::Run { session }),
+        (&args.approve, |session| ClientMsg::Approve { session }),
+        (&args.speak, |session| ClientMsg::Speak { session }),
+    ] {
+        if let Some(session) = id {
+            put(&mut writer, &make(session.clone())).await?;
+        }
+    }
+    if let Some(spec) = &args.panel_choice {
+        let parts: Vec<&str> = spec.splitn(3, ':').collect();
+        let [session, block, choice] = parts[..] else {
+            bail!("--panel-choice wants SESSION:BLOCK:N");
+        };
+        let choice = choice.parse().context("--panel-choice: N is a number")?;
+        put(
+            &mut writer,
+            &ClientMsg::PanelChoice {
+                session: session.into(),
+                block: block.into(),
+                choice,
             },
         )
         .await?;
@@ -550,18 +605,30 @@ impl Printer {
             ServerMsg::Sessions(list) => {
                 let c = &list.counts;
                 println!(
-                    "{at} sessions{}: {} ask, {} running, {} idle, {} planned, {} unread{}",
+                    "{at} sessions{}: {} ask, {} running, {} idle, {} planned, {} proposed, {} unread{}",
                     if list.locked { " (locked)" } else { "" },
                     c.ask,
                     c.running,
                     c.idle,
                     c.planned,
+                    c.proposed,
                     c.unread,
                     if list.older > 0 {
                         format!(", {} older", list.older)
                     } else {
                         String::new()
                     }
+                );
+                println!(
+                    "    check_at {:?} · next_at {:?} · latest ask {} done {}{}",
+                    list.check_at,
+                    list.next_at,
+                    list.latest.ask,
+                    list.latest.done,
+                    list.ask
+                        .as_ref()
+                        .map(|a| format!(" · asking in {}: {}", a.session, a.question))
+                        .unwrap_or_default()
                 );
                 for s in &list.sessions {
                     let step = match (s.step, s.steps) {
@@ -586,10 +653,55 @@ impl Printer {
                 };
                 println!("{at} session {} {:?}{step}: {}", s.id, s.state, s.title);
                 println!(
-                    "    {} · backend {:?}",
+                    "    {} · backend {:?}{}{}",
                     where_(s.via, &s.place, s.program.as_deref(), None),
-                    s.backend
+                    s.backend,
+                    s.cost
+                        .map(|c| format!(
+                            " · ${:.4}{}",
+                            c.usd,
+                            if c.notional { " (notional)" } else { "" }
+                        ))
+                        .unwrap_or_default(),
+                    s.expect_at
+                        .map(|t| format!(" · done by {t}"))
+                        .unwrap_or_default()
                 );
+                if let Some(sched) = &s.schedule {
+                    println!(
+                        "    schedule {} {} next {}{}{}{}: {}",
+                        sched.days,
+                        sched.at,
+                        sched.next,
+                        if sched.wake_board {
+                            " · wakes the board"
+                        } else {
+                            ""
+                        },
+                        if sched.show_note { " · as a note" } else { "" },
+                        if sched.speak { " · spoken" } else { "" },
+                        sched.prompt
+                    );
+                    for run in &sched.runs {
+                        println!("      run {} {:?} {} s", run.at, run.state, run.secs);
+                    }
+                }
+                if let Some(watch) = &s.watch {
+                    println!(
+                        "    watch every {} min until {}{} · next {:?} · {:?}",
+                        watch.every_minutes,
+                        watch.condition,
+                        if watch.met { " (met)" } else { "" },
+                        watch.next,
+                        watch.values
+                    );
+                }
+                if let Some(panel) = &s.panel {
+                    println!("    panel {}:", panel.title);
+                    for block in &panel.blocks {
+                        println!("      {block}");
+                    }
+                }
                 println!("    prompt: {}", s.prompt);
                 for item in s.plan.iter().flatten() {
                     let mark = match item.state {
@@ -637,6 +749,9 @@ impl Printer {
                             ""
                         }
                     );
+                }
+                if let Some(deadline) = ask.deadline {
+                    println!("    deadline {} then {:?}", deadline.at, deadline.then);
                 }
                 println!("    answer: --answer {}:{}:N", ask.session, ask.id);
             }

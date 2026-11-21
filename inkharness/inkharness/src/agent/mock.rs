@@ -5,7 +5,14 @@
 //! - "ask" or "choose": asks which of two plumbers to book, and waits for the answer;
 //! - "slow": takes 3 s over each step, long enough to watch it work and to talk into it;
 //! - "note": the result opens with a heading, which makes the session a note;
-//! - "fail": the run fails.
+//! - "fail": the run fails;
+//! - "deadline": the question waits a minute, then takes the recommendation ("again": asks
+//!   again; "give up": gives up);
+//! - "expect": the plan says it will be done in 30 minutes;
+//! - "schedule": makes the session a schedule, weekdays at 07:00, waking the board; its runs
+//!   end with a result (or fail, with "fail");
+//! - "watch": makes it a watch, every 5 minutes; each look reads 712, until a look whose
+//!   condition says "DROPPED", which holds.
 //!
 //! Talked into afterwards, it answers "You said: …".
 
@@ -16,7 +23,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::tools::{ASK_TOOL, PLAN_TOOL};
+use super::tools::{ASK_TOOL, PLAN_TOOL, SCHEDULE_TOOL, WATCH_TOOL};
 use crate::llm::{Llm, Outcome, Piece, Request};
 use crate::tools::JS_TOOL;
 
@@ -41,8 +48,9 @@ impl Llm for MockAgent {
                 anyhow::Ok(tools.call(name, input).await)
             }
         };
-        let follow_up =
-            !request.history.is_empty() || request.user.contains("inkharness restarted");
+        let follow_up = !request.history.is_empty()
+            || request.user.contains("inkharness restarted")
+            || request.user.contains("paused this task");
         if follow_up {
             say(format!("You said: {}", request.user)).await?;
             return Ok(Outcome::Done);
@@ -50,10 +58,46 @@ impl Llm for MockAgent {
 
         let task = request.user.trim();
         let words = task.to_lowercase();
+        if task.starts_with("(A scheduled run") {
+            if words.contains("fail") {
+                bail!("the mock model failed, as the schedule asked");
+            }
+            say(format!(
+                "**Brief:** {}",
+                task.lines().last().unwrap_or_default()
+            ))
+            .await?;
+            return Ok(Outcome::Done);
+        }
+        if task.starts_with("(A look for your watch") {
+            let reading = if task.contains("DROPPED") {
+                json!({"met": true})
+            } else {
+                json!({"value": 712})
+            };
+            call(WATCH_TOOL, reading).await?.ok();
+            say("Looked: $712.".into()).await?;
+            return Ok(Outcome::Done);
+        }
+        if words.contains("schedule") {
+            let made = call(
+                SCHEDULE_TOOL,
+                json!({"at": "07:00", "days": "weekdays", "prompt": task, "wake_board": true}),
+            )
+            .await?;
+            say(made.unwrap_or_else(|e| e)).await?;
+            return Ok(Outcome::Done);
+        }
+        if words.contains("watch") {
+            let made = call(WATCH_TOOL, json!({"every_minutes": 5, "condition": task})).await?;
+            say(made.unwrap_or_else(|e| e)).await?;
+            return Ok(Outcome::Done);
+        }
         let pause = Duration::from_secs(if words.contains("slow") { 3 } else { 0 });
         let steps = ["Read the task", "Work it out", "Write the result"];
         let title: String = format!("Mock · {task}").chars().take(40).collect();
-        let plan = |current: usize| json!({"steps": steps, "current": current, "title": title});
+        let expect = words.contains("expect").then_some(30);
+        let plan = |current: usize| json!({"steps": steps, "current": current, "title": title, "expect_minutes": expect});
 
         call(PLAN_TOOL, plan(1)).await?.ok();
         say("Reading the task.".into()).await?;
@@ -61,8 +105,8 @@ impl Llm for MockAgent {
         tokio::time::sleep(pause).await;
         call(PLAN_TOOL, plan(2)).await?.ok();
         let mut chose = String::new();
-        if words.contains("ask") || words.contains("choose") {
-            let question = json!({
+        if words.contains("ask") || words.contains("choose") || words.contains("deadline") {
+            let mut question = json!({
                 "question": "Which plumber should I book?",
                 "detail": "Two can come this week.",
                 "options": [
@@ -71,6 +115,14 @@ impl Llm for MockAgent {
                 ],
                 "recommend": 0
             });
+            if words.contains("deadline") {
+                question["deadline_minutes"] = json!(1);
+                if words.contains("again") {
+                    question["then"] = json!("ask_again");
+                } else if words.contains("give up") {
+                    question["then"] = json!("give_up");
+                }
+            }
             let answer = call(ASK_TOOL, question).await?;
             chose = format!("\n- You chose: {}", answer.unwrap_or_else(|e| e));
         }

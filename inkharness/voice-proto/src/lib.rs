@@ -217,6 +217,24 @@ pub enum ClientMsg {
     SendDraft { session: String, draft: String },
     /// Throws a draft away.
     DropDraft { session: String, draft: String },
+    /// Pauses a working or asking session, a schedule or a watch, keeping what it was doing.
+    Pause { session: String },
+    /// Picks a paused session up where it was.
+    Resume { session: String },
+    /// Starts a job that talk filed (a `proposed` session).
+    Approve { session: String },
+    /// Runs a schedule now, or has a watch look now.
+    Run { session: String },
+    /// Answers a `choice` block on a session's panel with one of its options.
+    PanelChoice {
+        session: String,
+        /// The block's id.
+        block: String,
+        choice: usize,
+    },
+    /// Says a session's last result aloud (a schedule with `speak`): answered as a reply,
+    /// `reply_start`, audio and `reply_end`, with no `stt`.
+    Speak { session: String },
 }
 
 /// What kind of turn an utterance is.
@@ -316,6 +334,10 @@ pub struct AgentHello {
     pub pin: bool,
     /// Whether this connection may use them now.
     pub unlocked: bool,
+    /// What this daemon can do beyond the first version: `pause`, `run`, `jobs`, `schedule`,
+    /// `watch`, `deadline`, `panel`, `speak`. A board hides what isn't here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub features: Vec<String>,
 }
 
 /// What a session is doing.
@@ -335,7 +357,15 @@ pub enum State {
     Stopped,
     /// Ready for more, with nothing to do (a herdr session whose program waits for input).
     Idle,
-    /// A state this version doesn't know (later ones add `watch`, `scheduled`).
+    /// Waits for its next run (a schedule).
+    Scheduled,
+    /// Waits for its next look (a watch).
+    Watch,
+    /// Paused by the user; it picks up where it was when resumed.
+    Paused,
+    /// A job filed by talk, waiting for someone behind the PIN to start it.
+    Proposed,
+    /// A state this version doesn't know.
     #[serde(other)]
     Unknown,
 }
@@ -381,11 +411,23 @@ impl State {
 /// The `sessions` message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionList {
-    /// Locked: only the counts and `check_at`, no sessions.
+    /// Locked: only the counts, `check_at`, `next_at` and `latest`, no sessions.
     pub locked: bool,
     pub counts: Counts,
-    /// When the board should check in next (Unix seconds), if the daemon wants it to.
+    /// When the board should check in next (Unix seconds), if the daemon wants it to: the
+    /// earliest of a working session's expected end, a watch's next look, and a schedule that
+    /// wakes the board. Always in the future when sent; the board sets its own floor.
     pub check_at: Option<u64>,
+    /// The next scheduled run (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_at: Option<u64>,
+    /// When the newest question was asked and the newest result came (Unix seconds, 0 for
+    /// none): a board chirps when either grows.
+    #[serde(default)]
+    pub latest: Latest,
+    /// Unlocked: the newest question waiting, in full (for a board's ask sheet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ask: Option<AskView>,
     pub sessions: Vec<SessionRow>,
     /// Sessions past the ones listed.
     pub older: usize,
@@ -396,11 +438,25 @@ pub struct Counts {
     pub ask: usize,
     /// Working, of every kind.
     pub running: usize,
+    /// Schedules and watches.
     pub planned: usize,
     pub unread: usize,
     /// Ready for more (herdr sessions whose program waits for input).
     #[serde(default)]
     pub idle: usize,
+    /// Jobs talk filed, waiting to be started.
+    #[serde(default)]
+    pub proposed: usize,
+}
+
+/// `latest` in the list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Latest {
+    /// The newest waiting question's `at`.
+    pub ask: u64,
+    /// The newest unread result: a session that finished, or a schedule's run (herdr
+    /// sessions, which finish after every task, don't count).
+    pub done: u64,
 }
 
 /// A session in the list.
@@ -425,6 +481,15 @@ pub struct SessionRow {
     pub progress: Option<u8>,
     pub updated: u64,
     pub unread: bool,
+    /// When a working session expects to be done (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_at: Option<u64>,
+    /// A schedule's next run, or a watch's next look (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_at: Option<u64>,
+    /// A watch's last readings, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spark: Vec<f64>,
 }
 
 /// The `session` message: one session in full.
@@ -454,6 +519,83 @@ pub struct SessionView {
     /// A herdr session's last lines of screen, plain text; null for the others.
     #[serde(default)]
     pub screen: Option<Vec<String>>,
+    /// When a working session expects to be done (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expect_at: Option<u64>,
+    /// What its model requests have cost so far.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<Cost>,
+    /// A schedule's settings and its last runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule: Option<ScheduleView>,
+    /// A watch's condition and readings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<WatchView>,
+    /// The screen the session drew (`show_panel`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel: Option<Panel>,
+}
+
+/// What a session's model requests cost, in US dollars.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Cost {
+    pub usd: f64,
+    /// On a subscription (the claude backend): what it would have cost, not what was paid.
+    #[serde(default)]
+    pub notional: bool,
+}
+
+/// A schedule, as a session shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScheduleView {
+    /// Local time on the daemon, "07:00".
+    pub at: String,
+    /// The days it runs: Monday first, `"MTWTF.."` for weekdays.
+    pub days: String,
+    /// The next run (Unix seconds).
+    pub next: u64,
+    /// What each run does, in the user's words.
+    pub prompt: String,
+    /// The board should wake to show the result (its RTC alarm).
+    pub wake_board: bool,
+    /// The result shows as a note.
+    pub show_note: bool,
+    /// The result is spoken on a board on USB.
+    pub speak: bool,
+    /// The last runs, newest first.
+    pub runs: Vec<RunView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunView {
+    pub at: u64,
+    /// done, note or fail.
+    pub state: State,
+    /// How long it took.
+    pub secs: u64,
+}
+
+/// A watch, as a session shows it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchView {
+    pub condition: String,
+    pub every_minutes: u64,
+    /// The next look (Unix seconds); none once the condition has held.
+    pub next: Option<u64>,
+    /// The last readings, oldest first.
+    pub values: Vec<f64>,
+    /// The condition held.
+    pub met: bool,
+}
+
+/// A screen a session drew from blocks (`show_panel`): the board lays them out in its own
+/// type, top to bottom, and skips a kind it doesn't know.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Panel {
+    pub title: String,
+    /// Each a JSON object with a `kind`: section, stat, kv, rows, meter, spark, text, choice.
+    pub blocks: Vec<serde_json::Value>,
+    pub at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -489,6 +631,29 @@ pub struct AskView {
     /// The option the session recommends.
     pub recommend: Option<usize>,
     pub at: u64,
+    /// What happens if nobody answers in time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline: Option<Deadline>,
+}
+
+/// A question's deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Deadline {
+    /// Unix seconds.
+    pub at: u64,
+    pub then: OnDeadline,
+}
+
+/// What a session does with a question nobody answered in time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnDeadline {
+    /// Asks again, as a new question.
+    AskAgain,
+    /// Takes the recommended option.
+    Recommend,
+    /// Gives up on the choice.
+    GiveUp,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -857,6 +1022,7 @@ mod tests {
             ],
             recommend: Some(0),
             at: 1795190000,
+            deadline: None,
         }
     }
 
@@ -872,6 +1038,22 @@ mod tests {
                     place: "ONIONSERVE".into(),
                     pin: true,
                     unlocked: false,
+                    features: Vec::new(),
+                }),
+            },
+        );
+        round_trip(
+            r#"{"type":"hello","proto":2,"session":"s1",
+                "agent":{"place":"ONIONSERVE","pin":false,"unlocked":true,
+                         "features":["pause","schedule"]}}"#,
+            ServerMsg::Hello {
+                proto: 2,
+                session: "s1".into(),
+                agent: Some(AgentHello {
+                    place: "ONIONSERVE".into(),
+                    pin: false,
+                    unlocked: true,
+                    features: vec!["pause".into(), "schedule".into()],
                 }),
             },
         );
@@ -886,8 +1068,8 @@ mod tests {
         );
         round_trip(
             r#"{"type":"sessions","locked":false,
-                "counts":{"ask":2,"running":4,"planned":0,"unread":1,"idle":1},
-                "check_at":null,"older":0,
+                "counts":{"ask":2,"running":4,"planned":0,"unread":1,"idle":1,"proposed":0},
+                "check_at":null,"latest":{"ask":1795190000,"done":0},"older":0,
                 "sessions":[{"id":"k7q2","title":"Plumber · kitchen leak","state":"ask",
                              "place":"ONIONSERVE","via":"inkharness","program":null,
                              "sub":"Which plumber should I book?",
@@ -901,8 +1083,15 @@ mod tests {
                     planned: 0,
                     unread: 1,
                     idle: 1,
+                    proposed: 0,
                 },
                 check_at: None,
+                next_at: None,
+                latest: Latest {
+                    ask: 1795190000,
+                    done: 0,
+                },
+                ask: None,
                 older: 0,
                 sessions: vec![SessionRow {
                     id: "k7q2".into(),
@@ -917,6 +1106,9 @@ mod tests {
                     progress: None,
                     updated: 1795190000,
                     unread: true,
+                    expect_at: None,
+                    next_at: None,
+                    spark: Vec::new(),
                 }],
             }),
         );
@@ -964,6 +1156,11 @@ mod tests {
                 result: None,
                 ask: None,
                 screen: None,
+                expect_at: None,
+                cost: None,
+                schedule: None,
+                watch: None,
+                panel: None,
             })),
         );
         round_trip(
@@ -975,6 +1172,64 @@ mod tests {
                 "recommend":0,"at":1795190000}"#,
             ServerMsg::Ask(plumber_ask()),
         );
+        round_trip(
+            r#"{"type":"ask","session":"k7q2","id":"a1","title":"Plumber · kitchen leak",
+                "question":"Which plumber should I book?",
+                "detail":"Three can come before the weekend.",
+                "options":[{"title":"Riverside · Thu 08:00","right":"$145","detail":"4.8 ★ (212)…"},
+                           {"title":"Northgate · Wed 13:00","right":"$120","detail":null}],
+                "recommend":0,"at":1795190000,
+                "deadline":{"at":1795197200,"then":"recommend"}}"#,
+            ServerMsg::Ask(AskView {
+                deadline: Some(Deadline {
+                    at: 1795197200,
+                    then: OnDeadline::Recommend,
+                }),
+                ..plumber_ask()
+            }),
+        );
+        for (json, msg) in [
+            (
+                r#"{"type":"pause","session":"k7q2"}"#,
+                ClientMsg::Pause {
+                    session: "k7q2".into(),
+                },
+            ),
+            (
+                r#"{"type":"resume","session":"k7q2"}"#,
+                ClientMsg::Resume {
+                    session: "k7q2".into(),
+                },
+            ),
+            (
+                r#"{"type":"approve","session":"k7q2"}"#,
+                ClientMsg::Approve {
+                    session: "k7q2".into(),
+                },
+            ),
+            (
+                r#"{"type":"run","session":"k7q2"}"#,
+                ClientMsg::Run {
+                    session: "k7q2".into(),
+                },
+            ),
+            (
+                r#"{"type":"speak","session":"k7q2"}"#,
+                ClientMsg::Speak {
+                    session: "k7q2".into(),
+                },
+            ),
+            (
+                r#"{"type":"panel_choice","session":"k7q2","block":"fare","choice":1}"#,
+                ClientMsg::PanelChoice {
+                    session: "k7q2".into(),
+                    block: "fare".into(),
+                    choice: 1,
+                },
+            ),
+        ] {
+            round_trip(json, msg);
+        }
         round_trip(
             r#"{"type":"started","session":"k7q2"}"#,
             ServerMsg::Started {
@@ -1025,8 +1280,20 @@ mod tests {
         assert_eq!(ask.options[0].right, None);
         assert_eq!(
             serde_json::from_str::<State>(r#""watch""#).unwrap(),
+            State::Watch
+        );
+        assert_eq!(
+            serde_json::from_str::<State>(r#""hibernating""#).unwrap(),
             State::Unknown
         );
+        for state in [
+            State::Scheduled,
+            State::Watch,
+            State::Paused,
+            State::Proposed,
+        ] {
+            assert!(!state.finished());
+        }
         assert!(State::Stopped.finished() && !State::Ask.finished());
     }
 
@@ -1058,7 +1325,17 @@ mod tests {
         );
         let counts: Counts =
             serde_json::from_str(r#"{"ask":0,"running":1,"planned":0,"unread":0}"#).unwrap();
-        assert_eq!(counts.idle, 0);
+        assert_eq!((counts.idle, counts.proposed), (0, 0));
+        // A list from a daemon before check-ins: no latest, next_at or ask.
+        let list: SessionList = serde_json::from_str(
+            r#"{"locked":true,"counts":{"ask":1,"running":0,"planned":0,"unread":1},
+                "check_at":null,"sessions":[],"older":0}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (list.latest, list.next_at, list.ask),
+            (Latest::default(), None, None)
+        );
         let screen = SessionView {
             via: Via::Herdr,
             program: Some("claude code".into()),

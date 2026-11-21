@@ -25,7 +25,7 @@ use tokio::sync::Notify;
 use voice_proto::State;
 
 use super::store::{self, Who};
-use super::tools::{self, ASK_TOOL, PLAN_TOOL};
+use super::tools::{self, ASK_TOOL, PLAN_TOOL, SCHEDULE_TOOL, WATCH_TOOL};
 use super::{Agent, bridge};
 use crate::config;
 use crate::meter;
@@ -190,6 +190,9 @@ pub fn prompt() -> String {
          - When a choice is genuinely theirs (which plumber to book, which flight to buy), call \
          mcp__{s}__{ASK_TOOL} and wait for the answer: it reaches them on their board, and \
          nobody would see a question asked in text. Decide everything else yourself.\n\
+         - For something every day or every week (\"every weekday at seven, brief me\"), call \
+         mcp__{s}__{SCHEDULE_TOOL}; to keep an eye on something until a condition holds (a \
+         fare under $700), call mcp__{s}__{WATCH_TOOL}. Don't wait or loop yourself.\n\
          - Keep what you write between tool calls to a few words.\n\
          - End with the result in Markdown, short and to the point as it should read on that \
          screen. If it is something to keep and read later (a brief, a summary, a recipe), \
@@ -318,6 +321,7 @@ impl Agent {
         let (outcome, charges) = outcome;
         let (cost, _) = meter::total(&charges);
         let notional = claude.credential() == "subscription";
+        self.add_cost(&id, run, cost, notional);
         tracing::info!(session = %id, cost, notional, "claude run ended (on a subscription the cost is notional)");
         match outcome {
             Ok(()) => {
@@ -512,13 +516,13 @@ impl Agent {
                 .or_else(|| todos.iter().position(|t| state(t) == "pending"))
                 .map_or(steps.len() + 1, |i| i + 1);
             if !steps.is_empty() {
-                let _ = self.set_plan(id, run, steps, current, None);
+                let _ = self.set_plan(id, run, steps, current, None, None);
             }
             return;
         }
         let own = format!("mcp__{}__", bridge::SERVER);
         match name.strip_prefix(&own) {
-            Some(ASK_TOOL | PLAN_TOOL) => {}
+            Some(name) if tools::shows_itself(name) => {}
             Some(other) => self.log(id, run, &tools::short_call(other, input)),
             None => self.log(id, run, &tools::short_call(name, input)),
         }
@@ -963,7 +967,7 @@ while read -r line; do result "heard: $(text_of "$line")"; done
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["plan", "ask_choice"]);
+        assert_eq!(names, ["plan", "ask_choice", "schedule", "watch"]);
         assert!(got[&2]["result"]["tools"][1]["inputSchema"]["properties"]["options"].is_object());
         assert_eq!(
             got[&3]["result"]["content"][0]["text"],

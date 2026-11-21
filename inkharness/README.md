@@ -151,9 +151,14 @@ tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixe
 - A session runs on `[agent.llm]` if there is one, else on `[chat.llm]`, else on `[llm]`: any
   backend `[llm]` takes, checked at startup like the others, and named on the log's
   `agent sessions` line. A text model suits it; one that speaks would pay for audio nobody
-  hears. It gets the daemon's tools (home, MCP, web search, run_js, skills) and two of its own: `plan`, a checklist the board shows as a
-  meter, and `ask_choice`, which puts a question with 2 to 6 options to the user and waits,
-  minutes or days, for the answer. The board's tools stay out: it may be off. The prompt tells
+  hears. It gets the daemon's tools (home, MCP, web search, run_js, skills) and its own: `plan`, a checklist the board shows as a
+  meter (with `expect_minutes`, when it expects to be done, so a sleeping board checks back
+  then); `ask_choice`, which puts a question with 2 to 6 options to the user and waits,
+  minutes or days, for the answer (with `deadline_minutes`, then asks again, takes its
+  recommendation or gives up); `schedule`, which makes the session run its prompt at a time of
+  day on some days ("every weekday at seven"), each run fresh, its result on the board; and
+  `watch`, which makes it look every so often (at least 5 minutes) until a condition holds.
+  The board's tools stay out: it may be off. The prompt tells
   the model it works alone for someone who reads results on a small e-paper screen: plan first,
   keep the log terse, ask only when the choice is the user's, end with a short Markdown result,
   and open it with a heading when it is meant to be kept (the session is then a note).
@@ -169,7 +174,11 @@ tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixe
   session, how long speech-to-text took).
 - What it writes between tool calls and the calls themselves go to its log. Talking into a
   working session reaches the model at its next round; into an asking one, it answers in words;
-  into a finished one, it starts again. Each run logs what it cost, as turns do.
+  into a finished one, it starts again; into a schedule or a watch, it can change it. Each run
+  logs what it cost, as turns do, and the session adds it up for the board.
+- A session can be paused (its run stops; it keeps its plan, inbox and question) and resumed.
+  Schedules run in the daemon machine's local time; a run missed by more than an hour (the
+  daemon was down) is skipped.
 - Sessions are JSON files in `dir`. After a restart, the working ones start again, told their
   plan and what they had done (the results of earlier tool calls are gone), and the asking ones
   wait on; an answer then starts them the same way.
@@ -178,7 +187,8 @@ tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixe
   sees a session. The token is on the board's SD card, so `pin_sha256` keeps a lost board or a
   copied card from reaching the agent: until a connection unlocks, it gets talk turns and the
   sessions' counts only. Wrong PINs back off after 3 (30 s, doubling to 30 min), and the count
-  survives a restart.
+  survives a restart. Talk's one way in is `propose_job`, which files a job that waits on the
+  list (`proposed`) until someone starts it there; `[talk] tools` can leave it out.
 
 The protocol is in [docs/voice-protocol.md](../docs/voice-protocol.md#agent-sessions). Over
 HTTP, with the token, and with `X-Inkharness-Pin: <pin>` when a PIN is set (403 without it or
@@ -193,7 +203,10 @@ with a wrong one, 429 while wrong ones back off):
 | `POST /sessions/{id}/send_draft` | `{"draft"}` types a herdr session's draft (kept 2 minutes) |
 | `POST /sessions/{id}/drop_draft` | `{"draft"}` throws it away |
 | `POST /sessions/{id}/answer` | `{"ask": "a1", "choice": 0}` |
-| `POST /sessions/{id}/stop` | Stops a working or asking one (a herdr session: its stop key) |
+| `POST /sessions/{id}/stop` | Stops a working or asking one, a schedule or a watch (a herdr session: its stop key) |
+| `POST /sessions/{id}/pause` | Pauses it; `resume` picks it up again |
+| `POST /sessions/{id}/run` | A schedule: runs now. A watch: looks now |
+| `POST /sessions/{id}/approve` | Starts a job talk filed: `{"session": "k7q2"}` |
 | `POST /sessions/{id}/kill` | A herdr session: ends its program (`[herdr] kill`) |
 | `DELETE /sessions/{id}` | Deletes it (a herdr session: takes it off the list) |
 
@@ -205,7 +218,10 @@ curl -s "${pin[@]}" localhost:7392/sessions/k7q2/answer -d '{"ask": "a1", "choic
 
 With `[llm] backend = "mock"`, sessions play through a scripted run instead (`agent/mock.rs`): a
 plan of three steps, a tool call and a result; "ask" in the task asks which of two plumbers to
-book, "slow" takes 3 s a step, "note" makes it a note, "fail" fails it.
+book, "slow" takes 3 s a step, "note" makes it a note, "fail" fails it, "deadline" gives the
+question a minute, "expect" says it will take 30 minutes, "schedule" makes it a weekday 07:00
+schedule that wakes the board, and "watch" a 5-minute watch (a look whose condition says
+"DROPPED" holds).
 
 ### Backends
 
@@ -332,7 +348,7 @@ scripts can't call the skill tools.
 | Path | |
 | --- | --- |
 | `voice-proto/` | Framing and messages, shared by the daemon and the test client |
-| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan` and `herdr_run`, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
+| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch` and talk's `propose_job`, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
 | `voice-client/` | Plays a board's part from a WAV file |
 | `skills/` | Agent Skills, found when inkharness starts in this folder; `goodnight` pauses every speaker that's playing in one `run_js` script |
 | `install.sh` | Installs inkharness from this checkout (`cargo install --path`) |
@@ -359,7 +375,8 @@ announces them (`name`, `description`, `input_schema`), each with the `answer` t
 called.
 
 It plays a board's part in agent sessions too: `--unlock PIN` (or `--ticket T`), `--sync`,
-`--open ID`, `--answer SESSION:ASK:N`, `--stop ID`, `--delete ID`, `--mode agent` (and
+`--open ID`, `--answer SESSION:ASK:N`, `--stop ID`, `--pause ID`, `--resume ID`, `--run ID`,
+`--approve ID`, `--panel-choice SESSION:BLOCK:N`, `--speak ID`, `--delete ID`, `--mode agent` (and
 `--session ID`) for an agent turn, `--wait SECS` to go on printing, `--json` for the messages as
 sent. A test daemon with sessions, every stage mocked and the PIN 1234, on ports of its own and
 without the global config:

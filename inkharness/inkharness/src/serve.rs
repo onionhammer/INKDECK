@@ -102,14 +102,21 @@ fn device_app(
 ) -> Result<Arc<session::App>> {
     let cfg = &place.config;
     let http = &harness.http;
+    // Talk's one way into the Agent: filing a job (before `[talk] tools`, which can drop it).
+    let base = match &agent {
+        Some(agent) => harness.tools.with_extra(Arc::new(agent::ProposeTool {
+            agent: agent.clone(),
+        })),
+        None => harness.tools.clone(),
+    };
     let tools = match &cfg.talk.tools {
         Some(patterns) => {
-            let tools = harness.tools.only(patterns);
+            let tools = base.only(patterns);
             let names: Vec<&str> = tools.defs().iter().map(|d| d.name.as_str()).collect();
             tracing::info!(?names, "talk tools");
             tools
         }
-        None => harness.tools.clone(),
+        None => base,
     };
     let think = match &cfg.think {
         Some(think) => Some(session::Thinker {

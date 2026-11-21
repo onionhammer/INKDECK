@@ -393,6 +393,47 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                             Ok(a) => a.drop_draft(&id, &draft),
                             Err(message) => refuse(&tx, "drop_draft", Some(id), &message).await,
                         },
+                        ClientMsg::Pause { session: id } => match gate(&agent, unlocked) {
+                            Ok(a) => {
+                                if let Err(r) = a.pause(&id) {
+                                    refuse(&tx, "pause", Some(id), &r.to_string()).await;
+                                }
+                            }
+                            Err(message) => refuse(&tx, "pause", Some(id), &message).await,
+                        },
+                        ClientMsg::Resume { session: id } => match gate(&agent, unlocked) {
+                            Ok(a) => {
+                                if let Err(r) = a.resume(&id) {
+                                    refuse(&tx, "resume", Some(id), &r.to_string()).await;
+                                }
+                            }
+                            Err(message) => refuse(&tx, "resume", Some(id), &message).await,
+                        },
+                        ClientMsg::Run { session: id } => match gate(&agent, unlocked) {
+                            Ok(a) => {
+                                if let Err(r) = a.run_now(&id) {
+                                    refuse(&tx, "run", Some(id), &r.to_string()).await;
+                                }
+                            }
+                            Err(message) => refuse(&tx, "run", Some(id), &message).await,
+                        },
+                        ClientMsg::Approve { session: id } => match gate(&agent, unlocked) {
+                            Ok(a) => {
+                                let (a, tx) = (a.clone(), tx.clone());
+                                tokio::spawn(async move {
+                                    if let Err(r) = a.approve(&id, None).await {
+                                        refuse(&tx, "approve", Some(id), &r.to_string()).await;
+                                    }
+                                });
+                            }
+                            Err(message) => refuse(&tx, "approve", Some(id), &message).await,
+                        },
+                        ClientMsg::PanelChoice { session: id, .. } => {
+                            refuse(&tx, "panel_choice", Some(id), "not on this daemon").await
+                        }
+                        ClientMsg::Speak { session: id } => {
+                            refuse(&tx, "speak", Some(id), "not on this daemon").await
+                        }
                         ClientMsg::Delete { session: id } => match gate(&agent, unlocked) {
                             Ok(a) => {
                                 let (a, tx) = (a.clone(), tx.clone());
@@ -1675,6 +1716,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_board_pauses_resumes_and_starts_filed_jobs() {
+        let (addr, agent) = agent_daemon("conn-pause", "unused").await;
+        let job = agent.propose("compare plumbers", Some("Plumbers"));
+        let (_, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        let (mut reader, mut writer) = board.unwrap();
+        // Locked: none of it.
+        for msg in [
+            ClientMsg::Approve {
+                session: job.clone(),
+            },
+            ClientMsg::Pause {
+                session: job.clone(),
+            },
+        ] {
+            put(&mut writer, msg).await;
+            let ServerMsg::Refused { message, .. } = next(&mut reader).await else {
+                panic!("not refused")
+            };
+            assert_eq!(message, "locked");
+        }
+        assert_eq!(agent.view(&job).unwrap().state, State::Proposed);
+        put(
+            &mut writer,
+            ClientMsg::Unlock {
+                pin: Some("1234".into()),
+                ticket: None,
+            },
+        )
+        .await;
+        assert!(matches!(
+            next(&mut reader).await,
+            ServerMsg::Unlocked { ok: true, .. }
+        ));
+        put(
+            &mut writer,
+            ClientMsg::Approve {
+                session: job.clone(),
+            },
+        )
+        .await;
+        agent::tests::until(&agent, &job, State::Done).await;
+        // A finished session can't be paused: refused, and why.
+        put(
+            &mut writer,
+            ClientMsg::Pause {
+                session: job.clone(),
+            },
+        )
+        .await;
+        assert_eq!(
+            next(&mut reader).await,
+            ServerMsg::Refused {
+                request: "pause".into(),
+                session: Some(job.clone()),
+                message: "not running".into()
+            }
+        );
+        let id = agent.start("ask me which").await.unwrap();
+        agent::tests::until(&agent, &id, State::Ask).await;
+        put(
+            &mut writer,
+            ClientMsg::Pause {
+                session: id.clone(),
+            },
+        )
+        .await;
+        agent::tests::until(&agent, &id, State::Paused).await;
+        put(
+            &mut writer,
+            ClientMsg::Resume {
+                session: id.clone(),
+            },
+        )
+        .await;
+        agent::tests::until(&agent, &id, State::Ask).await;
+    }
+
+    #[tokio::test]
     async fn a_board_unlocks_follows_and_answers_its_sessions() {
         let (addr, agent) = agent_daemon("conn-agent", "find a plumber and ask me which").await;
         let (answer, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
@@ -1686,7 +1805,8 @@ mod tests {
                 agent: Some(AgentHello {
                     place: "HOME".into(),
                     pin: true,
-                    unlocked: false
+                    unlocked: false,
+                    features: agent::FEATURES.iter().map(|f| f.to_string()).collect(),
                 }),
             }
         );
