@@ -58,7 +58,7 @@ struct Hint {
 constexpr int kMaxHints = 4;
 void drawHintBar(Canvas &c, const Rect &r, const Hint *hints, int count);
 
-// --- Sheet: the panel an overlay rises in from the bottom of the body (the voice and player
+// --- Sheet: the panel an overlay rises in from the bottom of the body (the agent and player
 // sheets): half the body but at least minH, its top rule casting a 6 px 50 % dither shadow up
 // onto the screen below it. Returns the area under the rule. With hints, a key-hint bar along its
 // bottom too, for a screen below without chrome (the navigator draws the hints only in chrome).

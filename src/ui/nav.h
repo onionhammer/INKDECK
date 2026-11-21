@@ -12,8 +12,8 @@
 //            On the root, with nothing to pop, it redraws with a full refresh (cleans the
 //            screen)
 //   HOLD BOOT talk to the assistant, from any screen (onTalkKey(), apps/hold_boot.h; only in a
-//            build with the voice assistant, INKDECK_VOICE in features.h): held about
-//            half a second, the voice sheet rises over the lower half; let go to send. Not while
+//            build with the agent, INKDECK_AGENT in features.h): held about
+//            half a second, the agent sheet rises over the lower half; let go to send. Not while
 //            the lock is on the stack, under an off face, or over a screen that has the mic or
 //            the speaker (allowsTalk()). While music or a podcast plays, it raises the player
 //            sheet instead (apps/music.h). Screens never see it.

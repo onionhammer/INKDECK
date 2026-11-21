@@ -12,7 +12,7 @@ Screens as the panel draws them, saved over USB with `tools/screenshot.py`.
 
 Home lists ten modules, each with a live preview. Every screen uses one key language: ▲▼ to
 move or adjust, ● for the main action, HOLD ● for the second one, BOOT for back (on Home, a
-full refresh), and HOLD BOOT on any screen to talk to the voice assistant (while music or a
+full refresh), and HOLD BOOT on any screen to talk to the agent (while music or a
 podcast plays, it raises a player sheet instead). Landscape screens (Clock, Level) turn the board
 so the wheel is on top; there, rolling it left is ▲ and right is ▼. Pictures turn with the
 board instead, and the wheel keeps its portrait sense there.
@@ -25,7 +25,7 @@ board instead, and the wheel keeps its portrait sense there.
 | **Weather** | Open-Meteo forecast: now, 12 hours and 6 days, with a detail sheet per day. Synced hourly (every half hour on USB; while the Reader naps, at the next page turn) and cached for offline use |
 | **Clock** | Landscape desk clock: calendar, sunrise and sunset, a weather strip, now-playing, and three alarms. An alarm can boot the board from power-off |
 | **Recorder** | Voice memos from the onboard mic as 16 kHz WAV, with a live waveform, input meter and gain. Memos play back on the device with a volume meter (▲▼), and can be deleted |
-| **Voice** | Hold BOOT on any screen and talk to an assistant on your network: a sheet rises over the lower half of the screen with what it heard and its reply; it speaks back, and can play music on speakers through Home Assistant. It can also use the board: find and open a book, read out the forecast, set an alarm, change the volume, open a screen, or say how the battery is (`src/apps/voice_tools.h`), and search the web (SearXNG, Brave or Tavily). A screen it opens comes up once the reply has been said. **Long answers go on the screen**: for a recipe, the steps of a how-to or a list, it says a sentence or two and puts the whole thing up as a **note** (`src/apps/note.h`), paged like the Reader (▲▼, Literata in three sizes), with headings, bullets, numbered steps and checklists. Each note is kept as Markdown in `SD:/Notes/` (the onboard flash without a card), where Files opens it again; "show me the recipe again" brings back the last one where it was left, and it can read the note on screen to answer a follow-up ("double it"). The board streams the mic, encrypted with the token both ends hold, to [`inkharness serve`](inkharness/README.md), a Rust daemon that runs speech-to-text, a language model and text-to-speech (hosted or local, each swappable; a model that hears or speaks can stand in for the first or last), and plays the reply as it arrives. Set `voice_host` in `SD:/inkdeck.ini`: a machine on your network, or on your tailnet from any Wi-Fi (Tailnet, below). Protocol: [`docs/voice-protocol.md`](docs/voice-protocol.md). The same program, installed with one line, is also a chat in the terminal and an HTTP API, using what it finds in the folder it starts in (`AGENTS.md`, skills, `.mcp.json`). **Not yet tested on the board** |
+| **Agent** | Hold BOOT on any screen and talk to an assistant on your network: a sheet rises over the lower half of the screen with what it heard and its reply; it speaks back, and can play music on speakers through Home Assistant. It can also use the board: find and open a book, read out the forecast, set an alarm, change the volume, open a screen, or say how the battery is (`src/apps/board_tools.h`), and search the web (SearXNG, Brave or Tavily). A screen it opens comes up once the reply has been said. **Long answers go on the screen**: for a recipe, the steps of a how-to or a list, it says a sentence or two and puts the whole thing up as a **note** (`src/apps/note.h`), paged like the Reader (▲▼, Literata in three sizes), with headings, bullets, numbered steps and checklists. Each note is kept as Markdown in `SD:/Notes/` (the onboard flash without a card), where Files opens it again; "show me the recipe again" brings back the last one where it was left, and it can read the note on screen to answer a follow-up ("double it"). The board streams the mic, encrypted with the token both ends hold, to [`inkharness serve`](inkharness/README.md), a Rust daemon that runs speech-to-text, a language model and text-to-speech (hosted or local, each swappable; a model that hears or speaks can stand in for the first or last), and plays the reply as it arrives. Set `agent_host` in `SD:/inkdeck.ini`: a machine on your network, or on your tailnet from any Wi-Fi (Tailnet, below). Protocol: [`docs/voice-protocol.md`](docs/voice-protocol.md). The same program, installed with one line, is also a chat in the terminal and an HTTP API, using what it finds in the folder it starts in (`AGENTS.md`, skills, `.mcp.json`). **Not yet tested on the board** |
 | **Agent** | Home → AGENT (03) lists the sessions inkharness runs for you: jobs that keep working on the daemon while the board sleeps, grouped NEEDS YOU, RUNNING and DONE (`src/apps/agent.h`). A session shows its plan as a checklist, the steps it has taken, and its result (● puts it up as a note). When one asks you to choose, the choices are on its screen: ▲▼, and ● sends. HOLD BOOT on the Agent starts a session, or talks into the one on screen. Anywhere else HOLD BOOT is a talk turn: the limited assistant above, which can't see or start sessions. With `agent` in `INKDECK_PIN_ON`, the Agent opens behind the PIN, which is asked again after every start or PWR, and the same digits unlock inkharness's own PIN (`pin_sha256`). Needs an inkharness with an `[agent]` table (issue #52). **Not yet tested on the board** |
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, and a scan panel: the live I2C bus, the Wi-Fi networks in range or the Bluetooth LE devices around, the strongest seven of each. A CSV log to the card. Its menu opens the full scans. **Wi-Fi**: a 2.4 GHz channel chart and every network with its channel, width, security and generation; a network's detail follows its signal live (two minutes of history) and shows what the driver reports (ciphers, WPS, country, BSS colour, FTM) and the networks that share its channels. **Bluetooth LE**, in a build with `INKDECK_BLE=1` in `platformio.ini` (off by default: it keeps about 26 KB of internal RAM from boot and takes about 230 KB of flash; the S3 has no Bluetooth Classic): a proximity strip and every advertising device, named or decoded from its advert (Apple Continuity, Microsoft Swift Pair, iBeacon, Eddystone, Fast Pair, appearance, services, maker); a device's detail has its live signal, transmit power and path loss, advertising interval and raw advert bytes. Both details can beep once a second, higher as the signal gets stronger, to walk towards it |
 | **Level** | Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
@@ -115,7 +115,7 @@ card's takes longer than macOS waits.)
 **Tailnet:** with a Tailscale auth key in `inkdeck.ini` (`[tailscale]`, below), the board joins
 your tailnet whenever something needs a machine there, through
 [MicroLink](lib/microlink/README.md), a Tailscale client for the ESP32 (`src/tailnet.h`). So
-`voice_host` can be your computer's name on the tailnet (`macbook`, or
+`agent_host` can be your computer's name on the tailnet (`macbook`, or
 `macbook.tail1234.ts.net`) or its 100.x address, and the board reaches inkharness from any Wi-Fi
 it can join, a phone's hotspot included. With a name, the board tries the LAN first: the
 address your router's DNS gives the name, and the addresses the machine last gave the tailnet.
@@ -135,7 +135,7 @@ the board is offline most of the time and Tailscale removes an ephemeral machine
 goes. Once the board shows up in Machines, turn off its key expiry, or it has to join again with
 a new key when that runs out. A different key joins the board as a new machine, and
 `tailscale_key = off` takes the key off it. The board relays through the same Tailscale relay
-region (DERP) as `voice_host`'s machine, or as most of your machines: it learns that at its first
+region (DERP) as `agent_host`'s machine, or as most of your machines: it learns that at its first
 join after a start, joins again from there if it has to (about 4 s more, once), and keeps it. Joining
 takes about 4 s after Wi-Fi, and voice over the tailnet starts about 6.5 s after you press BOOT
 (measured with inkharness on a home server). While on the tailnet, MicroLink's four tasks take
@@ -166,7 +166,7 @@ lines without them. To
 change one, write it in again. The flash isn't encrypted, so someone with the board and a USB
 cable can read them, as they can the `.env` values built into the firmware.
 `INKDECK_FAHRENHEIT` in `platformio.ini` switches between
-US and metric units, and `INKDECK_VOICE` builds the voice assistant in (`1`, as set) or leaves
+US and metric units, and `INKDECK_AGENT` builds the agent in (`1`, as set) or leaves
 it out (`0`): no AGENT on Home, and HOLD BOOT only raises the player sheet. `INKDECK_TAILNET`
 does the same for the tailnet: `0` saves about 123 KB of flash and 7 KB of internal RAM.
 
@@ -187,9 +187,9 @@ nfs = nfs://nas.local/volume1/books   ; up to 4 shares in all
 [lock]
 pin = 2468                            ; 4 to 8 digits; pin = off removes it
 lock_minutes = 5                      ; also lock after 5 minutes without a key
-[voice]
-voice_host = macbook                  ; inkharness, here on the tailnet
-voice_token = something-long
+[agent]
+agent_host = macbook                  ; inkharness, here on the tailnet
+agent_token = something-long
 [tailscale]
 tailscale_key = tskey-auth-...        ; the board keeps it and replaces the line with a note
 tailscale_name = inkdeck              ; its name on the tailnet

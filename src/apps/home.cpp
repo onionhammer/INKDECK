@@ -17,9 +17,9 @@
 #include "apps/sensors.h"
 #include "apps/system.h"
 #include "features.h"
-#if INKDECK_VOICE
+#if INKDECK_AGENT
 #include "apps/agent.h"
-#include "voice_client.h"
+#include "agent_client.h"
 #endif
 #include "apps/weather.h"
 #include "audio.h"
@@ -48,7 +48,7 @@ using ui::Rect;
 
 enum class Kind : uint8_t {
   Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder,
-#if INKDECK_VOICE
+#if INKDECK_AGENT
   Agent,
 #endif
 };
@@ -70,7 +70,7 @@ constexpr Module kModules[] = {
      "microSD \xC2\xB7 SDMMC 4-bit", Kind::Reader},
     {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
      "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts},
-#if INKDECK_VOICE
+#if INKDECK_AGENT
     {"AGENT", "NET",
      "Long jobs inkharness runs while the board sleeps. It asks here when you need to choose.",
      "Wi-Fi \xC2\xB7 ES8311 \xC2\xB7 inkharness", Kind::Agent},
@@ -322,15 +322,15 @@ int statsFor(const Module &m, Stat out[4]) {
       out[3] = {"MIC GAIN", std::to_string(r.gainDb) + " dB"};
       return 4;
     }
-#if INKDECK_VOICE
+#if INKDECK_AGENT
     case Kind::Agent: {
       // What the last connection said (a locked one says only the counts); until then, where.
-      const voice::Agent a = voice::agent();
+      const agent::Sessions a = agent::sessions();
       const bool known = a.synced || !a.rows.empty();
       out[0] = {"NEEDS YOU", known ? std::to_string(a.asks) : "--"};
       out[1] = {"RUNNING", known ? std::to_string(a.running) : "--"};
       out[2] = {"HOST", !a.place.empty()    ? a.place
-                        : settings::hasVoice() ? settings::voiceHost()
+                        : settings::hasAgent() ? settings::agentHost()
                                                : "NOT SET"};
       out[3] = {"TALK", "HOLD BOOT"};
       return 4;
@@ -427,7 +427,7 @@ class HomeScreen : public ui::Screen {
       case Kind::Weather: ui::nav::push(makeWeather()); break;
       case Kind::Level: ui::nav::push(makeLevel()); break;
       case Kind::Recorder: ui::nav::push(makeRecorder()); break;
-#if INKDECK_VOICE
+#if INKDECK_AGENT
       case Kind::Agent: openGuarded(Guarded::Agent, makeAgent); break;
 #endif
     }

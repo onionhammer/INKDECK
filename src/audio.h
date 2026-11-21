@@ -9,7 +9,7 @@
 // off. Pause switches them all off too and keeps the track open: play picks up where it paused.
 // The same task rings alarms: ring() pauses any music and plays a beep pattern until stopped.
 // Recording uses the mic through the codec's ADC, I2S receive only; the amp stays off.
-// The voice assistant uses the same two paths without files: capture and stream, below.
+// The agent uses the same two paths without files: capture and stream, below.
 #pragma once
 #include <stdint.h>
 
@@ -99,7 +99,7 @@ void changeMicGain(int deltaDb);
 RecordStatus recordStatus();
 bool recording();  // to a file (not a capture)
 
-// --- Voice (voice_client.h): the mic as a stream, and a reply played as it arrives. Both are mono
+// --- Voice (agent_client.h): the mic as a stream, and a reply played as it arrives. Both are mono
 // 16-bit PCM through rings in PSRAM. Call these from one task only. Playback and capture still
 // take turns: starting one ends the other, and stop() ends both.
 

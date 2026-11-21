@@ -73,7 +73,7 @@ std::atomic<int> recLevelCenti{-9600};  // levelDb x 100
 std::atomic<int> micDigitalDb{12};  // on top of the PGA's 30 dB: 42 dB in all to start
 std::atomic<uint32_t> recGeneration{0};
 // Voice streams: PCM rings in PSRAM between the audio task and the one task that calls
-// capture*() and stream*() (voice_client.cpp). One writer and one reader each.
+// capture*() and stream*() (agent_client.cpp). One writer and one reader each.
 constexpr size_t kCaptureBytes = 256 * 1024;  // 8 s of the mic: rides out a Wi-Fi join
 constexpr size_t kStreamBytes = 256 * 1024;   // 5.3 s of a reply at 24 kHz
 StreamBufferHandle_t captureBuf = nullptr;

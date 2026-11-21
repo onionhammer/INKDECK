@@ -1,8 +1,8 @@
 #include "features.h"
 
-#if INKDECK_VOICE  // the whole file (features.h)
+#if INKDECK_AGENT  // the whole file (features.h)
 
-#include "voice_client.h"
+#include "agent_client.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -25,13 +25,13 @@
 #include "audio.h"
 #include "settings.h"
 #include "tailnet.h"
-#include "voice_noise.h"
+#include "agent_noise.h"
 #include "wlan.h"
 
-namespace voice {
+namespace agent {
 namespace {
 
-constexpr int kProto = 2;  // encrypted (voice_noise.h)
+constexpr int kProto = 2;  // encrypted (agent_noise.h)
 constexpr uint8_t kControl = 1, kAudio = 2, kHandshake = 3, kSealed = 4;  // frame types
 constexpr size_t kHeader = 3;
 // A sealed frame: the header, then the type and payload of the frame inside, then the tag.
@@ -60,12 +60,12 @@ std::atomic<uint32_t> turns{0};
 // `lock`, except holds.
 Target (*targetSource)() = nullptr;
 std::atomic<int> holds{0};        // agentHold() minus agentRelease()
-Agent agentShared;
+Sessions agentShared;
 std::vector<std::string> outbox;  // answer, stop and delete, waiting to go out
 std::string wantOpen;             // agentOpen()'s session
 std::string pendingPin;           // agentUnlock()'s digits, until the daemon answers
 
-// The board's tools (setTools()), and the answers waiting to go out (answer()).
+// The board's tools (setTools()), and the answers waiting to go out (toolResult()).
 const char *toolDefinitions = nullptr;
 ToolCall toolCall = nullptr;
 struct Answer {
@@ -80,12 +80,12 @@ struct Locked {
   ~Locked() { xSemaphoreGive(lock); }
 };
 
-// The session (voice task only).
-struct Session {
+// The session (agent task only).
+struct Link {
   int fd = -1;
   bool wanted = false;     // open() was called and close() wasn't
   bool wifi = false;       // we hold a wlan::connect()
-  bool tailnet = false;    // and a tailnet::hold(): voice_host is on the tailnet
+  bool tailnet = false;    // and a tailnet::hold(): agent_host is on the tailnet
   bool hello = false;      // the daemon answered ours
   bool sealed = false;     // the handshake is done: every frame is sealed both ways
   std::unique_ptr<noise::Initiator> handshake;  // between message 1 and message 2
@@ -179,7 +179,7 @@ void drop(const char *why) {
   endAudio();
   forgetAnswers();
   forgetAgentConnection();
-  log_w("voice: %s", why);
+  log_w("agent: %s", why);
   setState(State::Error, why);
 }
 
@@ -215,7 +215,7 @@ bool sendSealed(uint8_t *frame, uint8_t type, size_t len) {
 bool sendControl(const std::string &json) {
   if (s.fd < 0) return false;
   if (json.size() > kMaxSealed) {
-    log_w("voice: a %u-byte message is too long to send", json.size());
+    log_w("agent: a %u-byte message is too long to send", json.size());
     return true;
   }
   std::vector<uint8_t> frame(kSealedPayload + json.size() + noise::kTag);
@@ -338,10 +338,10 @@ void readAsk(const cJSON *json, Ask &a) {
 }
 
 // The rows as the list draws them (`updated` isn't shown).
-bool sameRows(const std::vector<AgentRow> &a, const std::vector<AgentRow> &b) {
+bool sameRows(const std::vector<Row> &a, const std::vector<Row> &b) {
   if (a.size() != b.size()) return false;
   for (size_t i = 0; i < a.size(); ++i) {
-    const AgentRow &x = a[i], &y = b[i];
+    const Row &x = a[i], &y = b[i];
     if (x.id != y.id || x.title != y.title || x.state != y.state || x.place != y.place ||
         x.sub != y.sub || x.step != y.step || x.steps != y.steps || x.progress != y.progress ||
         x.unread != y.unread || x.herdr != y.herdr || x.program != y.program) {
@@ -352,10 +352,10 @@ bool sameRows(const std::vector<AgentRow> &a, const std::vector<AgentRow> &b) {
 }
 
 void onSessions(const cJSON *json) {
-  std::vector<AgentRow> rows;
+  std::vector<Row> rows;
   const cJSON *item;
   cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(json, "sessions")) {
-    AgentRow r;
+    Row r;
     r.id = field(item, "id");
     r.title = field(item, "title");
     r.state = field(item, "state");
@@ -400,7 +400,7 @@ void onSessions(const cJSON *json) {
 }
 
 void onSession(const cJSON *json) {
-  AgentSession a;
+  Session a;
   a.id = field(json, "id");
   a.title = field(json, "title");
   a.state = field(json, "state");
@@ -472,7 +472,7 @@ void onUnlocked(const cJSON *json) {
 
 void onRefused(const cJSON *json) {
   const std::string message = field(json, "message");
-  log_w("voice: inkharness refused %s: %s", field(json, "request").c_str(), message.c_str());
+  log_w("agent: inkharness refused %s: %s", field(json, "request").c_str(), message.c_str());
   if (message == "locked") s.agentUnlocked = false;
   Locked l;
   agentShared.refusal = message;
@@ -530,7 +530,7 @@ void onControl(const uint8_t *payload, size_t len) {
       if (s.stream) setState(State::Speaking);
     }
   } else if (type == "reply_end") {
-    log_i("voice: sealing and opening %u KB took %u ms", s.cryptoBytes / 1024,
+    log_i("agent: sealing and opening %u KB took %u ms", s.cryptoBytes / 1024,
           s.cryptoUs / 1000);
     s.cryptoUs = s.cryptoBytes = 0;
     if (s.staleEnds > 0) {
@@ -556,7 +556,7 @@ void onControl(const uint8_t *payload, size_t len) {
     if (s.staleEnds == 0 && s.turnOpen && cJSON_IsNumber(id)) {
       const uint32_t callId = static_cast<uint32_t>(id->valuedouble);
       if (!toolCall) {
-        answer(callId, "this board runs no tools", true);
+        toolResult(callId, "this board runs no tools", true);
       } else {
         cJSON *input = cJSON_DetachItemFromObjectCaseSensitive(json, "input");
         toolCall(callId, field(json, "name"), input, turns.load());
@@ -647,7 +647,7 @@ bool openSealed(uint8_t *payload, size_t len) {
 
 // The board's way of saying why the daemon refused it.
 std::string refusalText(const std::string &message) {
-  return message == "wrong token" ? "WRONG VOICE TOKEN" : "INKHARNESS: " + message;
+  return message == "wrong token" ? "WRONG AGENT TOKEN" : "INKHARNESS: " + message;
 }
 
 // Reads what the socket has (waiting up to timeoutMs for it) and handles the whole frames.
@@ -790,8 +790,8 @@ void connectSession() {
     answers.clear();  // late ones, for a session that has gone
   }
   setState(State::Connecting);
-  if (!settings::hasVoice()) {
-    setState(State::Error, "NO VOICE HOST SET");
+  if (!settings::hasAgent()) {
+    setState(State::Error, "NO AGENT HOST SET");
     return;
   }
   if (!s.wifi) {
@@ -805,9 +805,9 @@ void connectSession() {
     // for one. Off for the session (shares.cpp and ota.cpp do the same).
     WiFi.setSleep(false);
   }
-  const std::string host = settings::voiceHost();
-  const uint16_t port = static_cast<uint16_t>(settings::voicePort());
-  // A voice host on the tailnet is often on this LAN too (at home): its LAN addresses first, as
+  const std::string host = settings::agentHost();
+  const uint16_t port = static_cast<uint16_t>(settings::agentPort());
+  // A agent host on the tailnet is often on this LAN too (at home): its LAN addresses first, as
   // the tailnet last gave them, which needs no join. The token vouches for whoever answers.
   if (!s.tailnet && tailnet::routes(host)) {
     const int fd = tailnet::connectLan(host, port, 1000);
@@ -830,7 +830,7 @@ void connectSession() {
     hints.ai_socktype = SOCK_STREAM;
     addrinfo *res = nullptr;
     if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) {  // tailnet names too
-      setState(State::Error, s.tailnet ? "VOICE HOST NOT ON THE TAILNET" : "VOICE HOST NOT FOUND");
+      setState(State::Error, s.tailnet ? "AGENT HOST NOT ON THE TAILNET" : "AGENT HOST NOT FOUND");
       return;
     }
     const uint32_t ip = reinterpret_cast<const sockaddr_in *>(res->ai_addr)->sin_addr.s_addr;
@@ -857,11 +857,11 @@ void connectSession() {
   }
   hello += "}";
   const uint32_t t0 = millis();
-  s.handshake.reset(new noise::Initiator(settings::voiceToken()));
+  s.handshake.reset(new noise::Initiator(settings::agentToken()));
   const std::vector<uint8_t> msg1 = s.handshake->hello(hello);
   const uint32_t keyMs = millis() - t0;
   if (msg1.empty() || msg1.size() > 65535) {
-    drop(msg1.empty() ? "NO VOICE KEY (MBEDTLS)" : "TOO MANY VOICE TOOLS");
+    drop(msg1.empty() ? "NO AGENT KEY (MBEDTLS)" : "TOO MANY BOARD TOOLS");
     return;
   }
   uint8_t header[kHeader] = {kHandshake, static_cast<uint8_t>(msg1.size() & 0xFF),
@@ -882,8 +882,8 @@ void connectSession() {
     }
     return;
   }
-  log_i("voice: connected to %s:%d%s, encrypted (handshake %u ms, %u of them for keys)%s",
-        host.c_str(), settings::voicePort(),
+  log_i("agent: connected to %s:%d%s, encrypted (handshake %u ms, %u of them for keys)%s",
+        host.c_str(), settings::agentPort(),
         s.tailnet ? " through the tailnet" : tailnet::routes(host) ? " on the LAN" : "",
         millis() - t0, keyMs,
         s.agentSupported ? (s.agentUnlocked ? ", sessions" : ", sessions behind its PIN") : "");
@@ -912,14 +912,14 @@ void closeSession() {
   setState(State::Off);
 }
 
-// No session yet (the voice sheet's first hold) or a failed one: this press opens one and is
+// No session yet (the agent sheet's first hold) or a failed one: this press opens one and is
 // heard. The mic goes on first and the capture ring keeps what's said while Wi-Fi joins and
 // inkharness answers; sendMic() catches up once it has. A release while connecting is still queued
 // and ends the utterance as usual.
 void talkIntoNewSession() {
   s.wanted = true;
   if (!configured()) {  // nothing to connect to: say why, and leave the mic off
-    setState(State::Error, settings::hasVoice() ? "NO WI-FI NETWORK SET" : "NO VOICE HOST SET");
+    setState(State::Error, settings::hasAgent() ? "NO WI-FI NETWORK SET" : "NO AGENT HOST SET");
     return;
   }
   s.lingerUntilMs = 0;
@@ -1081,12 +1081,12 @@ void start() {
   cJSON_InitHooks(&hooks);
   lock = xSemaphoreCreateMutex();
   events = xQueueCreate(8, sizeof(Event));
-  xTaskCreate(task, "voice", 10240, nullptr, 4, nullptr);
+  xTaskCreate(task, "agent", 10240, nullptr, 4, nullptr);
 }
 
 }  // namespace
 
-bool configured() { return settings::hasVoice() && wlan::configured(); }
+bool configured() { return settings::hasAgent() && wlan::configured(); }
 
 void begin() { start(); }
 
@@ -1126,7 +1126,7 @@ void setTools(const char *definitions, ToolCall call) {
   toolCall = call;
 }
 
-void answer(uint32_t id, const std::string &text, bool error) {
+void toolResult(uint32_t id, const std::string &text, bool error) {
   if (!lock) return;
   Locked l;
   answers.push_back({id, text, error});
@@ -1134,26 +1134,26 @@ void answer(uint32_t id, const std::string &text, bool error) {
 
 void setTarget(Target (*source)()) { targetSource = source; }
 
-void agentHold() {
+void hold() {
   start();
   holds++;
   post(Event::Hold);
 }
 
-void agentRelease() {
+void release() {
   if (holds.load() > 0) holds--;
   post(Event::Release);
 }
 
-void agentRetry() { post(Event::Retry); }
+void retry() { post(Event::Retry); }
 
-Agent agent() {
+Sessions sessions() {
   if (!lock) return {};
   Locked l;
   return agentShared;
 }
 
-void agentOpen(const std::string &session) {
+void follow(const std::string &session) {
   if (!lock) return;
   {
     Locked l;
@@ -1177,16 +1177,16 @@ void request(std::string json) {
 }
 }  // namespace
 
-void agentAnswer(const std::string &session, const std::string &ask, int choice) {
+void answer(const std::string &session, const std::string &ask, int choice) {
   request("{\"type\":\"answer\",\"session\":" + quoted(session) + ",\"ask\":" + quoted(ask) +
           ",\"choice\":" + std::to_string(choice) + "}");
 }
 
-void agentStop(const std::string &session) {
+void stop(const std::string &session) {
   request("{\"type\":\"stop\",\"session\":" + quoted(session) + "}");
 }
 
-void agentDelete(const std::string &session) {
+void remove(const std::string &session) {
   request("{\"type\":\"delete\",\"session\":" + quoted(session) + "}");
 }
 
@@ -1207,11 +1207,11 @@ void settleDraft(const char *type) {
 }
 }  // namespace
 
-void agentSendDraft() { settleDraft("send_draft"); }
+void sendDraft() { settleDraft("send_draft"); }
 
-void agentDropDraft() { settleDraft("drop_draft"); }
+void dropDraft() { settleDraft("drop_draft"); }
 
-void agentUnlock(const std::string &pin) {
+void unlock(const std::string &pin) {
   start();
   {
     Locked l;
@@ -1222,6 +1222,6 @@ void agentUnlock(const std::string &pin) {
   post(Event::Kick);
 }
 
-}  // namespace voice
+}  // namespace agent
 
-#endif  // INKDECK_VOICE
+#endif  // INKDECK_AGENT

@@ -6,7 +6,7 @@
 // On demand, like Wi-Fi (wlan.h): hold() joins Wi-Fi and the tailnet (the control plane, the
 // list of machines, a relay: a few seconds), release() lets go, and the board leaves kLingerMs
 // after the last user. What joins it:
-//   - the voice daemon, when voice_host is on the tailnet (voice_client.h): inkharness on a
+//   - the agent daemon, when agent_host is on the tailnet (agent_client.h): inkharness on a
 //     machine anywhere, the board on any Wi-Fi;
 //   - a share in Files whose server is (shares.h);
 //   - an HTTP fetch from a host that is (netget.h): a feed on a home server;
@@ -16,7 +16,7 @@
 //     other machines always find it; on battery it joins only for the above.
 //
 // A host is on the tailnet (routes()) when it's a Tailscale address (100.64.0.0/10), a MagicDNS
-// name (*.ts.net) or a name without dots, which is how the tailnet names its machines. The voice
+// name (*.ts.net) or a name without dots, which is how the tailnet names its machines. The agent
 // client and shares try such a host on the LAN first (connectLan(): at home it answers there in
 // milliseconds, with no join) and hold the tailnet only when nothing does. While
 // the board is on it, getaddrinfo() answers those names from the tailnet's list of machines
@@ -73,7 +73,7 @@ void leave();
 // was nothing to try. On another network nothing answers, and the caller goes through the
 // tailnet. Needs Wi-Fi up but no hold(). Blocks (the DNS lookup too): call from a background
 // task. Whoever answers on the LAN isn't vouched for by the tailnet, so use it for links that
-// authenticate the other end themselves (the voice token, SMB's password).
+// authenticate the other end themselves (the agent token, SMB's password).
 int connectLan(const std::string &host, uint16_t port, uint32_t timeoutMs,
                std::string *address = nullptr);
 

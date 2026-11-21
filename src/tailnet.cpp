@@ -31,7 +31,7 @@
 namespace tailnet {
 namespace {
 
-// After the last user lets go, the board stays on the tailnet this long: the voice sheet opened
+// After the last user lets go, the board stays on the tailnet this long: the agent sheet opened
 // again, or the next screen of a share, finds it there instead of joining again.
 constexpr uint32_t kLingerMs = 60000;
 // How often reach() asks again for a handshake that hasn't come (MicroLink's TCP API does the
@@ -252,9 +252,9 @@ microlink_t *create() {
   cfg.auth_key = authKey.c_str();
   cfg.device_name = deviceName.c_str();
   cfg.enable_derp = cfg.enable_stun = cfg.enable_disco = true;
-  // The voice daemon by address: keep it a WireGuard slot on a tailnet with more machines than
+  // The agent daemon by address: keep it a WireGuard slot on a tailnet with more machines than
   // there are slots (CONFIG_ML_MAX_PEERS).
-  cfg.priority_peer_ip = parseIp(settings::voiceHost());
+  cfg.priority_peer_ip = parseIp(settings::agentHost());
   // tailscale_exit_node = on: the board offers itself as an exit node (MicroLink adds ::/0, as
   // Tailscale wants both, but forwards IPv4 only: port/microlink_kconfig.h). Read here, so like
   // the name it changes at the next boot: the instance is kept for this one.
@@ -295,7 +295,7 @@ bool exitNode() {
 // On USB power the board holds the tailnet; unplugged, it lets go (and leaves kLingerMs later).
 // An exit node on USB also keeps Wi-Fi's modem sleep off: forwarded traffic is everything another
 // machine sends, and modem sleep slows transfers several times over (ota.cpp, webdav.cpp). Those
-// and the voice client turn it back on when they finish; the next look here turns it off again.
+// and the agent client turn it back on when they finish; the next look here turns it off again.
 void usbTask(void *) {
   bool held = false;
   bool awake = false;                 // modem sleep off for the exit node
@@ -353,10 +353,10 @@ microlink_state_t waitForJoin(uint32_t t0, uint32_t timeoutMs) {
   return state;
 }
 
-// The relay region the board's machines can hear it on: the voice host's, if that's on the
+// The relay region the board's machines can hear it on: the agent host's, if that's on the
 // tailnet, else the one most machines use. 0 if the map doesn't say.
 uint16_t wantedRegion() {
-  const std::string host = settings::voiceHost();
+  const std::string host = settings::agentHost();
   uint32_t ip = parseIp(host);
   if (!ip && routes(host)) ip = microlink_resolve(ml, bareName(host.c_str()).c_str());
   if (const uint16_t r = ml_inkdeck_peer_region(ml, ip)) return r;
@@ -367,7 +367,7 @@ uint16_t wantedRegion() {
 // machines are, and joins again from there. MicroLink keeps one relay connection, to its home
 // region, and relays to every peer through it, so a peer homed elsewhere never hears a relayed
 // packet; until a direct path turns up there's no session (the board in upstream's default
-// Dallas, the voice host in Chicago: found on the board 2026-11-21). The region is kept in NVS,
+// Dallas, the agent host in Chicago: found on the board 2026-11-21). The region is kept in NVS,
 // so later boots start there. Under joinMutex, with nobody else on the tailnet. Returns the state
 // after it.
 microlink_state_t settleRegion(microlink_state_t state, uint32_t t0, uint32_t timeoutMs) {

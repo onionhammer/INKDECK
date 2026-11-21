@@ -1,6 +1,6 @@
 #include "features.h"
 
-#if INKDECK_VOICE  // the whole file (features.h)
+#if INKDECK_AGENT  // the whole file (features.h)
 
 #include "apps/agent.h"
 
@@ -17,7 +17,7 @@
 #include "settings.h"
 #include "text.h"
 #include "ui/menu.h"
-#include "voice_client.h"
+#include "agent_client.h"
 
 namespace apps {
 namespace {
@@ -35,7 +35,7 @@ constexpr int kScreenLineH = 18;  // a line of a herdr agent's screen
 constexpr int kMaxScreenAsk = 8;  // its lines under a question
 
 constexpr const char *kSetUpHelp =
-    "Name the machine that runs inkharness in SD:/inkdeck.ini: voice_host, and voice_token if it "
+    "Name the machine that runs inkharness in SD:/inkdeck.ini: agent_host, and agent_token if it "
     "asks for one. Then restart the board.";
 constexpr const char *kNoAgentHelp =
     "This inkharness keeps no sessions. Give it an [agent] table in inkharness.toml (issue #52) "
@@ -65,7 +65,7 @@ std::string stateWord(const std::string &state) {
   return ui::upper(state);
 }
 
-std::string tagFor(const voice::AgentRow &r) {
+std::string tagFor(const agent::Row &r) {
   if (r.state == "ask") return "ASK";
   if (r.state == "working") {
     if (r.progress >= 0) return std::to_string(std::min(r.progress, 100)) + "%";
@@ -147,31 +147,31 @@ std::vector<std::string> wrapLines(const std::vector<std::string> &lines, const 
 
 // What the connection is doing, for a screen that has nothing better to show. Empty when it's
 // up and has said what it holds.
-std::string connectionNote(const voice::Status &st, const voice::Agent &a) {
-  if (st.state == voice::State::Error && !a.connected) {
+std::string connectionNote(const agent::Status &st, const agent::Sessions &a) {
+  if (st.state == agent::State::Error && !a.connected) {
     return st.error.empty() ? "OFFLINE" : ui::upper(st.error);
   }
   if (!a.connected) return "CONNECTING";
   return {};
 }
 
-void openMenu(const voice::AgentRow &row, bool fromSession);
+void openMenu(const agent::Row &row, bool fromSession);
 
 // --- A session --------------------------------------------------------------------------------
 
 class SessionScreen : public ui::Screen {
  public:
   SessionScreen(std::string id, std::string title) : id_(std::move(id)), title_(std::move(title)) {
-    voice::agentHold();
+    agent::hold();
   }
-  ~SessionScreen() override { voice::agentRelease(); }
+  ~SessionScreen() override { agent::release(); }
 
   std::string tag() const override { return moduleTag("AGENT"); }
   std::string context() const override { return ui::upper(title_); }
   ui::TalkTo talkTo() const override { return {true, id_}; }
 
   int hints(ui::Hint *out) const override {
-    const voice::Agent a = voice::agent();
+    const agent::Sessions a = agent::sessions();
     int n = 0;
     if (asking(a)) {
       out[n++] = {ui::glyph::kDial, "MOVE"};
@@ -193,7 +193,7 @@ class SessionScreen : public ui::Screen {
   }
 
   void onEnter() override {
-    voice::agentOpen(id_);
+    agent::follow(id_);
     guardedOnTop(Guarded::Agent);
   }
   void onLeave() override { guardedLeft(Guarded::Agent); }
@@ -201,7 +201,7 @@ class SessionScreen : public ui::Screen {
   bool onKey(Key key) override {
     guardedInUse(Guarded::Agent);
     notice_.clear();
-    const voice::Agent a = voice::agent();
+    const agent::Sessions a = agent::sessions();
     if (asking(a)) {
       const int choices = static_cast<int>(a.open.ask.options.size()) + 1;  // + something else
       switch (key) {
@@ -209,7 +209,7 @@ class SessionScreen : public ui::Screen {
         case Key::Down: cursor_ = (cursor_ + 1) % choices; return true;
         case Key::Select:
           if (cursor_ < choices - 1 && sent_ != a.open.ask.id) {
-            voice::agentAnswer(id_, a.open.ask.id, cursor_);
+            agent::answer(id_, a.open.ask.id, cursor_);
             sent_ = a.open.ask.id;
             sentTitle_ = a.open.ask.options[cursor_].title;
           }
@@ -230,7 +230,7 @@ class SessionScreen : public ui::Screen {
         if (a.hasOpen && finished(a.open.state) && !a.open.result.empty()) showNote(a.open);
         return true;
       case Key::SelectLong: {
-        voice::AgentRow row;
+        agent::Row row;
         row.id = id_;
         row.title = a.hasOpen ? a.open.title : title_;
         row.state = a.hasOpen ? a.open.state : "";
@@ -242,8 +242,8 @@ class SessionScreen : public ui::Screen {
   }
 
   bool onTick() override {
-    const voice::Agent a = voice::agent();
-    const voice::Status st = voice::status();
+    const agent::Sessions a = agent::sessions();
+    const agent::Status st = agent::status();
     if (a.hasOpen && !a.open.title.empty()) title_ = a.open.title;
     // inkharness turned something down for this session (a stale answer, a busy agent, a
     // [herdr] policy): say so until the next key, and let the answer be sent again.
@@ -267,8 +267,8 @@ class SessionScreen : public ui::Screen {
 
   void draw(ui::Canvas &c, const Rect &body) override {
     using namespace ui;
-    const voice::Agent a = voice::agent();
-    const voice::Status st = voice::status();
+    const agent::Sessions a = agent::sessions();
+    const agent::Status st = agent::status();
     drawnAgent_ = a.generation;
     drawnStatus_ = st.generation;
 
@@ -292,7 +292,7 @@ class SessionScreen : public ui::Screen {
                 style::kBody, 4);
       return;
     }
-    const voice::AgentSession &s = a.open;
+    const agent::Session &s = a.open;
 
     // The title and its state.
     int y = r.y + 12;
@@ -335,7 +335,7 @@ class SessionScreen : public ui::Screen {
   }
 
  private:
-  bool asking(const voice::Agent &a) const {
+  bool asking(const agent::Sessions &a) const {
     return a.unlocked && a.hasOpen && a.open.asking && !a.open.ask.options.empty();
   }
 
@@ -371,7 +371,7 @@ class SessionScreen : public ui::Screen {
     r.takeTop(4);
   }
 
-  void drawAsk(ui::Canvas &c, Rect &r, const voice::Ask &ask,
+  void drawAsk(ui::Canvas &c, Rect &r, const agent::Ask &ask,
                const std::vector<std::string> &screen) {
     using namespace ui;
     int y = r.y + 4;
@@ -427,10 +427,10 @@ class SessionScreen : public ui::Screen {
     }
   }
 
-  void drawPlan(ui::Canvas &c, Rect &r, const voice::AgentSession &s) {
+  void drawPlan(ui::Canvas &c, Rect &r, const agent::Session &s) {
     using namespace ui;
     int done = 0;
-    for (const voice::PlanStep &p : s.plan) done += p.state == 'd';
+    for (const agent::PlanStep &p : s.plan) done += p.state == 'd';
     const int steps = static_cast<int>(s.plan.size());
     hrule(c, r.x, r.y, r.w);
     r.takeTop(kRule);
@@ -440,7 +440,7 @@ class SessionScreen : public ui::Screen {
     drawSegments(c, meter, std::min(steps, 20), steps > 20 ? done * 20 / steps : done);
     const int shown = std::min(steps, kMaxPlanRows);
     for (int i = 0; i < shown; ++i) {
-      const voice::PlanStep &p = s.plan[i];
+      const agent::PlanStep &p = s.plan[i];
       const Rect line = r.takeTop(kPlanRowH);
       const char *mark = p.state == 'd' ? "\xE2\x9C\x93" : p.state == 'n' ? glyph::kPlay : kDot.c_str();
       drawText(c, {line.x + kPadX, line.y, 20, line.h}, mark, style::kRowSmall);
@@ -476,7 +476,7 @@ class SessionScreen : public ui::Screen {
     }
   }
 
-  void drawLog(ui::Canvas &c, Rect &r, const voice::AgentSession &s) {
+  void drawLog(ui::Canvas &c, Rect &r, const agent::Session &s) {
     using namespace ui;
     if (r.h < kSectionH + kLogRowH) return;
     hrule(c, r.x, r.y, r.w);
@@ -507,7 +507,7 @@ class SessionScreen : public ui::Screen {
     }
   }
 
-  void showNote(const voice::AgentSession &s) {
+  void showNote(const agent::Session &s) {
     Note note;
     note.title = s.title.empty() ? "Agent" : s.title;
     note.text = s.result;
@@ -525,7 +525,7 @@ class SessionScreen : public ui::Screen {
   int page_ = 0;           // of the result or the log
   bool more_ = false;      // a page after this one
   std::string notice_;     // a refusal for this session, until the next key
-  uint32_t refusalsSeen_ = voice::agent().refusals;
+  uint32_t refusalsSeen_ = agent::sessions().refusals;
   uint32_t drawnAgent_ = 0;
   uint32_t drawnStatus_ = 0;
 };
@@ -534,7 +534,7 @@ class SessionScreen : public ui::Screen {
 
 enum class Group : uint8_t { NeedsYou, Running, Done };
 
-Group groupOf(const voice::AgentRow &r) {
+Group groupOf(const agent::Row &r) {
   if (r.state == "ask") return Group::NeedsYou;
   if (finished(r.state)) return Group::Done;
   return Group::Running;
@@ -560,23 +560,23 @@ struct Item {
 
 class AgentList : public ui::Screen {
  public:
-  AgentList() { voice::agentHold(); }
-  ~AgentList() override { voice::agentRelease(); }
+  AgentList() { agent::hold(); }
+  ~AgentList() override { agent::release(); }
 
   std::string tag() const override { return moduleTag("AGENT"); }
   std::string context() const override {
-    const voice::Agent a = voice::agent();
+    const agent::Sessions a = agent::sessions();
     if (!a.place.empty()) return a.place;
-    return settings::hasVoice() ? ui::upper(settings::voiceHost()) : std::string();
+    return settings::hasAgent() ? ui::upper(settings::agentHost()) : std::string();
   }
   ui::TalkTo talkTo() const override { return {true, ""}; }
 
   int hints(ui::Hint *out) const override {
     int n = 0;
-    if (voice::configured()) {
-      const voice::Agent a = voice::agent();
-      const voice::Status st = voice::status();
-      if (st.state == voice::State::Error && !a.connected) {
+    if (agent::configured()) {
+      const agent::Sessions a = agent::sessions();
+      const agent::Status st = agent::status();
+      if (st.state == agent::State::Error && !a.connected) {
         out[n++] = {ui::glyph::kPress, "RETRY"};
       } else if (a.connected && a.supported && !a.unlocked) {
         if (!a.unlocking) out[n++] = {ui::glyph::kPress, "PIN"};
@@ -593,16 +593,16 @@ class AgentList : public ui::Screen {
   }
 
   void onEnter() override {
-    voice::agentOpen("");  // back from a session: stop following it
+    agent::follow("");  // back from a session: stop following it
     guardedOnTop(Guarded::Agent);
   }
   void onLeave() override { guardedLeft(Guarded::Agent); }
 
   bool onKey(Key key) override {
     guardedInUse(Guarded::Agent);
-    if (!voice::configured()) return false;
-    const voice::Agent a = voice::agent();
-    const voice::Status st = voice::status();
+    if (!agent::configured()) return false;
+    const agent::Sessions a = agent::sessions();
+    const agent::Status st = agent::status();
     const int rows = static_cast<int>(a.rows.size());
     const bool usable = a.connected && a.supported && a.unlocked;
     switch (key) {
@@ -616,15 +616,15 @@ class AgentList : public ui::Screen {
         return true;
       }
       case Key::Select:
-        if (st.state == voice::State::Error && !a.connected) {
-          voice::agentRetry();
+        if (st.state == agent::State::Error && !a.connected) {
+          agent::retry();
         } else if (a.connected && a.supported && !a.unlocked) {
           if (!a.unlocking) {
             ui::nav::push(makePinEntry(moduleTag("AGENT"),
-                                       [](const std::string &pin) { voice::agentUnlock(pin); }));
+                                       [](const std::string &pin) { agent::unlock(pin); }));
           }
         } else if (usable && rows > 0) {
-          const voice::AgentRow &row = a.rows[indexOf(a, selected_)];
+          const agent::Row &row = a.rows[indexOf(a, selected_)];
           ui::nav::push(std::make_unique<SessionScreen>(row.id, row.title));
         }
         return true;
@@ -637,9 +637,9 @@ class AgentList : public ui::Screen {
   }
 
   bool onTick() override {
-    const voice::Agent a = voice::agent();
-    const voice::Status st = voice::status();
-    // A new session from HOLD BOOT here: open it once the voice sheet has gone and this is on
+    const agent::Sessions a = agent::sessions();
+    const agent::Status st = agent::status();
+    // A new session from HOLD BOOT here: open it once the agent sheet has gone and this is on
     // top again (a turn said into an existing session isn't one: that session was on screen).
     if (!a.started.empty() && a.startedTurn != followed_ && a.startedTurn == st.turn &&
         st.agentTurn && st.turnSession.empty() && ui::nav::top() == this) {
@@ -654,15 +654,15 @@ class AgentList : public ui::Screen {
 
   void draw(ui::Canvas &c, const Rect &body) override {
     using namespace ui;
-    const voice::Agent a = voice::agent();
-    const voice::Status st = voice::status();
+    const agent::Sessions a = agent::sessions();
+    const agent::Status st = agent::status();
     drawnAgent_ = a.generation;
     drawnStatus_ = st.generation;
     Rect r = body;
 
-    if (!voice::configured()) {
+    if (!agent::configured()) {
       drawNotice(c, r.takeTop(kSectionH),
-                 settings::hasVoice() ? "NO WI-FI NETWORK SET" : "NO VOICE HOST SET");
+                 settings::hasAgent() ? "NO WI-FI NETWORK SET" : "NO AGENT HOST SET");
       paragraph(c, r, r.y + 12, kSetUpHelp, style::kBody, 6);
       return;
     }
@@ -722,7 +722,7 @@ class AgentList : public ui::Screen {
         drawSectionHeader(c, {r.x, y, r.w, kSectionH}, groupLabel(it.group),
                           std::to_string(it.count), {it.group == Group::NeedsYou});
       } else {
-        const voice::AgentRow &row = a.rows[it.row];
+        const agent::Row &row = a.rows[it.row];
         Row line;
         line.title = upper(row.title);
         std::string sub = upper(row.place);
@@ -744,7 +744,7 @@ class AgentList : public ui::Screen {
   }
 
  private:
-  static int indexOf(const voice::Agent &a, const std::string &id, int fallback = 0) {
+  static int indexOf(const agent::Sessions &a, const std::string &id, int fallback = 0) {
     for (int i = 0; i < static_cast<int>(a.rows.size()); ++i) {
       if (a.rows[i].id == id) return i;
     }
@@ -760,7 +760,7 @@ class AgentList : public ui::Screen {
 
   // Groups in their order, each under its header. The daemon sends them in that order already
   // (questions, then work, then finished); grouping here keeps it so whatever it sends.
-  static std::vector<Item> layout(const voice::Agent &a) {
+  static std::vector<Item> layout(const agent::Sessions &a) {
     std::vector<Item> items;
     for (Group g : {Group::NeedsYou, Group::Running, Group::Done}) {
       const size_t header = items.size();
@@ -775,7 +775,7 @@ class AgentList : public ui::Screen {
     return items;
   }
 
-  void drawCounts(ui::Canvas &c, const Rect &band, const voice::Agent &a) {
+  void drawCounts(ui::Canvas &c, const Rect &band, const agent::Sessions &a) {
     using namespace ui;
     const bool known = a.synced || !a.rows.empty();
     struct Cell {
@@ -806,24 +806,24 @@ class AgentList : public ui::Screen {
 };
 
 // HOLD ● on a session: stop it while it works or asks, delete it.
-void openMenu(const voice::AgentRow &row, bool fromSession) {
+void openMenu(const agent::Row &row, bool fromSession) {
   std::vector<ui::MenuItem> items;
   const std::string id = row.id;
   if (row.state == "working" || row.state == "ask") {
     items.push_back({"STOP", nullptr, [id] {
-                       voice::agentStop(id);
+                       agent::stop(id);
                        ui::nav::pop();
                      }});
   }
   items.push_back({"DELETE", nullptr, [id, fromSession] {
-                     voice::agentDelete(id);
+                     agent::remove(id);
                      ui::nav::pop();               // the menu
                      if (fromSession) ui::nav::pop();  // and the session, now gone
                    }});
   ui::nav::push(std::make_unique<ui::MenuScreen>(ui::upper(row.title), std::move(items)));
 }
 
-voice::Target target() {
+agent::Target target() {
   const ui::TalkTo to = ui::nav::talkTarget();
   return {to.agent, to.session};
 }
@@ -833,10 +833,10 @@ voice::Target target() {
 std::unique_ptr<ui::Screen> makeAgent() { return std::make_unique<AgentList>(); }
 
 void beginAgent() {
-  voice::setTarget(target);
-  onPinEntered(voice::agentUnlock);
+  agent::setTarget(target);
+  onPinEntered(agent::unlock);
 }
 
 }  // namespace apps
 
-#endif  // INKDECK_VOICE
+#endif  // INKDECK_AGENT

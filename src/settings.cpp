@@ -29,16 +29,16 @@ struct Values {
   std::vector<std::string> wifiSsids;  // in the file's order
   std::vector<ShareLine> shares;       // passwords taken out
   int lockMinutes = 0;
-  std::string voiceHost;
-  int voicePort = 0;  // 0: the default
-  std::string voiceToken;
+  std::string agentHost;
+  int agentPort = 0;  // 0: the default
+  std::string agentToken;
   std::string tailscaleName;  // "": the default
   bool tailscaleExitNode = false;
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
            wifiSsids == o.wifiSsids && shares == o.shares && lockMinutes == o.lockMinutes &&
-           voiceHost == o.voiceHost && voicePort == o.voicePort && voiceToken == o.voiceToken &&
+           agentHost == o.agentHost && agentPort == o.agentPort && agentToken == o.agentToken &&
            tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode;
   }
 };
@@ -140,19 +140,19 @@ constexpr const char *kTemplate =
     "; Also lock after this many minutes without a key (0: only at power-on). Power-on builds only.\n"
     "; lock_minutes = 5\n"
     "\n"
-    "[voice]\n"
-    "; The machine on your network that runs inkharness, the assistant daemon (a name or an\n"
+    "[agent]\n"
+    "; The machine on your network that runs inkharness, the agent daemon (a name or an\n"
     "; address), its port (7391 unless you changed it) and the token in its inkharness.toml. The\n"
     "; token never leaves this file: it keys the connection's encryption, so make it long and random\n"
-    "; (openssl rand -hex 24). With [tailscale] set, voice_host can be the machine's name on your\n"
+    "; (openssl rand -hex 24). With [tailscale] set, agent_host can be the machine's name on your\n"
     "; tailnet (macbook, macbook.tail1234.ts.net) or its 100.x address, and the board reaches it\n"
     "; from any Wi-Fi. A name is tried on your LAN first, so at home the board doesn't join.\n"
-    "; voice_host = nas.local\n"
-    "; voice_port = 7391\n"
-    "; voice_token = something-long\n"
+    "; agent_host = nas.local\n"
+    "; agent_port = 7391\n"
+    "; agent_token = something-long\n"
     "\n"
     "[tailscale]\n"
-    "; Puts the board on your tailnet when something needs a machine there: a voice_host, a share's\n"
+    "; Puts the board on your tailnet when something needs a machine there: an agent_host, a share's\n"
     "; server or a feed's host given as a tailnet name or 100.x address. Wi-Fi Drive and Update\n"
     "; over Wi-Fi answer on the tailnet too while they're open. Make an auth key in Tailscale's\n"
     "; admin console (Settings > Keys), reusable and not ephemeral: the board is offline most of\n"
@@ -234,9 +234,9 @@ void loadNvs() {
   card.wifiSsids = splitLines(nvsString(prefs, "wssid"));
   card.shares = sharesFromRecords(splitLines(nvsString(prefs, "shares")));
   card.lockMinutes = prefs.getInt("lockmin", 0);
-  card.voiceHost = nvsString(prefs, "vhost");
-  card.voicePort = prefs.getInt("vport", 0);
-  card.voiceToken = nvsString(prefs, "vtoken");
+  card.agentHost = nvsString(prefs, "vhost");
+  card.agentPort = prefs.getInt("vport", 0);
+  card.agentToken = nvsString(prefs, "vtoken");
   card.tailscaleName = nvsString(prefs, "tsname");
   card.tailscaleExitNode = prefs.getBool("tsexit", false);
   tailscaleKeySet = prefs.isKey("tskey");
@@ -255,9 +255,9 @@ void saveNvs() {
   prefs.putString("wssid", joinRecords(card.wifiSsids).c_str());
   prefs.putString("shares", joinLines(shareRecords(card.shares)).c_str());
   prefs.putInt("lockmin", card.lockMinutes);
-  prefs.putString("vhost", card.voiceHost.c_str());
-  prefs.putInt("vport", card.voicePort);
-  prefs.putString("vtoken", card.voiceToken.c_str());
+  prefs.putString("vhost", card.agentHost.c_str());
+  prefs.putInt("vport", card.agentPort);
+  prefs.putString("vtoken", card.agentToken.c_str());
   prefs.putString("tsname", card.tailscaleName.c_str());
   prefs.putBool("tsexit", card.tailscaleExitNode);
   prefs.end();
@@ -504,6 +504,11 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
       log_w("settings: line %d of %s isn't key = value", lineNo, kFile);
       continue;
     }
+    if (key == "voice_host" || key == "voice_port" || key == "voice_token") {
+      // Before the Agent, these were the voice assistant's: a card from then still works.
+      log_w("settings: %s: %s is now agent_%s", kFile, key.c_str(), key.c_str() + 6);
+      key = "agent_" + key.substr(6);
+    }
     if (key == "timezone") {
       if (validTimezone(value)) {
         v.tz = value;
@@ -573,18 +578,18 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
       } else {
         v.lockMinutes = static_cast<int>(m);
       }
-    } else if (key == "voice_host") {
-      v.voiceHost = value;
-    } else if (key == "voice_port") {
+    } else if (key == "agent_host") {
+      v.agentHost = value;
+    } else if (key == "agent_port") {
       char *end = nullptr;
       const long port = strtol(value.c_str(), &end, 10);
       if (value.empty() || *end != '\0' || port < 1 || port > 65535) {
-        log_w("settings: %s: voice_port must be 1 to 65535", kFile);
+        log_w("settings: %s: agent_port must be 1 to 65535", kFile);
       } else {
-        v.voicePort = static_cast<int>(port);
+        v.agentPort = static_cast<int>(port);
       }
-    } else if (key == "voice_token") {
-      v.voiceToken = value;
+    } else if (key == "agent_token") {
+      v.agentToken = value;
     } else if (key == "tailscale_key") {
       if (isOff(value)) {
         cardKey = {CardTailscaleKey::Off, {}};
@@ -967,24 +972,24 @@ int lockMinutes() {
   return card.lockMinutes;
 }
 
-bool hasVoice() {
+bool hasAgent() {
   loadNvs();
-  return !card.voiceHost.empty();
+  return !card.agentHost.empty();
 }
 
-std::string voiceHost() {
+std::string agentHost() {
   loadNvs();
-  return card.voiceHost;
+  return card.agentHost;
 }
 
-int voicePort() {
+int agentPort() {
   loadNvs();
-  return card.voicePort > 0 ? card.voicePort : 7391;
+  return card.agentPort > 0 ? card.agentPort : 7391;
 }
 
-std::string voiceToken() {
+std::string agentToken() {
   loadNvs();
-  return card.voiceToken;
+  return card.agentToken;
 }
 
 bool hasTailscale() {

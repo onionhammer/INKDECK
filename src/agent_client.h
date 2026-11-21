@@ -1,24 +1,24 @@
-// Voice assistant client (voice_client.h rather than voice.h, which apps/voice.h would shadow
-// for the screens: AGENTS.md gotcha 8): holds a TCP session with inkharness on the home network
+// The agent client (agent_client.h rather than agent.h, which apps/agent.h would shadow for the
+// screens: AGENTS.md gotcha 8): holds a TCP session with inkharness on the home network
 // (docs/voice-protocol.md), sends what the mic hears while the talk key is down, and plays the
 // spoken reply as it arrives. The daemon does the listening, thinking and speaking; this is the
-// device's end of the wire. Only in a build with INKDECK_VOICE (features.h).
+// device's end of the wire. Only in a build with INKDECK_AGENT (features.h).
 //
-// A session is open while the Voice screen or the voice sheet (HOLD BOOT, apps/voice.h) is on
+// A session is open while the agent sheet (HOLD BOOT, apps/agent_sheet.h) is on
 // top: open() joins Wi-Fi and connects in the background, close() ends it and lets the radio go.
 // talkStart() with no session open one too, the mic first, so what's said while Wi-Fi joins is
 // kept (the capture ring holds 8 s) and sent once inkharness answers. Its own task owns the socket
 // and the audio streams (audio.h capture*/stream*), so the UI never waits on the network.
 //
-// The connection is encrypted with a key made from voice_token (voice_noise.h): the token
+// The connection is encrypted with a key made from agent_token (agent_noise.h): the token
 // itself never crosses the network, and a daemon with another one is reported as such.
 //
 // Half-duplex: the mic is off while a reply plays. Pressing the talk key during a reply stops
 // it and listens again.
 //
-// The board's own tools (apps/voice_tools.h): the hello announces them, and the model's calls
-// come down the connection (docs/voice-protocol.md, "Device tools"). The voice task hands each
-// to the tool handler; answer() sends back what it gave, from any task.
+// The board's own tools (apps/board_tools.h): the hello announces them, and the model's calls
+// come down the connection (docs/voice-protocol.md, "Device tools"). The agent task hands each
+// to the tool handler; toolResult() sends back what it gave, from any task.
 //
 // The agent (issue #52; docs/voice-protocol.md, "Agent sessions"): sessions that live on the
 // daemon and keep working while the board is away. The Agent's screens (apps/agent.h) share
@@ -34,7 +34,7 @@
 
 struct cJSON;
 
-namespace voice {
+namespace agent {
 
 enum class State : uint8_t {
   Off,         // no session
@@ -74,17 +74,17 @@ Status status();
 bool busy();  // connecting, listening, thinking or speaking: the idle power-off waits
 
 // The tools: `definitions` is the JSON array the hello announces (static: it is kept), and
-// `call` gets each tool_call in the voice task, with the turn it belongs to (keep it short:
+// `call` gets each tool_call in the agent task, with the turn it belongs to (keep it short:
 // queue it). `input` is the call's input object, or null; the handler owns it (cJSON_Delete()).
 // Before the first open().
 using ToolCall = void (*)(uint32_t id, const std::string &name, cJSON *input, uint32_t turn);
 void setTools(const char *definitions, ToolCall call);
 // What a call gave, or why it failed (error). Dropped if the session has ended since.
-void answer(uint32_t id, const std::string &text, bool error = false);
+void toolResult(uint32_t id, const std::string &text, bool error = false);
 
 // --- The agent ---------------------------------------------------------------------------------
 
-// Where an utterance goes: asked by the voice task as each one starts.
+// Where an utterance goes: asked by the agent task as each one starts.
 struct Target {
   bool agent = false;
   std::string session;  // with agent: the session to talk into; empty starts a new one
@@ -92,7 +92,7 @@ struct Target {
 void setTarget(Target (*source)());
 
 // One row of the list (the daemon's `sessions`). Numbers it didn't send are -1.
-struct AgentRow {
+struct Row {
   std::string id;
   std::string title;
   std::string state;  // working, ask, idle (herdr: ready), done, note, fail, stopped
@@ -128,7 +128,7 @@ struct LogLine {
 };
 
 // One session in full (the daemon's `session`).
-struct AgentSession {
+struct Session {
   std::string id, title, state, place, prompt;
   bool herdr = false;
   std::string program;
@@ -150,7 +150,7 @@ struct Draft {
   uint32_t turn = 0;  // the utterance it came from (Status::turn)
 };
 
-struct Agent {
+struct Sessions {
   bool known = false;      // a daemon has said hello since the board started
   bool supported = false;  // and it has sessions (its hello had `agent`)
   bool pin = false;        // it wants its PIN before it shows them
@@ -162,9 +162,9 @@ struct Agent {
   bool synced = false;     // a list has arrived on it
   bool locked = false;     // that list was the locked form: counts only
   int asks = 0, running = 0, idle = 0, planned = 0, unread = 0, older = 0;
-  std::vector<AgentRow> rows;  // the last list (kept after the connection ends)
+  std::vector<Row> rows;  // the last list (kept after the connection ends)
   bool hasOpen = false;        // `open` holds the session agentOpen() asked for
-  AgentSession open;
+  Session open;
   std::string started;       // the session the last agent turn went to
   Draft draft;               // waiting to be typed (an empty id: none)
   uint32_t startedTurn = 0;  // that turn (Status::turn)
@@ -177,23 +177,23 @@ struct Agent {
 
 // An Agent screen exists (from its constructor to its destructor; they nest). While any does,
 // the connection stays up, opening if need be, and the list is synced.
-void agentHold();
-void agentRelease();
+void hold();
+void release();
 // After a failed connection: try again (the Agent screen's RETRY).
-void agentRetry();
-Agent agent();  // a copy
+void retry();
+Sessions sessions();  // a copy
 
 // The session to get whole and keep current (Agent::open); empty for none.
-void agentOpen(const std::string &session);
-void agentAnswer(const std::string &session, const std::string &ask, int choice);
-void agentStop(const std::string &session);
-void agentDelete(const std::string &session);
+void follow(const std::string &session);
+void answer(const std::string &session, const std::string &ask, int choice);
+void stop(const std::string &session);
+void remove(const std::string &session);
 // Types agent().draft into its herdr session, or drops it. Either way it's gone from agent().
-void agentSendDraft();
-void agentDropDraft();
+void sendDraft();
+void dropDraft();
 // Unlocks the daemon with these digits, now or on the next connection. Kept in RAM only until
 // the daemon answers; a right one leaves a ticket that lets later connections in without it,
 // until the board powers off or the ticket runs out.
-void agentUnlock(const std::string &pin);
+void unlock(const std::string &pin);
 
-}  // namespace voice
+}  // namespace agent

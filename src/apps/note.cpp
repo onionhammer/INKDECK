@@ -206,7 +206,7 @@ class NoteScreen : public ui::Screen {
 
   bool reading() const override { return true; }  // light sleep between pages
   void onNap() override { save(); }
-  void onLeave() override { save(); }  // covered (the menu, the voice sheet), or closed
+  void onLeave() override { save(); }  // covered (the menu, the agent sheet), or closed
 
   bool onKey(Key key) override {
     switch (key) {

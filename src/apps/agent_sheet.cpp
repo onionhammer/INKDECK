@@ -1,8 +1,8 @@
 #include "features.h"
 
-#if INKDECK_VOICE  // the whole file (features.h)
+#if INKDECK_AGENT  // the whole file (features.h)
 
-#include "apps/voice.h"
+#include "apps/agent_sheet.h"
 
 #include <Arduino.h>
 
@@ -12,7 +12,7 @@
 #include "audio.h"
 #include "input.h"
 #include "settings.h"
-#include "voice_client.h"
+#include "agent_client.h"
 
 namespace apps {
 namespace {
@@ -32,28 +32,28 @@ constexpr uint32_t kSentCloseMs = 3000;    // after words went to a session with
 // The sheet while on top: HOLD BOOT there talks without opening another.
 const ui::Screen *onTop = nullptr;
 
-const char *stateWord(voice::State s) {
+const char *stateWord(agent::State s) {
   switch (s) {
-    case voice::State::Off: return "OFF";
-    case voice::State::Connecting: return "CONNECTING";
-    case voice::State::Ready: return "READY";
-    case voice::State::Listening: return "LISTENING";
-    case voice::State::Thinking: return "THINKING";
-    case voice::State::Speaking: return "SPEAKING";
-    case voice::State::Error: return "OFFLINE";
+    case agent::State::Off: return "OFF";
+    case agent::State::Connecting: return "CONNECTING";
+    case agent::State::Ready: return "READY";
+    case agent::State::Listening: return "LISTENING";
+    case agent::State::Thinking: return "THINKING";
+    case agent::State::Speaking: return "SPEAKING";
+    case agent::State::Error: return "OFFLINE";
   }
   return "";
 }
 
 const char *notSetUp() {
-  return settings::hasVoice() ? "NO WI-FI NETWORK SET" : "NO VOICE HOST SET";
+  return settings::hasAgent() ? "NO WI-FI NETWORK SET" : "NO AGENT HOST SET";
 }
 
 constexpr const char *kSetUpHelp =
-    "Name the machine that runs inkharness in SD:/inkdeck.ini: voice_host, and voice_token if it "
+    "Name the machine that runs inkharness in SD:/inkdeck.ini: agent_host, and agent_token if it "
     "asks for one. Then restart the board.";
 
-int meterFill(const voice::Status &s) {
+int meterFill(const agent::Status &s) {
   return s.mic ? std::clamp(static_cast<int>((s.levelDb + 60) / 3), 0, kMeterSegments) : 0;
 }
 
@@ -67,46 +67,46 @@ void paragraph(ui::Canvas &c, const Rect &area, const std::string &text, int max
   }
 }
 
-// The voice sheet (HOLD BOOT): an overlay over the lower half of whatever is on screen. The hold
+// The agent sheet (HOLD BOOT): an overlay over the lower half of whatever is on screen. The hold
 // that opens it has already started the session (apps/hold_boot.cpp); closing it ends it.
-std::string titleOf(const voice::Agent &a, const std::string &session) {
-  for (const voice::AgentRow &row : a.rows) {
+std::string titleOf(const agent::Sessions &a, const std::string &session) {
+  for (const agent::Row &row : a.rows) {
     if (row.id == session && !row.title.empty()) return row.title;
   }
   return "the agent";
 }
 
 // Words for a herdr agent this turn made, waiting for ● (an empty id: none).
-voice::Draft draftFor(const voice::Status &s) {
-  const voice::Agent a = voice::agent();
-  return a.draft.turn == s.turn && !s.mic ? a.draft : voice::Draft{};
+agent::Draft draftFor(const agent::Status &s) {
+  const agent::Sessions a = agent::sessions();
+  return a.draft.turn == s.turn && !s.mic ? a.draft : agent::Draft{};
 }
 
 // An agent turn that ended without a spoken reply (inkharness's [agent] reply = "none"): the
 // words went straight to a session. Its title then, or "" while that isn't so.
-std::string sentTo(const voice::Status &s) {
-  if (!s.agentTurn || !s.reply.empty() || s.mic || s.state != voice::State::Ready) return {};
-  const voice::Agent a = voice::agent();
+std::string sentTo(const agent::Status &s) {
+  if (!s.agentTurn || !s.reply.empty() || s.mic || s.state != agent::State::Ready) return {};
+  const agent::Sessions a = agent::sessions();
   if (a.started.empty() || a.startedTurn != s.turn || a.draft.turn == s.turn) return {};
   return titleOf(a, a.started);
 }
 
-class VoiceSheet : public ui::Screen {
+class AgentSheet : public ui::Screen {
  public:
   std::string tag() const override { return {}; }  // the screen below supplies the chrome
   bool overlay() const override { return true; }
 
   int hints(ui::Hint *out) const override {
     int n = 0;
-    if (!draftFor(voice::status()).id.empty()) {
+    if (!draftFor(agent::status()).id.empty()) {
       out[n++] = {ui::glyph::kPress, "TYPE IT"};
       out[n++] = {"HOLD BOOT", "SAY AGAIN"};
       out[n++] = {"BOOT", "DROP"};
       return n;
     }
-    if (voice::configured()) {
-      const voice::State s = voice::status().state;
-      const bool replying = s == voice::State::Thinking || s == voice::State::Speaking;
+    if (agent::configured()) {
+      const agent::State s = agent::status().state;
+      const bool replying = s == agent::State::Thinking || s == agent::State::Speaking;
       out[n++] = {"HOLD BOOT", replying ? "INTERRUPT" : "TALK"};
       out[n++] = {ui::glyph::kDial, "VOL"};
     }
@@ -118,21 +118,21 @@ class VoiceSheet : public ui::Screen {
 
   void onLeave() override {
     onTop = nullptr;
-    voice::agentDropDraft();  // words not typed by now never will be (does nothing without one)
-    voice::close();  // covered (the lock, an alarm, PWR) or closed: either way, done
+    agent::dropDraft();  // words not typed by now never will be (does nothing without one)
+    agent::close();  // covered (the lock, an alarm, PWR) or closed: either way, done
   }
 
   bool onKey(Key key) override {
-    const voice::Status s = voice::status();
-    const voice::Draft draft = draftFor(s);
+    const agent::Status s = agent::status();
+    const agent::Draft draft = draftFor(s);
     if (!draft.id.empty()) {
       switch (key) {
         case Key::Select:
-          typedInto_ = titleOf(voice::agent(), draft.session);
-          refusalsAtSend_ = voice::agent().refusals;
-          voice::agentSendDraft();
+          typedInto_ = titleOf(agent::sessions(), draft.session);
+          refusalsAtSend_ = agent::sessions().refusals;
+          agent::sendDraft();
           return true;
-        case Key::Back: voice::agentDropDraft(); return false;  // and the navigator pops
+        case Key::Back: agent::dropDraft(); return false;  // and the navigator pops
         default: return true;
       }
     }
@@ -144,9 +144,9 @@ class VoiceSheet : public ui::Screen {
   }
 
   bool onTick() override {
-    const voice::Status s = voice::status();
+    const agent::Status s = agent::status();
     const uint32_t now = millis();
-    if (s.generation != seen_ || s.mic || voice::busy()) {
+    if (s.generation != seen_ || s.mic || agent::busy()) {
       seen_ = s.generation;
       activeMs_ = now;
     }
@@ -160,12 +160,12 @@ class VoiceSheet : public ui::Screen {
       turn_ = s.turn;
       typedInto_.clear();
       notTyped_.clear();
-      const voice::Agent a = voice::agent();
-      if (!a.draft.id.empty() && a.draft.turn != s.turn) voice::agentDropDraft();
+      const agent::Sessions a = agent::sessions();
+      if (!a.draft.id.empty() && a.draft.turn != s.turn) agent::dropDraft();
     }
     // inkharness wouldn't type the draft (the program got busy, it ran out): say why, and stay.
     if (!typedInto_.empty()) {
-      const voice::Agent a = voice::agent();
+      const agent::Sessions a = agent::sessions();
       if (a.refusals != refusalsAtSend_ && a.refusalRequest == "send_draft") {
         notTyped_ = "Not typed: " + a.refusal + ". HOLD BOOT to say it again.";
         typedInto_.clear();
@@ -187,7 +187,7 @@ class VoiceSheet : public ui::Screen {
 
   void draw(ui::Canvas &c, const Rect &body) override {
     using namespace ui;
-    const voice::Status s = voice::status();
+    const agent::Status s = agent::status();
     drawn_ = s.generation;
 
     // Over a screen without chrome (the desk face), the sheet shows its keys itself.
@@ -197,7 +197,7 @@ class VoiceSheet : public ui::Screen {
     Rect r = drawSheet(c, body, kSheetMinH, keys, keyCount);
 
     const Rect head = r.takeTop(kSectionH);
-    if (!voice::configured()) {
+    if (!agent::configured()) {
       drawNotice(c, head, notSetUp());
       paragraph(c, r, kSetUpHelp, std::max(1, (r.h - 20) / lineHeight(style::kBody)));
       return;
@@ -205,7 +205,7 @@ class VoiceSheet : public ui::Screen {
     if (!s.error.empty()) {
       drawNotice(c, head, upper(s.error));
     } else {
-      const std::string right = s.state == voice::State::Connecting
+      const std::string right = s.state == agent::State::Connecting
                                     ? "CONNECTING"
                                     : "VOL " + std::to_string(audio::status().volume);
       drawSectionHeader(c, head, s.agentTurn ? "AGENT" : "ASSISTANT", right, {s.mic});
@@ -226,11 +226,11 @@ class VoiceSheet : public ui::Screen {
     paragraph(c, heard, s.heard.empty() ? (s.mic ? ui::glyph::kEllipsis : "") : s.heard,
               kSheetHeardLines);
 
-    const voice::Draft draft = draftFor(s);
+    const agent::Draft draft = draftFor(s);
     if (!draft.id.empty()) {
       // Words for a herdr agent's terminal: shown, and typed only on ●.
       drawSectionHeader(c, r.takeTop(kSectionH), "TYPE IT?",
-                        upper(titleOf(voice::agent(), draft.session)), {true});
+                        upper(titleOf(agent::sessions(), draft.session)), {true});
       paragraph(c, r, draft.text, std::max(1, (r.h - 16) / lineHeight(style::kBody)));
       drawnSent_.clear();
       return;
@@ -251,7 +251,7 @@ class VoiceSheet : public ui::Screen {
   std::string drawnSent_;  // sentTo() as last drawn
   std::string typedInto_;  // a draft typed from here: its session's title
   uint32_t turn_ = 0;      // the utterance typedInto_ belongs to
-  uint32_t refusalsAtSend_ = 0;  // voice::agent().refusals when the draft went
+  uint32_t refusalsAtSend_ = 0;  // agent::sessions().refusals when the draft went
   std::string notTyped_;         // why inkharness wouldn't type it
   std::string drawnNotTyped_;
   uint32_t sentMs_ = 0;    // when sentTo() first said so; 0: it doesn't
@@ -261,13 +261,13 @@ class VoiceSheet : public ui::Screen {
 
 }  // namespace
 
-bool voiceOnTop() {
+bool agentSheetOnTop() {
   const ui::Screen *top = ui::nav::top();
   return top && top == onTop;
 }
 
-void raiseVoiceSheet() { ui::nav::push(std::make_unique<VoiceSheet>()); }
+void raiseAgentSheet() { ui::nav::push(std::make_unique<AgentSheet>()); }
 
 }  // namespace apps
 
-#endif  // INKDECK_VOICE
+#endif  // INKDECK_AGENT

@@ -1,8 +1,8 @@
-#include "apps/voice_tools.h"
+#include "apps/board_tools.h"
 
 #include "features.h"
 
-#if INKDECK_VOICE
+#if INKDECK_AGENT
 
 #include <Arduino.h>
 #include <cJSON.h>
@@ -39,7 +39,7 @@
 #include "sensor_hub.h"
 #include "ui/nav.h"
 #include "units.h"
-#include "voice_client.h"
+#include "agent_client.h"
 
 namespace apps {
 namespace {
@@ -47,13 +47,13 @@ namespace {
 // What the hello announces: each tool's name, what it does (for the model) and its input.
 constexpr const char *kDefinitions = R"json([
 {"name":"find_books","description":"Lists the books (EPUBs) on the INKDECK, the e-paper board the user is talking through: the path to open each with, and how far it has been read. With a query, only the books whose path holds every word of it; if none does, all of them.","input_schema":{"type":"object","properties":{"query":{"type":"string","description":"Words from the title or the author, e.g. \"dune herbert\""}}}},
-{"name":"open_book","description":"Opens a book on the board where it was left, once your reply has finished playing (the voice sheet closes). Get the path from find_books. Keep the reply short: say you're opening it.","input_schema":{"type":"object","properties":{"path":{"type":"string","description":"A path find_books gave"}},"required":["path"]}},
+{"name":"open_book","description":"Opens a book on the board where it was left, once your reply has finished playing (the agent sheet closes). Get the path from find_books. Keep the reply short: say you're opening it.","input_schema":{"type":"object","properties":{"path":{"type":"string","description":"A path find_books gave"}},"required":["path"]}},
 {"name":"weather","description":"The weather where the board is, from the forecast it keeps for its Weather screen: now, the next 12 hours and the coming days (temperature, sky, rain chance and amount, wind, sunrise and sunset). Use it for any question about the weather here; search the web only for somewhere else.","input_schema":{"type":"object","properties":{}}},
 {"name":"board_status","description":"The board now: local date and time, battery, the room's temperature and humidity, volume, what's on screen, what's playing, its three alarms and the last book read.","input_schema":{"type":"object","properties":{}}},
 {"name":"set_volume","description":"Sets the board's speaker volume.","input_schema":{"type":"object","properties":{"volume":{"type":"integer","minimum":0,"maximum":100}},"required":["volume"]}},
 {"name":"set_alarm","description":"Sets one of the board's three alarms, or turns one off (on: false, with its slot or time). Without a slot it takes the one already at that time, else one that's off. board_status lists them.","input_schema":{"type":"object","properties":{"time":{"type":"string","description":"Local time, 24-hour HH:MM"},"repeat":{"type":"string","enum":["once","weekdays","weekend","every_day"],"description":"Default once"},"on":{"type":"boolean","description":"Default true"},"slot":{"type":"integer","minimum":1,"maximum":3}}}},
-{"name":"show","description":"Opens a screen on the board once your reply has finished playing (the voice sheet closes): home, clock, weather (the forecast), music (the player), podcasts, sensors (temperature and humidity history), reader (the last book, where it was left), or note (the last note show_note put up, where it was left). Only when the user asks to see or open one: to answer a question, use the tool that reads the answer (weather, board_status) and say it.","input_schema":{"type":"object","properties":{"screen":{"type":"string","enum":["home","clock","weather","music","podcasts","sensors","reader","note"]}},"required":["screen"]}},
-{"name":"show_note","description":"Puts text on the board's screen for the user to read and page through, once your reply has finished playing (the voice sheet closes), and keeps it in the board's notes. Use it when the user asks to see something, or when the answer is a recipe, the steps of a how-to, a list or anything else too long to follow by ear: put the whole answer here, and say only a sentence or two of it and that it's on the screen. Otherwise just answer aloud.","input_schema":{"type":"object","properties":{"title":{"type":"string","description":"Short, e.g. \"Banana bread\". A note with the same title is replaced"},"text":{"type":"string","description":"The whole answer in Markdown, without the title: # headings, - bullets, 1. numbered steps, - [ ] checklist items, **bold**, *italic*. Tables, links and images come out as plain text. Up to 16 KB; more is cut off"}},"required":["title","text"]}},
+{"name":"show","description":"Opens a screen on the board once your reply has finished playing (the agent sheet closes): home, clock, weather (the forecast), music (the player), podcasts, sensors (temperature and humidity history), reader (the last book, where it was left), or note (the last note show_note put up, where it was left). Only when the user asks to see or open one: to answer a question, use the tool that reads the answer (weather, board_status) and say it.","input_schema":{"type":"object","properties":{"screen":{"type":"string","enum":["home","clock","weather","music","podcasts","sensors","reader","note"]}},"required":["screen"]}},
+{"name":"show_note","description":"Puts text on the board's screen for the user to read and page through, once your reply has finished playing (the agent sheet closes), and keeps it in the board's notes. Use it when the user asks to see something, or when the answer is a recipe, the steps of a how-to, a list or anything else too long to follow by ear: put the whole answer here, and say only a sentence or two of it and that it's on the screen. Otherwise just answer aloud.","input_schema":{"type":"object","properties":{"title":{"type":"string","description":"Short, e.g. \"Banana bread\". A note with the same title is replaced"},"text":{"type":"string","description":"The whole answer in Markdown, without the title: # headings, - bullets, 1. numbered steps, - [ ] checklist items, **bold**, *italic*. Tables, links and images come out as plain text. Up to 16 KB; more is cut off"}},"required":["title","text"]}},
 {"name":"read_note","description":"The note on the board's screen, or the last one shown: its title and text. Use it when the user asks about what's on the screen (\"double it\", \"what's step 4?\") and it isn't in this conversation.","input_schema":{"type":"object","properties":{}}}
 ])json";
 
@@ -84,7 +84,7 @@ struct Change {
 };
 std::unique_ptr<Change> change;
 
-// The voice task's tool_call: queued for the UI task, which wakes for it.
+// The agent task's tool_call: queued for the UI task, which wakes for it.
 void onCall(uint32_t id, const std::string &name, cJSON *input, uint32_t turn) {
   xSemaphoreTake(lock, portMAX_DELAY);
   calls.push_back({id, name, input, turn});
@@ -216,7 +216,7 @@ Result openBook(const cJSON *in, uint32_t turn) {
   later(turn, [path] {
     std::string err;
     std::unique_ptr<ui::Screen> reader = makeReader(path, err);
-    if (!reader) log_w("voice: couldn't open %s: %s", path.c_str(), err.c_str());
+    if (!reader) log_w("agent: couldn't open %s: %s", path.c_str(), err.c_str());
     push(std::move(reader));
   });
   return {"\"" + nameOf(path) + "\" opens when your reply has finished playing."};
@@ -483,7 +483,7 @@ Result showNote(const cJSON *in, uint32_t turn) {
   }
   std::string err;
   const bool kept = saveNote(note, err);  // cuts it to 16 KB first
-  if (!kept) log_w("voice: a note not kept: %s", err.c_str());
+  if (!kept) log_w("agent: a note not kept: %s", err.c_str());
   std::string out = "\"" + note.title + "\" goes on the screen when your reply has finished playing";
   out += kept ? ", and is kept in the board's notes." : ". It couldn't be kept: " + err + ".";
   if (note.cut) out += " It was longer than 16 KB, so it's cut off there.";
@@ -551,28 +551,28 @@ Result run(const Call &call) {
 // again, the sheet closed, the connection lost) drops it.
 void applyChange() {
   if (!change) return;
-  const voice::Status s = voice::status();
-  if (s.turn != change->turn || s.state == voice::State::Off || s.state == voice::State::Error) {
-    log_i("voice: a screen change dropped (the turn was cut short)");
+  const agent::Status s = agent::status();
+  if (s.turn != change->turn || s.state == agent::State::Off || s.state == agent::State::Error) {
+    log_i("agent: a screen change dropped (the turn was cut short)");
     change.reset();
     return;
   }
-  if (s.state != voice::State::Ready || s.mic) return;
+  if (s.state != agent::State::Ready || s.mic) return;
   const std::function<void()> open = std::move(change->open);
   change.reset();
-  ui::nav::home();  // closes the voice sheet or the Voice screen, and with it the session
+  ui::nav::home();  // closes the agent sheet, and with it the session
   open();
 }
 
 }  // namespace
 
-void beginVoiceTools() {
+void beginBoardTools() {
   if (lock) return;
   lock = xSemaphoreCreateMutex();
-  voice::setTools(kDefinitions, onCall);
+  agent::setTools(kDefinitions, onCall);
 }
 
-void pollVoiceTools() {
+void pollBoardTools() {
   if (!lock) return;
   std::vector<Call> ready;
   xSemaphoreTake(lock, portMAX_DELAY);
@@ -581,20 +581,20 @@ void pollVoiceTools() {
   for (const Call &call : ready) {
     const uint32_t t0 = millis();
     const Result r = run(call);
-    log_i("voice: tool %s -> %s%s (%u ms)", call.name.c_str(), r.error ? "error: " : "",
+    log_i("agent: tool %s -> %s%s (%u ms)", call.name.c_str(), r.error ? "error: " : "",
           r.text.substr(0, 120).c_str(), static_cast<unsigned>(millis() - t0));
-    voice::answer(call.id, r.text, r.error);
+    agent::toolResult(call.id, r.text, r.error);
   }
   applyChange();
 }
 
 }  // namespace apps
 
-#else  // no voice assistant in this build
+#else  // no agent in this build
 
 namespace apps {
-void beginVoiceTools() {}
-void pollVoiceTools() {}
+void beginBoardTools() {}
+void pollBoardTools() {}
 }  // namespace apps
 
-#endif  // INKDECK_VOICE
+#endif  // INKDECK_AGENT
