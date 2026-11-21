@@ -333,6 +333,11 @@ class AgentFaceScreen : public ui::Screen {
     const time_t now = time(nullptr);
     const time_t alarm = rtc::timeValid() ? alarms::next(now) : 0;
     const time_t wake = devWake_ ? now + 60 : wakeAt_;
+    if (devWake_) {
+      // The dev tool's: one check-in, then the board stays on, so the USB console comes back.
+      saveU32("next", static_cast<uint32_t>(wake));
+      saveU32("dev", 1);
+    }
     power::off(power::Mode::Agent, earliestWake(alarm, wake));
     ui::nav::pop();  // still here: the power-off failed
     return true;
@@ -537,6 +542,11 @@ bool agentWake() {
     saveRecord(fresh);
   }
   log_i("agent face: checked in (%s), next %ld", ok ? "a list" : "nothing", static_cast<long>(next));
+  if (loadU32("dev")) {  // the dev tool's check-in: stay on now
+    saveU32("dev", 0);
+    log_i("agent face: dev wake done, staying on");
+    return false;
+  }
   power::off(power::Mode::Agent, earliestWake(ring, next));
   return false;
 }

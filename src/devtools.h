@@ -17,8 +17,8 @@
 //   k        close the book open in the Reader, as 15 idle minutes on battery do: its cover,
 //            then power-off. The RTC boots the board a minute later (so the USB console comes
 //            back), and that start opens the book again, under the Clock an RTC wake shows
-//   a        the Agent face's battery path: the face, off, and an RTC check-in a minute later
-//            (which redraws it and powers off again; HOLD PWR or a replug brings the board up)
+//   a        the Agent face's battery path: the face, off, and an RTC check-in a minute later,
+//            which redraws it; then the board stays on (so the USB console comes back)
 // Line commands start with '!' and end with a newline:
 //   !feed URL   add a podcast feed to SD:/Podcasts/feeds.txt (the Podcasts screen reads it when
 //               it next opens)
