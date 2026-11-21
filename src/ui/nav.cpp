@@ -25,6 +25,7 @@ uint32_t lastTick = 0;
 std::string drawnStatus;  // clock + battery as last drawn, to spot when they change
 void (*powerKeyHandler)() = nullptr;
 void (*talkKeyHandler)(bool) = nullptr;
+int (*asksCount)() = nullptr;
 bool dialSwapped = false;  // the swap orientDial() chose at the dial's press, kept for its repeats
 std::atomic<bool> talkOk{false};  // talkAllowed(), worked out when the stack changes
 std::mutex talkToLock;            // guards talkTo
@@ -50,8 +51,11 @@ void stackChanged() {
   talkOk = ok;
   TalkTo to;
   for (size_t i = stack.size(); i-- > 0;) {
-    if (!stack[i]->overlay()) {
-      to = stack[i]->talkTo();
+    TalkTo said = stack[i]->talkTo();
+    // A sheet speaks only when it sends words to the agent (the ask sheet): the agent sheet
+    // over it must not mask it, nor the player sheet the screen under.
+    if (!stack[i]->overlay() || said.agent) {
+      to = std::move(said);
       break;
     }
   }
@@ -74,6 +78,7 @@ StatusInfo statusFor(const Screen &s) {
     case audio::State::Paused: info.playback = Playback::Paused; break;
     case audio::State::Stopped: break;
   }
+  info.asks = asksCount ? asksCount() : 0;
   if (!s.statusClock()) {
     info.clock.clear();
   } else if (rtc::timeValid()) {
@@ -92,7 +97,7 @@ StatusInfo statusFor(const Screen &s) {
 std::string signature(const StatusInfo &info) {
   return info.clock + "|" + std::to_string(info.battery) + "|" + (info.usb ? "u" : "") +
          (info.wifi ? "w" : "") + std::to_string(static_cast<int>(info.playback)) + "|" +
-         info.temp;
+         info.temp + "|" + std::to_string(info.asks);
 }
 
 // How many screens home() keeps: the root, or everything up to the topmost lock screen.
@@ -284,5 +289,7 @@ TalkTo talkTarget() {
 void onPowerKey(void (*handler)()) { powerKeyHandler = handler; }
 
 void onTalkKey(void (*handler)(bool held)) { talkKeyHandler = handler; }
+
+void onAsks(int (*count)()) { asksCount = count; }
 
 }  // namespace ui::nav

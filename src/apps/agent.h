@@ -35,6 +35,7 @@
 // one goes.
 #pragma once
 #include <memory>
+#include <string>
 
 #include "ui/nav.h"
 
@@ -42,6 +43,15 @@ namespace apps {
 
 // Home opens it through openGuarded(Guarded::Agent, ...).
 std::unique_ptr<ui::Screen> makeAgent();
+// One session's screen (the ask sheet opens the question's, through the wheels).
+std::unique_ptr<ui::Screen> makeAgentSession(const std::string &id, const std::string &title);
+// A result as a note (kept in Notes) on top.
+void showAgentNote(const std::string &title, const std::string &markdown);
+
+// From loop(): the agent away from its screens (apps/ask_sheet.cpp). Chirps when the last list
+// has a new question (two rising pips) or a new result (two falling), raises the ask sheet over
+// the screen in use once per question, and asks for a check-in when a key comes while ?n shows.
+void pollAgent();
 
 // Once at start, after the agent client's: routes HOLD BOOT (agent::setTarget()) and passes a
 // PIN entered at the lock or the Agent's wheels on to inkharness (agent::unlock()).

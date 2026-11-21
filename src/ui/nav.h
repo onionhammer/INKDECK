@@ -87,6 +87,9 @@ class Screen {
   // true for the last frame before a power-off (Sleep, Standby, a closed book): nothing else
   // starts a power-off or a sync while it's on top.
   virtual bool offFace() const { return false; }
+  // An off face that still chirps (the Agent face: a new question or result heard at a
+  // check-in, apps/agent_face.h). Others are powered off, and their news waits on Home.
+  virtual bool chirps() const { return false; }
   // false: HOLD BOOT doesn't talk over this screen (the Recorder, which has the mic; an alarm
   // ringing). Asked of the screen on top and the one under it when the stack changes.
   virtual bool allowsTalk() const { return true; }
@@ -97,7 +100,8 @@ class Screen {
   // itself, and HOLD BOOT doesn't talk while it's on the stack.
   virtual bool locks() const { return false; }
   // Where HOLD BOOT's words go while this is the top screen that isn't a sheet (nav::base()):
-  // a talk turn, by default, or the agent (the Agent's screens, apps/agent.h).
+  // a talk turn, by default, or the agent (the Agent's screens, apps/agent.h). A sheet over it
+  // that says the agent (the ask sheet: words answer its question) speaks for both.
   virtual TalkTo talkTo() const { return {}; }
 
   // Called when the screen becomes the top of the stack (pushed, or uncovered by a pop) and
@@ -154,6 +158,8 @@ void onPowerKey(void (*handler)());
 // false). Called in the UI task whether or not talkAllowed(); screens never see these keys. A
 // redraw follows.
 void onTalkKey(void (*handler)(bool held));
+// Questions the agent has waiting, for the status bar's ?n (apps/agent.h); none without one.
+void onAsks(int (*count)());
 
 }  // namespace nav
 }  // namespace ui

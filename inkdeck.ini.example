@@ -80,6 +80,9 @@ nfs = nfs://nas.local/volume1/books
 ; agent_host = nas.local
 ; agent_port = 7391
 ; agent_token = something-long
+; With a PIN on the Agent, the Agent face shows counts only, and its titles stay off the
+; board's flash. On, it shows everything, for a board that stays on a desk at home.
+; agent_face_details = off
 
 [tailscale]
 ; Puts the board on your tailnet when something needs a machine there: an agent_host, a share's

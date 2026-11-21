@@ -244,6 +244,7 @@ struct Sessions {
   uint32_t checkAt = 0;    // the daemon's check_at (Unix seconds; 0: none)
   uint32_t nextAt = 0;     // the next scheduled run
   uint32_t latestAsk = 0, latestDone = 0;  // the list's latest: when to chirp
+  std::string sayId, noteId;  // that newest result is a schedule's to say / show as a note
   bool hasAsk = false;     // the newest question waiting (unlocked): for the ask sheet
   Ask ask;
   std::vector<Row> rows;  // the last list (kept after the connection ends)
@@ -266,6 +267,7 @@ struct Glance {
   int asks = 0, running = 0, planned = 0, proposed = 0, unread = 0;
   uint32_t nextAt = 0, checkAt = 0;
   uint32_t latestAsk = 0, latestDone = 0;
+  std::string sayId, noteId;      // what to do with the newest result (unlocked lists only)
   std::string askSession, askId;  // the newest question (unlocked lists only)
   uint32_t askAt = 0;
   uint32_t checkedAt = 0;  // when a list last came (Unix seconds)

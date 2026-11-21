@@ -1,8 +1,10 @@
 #include "apps/home.h"
 
 #include <Arduino.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "alarms.h"
 #include "apps/clock.h"
@@ -121,6 +123,20 @@ struct Stat {
 };
 
 // Up to four live readings for the preview. Only real values; unbuilt modules say so.
+#if INKDECK_AGENT
+// The next scheduled run: "07:00", or "TUE 07:00" past the next 18 hours.
+std::string agentNext(uint32_t unix) {
+  const time_t now = time(nullptr);
+  const time_t t = static_cast<time_t>(unix);
+  tm local;
+  localtime_r(&t, &local);
+  char buf[16];
+  strftime(buf, sizeof buf, t - now < 18 * 3600 ? "%H:%M" : "%a %H:%M", &local);
+  for (char *p = buf; *p; ++p) *p = static_cast<char>(toupper(*p));
+  return buf;
+}
+#endif
+
 int statsFor(const Module &m, Stat out[4]) {
   switch (m.kind) {
     case Kind::Reader: {
@@ -324,15 +340,20 @@ int statsFor(const Module &m, Stat out[4]) {
     }
 #if INKDECK_AGENT
     case Kind::Agent: {
-      // What the last connection said (a locked one says only the counts); until then, where.
-      const agent::Sessions a = agent::sessions();
-      const bool known = a.synced || !a.rows.empty();
-      out[0] = {"NEEDS YOU", known ? std::to_string(a.asks) : "--"};
-      out[1] = {"RUNNING", known ? std::to_string(a.running) : "--"};
-      out[2] = {"HOST", !a.place.empty()    ? a.place
-                        : settings::hasAgent() ? settings::agentHost()
-                                               : "NOT SET"};
-      out[3] = {"TALK", "HOLD BOOT"};
+      // What the last list said (a locked one, or one kept from before a power-off, says only
+      // counts and times); until then, where. With the PIN on the Agent: counts and times only.
+      const agent::Glance g = agent::glance();
+      out[0] = {"NEEDS YOU", g.known ? std::to_string(g.asks + g.proposed) : "--"};
+      out[1] = {"RUNNING", g.known ? std::to_string(g.running) : "--"};
+      out[2] = {"NEXT", g.nextAt ? agentNext(g.nextAt) : g.known ? "NOTHING" : "--"};
+      if (guardApplies(Guarded::Agent)) {
+        out[3] = {"TALK", "HOLD BOOT"};
+      } else {
+        const agent::Sessions a = agent::sessions();
+        out[3] = {"HOST", !a.place.empty()          ? a.place
+                          : settings::hasAgent() ? settings::agentHost()
+                                                 : "NOT SET"};
+      }
       return 4;
     }
 #endif
@@ -340,9 +361,33 @@ int statsFor(const Module &m, Stat out[4]) {
   return 0;
 }
 
+// The list's row for module i: its bus tag, or for the Agent while questions wait, an inverted
+// "1 ASK".
+ui::Row moduleRow(int i) {
+  ui::Row row;
+  row.index = twoDigits(i + 1);
+  row.title = kModules[i].label;
+  row.tag = kModules[i].bus;
+#if INKDECK_AGENT
+  if (kModules[i].kind == Kind::Agent) {
+    const agent::Glance g = agent::glance();
+    if (g.known && g.asks > 0) {
+      row.tag = std::to_string(g.asks) + " ASK";
+      row.tagInverted = true;
+    }
+  }
+#endif
+  return row;
+}
+
 class HomeScreen : public ui::Screen {
  public:
   HomeScreen() { cursor_.reset(kModuleCount); }
+
+#if INKDECK_AGENT
+  // Home coming up: what the agent is doing is worth a look (at most once a minute).
+  void onEnter() override { agent::checkSoon(); }
+#endif
 
   std::string tag() const override { return "INKDECK/OS"; }
   std::string context() const override { return "~/home"; }
@@ -381,6 +426,14 @@ class HomeScreen : public ui::Screen {
     const weather::Phase w = weather::status().phase;
     changed |= w != drawnWeather_ && kind == Kind::Weather;
     drawnWeather_ = w;
+#if INKDECK_AGENT
+    // The Agent's row tag and preview follow the list.
+    const agent::Glance a = agent::glance();
+    const uint32_t sig = static_cast<uint32_t>(a.asks) * 1000003u + a.running * 1009u +
+                         a.proposed * 31u + a.nextAt;
+    changed |= sig != drawnAgent_;
+    drawnAgent_ = sig;
+#endif
     return changed;
   }
 
@@ -395,9 +448,7 @@ class HomeScreen : public ui::Screen {
 
     drawPreview(c, r, cursor_.cursor());
     ui::drawSectionHeader(c, header, "MODULES", cursor_.label());
-    ui::drawList(c, list, ui::kRowH, cursor_, [](int i) {
-      return ui::Row{twoDigits(i + 1), kModules[i].label, "", kModules[i].bus, ""};
-    });
+    ui::drawList(c, list, ui::kRowH, cursor_, moduleRow);
   }
 
  private:
@@ -496,6 +547,9 @@ class HomeScreen : public ui::Screen {
   ui::ListCursor cursor_;
   uint32_t drawnGeneration_ = 0;
   weather::Phase drawnWeather_ = weather::Phase::Idle;
+#if INKDECK_AGENT
+  uint32_t drawnAgent_ = 0;
+#endif
 };
 
 }  // namespace

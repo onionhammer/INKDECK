@@ -579,6 +579,8 @@ void onSessions(const cJSON *json) {
     agentShared.nextAt = timeField(json, "next_at");
     agentShared.latestAsk = timeField(latest, "ask");
     agentShared.latestDone = timeField(latest, "done");
+    agentShared.sayId = field(latest, "say");
+    agentShared.noteId = field(latest, "note");
     agentShared.hasAsk = hasAsk;
     agentShared.ask = std::move(ask);
     // A working session sends a list about once a second (every log line is a change). Only
@@ -1779,6 +1781,8 @@ Glance glance() {
     g.checkAt = a.checkAt;
     g.latestAsk = a.latestAsk;
     g.latestDone = a.latestDone;
+    g.sayId = a.sayId;
+    g.noteId = a.noteId;
     if (a.hasAsk && a.asks > 0) {
       g.askSession = a.ask.session;
       g.askId = a.ask.id;

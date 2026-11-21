@@ -2,6 +2,7 @@
 
 #include "input.h"
 
+#include <math.h>
 #include <stdio.h>
 
 #include <algorithm>
@@ -71,12 +72,17 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   }
   if (info.battery >= 0) blockW += kBatteryGlyphW;
   if (info.playback != Playback::None) blockW += kPlaybackW + kGap;
+  const std::string asks = info.asks > 0 ? "?" + std::to_string(info.asks) : std::string();
+  if (!asks.empty()) blockW += tagWidth(asks, style::kStatusTag, 5) + kGap;
   const int blockX = band.right() - std::max(blockW, 0) - 12;
   vrule(c, blockX - 12 - kRule, band.y, band.h);
   const int baseline = baselineCentered(style::kStatus, band.y, band.h);
   int x = blockX;
   if (info.playback != Playback::None) {
     x += drawPlaybackMark(c, x, band.centerY(), info.playback) + kGap;
+  }
+  if (!asks.empty()) {
+    x += drawTag(c, x, band.centerY(), 20, asks, style::kStatusTag, TagKind::Inverted, 5) + kGap;
   }
   for (int i = 0; i < 4; ++i) {
     if (texts[i].empty()) continue;
@@ -220,7 +226,8 @@ void drawRow(Canvas &c, const Rect &r, const Row &row, bool selected) {
   }
   if (!row.tag.empty()) {
     const int w = tagWidth(row.tag, style::kTag, 5);
-    drawTag(c, right - w, band.centerY(), 18, row.tag, style::kTag, TagKind::Outlined, 5, ink);
+    drawTag(c, right - w, band.centerY(), 18, row.tag, style::kTag,
+            row.tagInverted ? TagKind::Inverted : TagKind::Outlined, 5, ink);
     right -= w + kGap;
   }
 
@@ -338,6 +345,34 @@ void drawStat(Canvas &c, const Rect &r, const std::string &key, const std::strin
   drawText(c, r.x, keyBase, ellipsize(style::kKey, key, r.w), style::kKey);
   drawText(c, r.x, keyBase + kLineGap + capHeight(style::kValue),
            ellipsize(style::kValue, value, r.w), style::kValue);
+}
+
+
+// --- Sparkline -----------------------------------------------------------------------------
+
+void drawSparkline(Canvas &c, const Rect &r, const float *values, int count, float minSpan) {
+  fill(c, {r.x, r.bottom() - 2, r.w, 2}, kInk);
+  if (count <= 0 || r.h < 6) return;
+  float mn = values[0], mx = values[0];
+  for (int i = 1; i < count; ++i) {
+    mn = std::min(mn, values[i]);
+    mx = std::max(mx, values[i]);
+  }
+  if (mx - mn < minSpan || mx <= mn) {
+    const float mid = (mn + mx) / 2;
+    const float half = std::max(minSpan, 1e-3f) / 2;
+    mn = mid - half;
+    mx = mid + half;
+  }
+  constexpr int kGap = 2;
+  const int usable = r.h - 2 - 2;  // over the axis, a little air on top
+  for (int i = 0; i < count; ++i) {
+    const int x0 = r.x + i * (r.w + kGap) / count;
+    const int x1 = r.x + (i + 1) * (r.w + kGap) / count - kGap;
+    const float f = (values[i] - mn) / (mx - mn);
+    const int h = std::max(2, static_cast<int>(lroundf(2 + f * (usable - 2))));
+    fill(c, {x0, r.bottom() - 2 - h, std::max(1, x1 - x0), h}, kInk);
+  }
 }
 
 }  // namespace ui

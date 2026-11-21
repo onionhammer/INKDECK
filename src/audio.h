@@ -69,6 +69,10 @@ bool ringing();
 // Ignored while anything plays, is paused, records or rings. Takes about a third of a second
 // in the audio task, the amp on throughout.
 void beep(uint32_t ms = 80, uint32_t hz = 2000);
+// The agent's chirps: two rising pips for a question, two falling for a session that finished
+// (issue #52). Like beep(): ignored while anything plays, is paused, records, rings or listens,
+// silent at volume 0. About half a second in the audio task.
+void chirp(bool rising);
 
 // --- Recording: 16 kHz, mono, 16-bit WAV. record() stops playback first. The file is
 // finished (its header's sizes filled in) by stopRecording(), or by stop(), which power-off

@@ -1013,6 +1013,8 @@ void enterDesk() {
   ui::nav::invalidate(ui::Refresh::Full);
 }
 
+bool deskShowing() { return desk && ui::nav::base() == desk; }
+
 bool wakeDesk() {
   // base() == desk also means it's still on the stack: a popped one lingers until the
   // navigator retires it.

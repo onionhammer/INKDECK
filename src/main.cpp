@@ -21,10 +21,12 @@
 #include "apps/lock.h"
 #include "apps/reader.h"
 #include "apps/sleep.h"
+#include "apps/agent.h"
 #include "apps/board_tools.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "devtools.h"
+#include "features.h"
 #include "input.h"
 #include "netget.h"
 #include "ota.h"
@@ -103,6 +105,9 @@ void loop() {
   apps::pollPower();
   apps::pollLock();  // before the nap: a lock over the Reader ends the naps and gets drawn
   apps::pollBoardTools();  // the assistant's calls to the board, and the screens they open
+#if INKDECK_AGENT
+  apps::pollAgent();  // chirps, the ask sheet; on a nap's minute wake too, before it naps again
+#endif
   // The hourly forecast sync, in the background. Not while the Reader naps on battery: that
   // would wake the radio every hour (every 15 minutes out of range) with nobody reading. It
   // runs after the next key instead. Nor under the last frame before a power-off, which would

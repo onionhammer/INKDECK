@@ -19,7 +19,7 @@ constexpr int kPadX = 14;  // side padding of chrome bands and list rows
 constexpr int kRowH = 34;  // single-line list row
 constexpr int kRowTallH = 48;  // two-line list row
 
-// --- Status bar: inverted module tag, context text, then [▶/‖] [WIFI] [temp] battery % and
+// --- Status bar: inverted module tag, context text, then [▶/‖] [?n] [WIFI] [temp] battery % and
 // clock.
 enum class Playback : uint8_t { None, Playing, Paused };
 struct StatusInfo {
@@ -32,6 +32,7 @@ struct StatusInfo {
   std::string clock;    // "14:32", or "--:--" when the time isn't known; empty: none
   bool wifi = false;    // the radio is on: "WIFI" before the rest
   Playback playback = Playback::None;  // music or a podcast: an inverted ▶ or ‖ first
+  int asks = 0;  // agent questions waiting: an inverted ?n after the ▶ (issue #52)
 };
 void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info);
 int drawBattery(Canvas &c, int x, int centerY, int percent);  // returns its width
@@ -81,6 +82,7 @@ struct Row {
   std::string subtitle;  // optional second line (use kRowTallH)
   std::string subtitleMark;  // optional small outlined tag before the subtitle ("hc": a herdr agent)
   std::string tag;       // optional boxed tag, right-aligned ("SD", "DIR")
+  bool tagInverted = false;  // the tag filled instead of outlined: it needs you ("1 ASK")
   std::string trailing;  // optional plain text, right-aligned ("3:05")
 };
 void drawRow(Canvas &c, const Rect &r, const Row &row, bool selected);
@@ -121,6 +123,9 @@ void drawList(Canvas &c, const Rect &r, int rowH, const ListCursor &cursor, RowA
 void drawProgress(Canvas &c, const Rect &r, float fraction);
 // Row of outlined segments, the first `filled` solid (volume).
 void drawSegments(Canvas &c, const Rect &r, int segments, int filled, int gap = 3);
+// Bars for `values`, oldest on the left, scaled between their least and greatest (a span under
+// minSpan isn't blown up to full height), on a 2 px axis along the bottom.
+void drawSparkline(Canvas &c, const Rect &r, const float *values, int count, float minSpan = 0);
 
 // --- Button: inverted box with a dithered drop shadow offset 6 px ("● OPEN").
 // Draws with its right edge at `right` and top at `top`; returns the box (without shadow).

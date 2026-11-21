@@ -34,12 +34,14 @@ struct Values {
   std::string agentToken;
   std::string tailscaleName;  // "": the default
   bool tailscaleExitNode = false;
+  bool agentFaceDetails = false;
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
            wifiSsids == o.wifiSsids && shares == o.shares && lockMinutes == o.lockMinutes &&
            agentHost == o.agentHost && agentPort == o.agentPort && agentToken == o.agentToken &&
-           tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode;
+           tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode &&
+           agentFaceDetails == o.agentFaceDetails;
   }
 };
 
@@ -150,6 +152,9 @@ constexpr const char *kTemplate =
     "; agent_host = nas.local\n"
     "; agent_port = 7391\n"
     "; agent_token = something-long\n"
+    "; With a PIN on the Agent, the Agent face shows counts only, and its titles stay off the\n"
+    "; board's flash. On, it shows everything, for a board that stays on a desk at home.\n"
+    "; agent_face_details = off\n"
     "\n"
     "[tailscale]\n"
     "; Puts the board on your tailnet when something needs a machine there: an agent_host, a share's\n"
@@ -239,6 +244,7 @@ void loadNvs() {
   card.agentToken = nvsString(prefs, "vtoken");
   card.tailscaleName = nvsString(prefs, "tsname");
   card.tailscaleExitNode = prefs.getBool("tsexit", false);
+  card.agentFaceDetails = prefs.getBool("afacedet", false);
   tailscaleKeySet = prefs.isKey("tskey");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
@@ -260,6 +266,7 @@ void saveNvs() {
   prefs.putString("vtoken", card.agentToken.c_str());
   prefs.putString("tsname", card.tailscaleName.c_str());
   prefs.putBool("tsexit", card.tailscaleExitNode);
+  prefs.putBool("afacedet", card.agentFaceDetails);
   prefs.end();
 }
 
@@ -605,6 +612,10 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
         v.tailscaleName = name;
       } else {
         log_w("settings: %s: tailscale_name must be letters, digits and hyphens, up to 63", kFile);
+      }
+    } else if (key == "agent_face_details") {
+      if (!parseOnOff(value, v.agentFaceDetails)) {
+        log_w("settings: %s: agent_face_details must be on or off", kFile);
       }
     } else if (key == "tailscale_exit_node") {
       if (!parseOnOff(value, v.tailscaleExitNode)) {
@@ -1015,6 +1026,11 @@ std::string tailscaleName() {
 bool tailscaleExitNode() {
   loadNvs();
   return card.tailscaleExitNode;
+}
+
+bool agentFaceDetails() {
+  loadNvs();
+  return card.agentFaceDetails;
 }
 
 PinChange pendingPin() { return pending; }

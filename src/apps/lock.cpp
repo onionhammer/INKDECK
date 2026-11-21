@@ -559,6 +559,10 @@ void guardedOnTop(Guarded module) {
 
 void forgetGuard(Guarded module) { guardOf(module).open = false; }
 
+bool guardApplies(Guarded module) { return applies(module); }
+
+bool guardWouldAsk(Guarded module) { return applies(module) && !fresh(module); }
+
 void guardedInUse(Guarded module) {
   if (guardOf(module).open) guardOf(module).ms = millis();
 }

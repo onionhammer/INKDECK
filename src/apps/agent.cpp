@@ -11,28 +11,31 @@
 #include <string>
 #include <vector>
 
+#include "agent_client.h"
+#include "apps/agent_panel.h"
+#include "apps/agent_ui.h"
 #include "apps/home.h"
 #include "apps/lock.h"
 #include "apps/note.h"
 #include "settings.h"
 #include "text.h"
 #include "ui/menu.h"
-#include "agent_client.h"
 
 namespace apps {
 namespace {
 
+using namespace agentui;
 using ui::Key;
 using ui::Rect;
 
 constexpr int kCountsH = 62;      // the three counts, rule included
-constexpr int kChoiceH = 34;      // a choice under a question
 constexpr int kPlanRowH = 26;     // a line of the plan's checklist
 constexpr int kLogRowH = 24;      // a line of the log
 constexpr int kMeterH = 10;       // the plan's segment meter
 constexpr int kMaxPlanRows = 7;   // of the checklist; the rest are counted
 constexpr int kScreenLineH = 18;  // a line of a herdr agent's screen
 constexpr int kMaxScreenAsk = 8;  // its lines under a question
+constexpr int kRunRowH = 26;      // a schedule's last runs
 
 constexpr const char *kSetUpHelp =
     "Name the machine that runs inkharness in SD:/inkdeck.ini: agent_host, and agent_token if it "
@@ -48,114 +51,25 @@ constexpr const char *kLockedHelp =
 
 const std::string kDot = ui::glyph::kDot;
 
-// Done, note, fail, stopped, and any state a later inkharness adds that this board doesn't know
-// (docs/voice-protocol.md says to take those as finished).
-bool finished(const std::string &state) {
-  return state != "working" && state != "ask" && state != "idle";
-}
-
-std::string stateWord(const std::string &state) {
-  if (state == "ask") return "ASKING";
-  if (state == "working") return "WORKING";
-  if (state == "idle") return "READY";
-  if (state == "done") return "DONE";
-  if (state == "note") return "NOTE";
-  if (state == "fail") return "FAILED";
-  if (state == "stopped") return "STOPPED";
-  return ui::upper(state);
-}
-
-std::string tagFor(const agent::Row &r) {
-  if (r.state == "ask") return "ASK";
-  if (r.state == "working") {
-    if (r.progress >= 0) return std::to_string(std::min(r.progress, 100)) + "%";
-    if (r.step > 0 && r.steps > 0) return std::to_string(r.step) + "/" + std::to_string(r.steps);
-    return "RUN";
-  }
-  if (r.state == "idle") return "READY";
-  if (r.state == "done") return "DONE";
-  if (r.state == "note") return "NOTE";
-  if (r.state == "fail") return "FAIL";
-  if (r.state == "stopped") return "STOP";
-  return ui::upper(r.state);
-}
-
-// "14:32", or "" when the board doesn't know the time.
-std::string clockText(uint32_t unix) {
-  if (unix == 0) return {};
-  const time_t t = static_cast<time_t>(unix);
-  tm local;
-  localtime_r(&t, &local);
-  char buf[8];
-  snprintf(buf, sizeof buf, "%02d:%02d", local.tm_hour, local.tm_min);
-  return buf;
-}
-
-// Word-wrapped text from `top`; returns the y under it.
-int paragraph(ui::Canvas &c, const Rect &area, int top, const std::string &text,
-              const ui::TextStyle &style, int maxLines) {
-  using namespace ui;
-  int baseline = top + capHeight(style);
-  for (const std::string &line : wrap(style, text, area.w - 2 * kPadX, maxLines)) {
-    drawText(c, area.x + kPadX, baseline, line, style);
-    baseline += lineHeight(style);
-  }
-  return baseline - capHeight(style);
-}
-
-// The result's Markdown as lines to read on the panel: headings, bullets and emphasis marks
-// dropped (the Note viewer shows it properly: ● on a finished session).
-std::vector<std::string> plainLines(const std::string &markdown) {
-  std::vector<std::string> out;
-  size_t start = 0;
-  while (start <= markdown.size()) {
-    size_t end = markdown.find('\n', start);
-    if (end == std::string::npos) end = markdown.size();
-    std::string line = markdown.substr(start, end - start);
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    size_t i = 0;
-    while (i < line.size() && line[i] == '#') ++i;
-    if (i > 0) line = ui::upper(line.substr(line.find_first_not_of(" #") == std::string::npos
-                                                 ? line.size()
-                                                 : line.find_first_not_of(" #")));
-    if (line.rfind("- [ ] ", 0) == 0 || line.rfind("- [x] ", 0) == 0) line = "- " + line.substr(6);
-    std::string clean;
-    for (size_t k = 0; k < line.size(); ++k) {
-      if (line[k] == '*' || line[k] == '`') continue;
-      clean += line[k];
-    }
-    out.push_back(clean);
-    start = end + 1;
-  }
-  while (!out.empty() && out.back().empty()) out.pop_back();
-  return out;
-}
-
-// Wraps lines for the panel; an empty line stays as a gap.
-std::vector<std::string> wrapLines(const std::vector<std::string> &lines, const ui::TextStyle &s,
-                                   int width) {
-  std::vector<std::string> out;
-  for (const std::string &line : lines) {
-    if (line.empty()) {
-      out.emplace_back();
-      continue;
-    }
-    for (std::string &w : ui::wrap(s, line, width, 64)) out.push_back(std::move(w));
-  }
-  return out;
-}
-
 // What the connection is doing, for a screen that has nothing better to show. Empty when it's
-// up and has said what it holds.
+// up and has said what it holds, or when an earlier list is kept and polls keep it current.
 std::string connectionNote(const agent::Status &st, const agent::Sessions &a) {
   if (st.state == agent::State::Error && !a.connected) {
     return st.error.empty() ? "OFFLINE" : ui::upper(st.error);
   }
-  if (!a.connected) return "CONNECTING";
+  if (!a.connected && !a.synced) return "CONNECTING";
   return {};
 }
 
-void openMenu(const agent::Row &row, bool fromSession);
+// "CHECKS BACK 14:35" when the board isn't connected and will look again then.
+std::string checksBack(const agent::Sessions &a) {
+  if (a.connected) return {};
+  const agent::Glance g = agent::glance();
+  if (g.nextCheck == 0) return {};
+  return "CHECKS BACK " + whenText(g.nextCheck);
+}
+
+void openMenu(const agent::Row &row, bool fromSession, bool hasResult);
 
 // --- A session --------------------------------------------------------------------------------
 
@@ -180,13 +94,20 @@ class SessionScreen : public ui::Screen {
       }
       out[n++] = {"HOLD BOOT", "SAY"};
     } else {
-      if (a.hasOpen && finished(a.open.state) && !a.open.result.empty()) {
+      const std::string state = a.hasOpen ? a.open.state : std::string();
+      if (state == "proposed" && (a.features & agent::kJobs)) {
+        out[n++] = {ui::glyph::kPress, "START"};
+      } else if (state == "scheduled" && (a.features & agent::kRun)) {
+        out[n++] = {ui::glyph::kPress, "RUN NOW"};
+      } else if (a.hasOpen && a.open.hasPanel) {
+        out[n++] = {ui::glyph::kPress, "PANEL"};
+      } else if (a.hasOpen && finished(state) && !a.open.result.empty()) {
         out[n++] = {ui::glyph::kPress, "NOTE"};
       } else {
         out[n++] = {ui::glyph::kDial, "PAGE"};
       }
       out[n++] = {ui::glyph::kHoldPress, "MENU"};
-      out[n++] = {"HOLD BOOT", "TALK"};
+      out[n++] = {"HOLD BOOT", state == "scheduled" || state == "watch" ? "CHANGE" : "TALK"};
     }
     out[n++] = {"BOOT", "BACK"};
     return n;
@@ -217,6 +138,7 @@ class SessionScreen : public ui::Screen {
         default: return false;
       }
     }
+    const std::string state = a.hasOpen ? a.open.state : std::string();
     switch (key) {
       case Key::Up:
         if (page_ == 0) return false;
@@ -227,14 +149,24 @@ class SessionScreen : public ui::Screen {
         ++page_;
         return true;
       case Key::Select:
-        if (a.hasOpen && finished(a.open.state) && !a.open.result.empty()) showNote(a.open);
+        if (state == "proposed" && (a.features & agent::kJobs)) {
+          agent::approve(id_);
+          notice_ = "STARTING";
+        } else if (state == "scheduled" && (a.features & agent::kRun)) {
+          agent::runNow(id_);
+          notice_ = "RUNNING NOW";
+        } else if (a.hasOpen && a.open.hasPanel) {
+          ui::nav::push(makeAgentPanel(id_));
+        } else if (a.hasOpen && finished(state) && !a.open.result.empty()) {
+          showNote(a.open);
+        }
         return true;
       case Key::SelectLong: {
         agent::Row row;
         row.id = id_;
         row.title = a.hasOpen ? a.open.title : title_;
-        row.state = a.hasOpen ? a.open.state : "";
-        openMenu(row, true);
+        row.state = state;
+        openMenu(row, true, a.hasOpen && !a.open.result.empty());
         return true;
       }
       default: return false;
@@ -256,11 +188,22 @@ class SessionScreen : public ui::Screen {
       }
     }
     // A new question: start at the recommended choice.
-    if (asking(a) && a.open.ask.id != askSeen_) {
-      askSeen_ = a.open.ask.id;
+    if (asking(a) && a.open.ask.id + std::to_string(a.open.ask.at) != askSeen_) {
+      askSeen_ = a.open.ask.id + std::to_string(a.open.ask.at);
       cursor_ = std::max(0, std::min(a.open.ask.recommend,
                                      static_cast<int>(a.open.ask.options.size()) - 1));
+      sent_.clear();
       return true;
+    }
+    // A panel it drew for the first time, or a new one: shown on top, once.
+    if (a.hasOpen && a.open.hasPanel && a.open.panel.at != panelSeen_ && ui::nav::top() == this) {
+      const bool first = panelSeen_ == 0 && !panelOpenedOnce_;
+      panelSeen_ = a.open.panel.at;
+      if (first) {
+        panelOpenedOnce_ = true;
+        ui::nav::push(makeAgentPanel(id_));
+        return false;
+      }
     }
     return a.generation != drawnAgent_ || st.generation != drawnStatus_;
   }
@@ -277,22 +220,33 @@ class SessionScreen : public ui::Screen {
     const std::string note = connectionNote(st, a);
     if (!note.empty()) {
       drawNotice(c, head, note);
-    } else if (!a.unlocked) {
+    } else if (!a.unlocked && a.connected) {
       drawNotice(c, head, "LOCKED BY INKHARNESS");
     } else if (!notice_.empty()) {
       drawNotice(c, head, notice_);
     } else {
-      const std::string since = a.hasOpen ? clockText(a.open.started) : std::string();
-      drawSectionHeader(c, head, asking(a) ? "QUESTION" : "SESSION",
-                        since.empty() ? std::string() : "SINCE " + since, {asking(a)});
+      std::string right = a.hasOpen ? clockText(a.open.started) : std::string();
+      if (!right.empty()) right = "SINCE " + right;
+      if (a.hasOpen) {
+        const std::string cost = costText(a.open.cost, a.open.costNotional);
+        if (!cost.empty()) right += (right.empty() ? "" : " " + kDot + " ") + cost;
+      }
+      drawSectionHeader(c, head, asking(a) ? "QUESTION" : "SESSION", right, {asking(a)});
     }
     if (!a.hasOpen) {
-      paragraph(c, r, r.y + 16, a.unlocked ? "Loading the session" + std::string(glyph::kEllipsis)
+      paragraph(c, r, r.y + 16,
+                a.unlocked || !a.connected ? "Loading the session" + std::string(glyph::kEllipsis)
                                            : kLockedHelp,
                 style::kBody, 4);
       return;
     }
     const agent::Session &s = a.open;
+    const std::string back = checksBack(a);
+    const Rect foot = back.empty() ? Rect{} : r.takeBottom(kSectionH);
+    if (!back.empty()) {
+      dashedH(c, foot.x, foot.y, foot.w);
+      drawText(c, {foot.x + kPadX, foot.y, foot.w - 2 * kPadX, foot.h}, back, style::kLabel);
+    }
 
     // The title and its state.
     int y = r.y + 12;
@@ -307,9 +261,11 @@ class SessionScreen : public ui::Screen {
     if (s.state == "working" && s.step > 0 && s.steps > 0) {
       state += " " + kDot + " STEP " + std::to_string(s.step) + "/" + std::to_string(s.steps);
     }
+    if (s.state == "working" && s.expectAt != 0) state += " " + kDot + " BY " + whenText(s.expectAt);
     const int pillY = y + 4 + 11;
+    const bool needsYou = s.state == "ask" || s.state == "fail" || s.state == "proposed";
     drawTag(c, r.x + kPadX, pillY, 22, state, style::kPill,
-            s.state == "ask" || s.state == "fail" ? TagKind::Inverted : TagKind::Outlined, 6);
+            needsYou ? TagKind::Inverted : TagKind::Outlined, 6);
     y += 4 + 22 + 10;
     r.takeTop(y - r.y);
 
@@ -318,6 +274,15 @@ class SessionScreen : public ui::Screen {
       return;
     }
     more_ = false;
+    if (s.state == "proposed") {
+      drawProposed(c, r, s, (a.features & agent::kJobs) != 0);
+      return;
+    }
+    if (s.schedule.present && s.state != "working") {
+      drawSchedule(c, r, s);
+      return;
+    }
+    if (s.watch.present) drawWatch(c, r, s.watch);
     if (!s.plan.empty()) drawPlan(c, r, s);
     if (finished(s.state) && !s.result.empty()) {
       if (s.herdr && !s.screen.empty()) {
@@ -391,27 +356,20 @@ class SessionScreen : public ui::Screen {
     const int choices = static_cast<int>(ask.options.size()) + 1;
     hrule(c, r.x, r.y, r.w);
     r.takeTop(kRule);
+    const std::string deadline = deadlineText(ask);
     drawSectionHeader(c, r.takeTop(kSectionH), "CHOICES",
                       std::to_string(cursor_ + 1) + "/" + std::to_string(choices));
     const Rect foot = r.takeBottom(kSectionH);
-    for (int i = 0; i < choices && r.h >= kChoiceH; ++i) {
-      Row row;
-      row.index = std::string(1, static_cast<char>('A' + std::min(i, 25)));
-      if (i < choices - 1) {
-        row.title = upper(ask.options[i].title);
-        row.trailing = ask.options[i].right;
-        if (i == ask.recommend) row.tag = "PICK";
-      } else {
-        row.title = "SOMETHING ELSE";
-        row.trailing = "HOLD BOOT";
-      }
-      drawRow(c, r.takeTop(kChoiceH), row, i == cursor_);
-    }
+    const Rect due = deadline.empty() ? Rect{} : r.takeBottom(kSectionH);
+    drawChoices(c, r, ask.options, ask.recommend, cursor_, true);
     // The chosen option's detail, where there's room.
     if (cursor_ < choices - 1 && !ask.options[cursor_].detail.empty() && r.h > 3 * kSectionH) {
       drawSectionHeader(c, r.takeTop(kSectionH), "DETAIL");
       paragraph(c, r, r.y + 10, ask.options[cursor_].detail, style::kBody,
                 std::max(1, (r.h - 16) / lineHeight(style::kBody)));
+    }
+    if (!deadline.empty()) {
+      drawText(c, {due.x + kPadX, due.y, due.w - 2 * kPadX, due.h}, deadline, style::kLabel);
     }
     if (sent_ == ask.id) {
       fill(c, foot, kInk);
@@ -425,6 +383,104 @@ class SessionScreen : public ui::Screen {
                                    : "HOLD BOOT AND SAY IT";
       drawText(c, {foot.x + kPadX, foot.y, foot.w - 2 * kPadX, foot.h}, text, style::kLabel);
     }
+  }
+
+  // A job talk filed: what it asks for, and how to start it.
+  void drawProposed(ui::Canvas &c, Rect &r, const agent::Session &s, bool canStart) {
+    using namespace ui;
+    hrule(c, r.x, r.y, r.w);
+    r.takeTop(kRule);
+    drawSectionHeader(c, r.takeTop(kSectionH), "THE JOB", "FILED BY TALK");
+    const int y = paragraph(c, r, r.y + 12, s.prompt, style::kReading, 8);
+    r.takeTop(y + 16 - r.y);
+    paragraph(c, r, r.y,
+              canStart ? "Nothing runs until you start it. HOLD BOOT to add to it as you start it."
+                       : "This inkharness can't start filed jobs.",
+              style::kBody, 3);
+  }
+
+  // A schedule: its time large, its days, the next run, the prompt, what the board does with a
+  // result, and its last runs (failures inverted).
+  void drawSchedule(ui::Canvas &c, Rect &r, const agent::Session &s) {
+    using namespace ui;
+    const agent::ScheduleView &v = s.schedule;
+    hrule(c, r.x, r.y, r.w);
+    r.takeTop(kRule);
+    drawSectionHeader(c, r.takeTop(kSectionH), "SCHEDULE",
+                      v.next != 0 && s.state == "scheduled" ? "NEXT " + whenText(v.next) : "");
+    // The time, 64 px.
+    const Rect clock = r.takeTop(84);
+    drawText(c, clock.x + kPadX, clock.y + 12 + capHeight(style::kReadout), v.at, style::kReadout);
+    // The week, a cell a day, filled on the days it runs.
+    const Rect week = r.takeTop(40);
+    const char *letters = "MTWTFSS";
+    const int cell = (week.w - 2 * kPadX) / 7;
+    for (int i = 0; i < 7; ++i) {
+      const Rect box{week.x + kPadX + i * cell, week.y + 4, cell - 4, 30};
+      const bool on = i < static_cast<int>(v.days.size()) && v.days[i] != '.';
+      if (on) {
+        fill(c, box, kInk);
+      } else {
+        frame(c, box, 2);
+      }
+      drawText(c, box, std::string(1, letters[i]), style::kKey, Align::Center, on ? kPaper : kInk);
+    }
+    r.takeTop(6);
+    drawSectionHeader(c, r.takeTop(kSectionH), "EACH RUN");
+    int y = paragraph(c, r, r.y + 10, v.prompt, style::kBody, 3);
+    r.takeTop(y + 8 - r.y);
+    drawSectionHeader(c, r.takeTop(kSectionH), "ON THE BOARD");
+    std::vector<std::string> board;
+    if (v.wake) {
+      const uint32_t took = v.runs.empty() ? 60 : std::max<uint32_t>(60, v.runs.front().secs);
+      board.push_back("WAKE THE BOARD ~" + clockText(v.next + took));
+    }
+    if (v.note) board.push_back("SHOW IT AS A NOTE");
+    if (v.speak) board.push_back("SAY IT, ON USB ONLY");
+    if (board.empty()) board.push_back("ON THE LIST, AND A CHIRP");
+    for (const std::string &line : board) {
+      if (r.h < kRunRowH) break;
+      drawText(c, {r.x + kPadX, r.y, r.w - 2 * kPadX, kRunRowH}, line, style::kBody);
+      r.takeTop(kRunRowH);
+    }
+    r.takeTop(4);
+    if (r.h < kSectionH + kRunRowH) return;
+    drawSectionHeader(c, r.takeTop(kSectionH), "LAST RUNS", std::to_string(v.runs.size()));
+    if (v.runs.empty()) {
+      paragraph(c, r, r.y + 8, "None yet.", style::kBody, 1);
+      return;
+    }
+    for (const agent::RunLine &run : v.runs) {
+      if (r.h < kRunRowH) break;
+      const Rect line = r.takeTop(kRunRowH);
+      drawText(c, {line.x + kPadX, line.y, 150, line.h}, whenText(run.at), style::kLabel);
+      const bool failed = run.state == "fail";
+      drawTag(c, line.x + kPadX + 150, line.centerY(), 18, stateWord(run.state), style::kTag,
+              failed ? TagKind::Inverted : TagKind::Outlined, 5);
+      drawText(c, {line.x + kPadX + 260, line.y, line.w - 2 * kPadX - 260, line.h},
+               std::to_string(run.secs) + " S", style::kLabel, Align::Right);
+    }
+  }
+
+  // A watch: what it waits for, its readings, the next look.
+  void drawWatch(ui::Canvas &c, Rect &r, const agent::WatchView &w) {
+    using namespace ui;
+    hrule(c, r.x, r.y, r.w);
+    r.takeTop(kRule);
+    drawSectionHeader(c, r.takeTop(kSectionH), "WATCH",
+                      w.met ? "MET" : "EVERY " + std::to_string(w.every) + " MIN", {w.met});
+    int y = paragraph(c, r, r.y + 10, upper(w.condition), style::kRowSmallSelected, 2);
+    r.takeTop(y + 6 - r.y);
+    if (!w.values.empty()) {
+      const Rect spark = r.takeTop(48).inset(kPadX, 4);
+      drawSparkline(c, spark, w.values.data(), static_cast<int>(w.values.size()));
+    }
+    char now[24];
+    snprintf(now, sizeof now, "%g", w.values.empty() ? 0.0 : static_cast<double>(w.values.back()));
+    std::string line = w.values.empty() ? std::string("NO READING YET") : "NOW " + std::string(now);
+    if (!w.met && w.next != 0) line += " " + kDot + " NEXT " + whenText(w.next);
+    drawText(c, {r.x + kPadX, r.y, r.w - 2 * kPadX, kRunRowH}, line, style::kLabel);
+    r.takeTop(kRunRowH + 4);
   }
 
   void drawPlan(ui::Canvas &c, Rect &r, const agent::Session &s) {
@@ -507,35 +563,31 @@ class SessionScreen : public ui::Screen {
     }
   }
 
-  void showNote(const agent::Session &s) {
-    Note note;
-    note.title = s.title.empty() ? "Agent" : s.title;
-    note.text = s.result;
-    std::string err;
-    if (!saveNote(note, err)) log_w("agent: note not kept: %s", err.c_str());
-    ui::nav::push(makeNote(note, false, true));
-  }
+  void showNote(const agent::Session &s) { showAgentNote(s.title, s.result); }
 
   std::string id_;
   std::string title_;
   int cursor_ = 0;         // the choice selected while asking
-  std::string askSeen_;    // the question cursor_ was set for
+  std::string askSeen_;    // the question (id and when it was asked) cursor_ was set for
   std::string sent_;       // the question answered from here, until the next one
   std::string sentTitle_;
   int page_ = 0;           // of the result or the log
   bool more_ = false;      // a page after this one
   std::string notice_;     // a refusal for this session, until the next key
   uint32_t refusalsSeen_ = agent::sessions().refusals;
+  uint32_t panelSeen_ = 0;
+  bool panelOpenedOnce_ = false;
   uint32_t drawnAgent_ = 0;
   uint32_t drawnStatus_ = 0;
 };
 
 // --- The list ---------------------------------------------------------------------------------
 
-enum class Group : uint8_t { NeedsYou, Running, Done };
+enum class Group : uint8_t { NeedsYou, Running, Scheduled, Done };
 
 Group groupOf(const agent::Row &r) {
-  if (r.state == "ask") return Group::NeedsYou;
+  if (r.state == "ask" || r.state == "proposed") return Group::NeedsYou;
+  if (r.state == "scheduled" || r.state == "watch") return Group::Scheduled;
   if (finished(r.state)) return Group::Done;
   return Group::Running;
 }
@@ -544,6 +596,7 @@ const char *groupLabel(Group g) {
   switch (g) {
     case Group::NeedsYou: return "NEEDS YOU";
     case Group::Running: return "RUNNING";
+    case Group::Scheduled: return "SCHEDULED";
     case Group::Done: return "DONE";
   }
   return "";
@@ -576,11 +629,12 @@ class AgentList : public ui::Screen {
     if (agent::configured()) {
       const agent::Sessions a = agent::sessions();
       const agent::Status st = agent::status();
-      if (st.state == agent::State::Error && !a.connected) {
+      const bool known = a.connected || a.synced;
+      if (st.state == agent::State::Error && !known) {
         out[n++] = {ui::glyph::kPress, "RETRY"};
       } else if (a.connected && a.supported && !a.unlocked) {
         if (!a.unlocking) out[n++] = {ui::glyph::kPress, "PIN"};
-      } else if (a.connected && a.supported) {
+      } else if (known && a.supported) {
         if (!a.rows.empty()) {
           out[n++] = {ui::glyph::kPress, "OPEN"};
           out[n++] = {ui::glyph::kHoldPress, "MENU"};
@@ -604,7 +658,8 @@ class AgentList : public ui::Screen {
     const agent::Sessions a = agent::sessions();
     const agent::Status st = agent::status();
     const int rows = static_cast<int>(a.rows.size());
-    const bool usable = a.connected && a.supported && a.unlocked;
+    const bool known = a.connected || a.synced;
+    const bool usable = known && a.supported && a.unlocked;
     switch (key) {
       case Key::Up:
       case Key::Down: {
@@ -616,7 +671,7 @@ class AgentList : public ui::Screen {
         return true;
       }
       case Key::Select:
-        if (st.state == agent::State::Error && !a.connected) {
+        if (st.state == agent::State::Error && !known) {
           agent::retry();
         } else if (a.connected && a.supported && !a.unlocked) {
           if (!a.unlocking) {
@@ -630,7 +685,7 @@ class AgentList : public ui::Screen {
         return true;
       case Key::SelectLong:
         if (!usable || rows == 0) return false;
-        openMenu(a.rows[indexOf(a, selected_)], false);
+        openMenu(a.rows[indexOf(a, selected_)], false, false);
         return true;
       default: return false;
     }
@@ -649,7 +704,10 @@ class AgentList : public ui::Screen {
       ui::nav::push(std::make_unique<SessionScreen>(a.started, row >= 0 ? a.rows[row].title : ""));
       return false;
     }
-    return a.generation != drawnAgent_ || st.generation != drawnStatus_;
+    const agent::Glance g = agent::glance();
+    const bool changed = a.generation != drawnAgent_ || st.generation != drawnStatus_ ||
+                         g.nextCheck != drawnCheck_;
+    return changed;
   }
 
   void draw(ui::Canvas &c, const Rect &body) override {
@@ -658,6 +716,7 @@ class AgentList : public ui::Screen {
     const agent::Status st = agent::status();
     drawnAgent_ = a.generation;
     drawnStatus_ = st.generation;
+    drawnCheck_ = agent::glance().nextCheck;
     Rect r = body;
 
     if (!agent::configured()) {
@@ -673,12 +732,12 @@ class AgentList : public ui::Screen {
       drawNotice(c, r.takeTop(kSectionH), note);
       return;
     }
-    if (!a.supported) {
+    if (!a.supported && a.connected) {
       drawNotice(c, r.takeTop(kSectionH), "NO SESSIONS ON THIS INKHARNESS");
       paragraph(c, r, r.y + 12, kNoAgentHelp, style::kBody, 6);
       return;
     }
-    if (!a.unlocked) {
+    if (!a.unlocked && (a.connected || a.locked)) {
       const std::string why = a.unlocking ? "UNLOCKING" + std::string(glyph::kEllipsis)
                               : a.unlockNote.empty() ? std::string("LOCKED BY INKHARNESS")
                                                      : a.unlockNote;
@@ -690,6 +749,7 @@ class AgentList : public ui::Screen {
       drawSectionHeader(c, r.takeTop(kSectionH), "SESSIONS", "LOADING");
       return;
     }
+    const std::string back = checksBack(a);
     if (a.rows.empty()) {
       drawSectionHeader(c, r.takeTop(kSectionH), "SESSIONS", "0");
       paragraph(c, r, r.y + 12, kEmptyHelp, style::kBody, 6);
@@ -697,7 +757,8 @@ class AgentList : public ui::Screen {
     }
 
     // The page of groups and rows that holds the selected session. Pages flip whole.
-    const Rect foot = a.older > 0 ? r.takeBottom(kSectionH) : Rect{};
+    const bool foot = a.older > 0 || !back.empty();
+    const Rect footRect = foot ? r.takeBottom(kSectionH) : Rect{};
     const std::vector<Item> items = layout(a);
     const int sel = indexOf(a, selected_);
     int pageStart = 0, used = 0;
@@ -731,15 +792,18 @@ class AgentList : public ui::Screen {
         line.subtitle = sub;
         if (row.herdr) line.subtitleMark = "hc";
         line.tag = tagFor(row);
-        if (row.unread && finished(row.state)) line.trailing = "NEW";
+        // What needs you, and what finished that you haven't opened, stands out until you do.
+        line.tagInverted = row.state == "ask" || row.state == "proposed" ||
+                           (row.unread && finished(row.state));
         drawRow(c, {r.x, y, r.w, kRowTallH}, line, it.row == sel);
       }
       y += it.height();
     }
-    if (a.older > 0) {
-      dashedH(c, foot.x, foot.y, foot.w);
-      drawText(c, {foot.x + kPadX, foot.y, foot.w - 2 * kPadX, foot.h},
-               "+ " + std::to_string(a.older) + " OLDER", style::kLabel);
+    if (foot) {
+      dashedH(c, footRect.x, footRect.y, footRect.w);
+      const Rect text{footRect.x + kPadX, footRect.y, footRect.w - 2 * kPadX, footRect.h};
+      if (a.older > 0) drawText(c, text, "+ " + std::to_string(a.older) + " OLDER", style::kLabel);
+      if (!back.empty()) drawText(c, text, back, style::kLabel, Align::Right);
     }
   }
 
@@ -759,10 +823,11 @@ class AgentList : public ui::Screen {
   }
 
   // Groups in their order, each under its header. The daemon sends them in that order already
-  // (questions, then work, then finished); grouping here keeps it so whatever it sends.
+  // (questions and jobs, then work, then schedules and watches, then finished); grouping here
+  // keeps it so whatever it sends.
   static std::vector<Item> layout(const agent::Sessions &a) {
     std::vector<Item> items;
-    for (Group g : {Group::NeedsYou, Group::Running, Group::Done}) {
+    for (Group g : {Group::NeedsYou, Group::Running, Group::Scheduled, Group::Done}) {
       const size_t header = items.size();
       int count = 0;
       for (int i = 0; i < static_cast<int>(a.rows.size()); ++i) {
@@ -803,21 +868,42 @@ class AgentList : public ui::Screen {
   uint32_t followed_ = 0;     // the turn whose new session was last opened
   uint32_t drawnAgent_ = 0;
   uint32_t drawnStatus_ = 0;
+  uint32_t drawnCheck_ = 0;
 };
 
-// HOLD ● on a session: stop it while it works or asks, delete it.
-void openMenu(const agent::Row &row, bool fromSession) {
+// HOLD ● on a session: what can be done with it in its state, as far as this inkharness can.
+void openMenu(const agent::Row &row, bool fromSession, bool hasResult) {
   std::vector<ui::MenuItem> items;
   const std::string id = row.id;
-  if (row.state == "working" || row.state == "ask") {
-    items.push_back({"STOP", nullptr, [id] {
-                       agent::stop(id);
+  const std::string title = row.title;
+  const std::string &st = row.state;
+  const uint32_t features = agent::sessions().features;
+  auto add = [&](const char *label, std::function<void()> act) {
+    items.push_back({label, nullptr, [act] {
+                       act();
                        ui::nav::pop();
                      }});
+  };
+  if (st == "proposed" && (features & agent::kJobs)) add("START", [id] { agent::approve(id); });
+  if ((st == "scheduled" || st == "watch") && (features & agent::kRun)) {
+    add(st == "watch" ? "LOOK NOW" : "RUN NOW", [id] { agent::runNow(id); });
+  }
+  const bool pausable = st == "working" || st == "ask" || st == "scheduled" || st == "watch";
+  if (pausable && (features & agent::kPause)) add("PAUSE", [id] { agent::pause(id); });
+  if (st == "paused" && (features & agent::kPause)) add("RESUME", [id] { agent::resume(id); });
+  if (fromSession && hasResult) {
+    items.push_back({"SHOW AS A NOTE", nullptr, [id, title] {
+                       ui::nav::pop();
+                       const agent::Sessions a = agent::sessions();
+                       if (a.hasOpen && a.open.id == id) showAgentNote(title, a.open.result);
+                     }});
+  }
+  if (st == "working" || st == "ask" || st == "scheduled" || st == "watch" || st == "paused") {
+    add("STOP", [id] { agent::stop(id); });
   }
   items.push_back({"DELETE", nullptr, [id, fromSession] {
                      agent::remove(id);
-                     ui::nav::pop();               // the menu
+                     ui::nav::pop();                   // the menu
                      if (fromSession) ui::nav::pop();  // and the session, now gone
                    }});
   ui::nav::push(std::make_unique<ui::MenuScreen>(ui::upper(row.title), std::move(items)));
@@ -828,13 +914,38 @@ agent::Target target() {
   return {to.agent, to.session};
 }
 
+// The status bar's ?n: questions waiting, as the last list said (counts only: no PIN needed).
+int asksWaiting() {
+  const agent::Glance g = agent::glance();
+  return g.known ? g.asks : 0;
+}
+
+// Titles may go on the face and into NVS unless the PIN guards the Agent (agent_face_details
+// says otherwise).
+bool contentAllowed() { return !guardApplies(Guarded::Agent) || settings::agentFaceDetails(); }
+
 }  // namespace
 
 std::unique_ptr<ui::Screen> makeAgent() { return std::make_unique<AgentList>(); }
 
+std::unique_ptr<ui::Screen> makeAgentSession(const std::string &id, const std::string &title) {
+  return std::make_unique<SessionScreen>(id, title);
+}
+
+void showAgentNote(const std::string &title, const std::string &markdown) {
+  Note note;
+  note.title = title.empty() ? "Agent" : title;
+  note.text = markdown;
+  std::string err;
+  if (!saveNote(note, err)) log_w("agent: note not kept: %s", err.c_str());
+  ui::nav::push(makeNote(note, false, true));
+}
+
 void beginAgent() {
   agent::setTarget(target);
+  agent::setContentPolicy(contentAllowed);
   onPinEntered(agent::unlock);
+  ui::nav::onAsks(asksWaiting);
 }
 
 }  // namespace apps

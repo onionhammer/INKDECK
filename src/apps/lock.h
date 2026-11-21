@@ -91,4 +91,10 @@ void guardedOnTop(Guarded module);
 void guardedInUse(Guarded module);
 void guardedLeft(Guarded module);
 
+// The build asks for the PIN at the module and one is set (whether or not it was given lately):
+// what the Agent keeps off its face and out of NVS.
+bool guardApplies(Guarded module);
+// The wheels would come up if the module opened now: the ask sheet then only says one waits.
+bool guardWouldAsk(Guarded module);
+
 }  // namespace apps

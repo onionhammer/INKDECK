@@ -19,6 +19,7 @@
 //   agent_host = nas.local               ; the machine running inkharness serve (agent_client.h); only the card sets it
 //   agent_port = 7391
 //   agent_token = something-long         ; stays on the card: it keys the agent link (agent_noise.h)
+//   agent_face_details = on              ; the Agent face shows titles even with a PIN on the Agent
 //   [tailscale]
 //   tailscale_key = tskey-auth-...       ; the board keeps it and replaces the line with a note (tailnet.h)
 //   tailscale_name = inkdeck             ; the board's name on the tailnet
@@ -114,6 +115,9 @@ bool hasAgent();
 std::string agentHost();
 int agentPort();
 std::string agentToken();  // "" if the daemon asks for none
+// agent_face_details = on: the Agent face (and its copy in NVS) keeps titles and the question
+// even when the PIN guards the Agent. Off by default: counts only.
+bool agentFaceDetails();
 
 // The tailnet (tailnet.h). hasTailscale(): the board has an auth key.
 bool hasTailscale();

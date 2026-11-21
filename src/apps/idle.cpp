@@ -11,7 +11,9 @@
 #include "apps/closed_book.h"
 #include "apps/lock.h"
 #include "apps/sleep.h"
+#include "agent_client.h"
 #include "audio.h"
+#include "features.h"
 #include "file_copy.h"
 #include "input.h"
 #include "ota.h"
@@ -66,6 +68,12 @@ bool mayNap() {
   if (millis() - keyWakeMs < kKeyWakeGuardMs) return false;
   if (motionWakeMs && millis() - motionWakeMs < kMotionAwakeMs) return false;
   if (input::anyDown() || input::pending()) return false;
+  // A sheet over the book (the ask sheet) is drawn and answered awake; it goes by itself.
+  const ui::Screen *top = ui::nav::top();
+  if (top && top->overlay()) return false;
+#if INKDECK_AGENT
+  if (agent::polling()) return false;  // a check-in due or under way: awake until it's done
+#endif
   // On USB the power doesn't matter, and light sleep would drop the console. Plugging USB into
   // a napping board ends the naps at the next wake (a key, or the minute).
   const pmic::Status p = pmic::status();
