@@ -26,6 +26,15 @@
 // current, and the session one has open (agentOpen()) comes down whole whenever it changes.
 // What a hold of the talk key says goes where setTarget()'s source says: a talk turn (the
 // limited assistant, by default) or the agent.
+//
+// Check-ins (issue #52, "The board idles, sleeps and checks in"): with no Agent screen open the
+// board doesn't hold Wi-Fi for the agent. The connection is live while an Agent screen is used
+// (it lets go after two minutes without a key) or the board is on USB; otherwise a poll joins,
+// syncs in one exchange and leaves again, every 5 minutes while something changes, backing off
+// to 15 and 30 while nothing does, or sooner at the daemon's check_at. These background
+// connects never touch what the agent sheet shows, and a talk press takes over from one. What
+// the last list said is kept in NVS (Summary) for Home, the status bar, the chirps and the
+// Agent face, which checks in from an RTC wake (checkInNow()).
 #pragma once
 #include <stdint.h>
 
@@ -104,6 +113,9 @@ struct Row {
   int progress = -1;          // 0-100
   uint32_t updated = 0;       // Unix seconds
   bool unread = false;        // finished or asking, and not opened since
+  uint32_t expectAt = 0;      // a working session's expected end
+  uint32_t nextAt = 0;        // a schedule's next run, a watch's next look
+  std::vector<float> spark;   // a watch's readings, oldest first
 };
 
 struct AskOption {
@@ -115,6 +127,8 @@ struct Ask {
   std::vector<AskOption> options;
   int recommend = -1;
   uint32_t at = 0;
+  uint32_t deadline = 0;  // when nobody answering does `then`: ask_again, recommend, give_up
+  std::string then;
 };
 
 struct PlanStep {
@@ -125,6 +139,51 @@ struct PlanStep {
 struct LogLine {
   uint32_t at = 0;
   std::string text;
+};
+
+struct RunLine {
+  uint32_t at = 0;
+  std::string state;  // done, note, fail
+  uint32_t secs = 0;
+};
+
+// A schedule (`schedule` in a session).
+struct ScheduleView {
+  bool present = false;
+  std::string at;    // "07:00", the daemon's local time
+  std::string days;  // "MTWTF.."
+  std::string prompt;
+  uint32_t next = 0;
+  bool wake = false, note = false, speak = false;
+  std::vector<RunLine> runs;  // newest first
+};
+
+// A watch (`watch` in a session).
+struct WatchView {
+  bool present = false;
+  std::string condition;
+  int every = 0;      // minutes
+  uint32_t next = 0;  // 0 once met
+  std::vector<float> values;
+  bool met = false;
+};
+
+// One block of a panel the session drew (show_panel; docs/voice-protocol.md, "Panels").
+struct PanelItem {
+  std::string a, b, c, d;  // stat: label, value · kv: key, value · rows: title, sub, right, tag
+};
+struct PanelBlock {
+  std::string kind;  // section, stat, kv, rows, meter, spark, text, choice; others are skipped
+  std::string id, label, right, text, question;
+  float value = 0, max = 0;
+  std::vector<float> values;
+  std::vector<PanelItem> items;  // stat, kv, rows; choice: options (title, right)
+  int recommend = -1;
+};
+struct Panel {
+  std::string title;
+  std::vector<PanelBlock> blocks;
+  uint32_t at = 0;  // a new one has a new time
 };
 
 // One session in full (the daemon's `session`).
@@ -141,6 +200,25 @@ struct Session {
   std::vector<LogLine> log;  // newest first
   bool asking = false;
   Ask ask;
+  uint32_t expectAt = 0;
+  float cost = -1;  // US dollars so far; -1: none yet
+  bool costNotional = false;
+  ScheduleView schedule;
+  WatchView watch;
+  bool hasPanel = false;
+  Panel panel;
+};
+
+// What the daemon's hello says it can do (AgentHello::features).
+enum Feature : uint32_t {
+  kPause = 1 << 0,
+  kRun = 1 << 1,
+  kJobs = 1 << 2,
+  kSchedule = 1 << 3,
+  kWatch = 1 << 4,
+  kDeadline = 1 << 5,
+  kPanel = 1 << 6,
+  kSpeak = 1 << 7,
 };
 
 // Words for a herdr agent's terminal, held by inkharness until the board says to type them
@@ -161,7 +239,13 @@ struct Sessions {
   bool connected = false;  // the connection is up now
   bool synced = false;     // a list has arrived on it
   bool locked = false;     // that list was the locked form: counts only
-  int asks = 0, running = 0, idle = 0, planned = 0, unread = 0, older = 0;
+  int asks = 0, running = 0, idle = 0, planned = 0, unread = 0, older = 0, proposed = 0;
+  uint32_t features = 0;   // Feature bits from the hello
+  uint32_t checkAt = 0;    // the daemon's check_at (Unix seconds; 0: none)
+  uint32_t nextAt = 0;     // the next scheduled run
+  uint32_t latestAsk = 0, latestDone = 0;  // the list's latest: when to chirp
+  bool hasAsk = false;     // the newest question waiting (unlocked): for the ask sheet
+  Ask ask;
   std::vector<Row> rows;  // the last list (kept after the connection ends)
   bool hasOpen = false;        // `open` holds the session agentOpen() asked for
   Session open;
@@ -174,6 +258,66 @@ struct Sessions {
   uint32_t refusals = 0;        // counts them, so a screen can tell a new one
   uint32_t generation = 0;   // changes with any of the above
 };
+
+// What Home, the status bar and the power code need, without copying the rows.
+struct Glance {
+  bool known = false;    // a list has been seen (now, or kept in NVS from before)
+  bool locked = false;
+  int asks = 0, running = 0, planned = 0, proposed = 0, unread = 0;
+  uint32_t nextAt = 0, checkAt = 0;
+  uint32_t latestAsk = 0, latestDone = 0;
+  std::string askSession, askId;  // the newest question (unlocked lists only)
+  uint32_t askAt = 0;
+  uint32_t checkedAt = 0;  // when a list last came (Unix seconds)
+  uint32_t nextCheck = 0;  // when the board looks again (Unix seconds; 0: when asked)
+  bool live = false;       // the connection is up
+  uint32_t generation = 0;
+};
+Glance glance();
+
+// What the Agent face draws, kept in NVS between power-offs. Counts and times always; titles,
+// the question and its choices only when content is allowed (setContentPolicy()): the flash
+// can be read off a lost board.
+struct SummaryRow {
+  char title[40];
+  char state[12];     // working, watch, done, note, fail, scheduled
+  int8_t step, steps;
+  uint32_t at;        // a working session's expected end, a watch's next look
+  uint8_t sparkN;     // a watch's readings, scaled to 0-255 between sparkMin and sparkMax
+  uint8_t spark[16];
+  float sparkMin, sparkMax, sparkLast;
+};
+struct Summary {
+  uint16_t version;
+  uint8_t locked, content;
+  uint16_t asks, running, planned, proposed, unread;
+  uint32_t checkAt, nextAt, latestAsk, latestDone;
+  char askTitle[40], askQuestion[120];
+  uint8_t optionCount;
+  int8_t recommend;
+  char options[4][32];
+  char nextTitle[40];  // the next schedule's title
+  uint8_t rowCount;
+  SummaryRow rows[5];
+};
+Summary summary();          // the last list's, or the one kept in NVS
+uint32_t checkedAt();       // when that list came (Unix seconds; 0: never)
+// Whether titles may be kept and shown off the Agent's screens (the PIN guard and
+// agent_face_details decide: apps/agent.h).
+void setContentPolicy(bool (*allowed)());
+
+// The chirps' memory (apps::pollAgent()): the latest values already chirped for, in NVS so a
+// check-in from power-off doesn't chirp again for what was heard before.
+void seen(uint32_t &ask, uint32_t &done);
+void markSeen(uint32_t ask, uint32_t done);
+
+// Polls: look again soon (Home coming up, a key while ?n shows), at most once a minute.
+void checkSoon();
+// A poll is due or under way: the Reader shouldn't nap through it (apps/idle.cpp).
+bool polling();
+// From setup(), on an RTC wake (apps::agentWake()): joins, syncs, saves the summary and lets
+// go, within deadlineMs. Starts the agent task if it isn't. True if a list came.
+bool checkInNow(uint32_t deadlineMs);
 
 // An Agent screen exists (from its constructor to its destructor; they nest). While any does,
 // the connection stays up, opening if need be, and the list is synced.
@@ -188,6 +332,14 @@ void follow(const std::string &session);
 void answer(const std::string &session, const std::string &ask, int choice);
 void stop(const std::string &session);
 void remove(const std::string &session);
+void pause(const std::string &session);
+void resume(const std::string &session);
+void runNow(const std::string &session);   // a schedule runs, a watch looks
+void approve(const std::string &session);  // a job talk filed starts
+void panelChoice(const std::string &session, const std::string &block, int choice);
+// Says the session's last result as a reply (a schedule with speak, on USB): like a turn, the
+// agent sheet shows and plays it. Needs the connection up (open() first).
+void speak(const std::string &session);
 // Types agent().draft into its herdr session, or drops it. Either way it's gone from agent().
 void sendDraft();
 void dropDraft();

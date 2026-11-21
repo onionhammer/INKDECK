@@ -5,6 +5,7 @@
 #include "agent_client.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <cJSON.h>
 #include <errno.h>
@@ -16,16 +17,20 @@
 #include <lwip/netdb.h>
 #include <lwip/sockets.h>
 #include <string.h>
+#include <time.h>
 
 #include <algorithm>
 #include <atomic>
 #include <memory>
 #include <vector>
 
+#include "agent_noise.h"
 #include "audio.h"
+#include "input.h"
+#include "pmic.h"
+#include "power.h"
 #include "settings.h"
 #include "tailnet.h"
-#include "agent_noise.h"
 #include "wlan.h"
 
 namespace agent {
@@ -47,7 +52,21 @@ constexpr uint32_t kAnswerTimeoutMs = 45000;  // of silence from the daemon in a
 // list, the list under a session), and Wi-Fi takes seconds to join again.
 constexpr uint32_t kLingerMs = 2500;
 
-enum class Event : uint8_t { Open, Close, TalkStart, TalkStop, Hold, Release, Retry, Kick };
+enum class Event : uint8_t {
+  Open, Close, TalkStart, TalkStop, Hold, Release, Retry, Kick, CheckIn, Speak
+};
+
+// Check-ins: the poll ladder (minutes), and how long a poll may take.
+constexpr uint32_t kLadderMin[] = {5, 15, 30};
+constexpr uint32_t kMaxPollGapMs = 30 * 60 * 1000;
+constexpr uint32_t kPollDeadlineMs = 20000;   // joining and connecting
+constexpr uint32_t kPollListMs = 8000;        // then waiting for the list
+constexpr uint32_t kIdleLiveMs = 120000;      // an Agent screen this long without a key: polls
+constexpr uint32_t kUsbCheckMs = 5000;
+constexpr uint32_t kSoonGapMs = 60000;        // checkSoon() at most this often
+constexpr uint32_t kFloorS = 60;              // check_at sooner than this is taken as this
+constexpr uint16_t kSummaryVersion = 1;
+constexpr char kNvs[] = "agent";
 
 QueueHandle_t events = nullptr;
 SemaphoreHandle_t lock = nullptr;  // guards `shared` and `answers`
@@ -64,6 +83,35 @@ Sessions agentShared;
 std::vector<std::string> outbox;  // answer, stop and delete, waiting to go out
 std::string wantOpen;             // agentOpen()'s session
 std::string pendingPin;           // agentUnlock()'s digits, until the daemon answers
+
+// Check-ins (agent task only, unless atomic).
+std::atomic<uint32_t> nextPollMs{0};  // millis; 0: none planned
+uint32_t lastPollMs = 0;
+uint8_t ladder = 0;
+uint8_t pollFailures = 0;
+uint32_t lastSignature = 0;
+std::atomic<bool> pollActive{false};  // a poll's connection, until its list comes
+uint32_t pollStartMs = 0;
+uint32_t pollLists = 0;
+uint32_t listCount = 0;       // lists received since boot
+bool usbLive = false;         // on USB power: the connection stays up
+uint32_t usbCheckedMs = 0;
+uint32_t liveRetryMs = 0;     // a failed live connect waits until then
+uint8_t liveFailures = 0;
+std::atomic<bool> soon{false};
+std::atomic<bool> talkWanted{false};    // a talk press is queued: a background connect yields
+std::atomic<uint32_t> nextCheckUnix{0};
+SemaphoreHandle_t checkInDone = nullptr;
+uint32_t checkInMs = 0;
+bool checkInOk = false;
+std::string speakSession;     // guarded by `lock`
+
+// What the last list said, as the Agent face keeps it (guarded by `lock`), and when it came.
+Summary summaryRam = {};
+Summary summarySaved = {};
+std::atomic<uint32_t> checkedAtUnix{0};
+uint32_t checkedSavedUnix = 0;
+bool (*contentPolicy)() = nullptr;
 
 // The board's tools (setTools()), and the answers waiting to go out (toolResult()).
 const char *toolDefinitions = nullptr;
@@ -103,6 +151,7 @@ struct Link {
   uint32_t talkStartMs = 0;
   uint32_t lastRxMs = 0;
   uint32_t lingerUntilMs = 0;  // when a connection nobody holds ends; 0: not ending
+  bool heldIdle = false;       // let go of an Agent screen's connection after no key for a while
   std::vector<uint8_t> rx;
   size_t rxLen = 0;
   // The agent, on this connection.
@@ -180,7 +229,12 @@ void drop(const char *why) {
   forgetAnswers();
   forgetAgentConnection();
   log_w("agent: %s", why);
-  setState(State::Error, why);
+  // A background connection (a poll, USB) that drops says nothing on the sheet.
+  if (s.wanted || holds.load() > 0) {
+    setState(State::Error, why);
+  } else {
+    setState(State::Off);
+  }
 }
 
 bool sendAll(const uint8_t *data, size_t len) {
@@ -319,6 +373,21 @@ void onAgentHello(const cJSON *hello) {
   agentShared.unlocked = s.agentUnlocked;
   agentShared.connected = true;
   if (s.agentSupported) agentShared.place = field(a, "place");
+  uint32_t features = 0;
+  const cJSON *f;
+  cJSON_ArrayForEach(f, cJSON_GetObjectItemCaseSensitive(a, "features")) {
+    if (!cJSON_IsString(f) || !f->valuestring) continue;
+    const std::string name = f->valuestring;
+    if (name == "pause") features |= kPause;
+    else if (name == "run") features |= kRun;
+    else if (name == "jobs") features |= kJobs;
+    else if (name == "schedule") features |= kSchedule;
+    else if (name == "watch") features |= kWatch;
+    else if (name == "deadline") features |= kDeadline;
+    else if (name == "panel") features |= kPanel;
+    else if (name == "speak") features |= kSpeak;
+  }
+  agentShared.features = features;
   agentChanged();
 }
 
@@ -330,11 +399,121 @@ void readAsk(const cJSON *json, Ask &a) {
   a.detail = field(json, "detail");
   a.recommend = intField(json, "recommend");
   a.at = timeField(json, "at");
+  const cJSON *deadline = cJSON_GetObjectItemCaseSensitive(json, "deadline");
+  a.deadline = timeField(deadline, "at");
+  a.then = field(deadline, "then");
   a.options.clear();
   const cJSON *option;
   cJSON_ArrayForEach(option, cJSON_GetObjectItemCaseSensitive(json, "options")) {
     a.options.push_back({field(option, "title"), field(option, "right"), field(option, "detail")});
   }
+}
+
+// `text` into a fixed field, cut at a character boundary.
+template <size_t N>
+void copyText(char (&out)[N], const std::string &text) {
+  size_t n = std::min(text.size(), N - 1);
+  while (n > 0 && n < text.size() && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80) --n;
+  memcpy(out, text.data(), n);
+  out[n] = '\0';
+}
+
+// The Agent face's summary of the list just read. Call with `lock` held.
+void rebuildSummary() {
+  Summary m = {};
+  m.version = kSummaryVersion;
+  m.locked = agentShared.locked;
+  m.asks = agentShared.asks;
+  m.running = agentShared.running;
+  m.planned = agentShared.planned;
+  m.proposed = agentShared.proposed;
+  m.unread = agentShared.unread;
+  m.checkAt = agentShared.checkAt;
+  m.nextAt = agentShared.nextAt;
+  m.latestAsk = agentShared.latestAsk;
+  m.latestDone = agentShared.latestDone;
+  m.content = !agentShared.locked && (!contentPolicy || contentPolicy());
+  if (m.content) {
+    if (agentShared.hasAsk) {
+      const Ask &a = agentShared.ask;
+      copyText(m.askTitle, a.title);
+      copyText(m.askQuestion, a.question);
+      m.optionCount = static_cast<uint8_t>(std::min<size_t>(a.options.size(), 4));
+      for (int i = 0; i < m.optionCount; ++i) copyText(m.options[i], a.options[i].title);
+      m.recommend = static_cast<int8_t>(a.recommend);
+    }
+    // What runs, then what watches, then what finished unseen.
+    auto add = [&](const Row &r) {
+      if (m.rowCount >= 5) return;
+      SummaryRow &out = m.rows[m.rowCount++];
+      copyText(out.title, r.title);
+      copyText(out.state, r.state);
+      out.step = static_cast<int8_t>(std::max(-1, std::min(r.step, 99)));
+      out.steps = static_cast<int8_t>(std::max(-1, std::min(r.steps, 99)));
+      out.at = r.state == "watch" ? r.nextAt : r.expectAt;
+      const size_t n = std::min<size_t>(r.spark.size(), 16);
+      if (n > 0) {
+        const auto first = r.spark.end() - n;
+        const float lo = *std::min_element(first, r.spark.end());
+        const float hi = *std::max_element(first, r.spark.end());
+        out.sparkN = static_cast<uint8_t>(n);
+        out.sparkMin = lo;
+        out.sparkMax = hi;
+        out.sparkLast = r.spark.back();
+        for (size_t i = 0; i < n; ++i) {
+          const float v = *(first + i);
+          out.spark[i] = hi > lo ? static_cast<uint8_t>((v - lo) / (hi - lo) * 255 + 0.5f) : 128;
+        }
+      }
+    };
+    for (const Row &r : agentShared.rows) if (r.state == "working") add(r);
+    for (const Row &r : agentShared.rows) if (r.state == "watch") add(r);
+    for (const Row &r : agentShared.rows) {
+      if (r.unread && (r.state == "done" || r.state == "note" || r.state == "fail")) add(r);
+    }
+    for (const Row &r : agentShared.rows) {
+      if (r.state == "scheduled" && r.nextAt != 0 && r.nextAt == agentShared.nextAt) {
+        copyText(m.nextTitle, r.title);
+        break;
+      }
+    }
+  }
+  summaryRam = m;
+}
+
+// Keeps the summary in NVS when it changed, and when the list came (at most once a minute).
+void saveSummary() {
+  Summary m;
+  {
+    Locked l;
+    m = summaryRam;
+  }
+  const uint32_t checked = checkedAtUnix.load();
+  const bool changed = memcmp(&m, &summarySaved, sizeof m) != 0;
+  const bool stale = checked > checkedSavedUnix + 60;
+  if (!changed && !stale) return;
+  Preferences prefs;
+  if (!prefs.begin(kNvs, false)) return;
+  if (changed) {
+    prefs.putBytes("sum", &m, sizeof m);
+    summarySaved = m;
+  }
+  prefs.putUInt("chk", checked);
+  checkedSavedUnix = checked;
+  prefs.end();
+}
+
+void loadSummary() {
+  Preferences prefs;
+  if (!prefs.begin(kNvs, true)) return;
+  Summary m = {};
+  if (prefs.getBytesLength("sum") == sizeof m && prefs.getBytes("sum", &m, sizeof m) == sizeof m &&
+      m.version == kSummaryVersion) {
+    summaryRam = summarySaved = m;
+  }
+  checkedSavedUnix = prefs.getUInt("chk", 0);
+  checkedAtUnix = checkedSavedUnix;
+  prefs.end();
 }
 
 // The rows as the list draws them (`updated` isn't shown).
@@ -344,7 +523,8 @@ bool sameRows(const std::vector<Row> &a, const std::vector<Row> &b) {
     const Row &x = a[i], &y = b[i];
     if (x.id != y.id || x.title != y.title || x.state != y.state || x.place != y.place ||
         x.sub != y.sub || x.step != y.step || x.steps != y.steps || x.progress != y.progress ||
-        x.unread != y.unread || x.herdr != y.herdr || x.program != y.program) {
+        x.unread != y.unread || x.herdr != y.herdr || x.program != y.program ||
+        x.spark != y.spark || x.nextAt != y.nextAt) {
       return false;
     }
   }
@@ -368,6 +548,12 @@ void onSessions(const cJSON *json) {
     r.progress = intField(item, "progress");
     r.updated = timeField(item, "updated");
     r.unread = flag(item, "unread");
+    r.expectAt = timeField(item, "expect_at");
+    r.nextAt = timeField(item, "next_at");
+    const cJSON *v;
+    cJSON_ArrayForEach(v, cJSON_GetObjectItemCaseSensitive(item, "spark")) {
+      if (cJSON_IsNumber(v)) r.spark.push_back(static_cast<float>(v->valuedouble));
+    }
     if (!r.id.empty()) rows.push_back(std::move(r));
   }
   const cJSON *counts = cJSON_GetObjectItemCaseSensitive(json, "counts");
@@ -377,26 +563,104 @@ void onSessions(const cJSON *json) {
   const int idle = std::max(0, intField(counts, "idle", 0));
   const int planned = std::max(0, intField(counts, "planned", 0));
   const int unread = std::max(0, intField(counts, "unread", 0));
+  const int proposed = std::max(0, intField(counts, "proposed", 0));
   const int older = std::max(0, intField(json, "older", 0));
-  Locked l;
-  // A working session sends a list about once a second (every log line is a change). Only
-  // what the board shows counts as a change here, so the panel redraws only for that.
-  const bool same = agentShared.synced && agentShared.locked == locked &&
-                    agentShared.asks == asks && agentShared.running == running &&
-                    agentShared.idle == idle &&
-                    agentShared.planned == planned && agentShared.unread == unread &&
-                    agentShared.older == older && sameRows(agentShared.rows, rows);
-  if (same) return;
-  agentShared.synced = true;
-  agentShared.locked = locked;
-  agentShared.asks = asks;
-  agentShared.running = running;
-  agentShared.idle = idle;
-  agentShared.planned = planned;
-  agentShared.unread = unread;
-  agentShared.older = older;
-  agentShared.rows.swap(rows);
-  agentChanged();
+  const cJSON *latest = cJSON_GetObjectItemCaseSensitive(json, "latest");
+  const cJSON *askJson = cJSON_GetObjectItemCaseSensitive(json, "ask");
+  Ask ask;
+  const bool hasAsk = cJSON_IsObject(askJson);
+  if (hasAsk) readAsk(askJson, ask);
+  ++listCount;
+  checkedAtUnix = static_cast<uint32_t>(time(nullptr));
+  {
+    Locked l;
+    // The times change the board's plans, not what it shows: kept whatever else happens.
+    agentShared.checkAt = timeField(json, "check_at");
+    agentShared.nextAt = timeField(json, "next_at");
+    agentShared.latestAsk = timeField(latest, "ask");
+    agentShared.latestDone = timeField(latest, "done");
+    agentShared.hasAsk = hasAsk;
+    agentShared.ask = std::move(ask);
+    // A working session sends a list about once a second (every log line is a change). Only
+    // what the board shows counts as a change here, so the panel redraws only for that.
+    const bool same = agentShared.synced && agentShared.locked == locked &&
+                      agentShared.asks == asks && agentShared.running == running &&
+                      agentShared.idle == idle && agentShared.planned == planned &&
+                      agentShared.unread == unread && agentShared.proposed == proposed &&
+                      agentShared.older == older && sameRows(agentShared.rows, rows);
+    if (!same) {
+      agentShared.synced = true;
+      agentShared.locked = locked;
+      agentShared.asks = asks;
+      agentShared.running = running;
+      agentShared.idle = idle;
+      agentShared.planned = planned;
+      agentShared.unread = unread;
+      agentShared.proposed = proposed;
+      agentShared.older = older;
+      agentShared.rows.swap(rows);
+      agentChanged();
+    }
+    rebuildSummary();
+  }
+  saveSummary();
+}
+
+// A number, or a number given as text ("712"): a model sends either.
+float number(const cJSON *json, const char *name) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, name);
+  if (cJSON_IsNumber(item)) return static_cast<float>(item->valuedouble);
+  if (cJSON_IsString(item) && item->valuestring) return strtof(item->valuestring, nullptr);
+  return 0;
+}
+
+// A field as text, whatever JSON it is: a value can come as a number ("value": 712).
+std::string text(const cJSON *json, const char *name) {
+  const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, name);
+  if (cJSON_IsString(item) && item->valuestring) return item->valuestring;
+  if (cJSON_IsNumber(item)) {
+    char buf[24];
+    snprintf(buf, sizeof buf, "%g", item->valuedouble);
+    return buf;
+  }
+  return "";
+}
+
+void readPanel(const cJSON *json, Panel &p) {
+  p.title = field(json, "title");
+  p.at = timeField(json, "at");
+  const cJSON *b;
+  cJSON_ArrayForEach(b, cJSON_GetObjectItemCaseSensitive(json, "blocks")) {
+    PanelBlock block;
+    block.kind = field(b, "kind");
+    block.id = field(b, "id");
+    block.label = text(b, "label");
+    block.right = text(b, "right");
+    block.text = field(b, "markdown");
+    block.question = field(b, "question");
+    block.value = number(b, "value");
+    block.max = number(b, "max");
+    block.recommend = intField(b, "recommend");
+    const cJSON *v;
+    cJSON_ArrayForEach(v, cJSON_GetObjectItemCaseSensitive(b, "values")) {
+      if (cJSON_IsNumber(v)) block.values.push_back(static_cast<float>(v->valuedouble));
+    }
+    const bool choice = block.kind == "choice";
+    cJSON_ArrayForEach(v, cJSON_GetObjectItemCaseSensitive(b, choice ? "options" : "items")) {
+      PanelItem item;
+      if (block.kind == "stat") {
+        item = {text(v, "label"), text(v, "value"), "", ""};
+      } else if (block.kind == "kv") {
+        item = {text(v, "key"), text(v, "value"), "", ""};
+      } else if (cJSON_IsString(v) && v->valuestring) {
+        item.a = v->valuestring;
+      } else {
+        item = {text(v, "title"), text(v, "sub"), text(v, "right"), text(v, "tag")};
+      }
+      block.items.push_back(std::move(item));
+    }
+    p.blocks.push_back(std::move(block));
+  }
 }
 
 void onSession(const cJSON *json) {
@@ -430,6 +694,46 @@ void onSession(const cJSON *json) {
   if (a.asking) {
     readAsk(ask, a.ask);
     if (a.ask.session.empty()) a.ask.session = a.id;
+  }
+  a.expectAt = timeField(json, "expect_at");
+  const cJSON *cost = cJSON_GetObjectItemCaseSensitive(json, "cost");
+  const cJSON *usd = cJSON_GetObjectItemCaseSensitive(cost, "usd");
+  if (cJSON_IsNumber(usd)) {
+    a.cost = static_cast<float>(usd->valuedouble);
+    a.costNotional = flag(cost, "notional");
+  }
+  const cJSON *sched = cJSON_GetObjectItemCaseSensitive(json, "schedule");
+  if (cJSON_IsObject(sched)) {
+    ScheduleView &v = a.schedule;
+    v.present = true;
+    v.at = field(sched, "at");
+    v.days = field(sched, "days");
+    v.prompt = field(sched, "prompt");
+    v.next = timeField(sched, "next");
+    v.wake = flag(sched, "wake_board");
+    v.note = flag(sched, "show_note");
+    v.speak = flag(sched, "speak");
+    cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(sched, "runs")) {
+      v.runs.push_back({timeField(item, "at"), field(item, "state"),
+                        static_cast<uint32_t>(std::max(0, intField(item, "secs", 0)))});
+    }
+  }
+  const cJSON *watch = cJSON_GetObjectItemCaseSensitive(json, "watch");
+  if (cJSON_IsObject(watch)) {
+    WatchView &v = a.watch;
+    v.present = true;
+    v.condition = field(watch, "condition");
+    v.every = std::max(0, intField(watch, "every_minutes", 0));
+    v.next = timeField(watch, "next");
+    v.met = flag(watch, "met");
+    cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(watch, "values")) {
+      if (cJSON_IsNumber(item)) v.values.push_back(static_cast<float>(item->valuedouble));
+    }
+  }
+  const cJSON *panel = cJSON_GetObjectItemCaseSensitive(json, "panel");
+  if (cJSON_IsObject(panel)) {
+    a.hasPanel = true;
+    readPanel(panel, a.panel);
   }
   Locked l;
   if (a.id != wantOpen) return;  // one asked for before another open: not wanted now
@@ -494,8 +798,17 @@ void onControl(const uint8_t *payload, size_t len) {
   } else if (type == "session") {
     onSession(json);
   } else if (type == "ask") {
-    // The board shows questions from the list and the session for now; the ask sheet over
-    // other screens comes with the check-ins (issue #52's next steps). The list follows anyway.
+    // A new question (or one asked again): the ask sheet takes it from here. The list that
+    // follows carries it too.
+    Ask ask;
+    readAsk(json, ask);
+    Locked l;
+    if (ask.at >= agentShared.ask.at || !agentShared.hasAsk) {
+      agentShared.ask = std::move(ask);
+      agentShared.hasAsk = true;
+      agentShared.latestAsk = std::max(agentShared.latestAsk, agentShared.ask.at);
+      agentChanged();
+    }
   } else if (type == "started") {
     Locked l;
     agentShared.started = field(json, "session");
@@ -737,7 +1050,9 @@ void agentPump() {
       agentChanged();
     }
   }
-  if (holds.load() > 0 && !s.synced) {
+  // Every connection follows the list: the sheet's, a poll's, the Agent's. It keeps Home, the
+  // status bar and the face current.
+  if (!s.synced) {
     if (!sendControl("{\"type\":\"sync\"}")) return;
     s.synced = true;
   }
@@ -755,9 +1070,16 @@ void agentPump() {
 
 void closeSession();
 
+bool heldActive() {
+  return holds.load() > 0 && (usbLive || input::idleMs() < kIdleLiveMs);
+}
+
+// Whether the connection should be up: an Agent screen in use, the sheet, USB power, a poll.
+bool wantLink() { return heldActive() || s.wanted || usbLive || pollActive.load(); }
+
 // Ends the connection once nobody holds it, after kLingerMs.
 void lingerOrClose() {
-  if (holds.load() > 0 || s.wanted) {
+  if (wantLink()) {
     s.lingerUntilMs = 0;
     return;
   }
@@ -781,30 +1103,47 @@ void dropTalkEvents() {
   for (int i = 0; i < n; ++i) xQueueSend(events, &kept[i], 0);
 }
 
-void connectSession() {
-  {
-    Locked l;
-    shared.error.clear();
-    shared.heard.clear();
-    shared.reply.clear();
-    answers.clear();  // late ones, for a session that has gone
+// Time left until `deadline` (millis), at most `cap`.
+uint32_t left(uint32_t deadline, uint32_t cap) {
+  const int32_t d = static_cast<int32_t>(deadline - millis());
+  return d <= 0 ? 0 : std::min<uint32_t>(static_cast<uint32_t>(d), cap);
+}
+
+// Joins Wi-Fi (and the tailnet if the host is there), connects and says hello, all before
+// `deadline` (millis). A quiet connect (a poll, the live connection on USB, a check-in) shows
+// nothing: it leaves the state and the sheet's texts alone, and gives up between steps as soon
+// as a talk press is waiting, which then connects as usual (the mic first). True if connected.
+bool connectLink(bool quiet, uint32_t deadline) {
+  auto fail = [&](const char *why) {
+    if (quiet) {
+      log_i("agent: background connect: %s", why);
+    } else {
+      setState(State::Error, why);
+    }
+    return false;
+  };
+  auto yields = [&] { return quiet && talkWanted.load(); };
+  if (!quiet) {
+    {
+      Locked l;
+      shared.error.clear();
+      shared.heard.clear();
+      shared.reply.clear();
+      answers.clear();  // late ones, for a session that has gone
+    }
+    setState(State::Connecting);
   }
-  setState(State::Connecting);
-  if (!settings::hasAgent()) {
-    setState(State::Error, "NO AGENT HOST SET");
-    return;
-  }
+  if (!settings::hasAgent()) return fail("NO AGENT HOST SET");
   if (!s.wifi) {
     std::string error;
-    if (!wlan::connect(15000, error)) {
-      setState(State::Error, error.c_str());
-      return;
-    }
+    const uint32_t ms = left(deadline, 15000);
+    if (ms == 0 || !wlan::connect(ms, error)) return fail(ms == 0 ? "NO TIME LEFT" : error.c_str());
     s.wifi = true;
     // Modem sleep wakes the radio only at the access point's beacons: every frame would wait
     // for one. Off for the session (shares.cpp and ota.cpp do the same).
     WiFi.setSleep(false);
   }
+  if (yields()) return false;
   const std::string host = settings::agentHost();
   const uint16_t port = static_cast<uint16_t>(settings::agentPort());
   // A agent host on the tailnet is often on this LAN too (at home): its LAN addresses first, as
@@ -815,31 +1154,30 @@ void connectSession() {
   }
   if (s.fd < 0) {
     if (!s.tailnet && tailnet::routes(host)) {
+      if (yields()) return false;
       std::string error;
-      if (!tailnet::hold(20000, error)) {
-        setState(State::Error, error.c_str());
-        return;
+      const uint32_t ms = left(deadline, 20000);
+      if (ms == 0 || !tailnet::hold(ms, error)) {
+        return fail(ms == 0 ? "NO TIME LEFT" : error.c_str());
       }
       s.tailnet = true;
     }
     // The WireGuard session with the daemon's machine first: a connect before it would lose its
     // SYN and wait a second or more for TCP to send it again.
-    if (s.tailnet) tailnet::reach(host, 8000);
+    if (s.tailnet) tailnet::reach(host, left(deadline, 8000));
+    if (yields()) return false;
     addrinfo hints = {};
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     addrinfo *res = nullptr;
     if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) {  // tailnet names too
-      setState(State::Error, s.tailnet ? "AGENT HOST NOT ON THE TAILNET" : "AGENT HOST NOT FOUND");
-      return;
+      return fail(s.tailnet ? "AGENT HOST NOT ON THE TAILNET" : "AGENT HOST NOT FOUND");
     }
     const uint32_t ip = reinterpret_cast<const sockaddr_in *>(res->ai_addr)->sin_addr.s_addr;
     freeaddrinfo(res);
-    s.fd = connectTo(ip, port, 4000);
-    if (s.fd < 0) {
-      setState(State::Error, "INKHARNESS ISN'T ANSWERING");
-      return;
-    }
+    const uint32_t ms = left(deadline, 4000);
+    s.fd = ms > 0 ? connectTo(ip, port, ms) : -1;
+    if (s.fd < 0) return fail("INKHARNESS ISN'T ANSWERING");
   }
   if (s.rx.empty()) s.rx.resize(kRxBytes);
   s.rxLen = 0;
@@ -862,16 +1200,16 @@ void connectSession() {
   const uint32_t keyMs = millis() - t0;
   if (msg1.empty() || msg1.size() > 65535) {
     drop(msg1.empty() ? "NO AGENT KEY (MBEDTLS)" : "TOO MANY BOARD TOOLS");
-    return;
+    return false;
   }
   uint8_t header[kHeader] = {kHandshake, static_cast<uint8_t>(msg1.size() & 0xFF),
                              static_cast<uint8_t>(msg1.size() >> 8)};
-  if (!sendAll(header, kHeader) || !sendAll(msg1.data(), msg1.size())) return;
-  while (s.fd >= 0 && !s.hello && millis() - t0 < 4000) pump(100);
+  if (!sendAll(header, kHeader) || !sendAll(msg1.data(), msg1.size())) return false;
+  while (s.fd >= 0 && !s.hello && millis() - t0 < 4000 && left(deadline, 1) > 0) pump(100);
   s.handshake.reset();
   if (s.fd < 0) {  // hung up on us: after saying why, unless it was something else
-    if (!s.refusal.empty()) setState(State::Error, refusalText(s.refusal).c_str());
-    return;
+    if (!s.refusal.empty()) fail(refusalText(s.refusal).c_str());
+    return false;
   }
   if (!s.hello) {
     if (!s.refusal.empty()) {
@@ -880,7 +1218,7 @@ void connectSession() {
       // A daemon from before encryption skips the handshake and waits for a plain hello.
       drop(s.sealed ? "INKHARNESS DIDN'T SAY HELLO" : "NO HANDSHAKE (OLD INKHARNESS?)");
     }
-    return;
+    return false;
   }
   log_i("agent: connected to %s:%d%s, encrypted (handshake %u ms, %u of them for keys)%s",
         host.c_str(), settings::agentPort(),
@@ -888,7 +1226,11 @@ void connectSession() {
         millis() - t0, keyMs,
         s.agentSupported ? (s.agentUnlocked ? ", sessions" : ", sessions behind its PIN") : "");
   setState(State::Ready);
+  return true;
 }
+
+// A connect for someone waiting on it (the sheet, an Agent screen): it shows how it goes.
+void connectSession() { connectLink(false, millis() + 45000); }
 
 void closeSession() {
   if (s.fd >= 0) ::close(s.fd);
@@ -1002,6 +1344,181 @@ bool sendMic() {
   return false;
 }
 
+// --- Check-ins ---------------------------------------------------------------------------------
+
+void refreshUsb() {
+  if (usbCheckedMs != 0 && millis() - usbCheckedMs < kUsbCheckMs) return;
+  usbCheckedMs = millis() | 1;
+  const pmic::Status p = pmic::status();
+  const bool usb = p.ok && p.vbus && configured();
+  if (usb == usbLive) return;
+  usbLive = usb;
+  liveFailures = 0;
+  liveRetryMs = millis();
+  log_i("agent: %s", usb ? "on USB: the connection stays up" : "off USB: polls instead");
+}
+
+// What the list says that a poll's ladder watches: when it changes, polls come every 5 minutes.
+uint32_t signature() {
+  Locked l;
+  const Sessions &a = agentShared;
+  uint32_t h = 2166136261u;
+  for (const uint32_t v : {static_cast<uint32_t>(a.asks), static_cast<uint32_t>(a.running),
+                           static_cast<uint32_t>(a.planned), static_cast<uint32_t>(a.proposed),
+                           static_cast<uint32_t>(a.unread), a.latestAsk, a.latestDone,
+                           static_cast<uint32_t>(a.rows.size())}) {
+    h = (h ^ v) * 16777619u;
+  }
+  return h;
+}
+
+// When to poll next, after a poll (or a live connection) that got a list (ok) or didn't: the
+// ladder, failures backing off, sooner at check_at, never on a low battery.
+void planPoll(bool ok) {
+  bool supported, known;
+  uint32_t checkAt;
+  {
+    Locked l;
+    supported = agentShared.supported;
+    known = agentShared.known;
+    checkAt = agentShared.checkAt;
+  }
+  uint32_t gap;
+  if (!ok) {
+    pollFailures = std::min<uint8_t>(pollFailures + 1, 4);
+    gap = std::min<uint32_t>(kMaxPollGapMs, kLadderMin[0] * 60000u << (pollFailures - 1));
+  } else {
+    pollFailures = 0;
+    if (known && !supported) {  // no sessions on this daemon: nothing to poll for
+      nextPollMs = 0;
+      nextCheckUnix = 0;
+      return;
+    }
+    const uint32_t sig = signature();
+    if (sig != lastSignature) {
+      ladder = 0;
+    } else if (ladder < 2) {
+      ++ladder;
+    }
+    lastSignature = sig;
+    gap = kLadderMin[ladder] * 60000u;
+  }
+  const uint32_t now = static_cast<uint32_t>(time(nullptr));
+  if (checkAt > now) gap = std::min<uint32_t>(gap, std::max(kFloorS, checkAt - now) * 1000u);
+  const pmic::Status p = pmic::status();
+  if (p.ok && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent) {
+    nextPollMs = 0;  // only when asked (checkSoon)
+    nextCheckUnix = 0;
+    return;
+  }
+  nextPollMs = (millis() + gap) | 1;
+  nextCheckUnix = now + gap / 1000;
+}
+
+bool pollIsDue() {
+  const uint32_t at = nextPollMs.load();
+  return at != 0 && static_cast<int32_t>(millis() - at) >= 0;
+}
+
+void startPoll() {
+  nextPollMs = 0;
+  lastPollMs = millis() | 1;
+  pollActive = true;
+  pollStartMs = millis();
+  pollLists = listCount;
+  if (!connectLink(true, millis() + kPollDeadlineMs)) {
+    pollActive = false;
+    closeSession();  // lets Wi-Fi go
+    planPoll(false);
+  }
+}
+
+// With the connection up: a poll ends once its list has come (or it waited long enough).
+void pollDuties() {
+  if (!pollActive.load()) return;
+  if (listCount != pollLists) {
+    pollActive = false;
+    planPoll(true);
+  } else if (millis() - pollStartMs > kPollDeadlineMs + kPollListMs) {
+    pollActive = false;
+    planPoll(false);
+  }
+}
+
+// With no connection: a key back on an Agent screen, USB, or a poll that's due.
+void idleDuties() {
+  refreshUsb();
+  if (!configured()) return;
+  const uint32_t now = millis();
+  if (s.heldIdle && heldActive()) {
+    s.heldIdle = false;
+    connectSession();
+    return;
+  }
+  if (usbLive && static_cast<int32_t>(now - liveRetryMs) >= 0) {
+    if (connectLink(true, now + kPollDeadlineMs)) {
+      liveFailures = 0;
+    } else {
+      closeSession();
+      liveFailures = std::min<uint8_t>(liveFailures + 1, 2);
+      liveRetryMs = millis() + (liveFailures == 1 ? 60000 : 300000);
+    }
+    return;
+  }
+  if (soon.exchange(false) && (lastPollMs == 0 || now - lastPollMs >= kSoonGapMs)) {
+    nextPollMs = now | 1;
+  }
+  if (pollIsDue()) startPoll();
+}
+
+// How long the idle task may sleep: until the next poll, and at least every kUsbCheckMs.
+uint32_t idleWaitMs() {
+  uint32_t wait = kUsbCheckMs;
+  const uint32_t at = nextPollMs.load();
+  if (at != 0) {
+    const int32_t d = static_cast<int32_t>(at - millis());
+    wait = std::min<uint32_t>(wait, d > 0 ? static_cast<uint32_t>(d) : 0);
+  }
+  return std::max<uint32_t>(wait, 10);
+}
+
+// From setup() on an RTC wake: connect, wait for the list, let go.
+void checkIn() {
+  const uint32_t deadline = millis() + checkInMs;
+  checkInOk = false;
+  const uint32_t lists = listCount;
+  if (s.fd < 0) connectLink(true, deadline);
+  while (s.fd >= 0 && listCount == lists && static_cast<int32_t>(deadline - millis()) > 0) {
+    agentPump();
+    if (s.fd < 0) break;
+    pump(50);
+  }
+  checkInOk = listCount != lists;
+  if (!wantLink()) closeSession();
+  if (checkInDone) xSemaphoreGive(checkInDone);
+}
+
+// A session's result, said: sent like a turn, so its reply plays as one.
+void sayResult() {
+  std::string id;
+  {
+    Locked l;
+    id.swap(speakSession);
+  }
+  if (id.empty() || s.fd < 0 || !s.hello || s.capturing || s.draining || s.turnOpen) return;
+  {
+    Locked l;
+    shared.heard.clear();
+    shared.reply.clear();
+    shared.error.clear();
+  }
+  if (!sendControl("{\"type\":\"speak\",\"session\":" + quoted(id) + "}")) return;
+  turns++;
+  s.turnOpen = true;
+  s.lastRxMs = millis();
+  setState(State::Thinking);
+}
+
 void handle(Event e) {
   switch (e) {
     case Event::Open:
@@ -1020,28 +1537,39 @@ void handle(Event e) {
     case Event::Retry:
       if (holds.load() <= 0) break;
       s.lingerUntilMs = 0;
+      s.heldIdle = false;
       if (s.fd < 0) {
         connectSession();
         dropTalkEvents();
       }
       break;
     case Event::Release: lingerOrClose(); break;
-    case Event::Kick: break;  // agentPump() sends it
-    case Event::TalkStart: beginTalk(); break;
+    case Event::Kick: break;  // agentPump() sends it, idleDuties() polls
+    case Event::TalkStart:
+      talkWanted = false;
+      beginTalk();
+      break;
     case Event::TalkStop: endTalk(); break;
+    case Event::CheckIn: checkIn(); break;
+    case Event::Speak: sayResult(); break;
   }
 }
 
 void task(void *) {
   for (;;) {
     Event e;
-    if (xQueueReceive(events, &e, s.fd >= 0 ? 0 : portMAX_DELAY) == pdTRUE) {
+    const TickType_t wait = s.fd >= 0 ? 0 : pdMS_TO_TICKS(idleWaitMs());
+    if (xQueueReceive(events, &e, wait) == pdTRUE) {
       handle(e);
       continue;
     }
     bool sent = false;
     if (s.capturing || s.draining) sent = sendMic();
-    if (s.fd < 0) continue;
+    if (s.fd < 0) {
+      idleDuties();
+      continue;
+    }
+    refreshUsb();
     if (s.capturing && millis() - s.talkStartMs > kMaxTalkMs) endTalk();  // a stuck key
     pump(sent || s.capturing ? 0 : 20);
     if (s.fd < 0) continue;
@@ -1049,13 +1577,22 @@ void task(void *) {
     if (s.fd < 0) continue;
     agentPump();
     if (s.fd < 0) continue;
-    // Nobody holds it (a release can be lost when the event queue is full): start the linger.
-    if (holds.load() <= 0 && !s.wanted && s.lingerUntilMs == 0) s.lingerUntilMs = millis() + kLingerMs;
+    pollDuties();
+    // Nobody wants it (a release can be lost when the event queue is full, and an Agent screen
+    // left alone stops counting): start the linger. Someone wanting it again stops it.
+    const bool wanted = wantLink();
+    if (wanted) {
+      s.lingerUntilMs = 0;
+    } else if (s.lingerUntilMs == 0) {
+      s.lingerUntilMs = millis() + kLingerMs;
+    }
     if (s.lingerUntilMs != 0 && static_cast<int32_t>(millis() - s.lingerUntilMs) >= 0 &&
         !s.capturing && !s.draining && !s.turnOpen && !s.playingOut) {
       s.lingerUntilMs = 0;
-      if (holds.load() <= 0 && !s.wanted) {
+      if (!wantLink()) {
+        s.heldIdle = holds.load() > 0;  // a key on that screen connects again
         closeSession();
+        if (nextPollMs.load() == 0) planPoll(true);  // polls take over from here
         continue;
       }
     }
@@ -1080,6 +1617,8 @@ void start() {
   cJSON_Hooks hooks = {jsonAlloc, free};
   cJSON_InitHooks(&hooks);
   lock = xSemaphoreCreateMutex();
+  checkInDone = xSemaphoreCreateBinary();
+  loadSummary();
   events = xQueueCreate(8, sizeof(Event));
   xTaskCreate(task, "agent", 10240, nullptr, 4, nullptr);
 }
@@ -1097,7 +1636,10 @@ void open() {
 
 void close() { post(Event::Close); }
 
-void talkStart() { post(Event::TalkStart); }
+void talkStart() {
+  talkWanted = true;  // a background connect under way gives way
+  post(Event::TalkStart);
+}
 
 void talkStop() { post(Event::TalkStop); }
 
@@ -1188,6 +1730,141 @@ void stop(const std::string &session) {
 
 void remove(const std::string &session) {
   request("{\"type\":\"delete\",\"session\":" + quoted(session) + "}");
+}
+
+void pause(const std::string &session) {
+  request("{\"type\":\"pause\",\"session\":" + quoted(session) + "}");
+}
+
+void resume(const std::string &session) {
+  request("{\"type\":\"resume\",\"session\":" + quoted(session) + "}");
+}
+
+void runNow(const std::string &session) {
+  request("{\"type\":\"run\",\"session\":" + quoted(session) + "}");
+}
+
+void approve(const std::string &session) {
+  request("{\"type\":\"approve\",\"session\":" + quoted(session) + "}");
+}
+
+void panelChoice(const std::string &session, const std::string &block, int choice) {
+  request("{\"type\":\"panel_choice\",\"session\":" + quoted(session) +
+          ",\"block\":" + quoted(block) + ",\"choice\":" + std::to_string(choice) + "}");
+}
+
+void speak(const std::string &session) {
+  if (!lock) return;
+  {
+    Locked l;
+    speakSession = session;
+  }
+  post(Event::Speak);
+}
+
+Glance glance() {
+  Glance g;
+  if (!lock) return g;
+  Locked l;
+  const Sessions &a = agentShared;
+  if (a.synced) {
+    g.known = true;
+    g.locked = a.locked;
+    g.asks = a.asks;
+    g.running = a.running;
+    g.planned = a.planned;
+    g.proposed = a.proposed;
+    g.unread = a.unread;
+    g.nextAt = a.nextAt;
+    g.checkAt = a.checkAt;
+    g.latestAsk = a.latestAsk;
+    g.latestDone = a.latestDone;
+    if (a.hasAsk && a.asks > 0) {
+      g.askSession = a.ask.session;
+      g.askId = a.ask.id;
+      g.askAt = a.ask.at;
+    }
+  } else if (summaryRam.version == kSummaryVersion) {
+    const Summary &m = summaryRam;
+    g.known = true;
+    g.locked = m.locked;
+    g.asks = m.asks;
+    g.running = m.running;
+    g.planned = m.planned;
+    g.proposed = m.proposed;
+    g.unread = m.unread;
+    g.nextAt = m.nextAt;
+    g.checkAt = m.checkAt;
+    g.latestAsk = m.latestAsk;
+    g.latestDone = m.latestDone;
+  }
+  g.checkedAt = checkedAtUnix.load();
+  g.nextCheck = a.connected ? 0 : nextCheckUnix.load();
+  g.live = a.connected;
+  g.generation = a.generation;
+  return g;
+}
+
+Summary summary() {
+  start();
+  Locked l;
+  return summaryRam;
+}
+
+uint32_t checkedAt() { return checkedAtUnix.load(); }
+
+void setContentPolicy(bool (*allowed)()) { contentPolicy = allowed; }
+
+namespace {
+bool seenLoaded = false;
+uint32_t seenAsk = 0, seenDone = 0;
+}  // namespace
+
+void seen(uint32_t &ask, uint32_t &done) {
+  if (!seenLoaded) {
+    Preferences prefs;
+    if (prefs.begin(kNvs, true)) {
+      seenAsk = prefs.getUInt("seenA", 0);
+      seenDone = prefs.getUInt("seenD", 0);
+      prefs.end();
+    }
+    seenLoaded = true;
+  }
+  ask = seenAsk;
+  done = seenDone;
+}
+
+void markSeen(uint32_t ask, uint32_t done) {
+  if (seenLoaded && ask == seenAsk && done == seenDone) return;
+  seenAsk = ask;
+  seenDone = done;
+  seenLoaded = true;
+  Preferences prefs;
+  if (!prefs.begin(kNvs, false)) return;
+  prefs.putUInt("seenA", ask);
+  prefs.putUInt("seenD", done);
+  prefs.end();
+}
+
+void checkSoon() {
+  if (!events) return;
+  soon = true;
+  post(Event::Kick);
+}
+
+bool polling() {
+  if (pollActive.load()) return true;
+  if (!pollIsDue() && !soon.load()) return false;
+  post(Event::Kick);  // the task may be asleep in its wait: it polls now
+  return true;
+}
+
+bool checkInNow(uint32_t deadlineMs) {
+  start();
+  xSemaphoreTake(checkInDone, 0);  // a stale give from before
+  checkInMs = deadlineMs;
+  post(Event::CheckIn);
+  return xSemaphoreTake(checkInDone, pdMS_TO_TICKS(deadlineMs + 3000)) == pdTRUE && checkInOk;
 }
 
 namespace {
