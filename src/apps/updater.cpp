@@ -7,6 +7,7 @@
 #include "apps/home.h"
 #include "ota.h"
 #include "sysinfo.h"
+#include "tailnet.h"
 #include "wlan.h"
 
 namespace apps {
@@ -131,7 +132,8 @@ class UpdaterScreen : public ui::Screen {
     Rect r = body;
     const Rect firmware = r.takeBottom(ui::kRule + ui::kSectionH + 4 + 2 * kRowH + 6);
     const Rect upload = r.takeBottom(ui::kRule + ui::kSectionH + 8 + 3 * kNoteH + 8);
-    const Rect address = r.takeBottom(ui::kRule + ui::kSectionH + 4 + 3 * kRowH + 6);
+    const int addressRows = tailnet::configured() ? 4 : 3;
+    const Rect address = r.takeBottom(ui::kRule + ui::kSectionH + 4 + addressRows * kRowH + 6);
     drawState(c, r, s);
     drawAddress(c, address, s);
     drawUpload(c, upload);
@@ -143,7 +145,7 @@ class UpdaterScreen : public ui::Screen {
     std::string sig = phaseName(s.phase);
     if (s.phase == ota::Phase::Receiving) sig += std::to_string(percentOf(s) / 5);
     if (s.phase == ota::Phase::Listening) sig += std::to_string((s.secondsLeft + 59) / 60);
-    return sig + "|" + s.ip + "|" + s.result;
+    return sig + "|" + s.ip + "|" + s.result + "|" + tailnet::describe();
   }
 
   static void drawState(ui::Canvas &c, const Rect &area, const ota::Status &s) {
@@ -205,12 +207,19 @@ class UpdaterScreen : public ui::Screen {
     r.takeTop(kRule);
     drawSectionHeader(c, r.takeTop(kSectionH), "ADDRESS", "PORT " + std::to_string(ota::kPort));
     r.takeTop(4);
+    // With a tailnet: the board's address on it while the updater listens there (or why not).
+    std::string onTailnet = tailnet::address();
+    if (onTailnet.empty()) {
+      const std::string state = tailnet::describe();
+      onTailnet = state.substr(0, state.find(" \xC2\xB7 "));
+    }
     const std::pair<const char *, std::string> rows[] = {
         {"HOST", std::string(ota::kHostname) + ".local"},
         {"IP", s.ip.empty() ? "--" : s.ip},
         {"NETWORK", wlan::network()},
+        {"TAILNET", onTailnet},
     };
-    drawRows(c, r, rows, 3);
+    drawRows(c, r, rows, tailnet::configured() ? 4 : 3);
   }
 
   static void drawUpload(ui::Canvas &c, const Rect &area) {

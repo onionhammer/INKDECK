@@ -99,6 +99,11 @@ firmware from before encryption speak protocol 1, which sends the token unencryp
 refuses them unless `plaintext = true`. A config with no speech in or out for its model serves
 HTTP only, with a warning.
 
+On a machine with Tailscale, the default `listen` covers its tailnet address too, so a board with
+a `[tailscale]` key in its `inkdeck.ini` reaches the daemon from any Wi-Fi with `voice_host` set
+to the machine's name on the tailnet (`macbook`) or its 100.x address. The token still encrypts
+the connection inside the tunnel. The tailnet's access rules must let the board reach port 7391.
+
 ```sh
 curl -s localhost:7392/chat -d '{"text": "what speakers are there?"}' -H 'content-type: application/json'
 # {"conversation":"c1","reply":"The kitchen and the office.","tools":["list_speakers"]}

@@ -22,6 +22,7 @@
 
 #include "audio.h"
 #include "settings.h"
+#include "tailnet.h"
 #include "voice_noise.h"
 #include "wlan.h"
 
@@ -69,6 +70,7 @@ struct Session {
   int fd = -1;
   bool wanted = false;     // open() was called and close() wasn't
   bool wifi = false;       // we hold a wlan::connect()
+  bool tailnet = false;    // and a tailnet::hold(): voice_host is on the tailnet
   bool hello = false;      // the daemon answered ours
   bool sealed = false;     // the handshake is done: every frame is sealed both ways
   std::unique_ptr<noise::Initiator> handshake;  // between message 1 and message 2
@@ -464,12 +466,23 @@ void connectSession() {
     WiFi.setSleep(false);
   }
   const std::string host = settings::voiceHost();
+  if (!s.tailnet && tailnet::routes(host)) {
+    std::string error;
+    if (!tailnet::hold(20000, error)) {
+      setState(State::Error, error.c_str());
+      return;
+    }
+    s.tailnet = true;
+  }
+  // The WireGuard session with the daemon's machine first: a connect before it would lose its
+  // SYN and wait a second or more for TCP to send it again.
+  if (s.tailnet) tailnet::reach(host, 8000);
   addrinfo hints = {};
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
   addrinfo *res = nullptr;
-  if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) {
-    setState(State::Error, "VOICE HOST NOT FOUND");
+  if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) {  // tailnet names too
+    setState(State::Error, s.tailnet ? "VOICE HOST NOT ON THE TAILNET" : "VOICE HOST NOT FOUND");
     return;
   }
   const uint32_t ip = reinterpret_cast<const sockaddr_in *>(res->ai_addr)->sin_addr.s_addr;
@@ -533,6 +546,10 @@ void closeSession() {
   forgetKeys();
   endAudio();
   forgetAnswers();
+  if (s.tailnet) {
+    tailnet::release();
+    s.tailnet = false;
+  }
   if (s.wifi) {
     WiFi.setSleep(true);
     wlan::disconnect();

@@ -8,6 +8,12 @@
 //                       memory from boot (about 26 KB of internal RAM, measured 2026-11-19) and adds
 //                       about 230 KB of flash. 0 or unset: none of it is built, the core frees that
 //                       memory at boot, and Sensors scans Wi-Fi only.
+//   -DINKDECK_TAILNET=1 the board on your tailnet (tailnet.h, Tailscale through lib/microlink):
+//                       voice_host, shares and feeds on tailnet machines, Wi-Fi Drive and the
+//                       updater answering there. MicroLink adds about 123 KB of flash and keeps
+//                       about 7 KB of internal RAM from boot (its static tables; measured
+//                       2026-11-21), and 42 KB more while the board is on the tailnet. 0 or unset:
+//                       none of it is built, and System's TAILNET row says so.
 #pragma once
 
 #ifndef INKDECK_VOICE
@@ -16,4 +22,8 @@
 
 #ifndef INKDECK_BLE
 #define INKDECK_BLE 0
+#endif
+
+#ifndef INKDECK_TAILNET
+#define INKDECK_TAILNET 0
 #endif

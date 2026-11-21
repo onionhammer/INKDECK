@@ -32,11 +32,13 @@ struct Values {
   std::string voiceHost;
   int voicePort = 0;  // 0: the default
   std::string voiceToken;
+  std::string tailscaleName;  // "": the default
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
            wifiSsids == o.wifiSsids && shares == o.shares && lockMinutes == o.lockMinutes &&
-           voiceHost == o.voiceHost && voicePort == o.voicePort && voiceToken == o.voiceToken;
+           voiceHost == o.voiceHost && voicePort == o.voicePort && voiceToken == o.voiceToken &&
+           tailscaleName == o.tailscaleName;
   }
 };
 
@@ -55,11 +57,18 @@ struct CardPin {
   std::string digits;
 };
 
+// The card's tailscale_key line, kept the same way: a file without one keeps the board's key.
+struct CardTailscaleKey {
+  enum Kind : unsigned char { Absent, Key, Off } kind = Absent;
+  std::string key;
+};
+
 Values card;
 bool loaded = false;
 std::string pin;  // the board's PIN (NVS); empty: no lock
 PinChange pending = PinChange::None;
 std::string pendingDigits;  // the PIN a pending PinChange::New brings
+bool tailscaleKeySet = false;  // NVS has "tskey"
 
 // What a Wi-Fi password line becomes once the board has it, and what an smb line whose
 // password the board took gets after it.
@@ -72,6 +81,11 @@ constexpr const char *kSmbPasswordNote = " ; the board keeps the password";
 constexpr const char *kPinNote =
     "; The board keeps the PIN (System > PIN LOCK). Write pin = <digits> to change it, pin = off "
     "to remove it.";
+
+// The same for a tailscale_key line, true whether the board has a key now or not.
+constexpr const char *kTailscaleKeyNote =
+    "; The board keeps its Tailscale auth key (System > TAILNET). Write tailscale_key = ... to "
+    "change it, tailscale_key = off to remove it.";
 
 constexpr const char *kTemplate =
     "; INKDECK settings. A value here overrides the one built into the firmware from .env.\n"
@@ -129,10 +143,24 @@ constexpr const char *kTemplate =
     "; The machine on your network that runs inkharness, the assistant daemon (a name or an\n"
     "; address), its port (7391 unless you changed it) and the token in its inkharness.toml. The\n"
     "; token never leaves this file: it keys the connection's encryption, so make it long and random\n"
-    "; (openssl rand -hex 24).\n"
+    "; (openssl rand -hex 24). With [tailscale] set, voice_host can be the machine's name on your\n"
+    "; tailnet (macbook, macbook.tail1234.ts.net) or its 100.x address, and the board reaches it\n"
+    "; from any Wi-Fi.\n"
     "; voice_host = nas.local\n"
     "; voice_port = 7391\n"
-    "; voice_token = something-long\n";
+    "; voice_token = something-long\n"
+    "\n"
+    "[tailscale]\n"
+    "; Puts the board on your tailnet when something needs a machine there: a voice_host, a share's\n"
+    "; server or a feed's host given as a tailnet name or 100.x address. Wi-Fi Drive and Update\n"
+    "; over Wi-Fi answer on the tailnet too while they're open. Make an auth key in Tailscale's\n"
+    "; admin console (Settings > Keys), reusable and not ephemeral: the board is offline most of\n"
+    "; the time, and Tailscale removes an ephemeral machine soon after it goes. Once the board shows\n"
+    "; up in Machines, turn off its key expiry there. The board keeps the key and replaces this\n"
+    "; line with a note; a different key joins it as a new machine. tailscale_key = off removes it.\n"
+    "; tailscale_key = tskey-auth-k1234567CNTRL-abcdefghijklmnopqrstuvwxyz\n"
+    "; Its name on the tailnet: letters, digits and hyphens (inkdeck unless you change it).\n"
+    "; tailscale_name = inkdeck\n";
 
 // The share lines and SMB passwords go in NVS as one string each, a line apiece.
 std::vector<std::string> splitLines(const std::string &text) {
@@ -202,6 +230,8 @@ void loadNvs() {
   card.voiceHost = nvsString(prefs, "vhost");
   card.voicePort = prefs.getInt("vport", 0);
   card.voiceToken = nvsString(prefs, "vtoken");
+  card.tailscaleName = nvsString(prefs, "tsname");
+  tailscaleKeySet = prefs.isKey("tskey");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
   prefs.end();
@@ -220,6 +250,7 @@ void saveNvs() {
   prefs.putString("vhost", card.voiceHost.c_str());
   prefs.putInt("vport", card.voicePort);
   prefs.putString("vtoken", card.voiceToken.c_str());
+  prefs.putString("tsname", card.tailscaleName.c_str());
   prefs.end();
 }
 
@@ -400,6 +431,21 @@ const std::string *findSecret(const Secrets &secrets, const std::string &id) {
   return nullptr;
 }
 
+// A machine name on a tailnet: letters, digits and hyphens, not at either end, up to 63.
+bool validTailscaleName(const std::string &s) {
+  if (s.empty() || s.size() > 63 || s.front() == '-' || s.back() == '-') return false;
+  return std::all_of(s.begin(), s.end(), [](char c) {
+    return isalnum(static_cast<unsigned char>(c)) || c == '-';
+  });
+}
+
+// An auth key as the admin console gives it (tskey-auth-...), or a Headscale one: printable,
+// no spaces.
+bool validTailscaleKey(const std::string &s) {
+  if (s.size() < 8 || s.size() > 200) return false;
+  return std::all_of(s.begin(), s.end(), [](char c) { return c > 0x20 && c < 0x7F; });
+}
+
 bool isOff(std::string s) {
   for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
   return s == "off";
@@ -413,9 +459,11 @@ bool parseDegrees(const std::string &text, double limit, double &out) {
   return true;
 }
 
-Values parse(const std::string &text, CardPin &cardPin, CardSecrets &secrets) {
+Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKey,
+             CardSecrets &secrets) {
   Values v;
   cardPin = {};
+  cardKey = {};
   secrets = {};
   bool hasLat = false, hasLon = false;
   double lat = 0, lon = 0;
@@ -515,6 +563,22 @@ Values parse(const std::string &text, CardPin &cardPin, CardSecrets &secrets) {
       }
     } else if (key == "voice_token") {
       v.voiceToken = value;
+    } else if (key == "tailscale_key") {
+      if (isOff(value)) {
+        cardKey = {CardTailscaleKey::Off, {}};
+      } else if (validTailscaleKey(value)) {
+        cardKey = {CardTailscaleKey::Key, value};
+      } else {
+        log_w("settings: %s: tailscale_key isn't an auth key (tskey-auth-...), or off", kFile);
+      }
+    } else if (key == "tailscale_name") {
+      std::string name = value;
+      for (char &c : name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      if (validTailscaleName(name)) {
+        v.tailscaleName = name;
+      } else {
+        log_w("settings: %s: tailscale_name must be letters, digits and hyphens, up to 63", kFile);
+      }
     } else {
       log_w("settings: %s: unknown setting \"%s\"", kFile, key.c_str());
     }
@@ -574,6 +638,34 @@ void hidePinLines() {
                                   std::string &out) {
     if (key != "pin" || !(validPin(value) || isOff(value))) return false;
     out = kPinNote;
+    return true;
+  });
+}
+
+// What the card's tailscale_key line asks for: the board keeps the key (or forgets it), and the
+// line becomes kTailscaleKeyNote either way, so the key doesn't stay on the card.
+void applyCardTailscaleKey(const CardTailscaleKey &c) {
+  if (c.kind == CardTailscaleKey::Absent) return;
+  Preferences prefs;
+  if (!prefs.begin(kNamespace, false)) return;
+  if (c.kind == CardTailscaleKey::Key) {
+    if (nvsString(prefs, "tskey") != c.key) {
+      prefs.putString("tskey", c.key.c_str());
+      log_i("settings: Tailscale auth key kept on the board");
+    }
+    tailscaleKeySet = true;
+  } else {
+    if (prefs.isKey("tskey")) {
+      prefs.remove("tskey");
+      log_i("settings: Tailscale auth key removed, as the card asked");
+    }
+    tailscaleKeySet = false;
+  }
+  prefs.end();
+  rewriteCardLines("tailscale_key line", [](const std::string &key, const std::string &value,
+                                            std::string &out) {
+    if (key != "tailscale_key" || !(validTailscaleKey(value) || isOff(value))) return false;
+    out = kTailscaleKeyNote;
     return true;
   });
 }
@@ -733,14 +825,16 @@ void loadCard() {
     }
   }
   CardPin cardPin;
+  CardTailscaleKey cardKey;
   CardSecrets secrets;
-  const Values next = parse(text, cardPin, secrets);
+  const Values next = parse(text, cardPin, cardKey, secrets);
   if (!(next == card)) {
     card = next;
     saveNvs();
   }
   applyCardSecrets(secrets);
   applyCardPin(cardPin);
+  applyCardTailscaleKey(cardKey);
   if (card.lockMinutes > 0 && pin.empty()) {
     log_w("settings: %s: lock_minutes does nothing without a pin", kFile);
   }
@@ -865,6 +959,26 @@ int voicePort() {
 std::string voiceToken() {
   loadNvs();
   return card.voiceToken;
+}
+
+bool hasTailscale() {
+  loadNvs();
+  return tailscaleKeySet;
+}
+
+std::string tailscaleKey() {
+  Preferences prefs;
+  std::string key;
+  if (prefs.begin(kNamespace, true)) {
+    key = nvsString(prefs, "tskey");
+    prefs.end();
+  }
+  return key;
+}
+
+std::string tailscaleName() {
+  loadNvs();
+  return card.tailscaleName.empty() ? "inkdeck" : card.tailscaleName;
 }
 
 PinChange pendingPin() { return pending; }

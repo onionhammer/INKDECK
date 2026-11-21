@@ -1,0 +1,407 @@
+#include "tailnet.h"
+
+#include "features.h"
+#include "settings.h"
+
+#if INKDECK_TAILNET  // the rest of the file, but the stubs at its end (features.h)
+
+#include <Arduino.h>
+#include <Preferences.h>
+#include <esp_heap_caps.h>
+#include <lwip/api.h>
+#include <lwip/ip_addr.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <atomic>
+#include <mutex>
+
+#include "microlink.h"
+#include "ml_inkdeck.h"  // lib/microlink/port: wake a peer, ask whether its session is up
+#include "wlan.h"
+
+namespace tailnet {
+namespace {
+
+// After the last user lets go, the board stays on the tailnet this long: the voice sheet opened
+// again, or the next screen of a share, finds it there instead of joining again.
+constexpr uint32_t kLingerMs = 60000;
+// How often reach() asks again for a handshake that hasn't come (MicroLink's TCP API does the
+// same).
+constexpr uint32_t kWakeAgainMs = 5000;
+
+constexpr const char *kNamespace = "tailnet";  // NVS: "keyid", the auth key the identity is from
+
+std::mutex joinMutex;   // held through a join and a stop, so a second caller waits for it
+std::mutex stateMutex;  // guards what follows
+microlink_t *ml = nullptr;  // made at the first join, kept for the boot: started and stopped
+bool running = false;       // started and not stopped since
+bool wifi = false;          // the tailnet's own wlan::connect()
+int users = 0;              // hold()s that succeeded, not yet released
+uint32_t generation = 0;    // changes with every hold and release: a linger that sees another
+                            // one has been overtaken
+std::string lastError;      // why the last join failed; "" once one succeeds
+
+// ml while it runs, for the resolver hook and the status calls, which take no lock. The handle
+// itself is never freed, so a stale copy is harmless.
+std::atomic<microlink_t *> live{nullptr};
+
+// MicroLink keeps the config's string pointers, so they live here for the boot.
+std::string authKey;
+std::string deviceName;
+
+// --- Helpers -----------------------------------------------------------------------------------
+
+std::string lower(std::string s) {
+  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  return s;
+}
+
+bool endsWith(const std::string &s, const char *tail) {
+  const size_t n = strlen(tail);
+  return s.size() >= n && s.compare(s.size() - n, n, tail) == 0;
+}
+
+// A dotted IPv4 address in host byte order; 0 if `s` isn't one.
+uint32_t parseIp(const std::string &s) {
+  unsigned a, b, c, d;
+  char extra;
+  if (siscanf(s.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &extra) != 4) return 0;
+  if (a > 255 || b > 255 || c > 255 || d > 255) return 0;
+  return a << 24 | b << 16 | c << 8 | d;
+}
+
+std::string ipText(uint32_t ip) {  // host byte order
+  char buf[16];
+  snprintf(buf, sizeof buf, "%u.%u.%u.%u", static_cast<unsigned>(ip >> 24),
+           static_cast<unsigned>(ip >> 16 & 0xFF), static_cast<unsigned>(ip >> 8 & 0xFF),
+           static_cast<unsigned>(ip & 0xFF));
+  return buf;
+}
+
+// A name as the tailnet's list has it: no trailing dot. "" if it can't be one.
+std::string bareName(const char *name) {
+  std::string s = name ? name : "";
+  if (!s.empty() && s.back() == '.') s.pop_back();
+  return s.size() < 64 ? s : std::string();  // microlink_peer_info_t's hostname[64]
+}
+
+// Which auth key the board's identity came from, without keeping the key itself twice: FNV-1a.
+std::string keyId(const std::string &key) {
+  uint32_t h = 2166136261u;
+  for (const char c : key) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
+  char buf[9];
+  snprintf(buf, sizeof buf, "%08x", static_cast<unsigned>(h));
+  return buf;
+}
+
+// A different auth key from the one the board joined with: the board joins again as a new
+// machine, so its old keys go first (microlink_factory_reset() wants that before init).
+void forgetIdentityIfNewKey() {
+  const std::string id = keyId(authKey);
+  Preferences prefs;
+  if (!prefs.begin(kNamespace, false)) return;
+  const std::string had = prefs.isKey("keyid") ? prefs.getString("keyid", "").c_str() : "";
+  if (had != id) {
+    if (!had.empty()) log_i("tailnet: a new auth key: the board joins as a new machine");
+    microlink_factory_reset();
+    prefs.putString("keyid", id.c_str());
+  }
+  prefs.end();
+}
+
+// Under joinMutex.
+microlink_t *create() {
+  authKey = settings::tailscaleKey();
+  deviceName = settings::tailscaleName();
+  forgetIdentityIfNewKey();
+  microlink_config_t cfg = {};
+  cfg.auth_key = authKey.c_str();
+  cfg.device_name = deviceName.c_str();
+  cfg.enable_derp = cfg.enable_stun = cfg.enable_disco = true;
+  // The voice daemon by address: keep it a WireGuard slot on a tailnet with more machines than
+  // there are slots (CONFIG_ML_MAX_PEERS).
+  cfg.priority_peer_ip = parseIp(settings::voiceHost());
+  return microlink_init(&cfg);
+}
+
+// Leaves the tailnet and lets the radio go. Under joinMutex.
+void stopNow() {
+  microlink_t *m;
+  {
+    std::lock_guard<std::mutex> g(stateMutex);
+    m = running ? ml : nullptr;
+    running = false;
+    live = nullptr;
+  }
+  if (m) {
+    const esp_err_t err = microlink_stop(m);
+    if (err != ESP_OK) {
+      // A task still in a network call: the next start stops it again first.
+      log_w("tailnet: stop: %s", esp_err_to_name(err));
+    } else {
+      log_i("tailnet: left");
+    }
+  }
+  if (wifi) {
+    wifi = false;
+    wlan::disconnect();
+  }
+}
+
+// The last user's linger: leaves unless someone held the tailnet since.
+void lingerTask(void *arg) {
+  const uint32_t gen = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
+  vTaskDelay(pdMS_TO_TICKS(kLingerMs));
+  {
+    std::lock_guard<std::mutex> join(joinMutex);
+    bool leave;
+    {
+      std::lock_guard<std::mutex> g(stateMutex);
+      leave = users == 0 && generation == gen;
+    }
+    if (leave) stopNow();
+  }
+  vTaskDelete(nullptr);
+}
+
+// join()'s hold, made in a task of its own.
+std::mutex backgroundMutex;  // guards what follows
+int backgroundWanted = 0;    // join()s not yet matched by a leave()
+bool backgroundJoining = false;
+bool backgroundHeld = false;  // its hold() succeeded and hasn't been released
+
+void backgroundTask(void *) {
+  std::string error;
+  const bool on = hold(30000, error);
+  bool keep = false;
+  {
+    std::lock_guard<std::mutex> g(backgroundMutex);
+    backgroundJoining = false;
+    keep = on && backgroundWanted > 0;
+    backgroundHeld = keep;
+  }
+  if (on && !keep) release();  // left while it joined
+  vTaskDelete(nullptr);
+}
+
+const char *stateError(microlink_state_t s) {
+  switch (s) {
+    case ML_STATE_AUTH_FAILED: return "TAILSCALE KEY REFUSED";
+    case ML_STATE_NEEDS_LOGIN: return "TAILSCALE WANTS A NEW KEY";  // a used one-off key
+    default: return nullptr;
+  }
+}
+
+}  // namespace
+
+bool configured() { return settings::hasTailscale(); }
+
+bool routes(const std::string &host) {
+  if (host.empty() || !configured()) return false;
+  if (const uint32_t ip = parseIp(host)) return (ip & 0xFFC00000u) == 0x64400000u;  // 100.64/10
+  const std::string h = lower(bareName(host.c_str()));
+  return !h.empty() && (endsWith(h, ".ts.net") || h.find('.') == std::string::npos);
+}
+
+bool hold(uint32_t timeoutMs, std::string &error) {
+  if (!configured()) {
+    error = "NO TAILSCALE KEY";
+    return false;
+  }
+  const uint32_t t0 = millis();
+  std::lock_guard<std::mutex> join(joinMutex);
+  {
+    std::lock_guard<std::mutex> g(stateMutex);
+    if (running && microlink_is_connected(ml)) {
+      ++users;
+      ++generation;
+      return true;
+    }
+  }
+  if (!wifi) {
+    if (!wlan::connect(timeoutMs, error)) return false;
+    wifi = true;
+  }
+  if (!ml) ml = create();
+  if (!ml) {
+    error = "TAILSCALE DIDN'T START";
+    stopNow();
+    return false;
+  }
+  if (!running) {
+    esp_err_t err = microlink_start(ml);
+    if (err == ESP_ERR_INVALID_STATE) {  // the last stop timed out: finish it, then start
+      microlink_stop(ml);
+      err = microlink_start(ml);
+    }
+    if (err != ESP_OK) {
+      log_w("tailnet: start: %s; internal heap %u free", esp_err_to_name(err),
+            static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+      error = "TAILSCALE DIDN'T START";
+      stopNow();
+      return false;
+    }
+    std::lock_guard<std::mutex> g(stateMutex);
+    running = true;
+    live = ml;
+  }
+  microlink_state_t state = microlink_get_state(ml);
+  while (state != ML_STATE_CONNECTED && !stateError(state) && millis() - t0 < timeoutMs) {
+    vTaskDelay(pdMS_TO_TICKS(100));
+    state = microlink_get_state(ml);
+  }
+  const bool on = state == ML_STATE_CONNECTED;
+  bool first = false, leave = false;
+  {
+    std::lock_guard<std::mutex> g(stateMutex);
+    if (on) {
+      lastError.clear();
+      first = users++ == 0;
+      ++generation;
+    } else {
+      error = stateError(state) ? stateError(state) : "TAILNET TIMED OUT";
+      lastError = error;
+      leave = users == 0;  // nobody else is on it: don't keep trying
+    }
+  }
+  if (first) {
+    log_i("tailnet: on as %s (%s) in %lu ms, %d machines; internal heap %u free", name().c_str(),
+          ipText(microlink_get_vpn_ip(ml)).c_str(), static_cast<unsigned long>(millis() - t0),
+          microlink_get_peer_count(ml),
+          static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+  } else if (!on) {
+    log_w("tailnet: %s after %lu ms (state %d)", error.c_str(),
+          static_cast<unsigned long>(millis() - t0), static_cast<int>(state));
+  }
+  if (leave) stopNow();
+  return on;
+}
+
+void release() {
+  uint32_t gen;
+  {
+    std::lock_guard<std::mutex> g(stateMutex);
+    if (users <= 0) return;
+    gen = ++generation;
+    if (--users > 0) return;
+  }
+  if (xTaskCreate(lingerTask, "tailnet-off", 3072, reinterpret_cast<void *>(gen), 1, nullptr) !=
+      pdPASS) {
+    std::lock_guard<std::mutex> join(joinMutex);  // no task for the linger: leave now
+    stopNow();
+  }
+}
+
+void join() {
+  if (!configured()) return;
+  std::lock_guard<std::mutex> g(backgroundMutex);
+  if (++backgroundWanted > 1 || backgroundJoining || backgroundHeld) return;
+  backgroundJoining = true;
+  if (xTaskCreate(backgroundTask, "tailnet-join", 4096, nullptr, 1, nullptr) != pdPASS) {
+    backgroundJoining = false;
+    log_w("tailnet: no memory for the join task");
+  }
+}
+
+void leave() {
+  bool drop = false;
+  {
+    std::lock_guard<std::mutex> g(backgroundMutex);
+    if (backgroundWanted == 0 || --backgroundWanted > 0) return;
+    drop = backgroundHeld;
+    backgroundHeld = false;
+  }
+  if (drop) release();
+}
+
+bool reach(const std::string &host, uint32_t timeoutMs) {
+  microlink_t *m = live;
+  if (!m || !microlink_is_connected(m)) return false;
+  uint32_t ip = parseIp(host);
+  if (!ip) ip = microlink_resolve(m, bareName(host.c_str()).c_str());
+  if (!ip) return false;
+  if (ml_inkdeck_peer_is_up(m, ip)) return true;
+  const uint32_t t0 = millis();
+  uint32_t wokeAt = t0;
+  ml_inkdeck_wake_peer(m, ip);
+  while (millis() - t0 < timeoutMs) {
+    vTaskDelay(pdMS_TO_TICKS(100));
+    if (ml_inkdeck_peer_is_up(m, ip)) {
+      log_i("tailnet: session with %s up in %lu ms", host.c_str(),
+            static_cast<unsigned long>(millis() - t0));
+      return true;
+    }
+    if (millis() - wokeAt >= kWakeAgainMs) {
+      wokeAt = millis();
+      ml_inkdeck_wake_peer(m, ip);
+    }
+  }
+  log_w("tailnet: no session with %s after %lu ms", host.c_str(),
+        static_cast<unsigned long>(timeoutMs));
+  return false;
+}
+
+std::string address() {
+  microlink_t *m = live;
+  if (!m || !microlink_is_connected(m)) return "";
+  const uint32_t ip = microlink_get_vpn_ip(m);
+  return ip ? ipText(ip) : "";
+}
+
+std::string name() { return settings::tailscaleName(); }
+
+std::string describe() {
+  if (!configured()) return "not set";
+  const std::string who = name();
+  microlink_t *m = live;
+  if (m) {
+    if (microlink_is_connected(m)) return "on \xC2\xB7 " + who + " \xC2\xB7 " + address();
+    return "joining \xC2\xB7 " + who;
+  }
+  std::lock_guard<std::mutex> g(stateMutex);
+  return (lastError.empty() ? std::string("off") : lastError) + " \xC2\xB7 " + who;
+}
+
+}  // namespace tailnet
+
+// MagicDNS on the board: lwIP asks this before DNS for every getaddrinfo() (ESP-IDF's
+// LWIP_HOOK_NETCONN_EXTERNAL_RESOLVE, whose default in liblwip.a is a weak one that declines).
+// While the board is on the tailnet, a name on its list of machines (short, or the full
+// *.ts.net one) answers with the machine's address. Anything else goes on to DNS.
+extern "C" int lwip_hook_netconn_external_resolve(const char *name, ip_addr_t *addr,
+                                                  u8_t addrtype, err_t *err) {
+  microlink_t *m = tailnet::live;
+  if (!m || !name || !addr || !err) return 0;
+  if (addrtype == NETCONN_DNS_IPV6) return 0;  // the tailnet's addresses here are IPv4
+  if (!microlink_is_connected(m)) return 0;
+  const std::string bare = tailnet::bareName(name);
+  if (bare.empty()) return 0;
+  const uint32_t ip = microlink_resolve(m, bare.c_str());
+  if (!ip) return 0;
+  IP_ADDR4(addr, ip >> 24, ip >> 16 & 0xFF, ip >> 8 & 0xFF, ip & 0xFF);
+  *err = ERR_OK;
+  return 1;
+}
+
+#else  // a build without the tailnet: nothing is on it, and MicroLink isn't linked
+
+namespace tailnet {
+
+bool configured() { return false; }
+bool routes(const std::string &) { return false; }
+bool hold(uint32_t, std::string &error) {
+  error = "NO TAILNET IN THIS BUILD";
+  return false;
+}
+void release() {}
+void join() {}
+void leave() {}
+bool reach(const std::string &, uint32_t) { return false; }
+std::string address() { return ""; }
+std::string name() { return settings::tailscaleName(); }
+std::string describe() { return "not in this build"; }
+
+}  // namespace tailnet
+
+#endif  // INKDECK_TAILNET

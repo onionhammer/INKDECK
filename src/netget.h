@@ -1,7 +1,8 @@
 // A streaming HTTP(S) GET for bodies too big to hold (podcast episodes) or worth cutting short
 // (long RSS feeds): follows redirects (podcast links usually pass through one or two tracking
 // hosts), can resume from a byte offset, and hands the body over in chunks. HTTPS uses the
-// core's certificate bundle. Call from a background task with Wi-Fi up (wlan.h).
+// core's certificate bundle. Call from a background task with Wi-Fi up (wlan.h). A URL whose
+// host is on the tailnet holds it from open() to close() (tailnet.h).
 #pragma once
 #include <stdint.h>
 
@@ -44,6 +45,7 @@ class Get {
   static int onEvent(void *event);  // esp_http_client_event_t: collects the validators
 
   void *client_ = nullptr;  // esp_http_client_handle_t
+  bool tailnet_ = false;    // this request holds the tailnet
   int status_ = 0;
   int64_t length_ = -1;
   std::string etag_;

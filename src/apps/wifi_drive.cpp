@@ -9,6 +9,7 @@
 #include "ota.h"
 #include "podcast_library.h"
 #include "settings.h"
+#include "tailnet.h"
 #include "ui/menu.h"
 #include "webdav.h"
 #include "wlan.h"
@@ -123,13 +124,14 @@ class WifiDriveScreen : public ui::Screen {
     drawnMs_ = millis();
 
     Rect r = body;
-    const Rect notes = r.takeBottom(ui::kRule + ui::kSectionH + 8 + 3 * kNoteH + 8);
+    const int noteLines = tailnet::configured() ? 4 : 3;
+    const Rect notes = r.takeBottom(ui::kRule + ui::kSectionH + 8 + noteLines * kNoteH + 8);
     const Rect transfer = r.takeBottom(ui::kRule + ui::kSectionH + 4 + 3 * kRowH + 6);
     const Rect signIn = r.takeBottom(ui::kRule + ui::kSectionH + 4 + 2 * kRowH + 6);
     drawState(c, r, s);
     drawSignIn(c, signIn, s);
     drawTransfer(c, transfer, s);
-    drawNotes(c, notes);
+    drawNotes(c, notes, s);
   }
 
  private:
@@ -187,7 +189,7 @@ class WifiDriveScreen : public ui::Screen {
   // kCounterRedrawMs. The idle stop's minutes show (and redraw) only in its last five.
   static std::string coarseSignature(const webdav::Status &s) {
     std::string sig = std::string(pill(s)) + "|" + s.ip + "|" + s.result + "|" + s.lastChange +
-                      "|" + std::to_string(s.badSignIns);
+                      "|" + std::to_string(s.badSignIns) + "|" + tailnet::describe();
     if (s.phase == webdav::Phase::Serving && s.secondsLeft <= 5 * 60) {
       sig += "|" + std::to_string((s.secondsLeft + 59) / 60);
     }
@@ -271,12 +273,23 @@ class WifiDriveScreen : public ui::Screen {
     drawRows(c, r, rows, 3);
   }
 
-  static void drawNotes(ui::Canvas &c, const Rect &area) {
+  // While serving with a tailnet set up: where the board answers on it, or why it doesn't.
+  static std::string tailnetNote(const webdav::Status &s) {
+    if (s.phase != webdav::Phase::Serving) return "Tailnet: while it's serving";
+    const std::string at = tailnet::address();
+    if (!at.empty()) return "Tailnet: http://" + tailnet::name() + " or http://" + at;
+    const std::string state = tailnet::describe();
+    if (state.compare(0, 7, "joining") == 0) return "Tailnet: joining\xE2\x80\xA6";
+    return "Tailnet: " + state.substr(0, state.find(" \xC2\xB7 "));
+  }
+
+  static void drawNotes(ui::Canvas &c, const Rect &area, const webdav::Status &s) {
     using namespace ui;
     Rect r = area;
     hrule(c, r.x, r.y, r.w);
     r.takeTop(kRule);
-    drawSectionHeader(c, r.takeTop(kSectionH), "ON THE COMPUTER", "SAME NETWORK");
+    drawSectionHeader(c, r.takeTop(kSectionH), "ON THE COMPUTER",
+                      tailnet::configured() ? "SAME NETWORK OR TAILNET" : "SAME NETWORK");
     r.takeTop(8);
     const int x = r.x + kPadX;
     const int w = r.w - 2 * kPadX;
@@ -287,6 +300,9 @@ class WifiDriveScreen : public ui::Screen {
     drawText(c, {x, r.takeTop(kNoteH).y, w, kNoteH},
              "stops when you leave, or " + std::to_string(webdav::kIdleMinutes) + " min unused",
              kNote);
+    if (tailnet::configured()) {
+      drawText(c, {x, r.takeTop(kNoteH).y, w, kNoteH}, tailnetNote(s), kNote);
+    }
   }
 
   std::string drawnCoarse_;
