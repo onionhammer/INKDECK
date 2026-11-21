@@ -6,6 +6,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <algorithm>
+
 #include "alarms.h"
 #include "apps/clock.h"
 #include "apps/files.h"
@@ -67,14 +69,14 @@ struct Module {
 
 // Copy from the design canvas, trimmed to what the firmware does today. The order is the
 // user's (2026-11-13; AGENT up to 03 and MUSIC down to 07 on 2026-11-20, issue #52): what's
-// used most first, related modules together. NEWS, the newest, comes last (12). Screen tags
-// follow it through moduleTag().
+// used most first, related modules together; NEWS up to 02 and PODCASTS down to 05 on
+// 2026-11-21. Screen tags follow it through moduleTag().
 // The \xC2\xB7 escapes in these strings are the middle dot (UTF-8 U+00B7).
 constexpr Module kModules[] = {
     {"READER", "SD", "EPUB books from microSD. Opens where you left off.",
      "microSD \xC2\xB7 SDMMC 4-bit", Kind::Reader},
-    {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
-     "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts},
+    {"NEWS", "NET", "RSS and Atom feeds over Wi-Fi, kept on the card to read offline.",
+     "Wi-Fi \xC2\xB7 microSD", Kind::News},
 #if INKDECK_AGENT
     {"AGENT", "NET",
      "Long jobs inkharness runs while the board sleeps. It asks here when you need to choose.",
@@ -82,6 +84,8 @@ constexpr Module kModules[] = {
 #endif
     {"WEATHER", "NET", "Now, hourly and 6-day forecast over Wi-Fi, every half hour on USB.",
      "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather},
+    {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
+     "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
      "PCF85063A @ 0x51", Kind::Clock},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
@@ -97,8 +101,6 @@ constexpr Module kModules[] = {
      "SDMMC 4-bit \xC2\xB7 16 MB flash", Kind::Files},
     {"SYSTEM", "PMIC", "Battery, power rails, sleep schedule, Wi-Fi and firmware updates.",
      "TG28 (AXP2101) @ 0x34", Kind::System},
-    {"NEWS", "NET", "RSS and Atom feeds over Wi-Fi, kept on the card to read offline.",
-     "Wi-Fi \xC2\xB7 microSD", Kind::News},
 };
 constexpr int kModuleCount = sizeof kModules / sizeof kModules[0];
 
@@ -550,12 +552,18 @@ class HomeScreen : public ui::Screen {
     hrule(c, p.x, y, p.w);
     y += kRule + 10;
 
-    // READER: the last book's cover, framed, with a dithered shadow like the button's; the
-    // stats move right of it.
+    // With twelve modules the list leaves no room under the stats for the HW line and the OPEN
+    // button (the hint bar says OPEN too).
+    const bool buttonRow = p.bottom() - 44 >= y + 2 * 48;
+
+    // READER: the last book's cover, framed, with a dithered shadow like the button's, as tall as
+    // the space down to the button row (the bottom without one); the stats move right of it.
     Rect statsArea{p.x, y, p.w, 96};
+    bool fitColumn = false;  // the right column only as wide as its stats need
     if (m.kind == Kind::Reader) {
-      constexpr int kFrame = 2, kShadow = 4, kMaxW = 84, kGap = 16;
-      const int maxH = (p.bottom() - 44 - 10) - y - kShadow - 2 * kFrame;
+      constexpr int kFrame = 2, kShadow = 4, kMaxW = 132, kGap = 16;
+      const int bottom = buttonRow ? p.bottom() - 44 - 10 : p.bottom();
+      const int maxH = bottom - y - kShadow - 2 * kFrame;
       std::string path, title;
       readstate::Position pos;
       picture::Bitmap cover;
@@ -569,19 +577,30 @@ class HomeScreen : public ui::Screen {
         statsArea.x += shift;
         statsArea.w -= shift;
       }
+      fitColumn = true;  // PLACE and SD CARD are short; the title gets the room
     }
 
     Stat stats[4];
     const int n = statsFor(m, stats);
-    const int colW = (statsArea.w - 20) / 2;
+    constexpr int kColGap = 20;
+    int rightW = (statsArea.w - kColGap) / 2;
+    if (fitColumn) {
+      int need = 0;
+      for (int k = 1; k < n; k += 2) {
+        need = std::max({need, textWidth(style::kKey, stats[k].key),
+                         textWidth(style::kValue, stats[k].value)});
+      }
+      if (need > 0) rightW = std::min(rightW, need + 4);
+    }
+    const int leftW = statsArea.w - kColGap - rightW;
     for (int k = 0; k < n; ++k) {
-      drawStat(c, {statsArea.x + (k % 2) * (colW + 20), y + (k / 2) * 48, colW, 48},
+      const bool right = k % 2 == 1;
+      drawStat(c, {statsArea.x + (right ? leftW + kColGap : 0), y + (k / 2) * 48,
+                   right ? rightW : leftW, 48},
                stats[k].key, stats[k].value);
     }
 
-    // With twelve modules the list leaves no room under the stats for the HW line and the OPEN
-    // button (the hint bar says OPEN too).
-    if (p.bottom() - 44 >= y + 2 * 48) {
+    if (buttonRow) {
       const Rect button = drawButton(c, p.right() - 6, p.bottom() - 44, glyph::kPress, "OPEN");
       drawText(c, {p.x, button.y, button.x - p.x - 14, button.h},
                std::string("HW ") + glyph::kPointer + " " + m.hw, style::kLabel);
