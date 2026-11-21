@@ -30,8 +30,8 @@
 //
 // Home opens it behind the PIN when the build asks for one there (INKDECK_PIN_ON's files) and
 // Files wasn't in use in the last minute, and the PIN comes back in front of it after a minute
-// away or without a key (apps/lock.h openGuarded()). The Reader and Music get a confined
-// browser instead (openLibrary()).
+// away or without a key (apps/lock.h openGuarded()). Music gets a confined browser instead
+// (openLibrary()); the Reader has its own library (apps/library.h).
 #pragma once
 #include <memory>
 #include <string>
@@ -44,12 +44,13 @@ namespace apps {
 // share's shares::Share::mountPath()), with the cursor on the entry named select if given.
 std::unique_ptr<ui::Screen> makeFiles(const std::string &dir, const std::string &select = "");
 
-// The Reader's and Music's way onto the card: its top-level folder `name` ("books", "music"),
+// Music's and the notes' way onto the card: its top-level folder `name` ("music", "notes"),
 // at dir inside it (default: the folder itself) with the cursor on select. That browser stays in
 // the folder (BOOT at its top goes back), deletes nothing, has no ONBOARD FLASH or share rows,
 // and needs no PIN. If the card has no such folder, or dir isn't inside it, this opens Files
-// proper at dir (the card's root by default), behind the PIN as Home's FILES. replace: in place
-// of the top screen (the Reader's LIBRARY), else pushed.
+// proper at dir (the card's root by default), behind the PIN as Home's FILES: what the Reader's
+// library does for a book outside SD:/Books. replace: in place of the top screen (a note's
+// FOLDER, the Reader's LIBRARY), else pushed.
 void openLibrary(const char *name, const std::string &dir = "", const std::string &select = "",
                  bool replace = false);
 

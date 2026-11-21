@@ -19,7 +19,7 @@ board instead, and the wheel keeps its portrait sense there.
 
 | Module | What it does |
 | --- | --- |
-| **Reader** | EPUB 2/3 from microSD in Literata (three sizes), justified, with drop caps and line breaks at soft hyphens and dashes. Shows pictures (JPEG/PNG, dithered), the table of contents, and the cover as a page and on Home. Honours `display:none`. Resumes each book where you left it, even after a power loss |
+| **Reader** | EPUB 2/3 from microSD in Literata (three sizes), justified, with drop caps and line breaks at soft hyphens and dashes. Shows pictures (JPEG/PNG, dithered), the table of contents, and the cover as a page and on Home. Honours `display:none`. Resumes each book where you left it, even after a power loss. The **library** lists every book in `SD:/Books` (and its folders) under its author, authors by surname and each author's books by title, with how far each is read; titles and authors are read from each book once and cached on the card |
 | **Podcasts** | RSS feeds over Wi-Fi plus folders of MP3s. Downloads resume after a reset. Playback resumes where you stopped, and played episodes are marked |
 | **Music** | MP3 and WAV from the card through the codec and speaker, with a waveform overview, queue and volume. Playback continues on any screen; while it plays, HOLD BOOT raises a player sheet over any screen (what's playing, pause / play, next, volume; BOOT closes it) |
 | **Weather** | Open-Meteo forecast: now, 12 hours and 6 days, with a detail sheet per day. Synced hourly (every half hour on USB; while the Reader naps, at the next page turn) and cached for offline use |
@@ -68,10 +68,10 @@ if it's unset):
   again if you come back to System (from the updater, the desk face, a sheet) more than a minute
   after you last used it, or leave it on screen a minute without a key.
 - `files`: the same for **Files**: coming back to it from a book, a picture or the desk face
-  after a minute, or leaving it a minute without a key, brings the PIN up again. The Reader and
-  Music still open `SD:/Books` and `SD:/Music` without it, but only those folders: BOOT stops at
-  the folder, and there's no delete, onboard flash or network shares there. Without such a
-  folder, or for a book kept elsewhere, they open Files with the PIN.
+  after a minute, or leaving it a minute without a key, brings the PIN up again. The Reader's
+  library (only books in `SD:/Books`) and Music (`SD:/Music`, only that folder: BOOT stops at it,
+  and there's no delete, onboard flash or network shares there) still open without it. Without
+  such a folder, or for a book kept elsewhere, they open Files with the PIN.
 
 Leave `power_on` out to ask only for System and/or Files. Before System or Files, the wheels show
 under that module's tag with ● OPEN on the last one, and BOOT on the first wheel goes back to

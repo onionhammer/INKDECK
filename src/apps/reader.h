@@ -11,11 +11,11 @@
 namespace apps {
 
 // Opens the EPUB at path at its saved position, or returns nullptr with err set. The menu's
-// LIBRARY goes back to the Files screen that opened it.
+// LIBRARY goes back to the screen that opened it (the library, apps/library.h, or Files).
 std::unique_ptr<ui::Screen> makeReader(const std::string &path, std::string &err);
 
 // The last book read, at its saved position, or nullptr if there isn't one (or it's gone).
-// LIBRARY then opens Files in the book's folder.
+// LIBRARY then opens the library in its place (openBookLibrary()).
 std::unique_ptr<ui::Screen> resumeLastBook();
 
 }  // namespace apps

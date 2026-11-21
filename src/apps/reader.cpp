@@ -4,8 +4,8 @@
 
 #include <vector>
 
-#include "apps/files.h"
 #include "apps/home.h"
+#include "apps/library.h"
 #include "fonts.h"
 #include "book_reader.h"
 #include "readstate.h"
@@ -220,9 +220,9 @@ class ReaderScreen : public ui::Screen {
                      [r, fromFiles] {
                        ui::nav::pop();  // the menu
                        if (fromFiles) {
-                         ui::nav::pop();  // back to the Files screen that opened the book
+                         ui::nav::pop();  // back to the library (or Files) that opened it
                        } else {
-                         openLibrary("books", folderOf(r->path()), nameOf(r->path()), true);
+                         openBookLibrary(r->path(), true);
                        }
                      }});
     ui::nav::push(std::make_unique<ui::MenuScreen>("READER", std::move(items)));
