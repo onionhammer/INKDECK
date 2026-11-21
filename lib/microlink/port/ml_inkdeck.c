@@ -81,3 +81,7 @@ int ml_inkdeck_peer_lan_addresses(microlink_t *ml, uint32_t vpn_ip, uint32_t *ou
     }
     return n;
 }
+
+bool ml_inkdeck_exit_node(microlink_t *ml) {
+    return ml && ml_routes_is_exit_node(ml->routes, ml->route_count);
+}

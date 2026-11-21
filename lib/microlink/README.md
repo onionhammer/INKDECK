@@ -10,7 +10,8 @@ the map of machines), finds paths with DISCO and STUN, relays through DERP when 
 works, enforces the tailnet's access rules on what comes in, and adds a WireGuard interface to
 lwIP for the tailnet's 100.64.0.0/10. So the firmware's ordinary sockets reach other machines,
 and its servers (Wi-Fi Drive, the updater) answer them. IPv4 inside the tunnel only, no MagicDNS
-server (`src/tailnet.cpp` answers names from the map itself), no subnet routes or exit nodes in.
+server (`src/tailnet.cpp` answers names from the map itself), and it uses no other machine's subnet
+routes or exit node. It can be an exit node itself, for IPv4 (`tailscale_exit_node`, `src/tailnet.h`).
 
 Copied from commit `1cb8d1c` (2026-11-18), component version 2.3.0: upstream's
 `components/microlink/` as it is, with `include/` and `src/` here, its bundled
@@ -25,14 +26,23 @@ Ours, in `port/`:
   has ESP-IDF prebuilt, with no menuconfig, so `library.json` force-includes this ahead of every
   MicroLink source. Upstream's defaults, except a 10 s stop timeout (30 s), no device-name prefix
   or priority peer (`src/tailnet.cpp` passes both at run time), and no OTA rollback of its own
-  (the firmware's `ota::confirmBoot()` decides). The DERP home region is a variable instead of
+  (the firmware's `ota::confirmBoot()` decides), and its subnet router built in
+  (`CONFIG_ML_SUBNET_ROUTER`, upstream off), which `src/tailnet.cpp` uses only for an exit node,
+  and only when the card asks. That option needs lwIP's IPv4 forwarding and NAPT, which the
+  core's prebuilt lwIP has; it has no IPv6 forwarding, so `CONFIG_ML_ROUTER_IPV6` stays off. The
+  DERP home region is a variable instead of
   Kconfig's constant: MicroLink relays to every peer through its own home region only, so
   `src/tailnet.cpp` sets it to where the board's peers are (upstream's 9, Dallas, until it knows).
   A `-D` build flag fixes the region, and two more pick another control server; the file says how,
   Headscale included.
 - `ml_inkdeck.c`/`.h`: calls into MicroLink's internals: wake a peer's WireGuard session and ask
   whether it's up (its own TCP API does the same before it connects, but keeps the socket), and
-  the DERP regions (the board's, a peer's, the one most peers use), with the variable above.
+  the DERP regions (the board's, a peer's, the one most peers use), with the variable above, and
+  whether the instance is an exit node (its routes survive only if NAPT came up).
+
+PlatformIO doesn't see a change to `port/microlink_kconfig.h` (it's force-included, not
+`#include`d): after editing it, delete `.pio/build/epaper397/lib*/microlink` and
+`libmicrolink.a` there, or the old objects are linked.
 
 Upstream builds the crypto (ChaCha20-Poly1305, BLAKE2s, X25519, the DISCO box) at `-O2`. Here it
 is `-Os` like the rest. Voice audio is tens of KB/s, far below what it manages either way.

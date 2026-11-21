@@ -27,6 +27,15 @@
 // and takes off the card, and the board's name on the tailnet. MicroLink keeps the board's own
 // keys (machine, node, disco) in NVS too ("microlink"), so it stays the same machine across
 // power-offs; a different auth key joins it again as a new machine.
+//
+// tailscale_exit_node = on makes the board an exit node: it advertises 0.0.0.0/0, and once that's
+// approved in the admin console, machines that pick it send their internet traffic through it,
+// out of its Wi-Fi with its LAN address as the source (lwIP's NAPT, port/microlink_kconfig.h).
+// IPv4 only: the core's lwIP can't forward IPv6, so a machine's IPv6 through it goes nowhere and
+// it falls back to IPv4. The tailnet's access rules decide where it forwards to, as for what
+// reaches the board. It's an exit node while it's on the tailnet: all the time on USB power
+// (begin()), where it also keeps Wi-Fi's modem sleep off, and on battery only while something
+// holds it.
 #pragma once
 #include <stdint.h>
 
@@ -80,8 +89,8 @@ std::string address();
 std::string name();  // what it asks to be called (tailscale_name, inkdeck by default)
 
 // For the System screen's TAILNET row: "not set", "off · inkdeck", "joining · inkdeck",
-// "on · inkdeck · 100.101.102.103", "KEY REFUSED · inkdeck" (the last join's failure). Safe
-// from any task.
+// "on · inkdeck · 100.101.102.103" (with " · exit node" when it offers itself as one),
+// "KEY REFUSED · inkdeck" (the last join's failure). Safe from any task.
 std::string describe();
 
 }  // namespace tailnet

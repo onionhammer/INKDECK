@@ -92,3 +92,9 @@ nfs = nfs://nas.local/volume1/books
 ; tailscale_key = tskey-auth-k1234567CNTRL-abcdefghijklmnopqrstuvwxyz
 ; Its name on the tailnet: letters, digits and hyphens (inkdeck unless you change it).
 ; tailscale_name = inkdeck
+; Offer the board as an exit node, IPv4 only: the tailnet's machines can send their internet
+; traffic out through its Wi-Fi. Approve it in the admin console (Machines, Edit route
+; settings); access rules other than the default must allow autogroup:internet. It's there
+; while the board is on the tailnet, all the time on USB power. Software encryption over
+; 2.4 GHz Wi-Fi: much slower than a computer would be.
+; tailscale_exit_node = on

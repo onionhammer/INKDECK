@@ -255,6 +255,10 @@ microlink_t *create() {
   // The voice daemon by address: keep it a WireGuard slot on a tailnet with more machines than
   // there are slots (CONFIG_ML_MAX_PEERS).
   cfg.priority_peer_ip = parseIp(settings::voiceHost());
+  // tailscale_exit_node = on: the board offers itself as an exit node (MicroLink adds ::/0, as
+  // Tailscale wants both, but forwards IPv4 only: port/microlink_kconfig.h). Read here, so like
+  // the name it changes at the next boot: the instance is kept for this one.
+  if (settings::tailscaleExitNode()) cfg.advertise_routes = "0.0.0.0/0";
   return microlink_init(&cfg);
 }
 
@@ -282,9 +286,19 @@ void stopNow() {
   }
 }
 
+// The board forwards the tailnet's internet traffic now (an exit node, approved or not).
+bool exitNode() {
+  microlink_t *m = live;
+  return m && microlink_is_connected(m) && ml_inkdeck_exit_node(m);
+}
+
 // On USB power the board holds the tailnet; unplugged, it lets go (and leaves kLingerMs later).
+// An exit node on USB also keeps Wi-Fi's modem sleep off: forwarded traffic is everything another
+// machine sends, and modem sleep slows transfers several times over (ota.cpp, webdav.cpp). Those
+// and the voice client turn it back on when they finish; the next look here turns it off again.
 void usbTask(void *) {
   bool held = false;
+  bool awake = false;                 // modem sleep off for the exit node
   uint32_t waitFrom = 0, waitMs = 0;  // after a failed join
   for (;;) {
     const pmic::Status p = pmic::status();
@@ -303,10 +317,19 @@ void usbTask(void *) {
       }
     } else if (!onUsb && held) {
       held = false;
+      if (awake) {
+        awake = false;
+        WiFi.setSleep(true);
+      }
       release();
       log_i("tailnet: off USB: leaving the tailnet unless something else needs it");
     } else if (!onUsb) {
       waitMs = 0;  // plugging in again tries at once
+    }
+    if (held && exitNode() && WiFi.getSleep() != WIFI_PS_NONE) {
+      if (!awake) log_i("tailnet: an exit node on USB: Wi-Fi modem sleep off");
+      awake = true;
+      WiFi.setSleep(false);
     }
     vTaskDelay(pdMS_TO_TICKS(kUsbPollMs));
   }
@@ -662,7 +685,10 @@ std::string describe() {
   const std::string who = name();
   microlink_t *m = live;
   if (m) {
-    if (microlink_is_connected(m)) return "on \xC2\xB7 " + who + " \xC2\xB7 " + address();
+    if (microlink_is_connected(m)) {
+      return "on \xC2\xB7 " + who + " \xC2\xB7 " + address() +
+             (ml_inkdeck_exit_node(m) ? " \xC2\xB7 exit node" : "");
+    }
     return "joining \xC2\xB7 " + who;
   }
   std::lock_guard<std::mutex> g(stateMutex);

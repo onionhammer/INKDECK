@@ -22,6 +22,7 @@
 //   [tailscale]
 //   tailscale_key = tskey-auth-...       ; the board keeps it and replaces the line with a note (tailnet.h)
 //   tailscale_name = inkdeck             ; the board's name on the tailnet
+//   tailscale_exit_node = on             ; offer the board as an exit node, IPv4 (tailnet.h)
 //
 // and lists the network shares Files browses (shares.h has the syntax), one line each:
 //
@@ -118,6 +119,7 @@ std::string voiceToken();  // "" if the daemon asks for none
 bool hasTailscale();
 std::string tailscaleKey();   // from NVS; "" if none
 std::string tailscaleName();  // tailscale_name, else "inkdeck"
+bool tailscaleExitNode();     // tailscale_exit_node = on: the board offers itself as an exit node
 
 // The lock. hasPin(): the board locks at boot, on waking the desk face and after lockMinutes()
 // without a key (0: never for that).

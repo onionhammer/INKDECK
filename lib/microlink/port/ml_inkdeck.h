@@ -1,7 +1,8 @@
 // What src/tailnet.cpp needs from MicroLink's internals (microlink_internal.h): waking a peer's
 // WireGuard session, as microlink_tcp_connect() does before its connect() but without the socket
 // it makes (the firmware connects with ordinary lwIP sockets, which reach a 100.x address through
-// MicroLink's WireGuard interface once the session is up), and the DERP regions in play.
+// MicroLink's WireGuard interface once the session is up), the DERP regions in play, and whether
+// it's an exit node.
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
@@ -36,6 +37,11 @@ uint16_t ml_inkdeck_common_region(microlink_t *ml);
 // The private IPv4 addresses (10/8, 172.16/12, 192.168/16) among a peer's endpoints, as the map
 // gave them: its LAN addresses, a Docker bridge's. Host byte order, at most `max`; the count.
 int ml_inkdeck_peer_lan_addresses(microlink_t *ml, uint32_t vpn_ip, uint32_t *out, int max);
+
+// The instance offers itself as an exit node: 0.0.0.0/0 was among its advertise_routes, and the
+// WireGuard interface's NAPT came up (MicroLink drops the routes for good when it can't, rather
+// than forward with tailnet source addresses).
+bool ml_inkdeck_exit_node(microlink_t *ml);
 
 #ifdef __cplusplus
 }

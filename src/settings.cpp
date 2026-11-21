@@ -33,12 +33,13 @@ struct Values {
   int voicePort = 0;  // 0: the default
   std::string voiceToken;
   std::string tailscaleName;  // "": the default
+  bool tailscaleExitNode = false;
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
            wifiSsids == o.wifiSsids && shares == o.shares && lockMinutes == o.lockMinutes &&
            voiceHost == o.voiceHost && voicePort == o.voicePort && voiceToken == o.voiceToken &&
-           tailscaleName == o.tailscaleName;
+           tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode;
   }
 };
 
@@ -160,7 +161,13 @@ constexpr const char *kTemplate =
     "; line with a note; a different key joins it as a new machine. tailscale_key = off removes it.\n"
     "; tailscale_key = tskey-auth-k1234567CNTRL-abcdefghijklmnopqrstuvwxyz\n"
     "; Its name on the tailnet: letters, digits and hyphens (inkdeck unless you change it).\n"
-    "; tailscale_name = inkdeck\n";
+    "; tailscale_name = inkdeck\n"
+    "; Offer the board as an exit node, IPv4 only: the tailnet's machines can send their internet\n"
+    "; traffic out through its Wi-Fi. Approve it in the admin console (Machines, Edit route\n"
+    "; settings); access rules other than the default must allow autogroup:internet. It's there\n"
+    "; while the board is on the tailnet, all the time on USB power. Software encryption over\n"
+    "; 2.4 GHz Wi-Fi: much slower than a computer would be.\n"
+    "; tailscale_exit_node = on\n";
 
 // The share lines and SMB passwords go in NVS as one string each, a line apiece.
 std::vector<std::string> splitLines(const std::string &text) {
@@ -231,6 +238,7 @@ void loadNvs() {
   card.voicePort = prefs.getInt("vport", 0);
   card.voiceToken = nvsString(prefs, "vtoken");
   card.tailscaleName = nvsString(prefs, "tsname");
+  card.tailscaleExitNode = prefs.getBool("tsexit", false);
   tailscaleKeySet = prefs.isKey("tskey");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
@@ -251,6 +259,7 @@ void saveNvs() {
   prefs.putInt("vport", card.voicePort);
   prefs.putString("vtoken", card.voiceToken.c_str());
   prefs.putString("tsname", card.tailscaleName.c_str());
+  prefs.putBool("tsexit", card.tailscaleExitNode);
   prefs.end();
 }
 
@@ -451,6 +460,19 @@ bool isOff(std::string s) {
   return s == "off";
 }
 
+// on / off, or yes / no, true / false, 1 / 0. False if it's none of them.
+bool parseOnOff(std::string s, bool &out) {
+  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  if (s == "on" || s == "yes" || s == "true" || s == "1") {
+    out = true;
+  } else if (s == "off" || s == "no" || s == "false" || s == "0") {
+    out = false;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 bool parseDegrees(const std::string &text, double limit, double &out) {
   char *end = nullptr;
   const double v = strtod(text.c_str(), &end);
@@ -578,6 +600,10 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
         v.tailscaleName = name;
       } else {
         log_w("settings: %s: tailscale_name must be letters, digits and hyphens, up to 63", kFile);
+      }
+    } else if (key == "tailscale_exit_node") {
+      if (!parseOnOff(value, v.tailscaleExitNode)) {
+        log_w("settings: %s: tailscale_exit_node must be on or off", kFile);
       }
     } else {
       log_w("settings: %s: unknown setting \"%s\"", kFile, key.c_str());
@@ -979,6 +1005,11 @@ std::string tailscaleKey() {
 std::string tailscaleName() {
   loadNvs();
   return card.tailscaleName.empty() ? "inkdeck" : card.tailscaleName;
+}
+
+bool tailscaleExitNode() {
+  loadNvs();
+  return card.tailscaleExitNode;
 }
 
 PinChange pendingPin() { return pending; }

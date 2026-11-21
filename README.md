@@ -137,6 +137,17 @@ takes about 4 s after Wi-Fi, and voice over the tailnet starts about 6.5 s after
 (measured with inkharness on a home server). While on the tailnet, MicroLink's four tasks take
 42 KB of internal RAM, and fetching the list of machines takes 512 KB of PSRAM. Voice over the
 tailnet is tested on the board; shares, feeds, Wi-Fi Drive and updates over it aren't yet.
+**Exit node:** with `tailscale_exit_node = on`, the board offers itself as an exit node, so a
+laptop or phone on the tailnet can send its internet traffic out through the board's Wi-Fi.
+Approve it in the admin console (Machines → the board → Edit route settings → Use as exit
+node); access rules other than the default must allow `autogroup:internet`. It's IPv4 only: the
+core's lwIP can't forward IPv6, so a machine using it falls back to IPv4 for sites that have
+both. It's there whenever the board is on the tailnet, so in practice on USB power, where the
+board also keeps Wi-Fi's modem sleep off. Everything is encrypted in software on a 240 MHz core
+over 2.4 GHz Wi-Fi, so it's much slower than a computer would be. System's TAILNET row ends in
+`exit node` while it offers itself. The board advertises the route and forwards with NAT
+(tested 2026-11-21: on USB it joined and turned it on, with the same 93 KB of internal RAM
+free); traffic through it isn't tested yet.
 
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
@@ -178,6 +189,7 @@ voice_token = something-long
 [tailscale]
 tailscale_key = tskey-auth-...        ; the board keeps it and replaces the line with a note
 tailscale_name = inkdeck              ; its name on the tailnet
+tailscale_exit_node = on              ; offer the board as an exit node (IPv4)
 ```
 
 Each `smb =` or `nfs =` line is a share Files lists:

@@ -62,8 +62,17 @@ extern uint16_t ml_inkdeck_derp_region;
 #define CONFIG_ML_STOP_TIMEOUT_MS 10000  // upstream: 30000. Its tasks stop within a second or two
 #define CONFIG_ML_DEVICE_NAME ""         // tailnet.cpp always names the board
 
+// The board as an exit node (upstream: off). This only builds the code in: the board offers
+// itself only when inkdeck.ini's tailscale_exit_node = on, and tailnet.cpp then passes
+// "0.0.0.0/0" as microlink_config_t.advertise_routes. Kconfig's option selects lwIP's IPv4
+// forwarding and NAPT, and the core's prebuilt lwIP has both already (CONFIG_LWIP_IP_FORWARD and
+// CONFIG_LWIP_IPV4_NAPT in its sdkconfig.h, for WiFi.AP.enableNAPT()). It has no IPv6 forwarding
+// (no CONFIG_LWIP_IPV6_FORWARD), so CONFIG_ML_ROUTER_IPV6 stays off: an exit node for IPv4 only.
+#define CONFIG_ML_SUBNET_ROUTER 1
+#define CONFIG_ML_ADVERTISE_ROUTES ""  // tailnet.cpp passes them at run time instead
+
 // Left out (undefined, as Kconfig leaves an option that's off): CONFIG_ML_ZERO_COPY_WG,
-// CONFIG_ML_SUBNET_ROUTER, CONFIG_ML_ROUTER_IPV6, CONFIG_ML_ENABLE_CELLULAR,
+// CONFIG_ML_ROUTER_IPV6, CONFIG_ML_ENABLE_CELLULAR,
 // CONFIG_ML_ENABLE_NET_SWITCH, CONFIG_ML_ENABLE_CONFIG_HTTPD, CONFIG_ML_CTRL_TLS,
 // CONFIG_ML_CTRL_STREAMING_MAP_FETCH, and CONFIG_ML_OTA_ROLLBACK: the firmware keeps or rolls
 // back an update itself (ota::confirmBoot()), and MicroLink's would mark it valid on its own.
