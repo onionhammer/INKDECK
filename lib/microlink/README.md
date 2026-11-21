@@ -25,10 +25,14 @@ Ours, in `port/`:
   has ESP-IDF prebuilt, with no menuconfig, so `library.json` force-includes this ahead of every
   MicroLink source. Upstream's defaults, except a 10 s stop timeout (30 s), no device-name prefix
   or priority peer (`src/tailnet.cpp` passes both at run time), and no OTA rollback of its own
-  (the firmware's `ota::confirmBoot()` decides). The DERP home region (9, Dallas) and the control
-  server (Tailscale's) can be changed with `-D` build flags; the file says how, Headscale included.
-- `ml_inkdeck.c`/`.h`: two calls into MicroLink's internals, to wake a peer's WireGuard session
-  and ask whether it's up. Its own TCP API does the same before it connects, but keeps the socket.
+  (the firmware's `ota::confirmBoot()` decides). The DERP home region is a variable instead of
+  Kconfig's constant: MicroLink relays to every peer through its own home region only, so
+  `src/tailnet.cpp` sets it to where the board's peers are (upstream's 9, Dallas, until it knows).
+  A `-D` build flag fixes the region, and two more pick another control server; the file says how,
+  Headscale included.
+- `ml_inkdeck.c`/`.h`: calls into MicroLink's internals: wake a peer's WireGuard session and ask
+  whether it's up (its own TCP API does the same before it connects, but keeps the socket), and
+  the DERP regions (the board's, a peer's, the one most peers use), with the variable above.
 
 Upstream builds the crypto (ChaCha20-Poly1305, BLAKE2s, X25519, the DISCO box) at `-O2`. Here it
 is `-Os` like the rest. Voice audio is tens of KB/s, far below what it manages either way.

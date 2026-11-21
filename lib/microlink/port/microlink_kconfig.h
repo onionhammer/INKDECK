@@ -4,6 +4,7 @@
 // unless a comment says otherwise. The ones in #ifndef can be overridden with a -D in
 // platformio.ini's build_flags, which reaches libraries too.
 #pragma once
+#include <stdint.h>
 
 // --- Peers and buffers ----------------------------------------------------------------------
 
@@ -29,10 +30,17 @@
 
 // --- Relays, control plane ------------------------------------------------------------------
 
-// The DERP relay region the board calls home, used when no direct path works. Upstream's
-// default: 9 (Dallas). The regions' numbers are in https://login.tailscale.com/derpmap/default.
+// The DERP relay region the board calls home: it advertises it (PreferredDERP) and keeps its
+// one relay connection there, and MicroLink relays to every peer through it. A peer homed in
+// another region never hears a relayed packet, so this must be the region the board's peers use.
+// Kconfig makes it a constant (upstream's default: 9, Dallas); here it's a variable, which
+// src/tailnet.cpp sets before each start: the voice host's region, else the one most machines
+// use, learned at the first join and kept in NVS (ml_inkdeck.h). -DCONFIG_ML_DERP_REGION=N fixes
+// it at N instead (https://login.tailscale.com/derpmap/default has the numbers).
 #ifndef CONFIG_ML_DERP_REGION
-#define CONFIG_ML_DERP_REGION 9
+extern uint16_t ml_inkdeck_derp_region;
+#define CONFIG_ML_DERP_REGION ml_inkdeck_derp_region
+#define ML_INKDECK_DERP_AUTO 1
 #endif
 #define CONFIG_ML_DERP_VERIFY_CERT 1  // the core has the certificate bundle
 

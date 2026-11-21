@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 
@@ -30,7 +31,10 @@ constexpr uint32_t kLingerMs = 60000;
 // same).
 constexpr uint32_t kWakeAgainMs = 5000;
 
-constexpr const char *kNamespace = "tailnet";  // NVS: "keyid", the auth key the identity is from
+// NVS: "keyid", the auth key the identity is from; "derp", the relay region the board calls home.
+constexpr const char *kNamespace = "tailnet";
+// How long the first join of a boot may take to join again from another relay region.
+constexpr uint32_t kRegionRejoinMs = 15000;
 
 std::mutex joinMutex;   // held through a join and a stop, so a second caller waits for it
 std::mutex stateMutex;  // guards what follows
@@ -41,6 +45,7 @@ int users = 0;              // hold()s that succeeded, not yet released
 uint32_t generation = 0;    // changes with every hold and release: a linger that sees another
                             // one has been overtaken
 std::string lastError;      // why the last join failed; "" once one succeeds
+bool regionSettled = false; // this boot's first join has checked the relay region
 
 // ml while it runs, for the resolver hook and the status calls, which take no lock. The handle
 // itself is never freed, so a stale copy is harmless.
@@ -110,11 +115,31 @@ void forgetIdentityIfNewKey() {
   prefs.end();
 }
 
+uint16_t storedRegion() {
+  Preferences prefs;
+  uint16_t r = 0;
+  if (prefs.begin(kNamespace, true)) {  // read-only: fails until the first join creates it
+    r = prefs.getUShort("derp", 0);
+    prefs.end();
+  }
+  return r;
+}
+
+void storeRegion(uint16_t r) {
+  Preferences prefs;
+  if (prefs.begin(kNamespace, false)) {
+    if (prefs.getUShort("derp", 0) != r) prefs.putUShort("derp", r);
+    prefs.end();
+  }
+}
+
 // Under joinMutex.
 microlink_t *create() {
   authKey = settings::tailscaleKey();
   deviceName = settings::tailscaleName();
   forgetIdentityIfNewKey();
+  // The relay region the last boot settled on (settleRegion()); upstream's 9 the first time.
+  if (const uint16_t r = storedRegion()) ml_inkdeck_derp_region = r;
   microlink_config_t cfg = {};
   cfg.auth_key = authKey.c_str();
   cfg.device_name = deviceName.c_str();
@@ -147,6 +172,59 @@ void stopNow() {
     wifi = false;
     wlan::disconnect();
   }
+}
+
+const char *stateError(microlink_state_t s) {
+  switch (s) {
+    case ML_STATE_AUTH_FAILED: return "TAILSCALE KEY REFUSED";
+    case ML_STATE_NEEDS_LOGIN: return "TAILSCALE WANTS A NEW KEY";  // a used one-off key
+    default: return nullptr;
+  }
+}
+
+// Waits for MicroLink to be on the tailnet, or to say it won't be, until timeoutMs after t0.
+microlink_state_t waitForJoin(uint32_t t0, uint32_t timeoutMs) {
+  microlink_state_t state = microlink_get_state(ml);
+  while (state != ML_STATE_CONNECTED && !stateError(state) && millis() - t0 < timeoutMs) {
+    vTaskDelay(pdMS_TO_TICKS(100));
+    state = microlink_get_state(ml);
+  }
+  return state;
+}
+
+// The relay region the board's machines can hear it on: the voice host's, if that's on the
+// tailnet, else the one most machines use. 0 if the map doesn't say.
+uint16_t wantedRegion() {
+  const std::string host = settings::voiceHost();
+  uint32_t ip = parseIp(host);
+  if (!ip && routes(host)) ip = microlink_resolve(ml, bareName(host.c_str()).c_str());
+  if (const uint16_t r = ml_inkdeck_peer_region(ml, ip)) return r;
+  return ml_inkdeck_common_region(ml);
+}
+
+// The first join of a boot, once on the tailnet: moves the board's relay home to where its
+// machines are, and joins again from there. MicroLink keeps one relay connection, to its home
+// region, and relays to every peer through it, so a peer homed elsewhere never hears a relayed
+// packet; until a direct path turns up there's no session (the board in upstream's default
+// Dallas, the voice host in Chicago: found on the board 2026-11-21). The region is kept in NVS,
+// so later boots start there. Under joinMutex, with nobody else on the tailnet. Returns the state
+// after it.
+microlink_state_t settleRegion(microlink_state_t state, uint32_t t0, uint32_t timeoutMs) {
+  if (regionSettled || state != ML_STATE_CONNECTED || !ml_inkdeck_derp_auto()) return state;
+  regionSettled = true;
+  const uint16_t want = wantedRegion();
+  const uint16_t have = ml_inkdeck_home_region(ml);
+  if (!want) return state;
+  storeRegion(want);
+  if (want == have) return state;
+  log_i("tailnet: relay region %u, where the board's machines are, not %u: joining again from there",
+        static_cast<unsigned>(want), static_cast<unsigned>(have));
+  ml_inkdeck_derp_region = want;
+  microlink_stop(ml);
+  // The instance keeps the home region it had: without this the new one is never read.
+  ml_inkdeck_forget_home_region(ml);
+  if (microlink_start(ml) != ESP_OK) return ML_STATE_ERROR;
+  return waitForJoin(t0, std::max(timeoutMs, millis() - t0 + kRegionRejoinMs));
 }
 
 // The last user's linger: leaves unless someone held the tailnet since.
@@ -183,14 +261,6 @@ void backgroundTask(void *) {
   }
   if (on && !keep) release();  // left while it joined
   vTaskDelete(nullptr);
-}
-
-const char *stateError(microlink_state_t s) {
-  switch (s) {
-    case ML_STATE_AUTH_FAILED: return "TAILSCALE KEY REFUSED";
-    case ML_STATE_NEEDS_LOGIN: return "TAILSCALE WANTS A NEW KEY";  // a used one-off key
-    default: return nullptr;
-  }
 }
 
 }  // namespace
@@ -246,11 +316,13 @@ bool hold(uint32_t timeoutMs, std::string &error) {
     running = true;
     live = ml;
   }
-  microlink_state_t state = microlink_get_state(ml);
-  while (state != ML_STATE_CONNECTED && !stateError(state) && millis() - t0 < timeoutMs) {
-    vTaskDelay(pdMS_TO_TICKS(100));
-    state = microlink_get_state(ml);
+  microlink_state_t state = waitForJoin(t0, timeoutMs);
+  bool alone;
+  {
+    std::lock_guard<std::mutex> g(stateMutex);
+    alone = users == 0;
   }
+  if (alone) state = settleRegion(state, t0, timeoutMs);
   const bool on = state == ML_STATE_CONNECTED;
   bool first = false, leave = false;
   {
@@ -337,8 +409,11 @@ bool reach(const std::string &host, uint32_t timeoutMs) {
       ml_inkdeck_wake_peer(m, ip);
     }
   }
-  log_w("tailnet: no session with %s after %lu ms", host.c_str(),
-        static_cast<unsigned long>(timeoutMs));
+  // Relayed packets reach only peers homed in the board's relay region (settleRegion()).
+  log_w("tailnet: no session with %s after %lu ms (its relay region %u, the board's %u)",
+        host.c_str(), static_cast<unsigned long>(timeoutMs),
+        static_cast<unsigned>(ml_inkdeck_peer_region(m, ip)),
+        static_cast<unsigned>(ml_inkdeck_home_region(m)));
   return false;
 }
 

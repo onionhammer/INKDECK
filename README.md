@@ -123,9 +123,13 @@ Make the key in Tailscale's admin console (Settings → Keys): reusable and not 
 the board is offline most of the time and Tailscale removes an ephemeral machine soon after it
 goes. Once the board shows up in Machines, turn off its key expiry, or it has to join again with
 a new key when that runs out. A different key joins the board as a new machine, and
-`tailscale_key = off` takes the key off it. While on the tailnet, MicroLink's four tasks take
-42 KB of internal RAM, and fetching the list of machines takes 512 KB of PSRAM. **Not yet tested
-on a tailnet.**
+`tailscale_key = off` takes the key off it. The board relays through the same Tailscale relay
+region (DERP) as `voice_host`'s machine, or as most of your machines: it learns that at its first
+join after a start, joins again from there if it has to (about 4 s more, once), and keeps it. Joining
+takes about 4 s after Wi-Fi, and voice over the tailnet starts about 6.5 s after you press BOOT
+(measured with inkharness on a home server). While on the tailnet, MicroLink's four tasks take
+42 KB of internal RAM, and fetching the list of machines takes 512 KB of PSRAM. Voice over the
+tailnet is tested on the board; shares, feeds, Wi-Fi Drive and updates over it aren't yet.
 
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
