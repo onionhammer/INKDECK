@@ -8,6 +8,7 @@
 #include "apps/clock.h"
 #include "apps/files.h"
 #include "apps/level.h"
+#include "apps/library.h"
 #include "apps/lock.h"
 #include "apps/music.h"
 #include "apps/podcasts.h"
@@ -399,7 +400,7 @@ class HomeScreen : public ui::Screen {
         if (auto reader = resumeLastBook()) {
           ui::nav::push(std::move(reader));
         } else {
-          openLibrary("books");
+          openBookLibrary();
         }
         break;
       case Kind::Music:

@@ -29,6 +29,21 @@ struct HiddenSelector {
 // The display:none selectors in a stylesheet.
 std::vector<HiddenSelector> hiddenSelectors(const std::string &css);
 
+// What the Reader's library sorts by (book_library.h), from the OPF's metadata: the first title
+// and the first author (a creator with the role "aut" or none; failing that, the first creator),
+// each with the sort form the book gives, or "" where it gives none: EPUB 2's opf:file-as, an
+// EPUB 3 file-as <meta> refining it, or calibre's title_sort. All UTF-8.
+struct EpubMeta {
+  std::string title;
+  std::string titleSort;   // "Dispossessed, The"
+  std::string author;      // "Ursula K. Le Guin"
+  std::string authorSort;  // "Le Guin, Ursula K."
+};
+
+// Reads only container.xml and the OPF, so it's much quicker than Epub::open(). False with err
+// set if the file isn't an EPUB this can read. title is "" if the book names none.
+bool readEpubMeta(const std::string &path, EpubMeta &out, std::string &err);
+
 class Epub {
  public:
   struct TocEntry {

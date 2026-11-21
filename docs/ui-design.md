@@ -69,6 +69,7 @@ off face (Sleep, Standby, a closed book), and doesn't talk over the Recorder or 
 | --- | --- | --- | --- | --- |
 | `Main` (Home) | Portrait | Preview of the selected module (big index, name, bus tag, 4 stats, `● OPEN`) above an 11-row module list. Order (the user's, by use; differs from the canvas): Reader, Podcasts, Music, Weather, Clock, Recorder, Voice, Sensors, Level, Files, System. Each screen's status-bar tag carries its number (`apps::moduleTag()`) | — | ▲▼ move · ● open · BOOT back · PWR off |
 | `Reader` | Portrait | Book page (Literata 19/30, justified, inverted drop cap), page counter and progress bar | microSD (SDMMC 4-bit) | ▲ prev · ▼ next · ● menu · BOOT back |
+| `Library` (firmware addition) | Portrait | The Reader's books: every EPUB in `SD:/Books` and the folders in it (three deep, at most 400) in one list under `// LIBRARY` with the book's place on the right (`03/40`, headings not counted). Grouped by author: a heading row per author (34 px like the others, the name in 15 px ExtraBold capitals from the row's left padding, a 1 px dashed rule through the middle, the number of books right-aligned), then that author's books as list rows (title, `41%` read on the right once opened). Authors by the sort name the book gives (`LE GUIN, URSULA K.`; a book without one borrows another's by the same author, else the name as written), `UNKNOWN AUTHOR` last; each author's books by title (the book's sort title, else without a leading The/A/An; numbers in order). The cursor skips headings; a held dial pages and lands on the page's first book. Status tag `01 READER`, context `SD:/Books`. Titles and authors are read from each new or changed book once (an inverted `// READING BOOKS…` header with `12/80`, the count redrawn every 1.5 s) and kept in `SD:/.inkdeck/books.tsv` (`src/apps/library.h`, `src/book_library.h`). No books: `NO BOOKS` and ● RETRY | microSD | ▲▼ move · ● read · BOOT back. Opens from Home's READER with no book to resume and from the Reader's LIBRARY (back to it from a book it opened, the cursor on that book) |
 | `Music` | Portrait | Now playing, 1-bit waveform overview with playhead, time, play state, volume, 4-track queue, signal chain | ES8311, NS4150B, I2S, ALDO1, microSD | ▲▼ volume · ● pause · HOLD ● skip · BOOT back |
 | `Podcasts` | Portrait | Feed list, episode list with state (`[NEW]`, `[DL 62%]`, `[▶ 23m]`, `[✓]`), selected-episode card, SD cache meter | Wi-Fi, microSD, audio path | ▲▼ move · ● play · HOLD ● download · BOOT back (firmware: ● opens a show, then ● plays or GETs an episode, HOLD ● marks it played or cancels a download, HOLD ● on the show list refreshes; see `src/apps/podcasts.h`) |
 | `Weather` | Portrait | Current temp + condition, feels/wind/RH/sunset, 12-hour temp + rain-chance bars, 6-day list with lo–hi range bars | Wi-Fi (Open-Meteo, synced hourly while the board is on; no wake from power-off) | ▲▼ day · ● detail · HOLD ● sync · BOOT back |
@@ -91,10 +92,11 @@ off face (Sleep, Standby, a closed book), and doesn't talk over the Recorder or 
 
 Home also lists **Files**, which has no artboard and follows Home's list language: one row per
 entry (name, type tag, size), the path in the status bar. With a PIN set, it can open behind the
-Lock screen's wheels unless it was used in the last minute (Lock above). The Reader (no book to
-resume, or its LIBRARY) and Music (nothing playing) open the same browser confined to
-`SD:/Books` or `SD:/Music`: `BOOT BACK` at that folder, no HOLD ● DELETE, no ONBOARD FLASH or
-share rows, and no PIN. Without the folder, or for a book outside it, they open Files proper. The card's root starts
+Lock screen's wheels unless it was used in the last minute (Lock above). Music (nothing playing)
+opens the same browser confined to `SD:/Music`: `BOOT BACK` at that folder, no HOLD ● DELETE, no
+ONBOARD FLASH or share rows, and no PIN. Without the folder it opens Files proper. The Reader
+has its own **Library** (the table above); without `SD:/Books`, or for a book outside it, its
+LIBRARY opens Files proper at the book's folder. The card's root starts
 with an `ONBOARD FLASH` row that opens the 9.9 MB FAT partition in the same browser. A held dial
 moves a page at a time in any long list. The ● verb follows the selection: OPEN, READ (EPUB,
 or any file that reads as text), PLAY, VIEW (JPEG, PNG). HOLD ● deletes the selection (any entry but

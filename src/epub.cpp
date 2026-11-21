@@ -666,6 +666,109 @@ void xhtmlToFlow(const std::string &s, std::string &out, std::vector<Epub::Image
 }
 
 // ---------------------------------------------------------------------------------------------
+// The OPF
+
+namespace {
+
+// The OPF's path in the zip, from META-INF/container.xml.
+bool opfPathOf(const ZipFile &zip, std::string &opfPath, std::string &err) {
+  std::string xml;
+  if (!zip.read("META-INF/container.xml", xml, err)) return false;
+  Tag t;
+  for (size_t pos = xml.find('<'); pos != std::string::npos; pos = xml.find('<', t.end)) {
+    if (!parseTag(xml, pos, t)) break;
+    if (!t.special && !t.closing && t.name == "rootfile") {
+      opfPath = attr(xml, t, "full-path");
+      break;
+    }
+  }
+  if (opfPath.empty()) {
+    err = "no rootfile in container.xml";
+    return false;
+  }
+  return true;
+}
+
+std::string lowerAscii(std::string s) {
+  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  return s;
+}
+
+// The title and author from the OPF's <metadata> (EpubMeta in epub.h), which comes before its
+// manifest and spine.
+void parseOpfMeta(const std::string &xml, EpubMeta &out) {
+  struct Creator {
+    std::string id, name, fileAs, role;
+  };
+  std::vector<Creator> creators;
+  std::string titleId, calibreTitleSort;
+  std::map<std::string, std::string> fileAs, role;  // EPUB 3 refinements, by the id refined
+  Tag t;
+  for (size_t pos = xml.find('<'); pos != std::string::npos; pos = xml.find('<', t.end)) {
+    if (!parseTag(xml, pos, t)) break;
+    if (t.special) continue;
+    if (t.closing) {
+      if (t.name == "metadata") break;
+      continue;
+    }
+    if (t.name == "manifest" || t.name == "spine") break;
+    if (t.name == "title" && out.title.empty()) {
+      out.title = decodeText(elementText(xml, t));
+      titleId = attr(xml, t, "id");
+    } else if (t.name == "creator") {
+      creators.push_back({attr(xml, t, "id"), decodeText(elementText(xml, t)),
+                          decodeText(attr(xml, t, "file-as")), lowerAscii(attr(xml, t, "role"))});
+    } else if (t.name == "meta") {
+      std::string refines = attr(xml, t, "refines");
+      if (!refines.empty() && refines[0] == '#') refines.erase(0, 1);
+      const std::string property = attr(xml, t, "property");
+      if (!refines.empty() && property == "file-as") {
+        fileAs[refines] = decodeText(elementText(xml, t));
+      } else if (!refines.empty() && property == "role") {
+        role[refines] = lowerAscii(decodeText(elementText(xml, t)));
+      } else if (attr(xml, t, "name") == "calibre:title_sort") {
+        calibreTitleSort = decodeText(attr(xml, t, "content"));
+      } else if (property == "calibre:title_sort") {
+        calibreTitleSort = decodeText(elementText(xml, t));
+      }
+    }
+  }
+  auto refined = [](const std::map<std::string, std::string> &m, const std::string &id) {
+    const auto it = id.empty() ? m.end() : m.find(id);
+    return it == m.end() ? std::string() : it->second;
+  };
+
+  const Creator *author = nullptr;
+  for (const Creator &c : creators) {
+    const std::string r = c.role.empty() ? refined(role, c.id) : c.role;
+    if (r.empty() || r == "aut") {
+      author = &c;
+      break;
+    }
+  }
+  if (!author && !creators.empty()) author = &creators.front();
+  if (author) {
+    out.author = author->name;
+    out.authorSort = author->fileAs.empty() ? refined(fileAs, author->id) : author->fileAs;
+  }
+  out.titleSort = refined(fileAs, titleId);
+  if (out.titleSort.empty()) out.titleSort = calibreTitleSort;
+}
+
+}  // namespace
+
+bool readEpubMeta(const std::string &path, EpubMeta &out, std::string &err) {
+  out = {};
+  ZipFile zip;
+  std::string opfPath, xml;
+  if (!zip.open(path, err) || !opfPathOf(zip, opfPath, err) || !zip.read(opfPath, xml, err)) {
+    return false;
+  }
+  parseOpfMeta(xml, out);
+  return true;
+}
+
+// ---------------------------------------------------------------------------------------------
 
 void Epub::close() {
   zip_.close();
@@ -683,25 +786,16 @@ bool Epub::open(const std::string &path, std::string &err) {
   if (path.rfind(flashfs::kMountPoint, 0) == 0) flashfs::mount();
   if (!zip_.open(path, err)) return false;
 
-  std::string xml;
-  if (!zip_.read("META-INF/container.xml", xml, err)) return false;
-  std::string opfPath;
-  Tag t;
-  for (size_t pos = xml.find('<'); pos != std::string::npos; pos = xml.find('<', t.end)) {
-    if (!parseTag(xml, pos, t)) break;
-    if (!t.special && !t.closing && t.name == "rootfile") {
-      opfPath = attr(xml, t, "full-path");
-      break;
-    }
-  }
-  if (opfPath.empty()) {
-    err = "no rootfile in container.xml";
-    return false;
-  }
-
-  if (!zip_.read(opfPath, xml, err)) return false;
+  std::string opfPath, xml;
+  if (!opfPathOf(zip_, opfPath, err) || !zip_.read(opfPath, xml, err)) return false;
   const size_t slash = opfPath.rfind('/');
   const std::string opfDir = slash == std::string::npos ? "" : opfPath.substr(0, slash + 1);
+
+  // The title and author as the library has them (the first author, not an editor).
+  EpubMeta meta;
+  parseOpfMeta(xml, meta);
+  title_ = meta.title;
+  author_ = meta.author;
 
   struct Item {
     std::string href, mediaType, properties;
@@ -709,14 +803,11 @@ bool Epub::open(const std::string &path, std::string &err) {
   std::map<std::string, Item> manifest;  // id -> item
   std::vector<std::string> idrefs;
   std::string ncxId, coverId;
+  Tag t;
   for (size_t pos = xml.find('<'); pos != std::string::npos; pos = xml.find('<', t.end)) {
     if (!parseTag(xml, pos, t)) break;
     if (t.special || t.closing) continue;
-    if (t.name == "title" && title_.empty()) {
-      title_ = decodeText(elementText(xml, t));
-    } else if (t.name == "creator" && author_.empty()) {
-      author_ = decodeText(elementText(xml, t));
-    } else if (t.name == "item") {
+    if (t.name == "item") {
       manifest[attr(xml, t, "id")] = {attr(xml, t, "href"), attr(xml, t, "media-type"),
                                       attr(xml, t, "properties")};
     } else if (t.name == "spine") {
