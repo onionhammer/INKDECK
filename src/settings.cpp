@@ -145,7 +145,7 @@ constexpr const char *kTemplate =
     "; token never leaves this file: it keys the connection's encryption, so make it long and random\n"
     "; (openssl rand -hex 24). With [tailscale] set, voice_host can be the machine's name on your\n"
     "; tailnet (macbook, macbook.tail1234.ts.net) or its 100.x address, and the board reaches it\n"
-    "; from any Wi-Fi.\n"
+    "; from any Wi-Fi. A name is tried on your LAN first, so at home the board doesn't join.\n"
     "; voice_host = nas.local\n"
     "; voice_port = 7391\n"
     "; voice_token = something-long\n"

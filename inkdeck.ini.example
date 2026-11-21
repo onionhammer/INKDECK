@@ -76,7 +76,7 @@ nfs = nfs://nas.local/volume1/books
 ; token never leaves this file: it keys the connection's encryption, so make it long and random
 ; (openssl rand -hex 24). With [tailscale] set, voice_host can be the machine's name on your
 ; tailnet (macbook, macbook.tail1234.ts.net) or its 100.x address, and the board reaches it
-; from any Wi-Fi.
+; from any Wi-Fi. A name is tried on your LAN first, so at home the board doesn't join.
 ; voice_host = nas.local
 ; voice_port = 7391
 ; voice_token = something-long

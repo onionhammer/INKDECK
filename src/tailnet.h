@@ -14,7 +14,9 @@
 //     (webdav.h, ota.h).
 //
 // A host is on the tailnet (routes()) when it's a Tailscale address (100.64.0.0/10), a MagicDNS
-// name (*.ts.net) or a name without dots, which is how the tailnet names its machines. While
+// name (*.ts.net) or a name without dots, which is how the tailnet names its machines. The voice
+// client and shares try such a host on the LAN first (connectLan(): at home it answers there in
+// milliseconds, with no join) and hold the tailnet only when nothing does. While
 // the board is on it, getaddrinfo() answers those names from the tailnet's list of machines
 // (an lwIP hook, tailnet.cpp), so code that resolves a name needs nothing more. A name the list
 // doesn't have goes to DNS as usual.
@@ -46,6 +48,19 @@ void release();
 // describe() says why. Nothing happens without configured().
 void join();
 void leave();
+
+// At home a tailnet machine is usually on the same LAN, and quicker to reach there: no join.
+// connectLan() tries, all at once, the address the LAN's own DNS gives the name (a router often
+// knows its machines by name; the tailnet's names stay out of it), and the private IPv4 addresses
+// the machine gave the tailnet the last time reach() met it (kept in NVS by host: its LAN ones,
+// a Docker bridge's). It returns the first socket that connects to `port` (blocking, no options
+// set), with the address in `address` if given, or -1: nothing answered in timeoutMs, or there
+// was nothing to try. On another network nothing answers, and the caller goes through the
+// tailnet. Needs Wi-Fi up but no hold(). Blocks (the DNS lookup too): call from a background
+// task. Whoever answers on the LAN isn't vouched for by the tailnet, so use it for links that
+// authenticate the other end themselves (the voice token, SMB's password).
+int connectLan(const std::string &host, uint16_t port, uint32_t timeoutMs,
+               std::string *address = nullptr);
 
 // While held: brings up the WireGuard session with the machine `host` names (a tailnet name or
 // address), waiting until it's up or timeoutMs passes. A connect() before that loses its first

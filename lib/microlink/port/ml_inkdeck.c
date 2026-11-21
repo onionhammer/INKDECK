@@ -59,3 +59,25 @@ uint16_t ml_inkdeck_common_region(microlink_t *ml) {
     }
     return best;
 }
+
+static bool is_private_v4(uint32_t ip) {
+    return (ip >> 24) == 10 || (ip >> 20) == 0xAC1 || (ip >> 16) == 0xC0A8;
+}
+
+int ml_inkdeck_peer_lan_addresses(microlink_t *ml, uint32_t vpn_ip, uint32_t *out, int max) {
+    if (!ml || !vpn_ip || !out) return 0;
+    int n = 0;
+    for (int i = 0; i < ml->peer_count; i++) {
+        const ml_peer_t *p = &ml->peers[i];
+        if (!p->active || p->vpn_ip != vpn_ip) continue;
+        for (int e = 0; e < p->endpoint_count && n < max; e++) {
+            const uint32_t ip = p->endpoints[e].ip;
+            if (p->endpoints[e].is_ipv6 || !is_private_v4(ip)) continue;
+            bool seen = false;
+            for (int k = 0; k < n; k++) seen = seen || out[k] == ip;
+            if (!seen) out[n++] = ip;
+        }
+        break;
+    }
+    return n;
+}

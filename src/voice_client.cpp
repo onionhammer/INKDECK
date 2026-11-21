@@ -198,6 +198,15 @@ std::string quoted(const std::string &text) {
   return out + "\"";
 }
 
+// A connected socket as the session wants it (blocking).
+int configureSocket(int fd) {
+  const int one = 1;
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+  timeval tv = {5, 0};  // a send stuck this long means the link is gone
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+  return fd;
+}
+
 int connectTo(uint32_t ip, uint16_t port, uint32_t timeoutMs) {
   const int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (fd < 0) return -1;
@@ -227,11 +236,7 @@ int connectTo(uint32_t ip, uint16_t port, uint32_t timeoutMs) {
     return -1;
   }
   fcntl(fd, F_SETFL, flags);
-  const int one = 1;
-  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-  timeval tv = {5, 0};  // a send stuck this long means the link is gone
-  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
-  return fd;
+  return configureSocket(fd);
 }
 
 // --- Frames from the daemon ------------------------------------------------------------------
@@ -466,31 +471,40 @@ void connectSession() {
     WiFi.setSleep(false);
   }
   const std::string host = settings::voiceHost();
+  const uint16_t port = static_cast<uint16_t>(settings::voicePort());
+  // A voice host on the tailnet is often on this LAN too (at home): its LAN addresses first, as
+  // the tailnet last gave them, which needs no join. The token vouches for whoever answers.
   if (!s.tailnet && tailnet::routes(host)) {
-    std::string error;
-    if (!tailnet::hold(20000, error)) {
-      setState(State::Error, error.c_str());
+    const int fd = tailnet::connectLan(host, port, 1000);
+    if (fd >= 0) s.fd = configureSocket(fd);
+  }
+  if (s.fd < 0) {
+    if (!s.tailnet && tailnet::routes(host)) {
+      std::string error;
+      if (!tailnet::hold(20000, error)) {
+        setState(State::Error, error.c_str());
+        return;
+      }
+      s.tailnet = true;
+    }
+    // The WireGuard session with the daemon's machine first: a connect before it would lose its
+    // SYN and wait a second or more for TCP to send it again.
+    if (s.tailnet) tailnet::reach(host, 8000);
+    addrinfo hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    addrinfo *res = nullptr;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) {  // tailnet names too
+      setState(State::Error, s.tailnet ? "VOICE HOST NOT ON THE TAILNET" : "VOICE HOST NOT FOUND");
       return;
     }
-    s.tailnet = true;
-  }
-  // The WireGuard session with the daemon's machine first: a connect before it would lose its
-  // SYN and wait a second or more for TCP to send it again.
-  if (s.tailnet) tailnet::reach(host, 8000);
-  addrinfo hints = {};
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_STREAM;
-  addrinfo *res = nullptr;
-  if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0 || !res) {  // tailnet names too
-    setState(State::Error, s.tailnet ? "VOICE HOST NOT ON THE TAILNET" : "VOICE HOST NOT FOUND");
-    return;
-  }
-  const uint32_t ip = reinterpret_cast<const sockaddr_in *>(res->ai_addr)->sin_addr.s_addr;
-  freeaddrinfo(res);
-  s.fd = connectTo(ip, static_cast<uint16_t>(settings::voicePort()), 4000);
-  if (s.fd < 0) {
-    setState(State::Error, "INKHARNESS ISN'T ANSWERING");
-    return;
+    const uint32_t ip = reinterpret_cast<const sockaddr_in *>(res->ai_addr)->sin_addr.s_addr;
+    freeaddrinfo(res);
+    s.fd = connectTo(ip, port, 4000);
+    if (s.fd < 0) {
+      setState(State::Error, "INKHARNESS ISN'T ANSWERING");
+      return;
+    }
   }
   if (s.rx.empty()) s.rx.resize(kRxBytes);
   s.rxLen = 0;
@@ -533,8 +547,10 @@ void connectSession() {
     }
     return;
   }
-  log_i("voice: connected to %s:%d, encrypted (handshake %u ms, %u of them for keys)",
-        host.c_str(), settings::voicePort(), millis() - t0, keyMs);
+  log_i("voice: connected to %s:%d%s, encrypted (handshake %u ms, %u of them for keys)",
+        host.c_str(), settings::voicePort(),
+        s.tailnet ? " through the tailnet" : tailnet::routes(host) ? " on the LAN" : "",
+        millis() - t0, keyMs);
   setState(State::Ready);
 }
 

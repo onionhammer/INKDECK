@@ -7,15 +7,21 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <WiFi.h>
 #include <esp_heap_caps.h>
+#include <fcntl.h>
 #include <lwip/api.h>
 #include <lwip/ip_addr.h>
+#include <lwip/netdb.h>
+#include <lwip/sockets.h>
 #include <stdio.h>
 #include <string.h>
 
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 #include "microlink.h"
 #include "ml_inkdeck.h"  // lib/microlink/port: wake a peer, ask whether its session is up
@@ -31,10 +37,13 @@ constexpr uint32_t kLingerMs = 60000;
 // same).
 constexpr uint32_t kWakeAgainMs = 5000;
 
-// NVS: "keyid", the auth key the identity is from; "derp", the relay region the board calls home.
+// NVS: "keyid", the auth key the identity is from; "derp", the relay region the board calls home;
+// "lan", a "<host>\t<ip>,<ip>" line per host with the machine's LAN addresses (connectLan()).
 constexpr const char *kNamespace = "tailnet";
 // How long the first join of a boot may take to join again from another relay region.
 constexpr uint32_t kRegionRejoinMs = 15000;
+constexpr int kMaxLanHosts = 8;      // remembered in "lan"; the oldest goes
+constexpr int kMaxLanAddresses = 4;  // kept, and tried at once, per host
 
 std::mutex joinMutex;   // held through a join and a stop, so a second caller waits for it
 std::mutex stateMutex;  // guards what follows
@@ -56,6 +65,15 @@ std::string authKey;
 std::string deviceName;
 
 // --- Helpers -----------------------------------------------------------------------------------
+
+// The machines' LAN addresses (connectLan()), newest first, as NVS keeps them.
+std::mutex lanMutex;  // guards what follows
+std::vector<std::pair<std::string, std::string>> lanHosts;  // host, "a.b.c.d,e.f.g.h"
+bool lanLoaded = false;
+
+// The task asking the LAN's DNS (lanDns()): the resolver hook leaves its lookups alone.
+std::mutex lanDnsMutex;
+std::atomic<TaskHandle_t> lanLookupTask{nullptr};
 
 std::string lower(std::string s) {
   for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
@@ -89,6 +107,89 @@ std::string bareName(const char *name) {
   std::string s = name ? name : "";
   if (!s.empty() && s.back() == '.') s.pop_back();
   return s.size() < 64 ? s : std::string();  // microlink_peer_info_t's hostname[64]
+}
+
+// Under lanMutex.
+void loadLan() {
+  if (lanLoaded) return;
+  lanLoaded = true;
+  Preferences prefs;
+  if (!prefs.begin(kNamespace, true)) return;
+  const std::string text = prefs.isKey("lan") ? prefs.getString("lan", "").c_str() : "";
+  prefs.end();
+  size_t pos = 0;
+  while (pos < text.size()) {
+    size_t nl = text.find('\n', pos);
+    if (nl == std::string::npos) nl = text.size();
+    const std::string line = text.substr(pos, nl - pos);
+    const size_t tab = line.find('\t');
+    if (tab != std::string::npos) lanHosts.push_back({line.substr(0, tab), line.substr(tab + 1)});
+    pos = nl + 1;
+  }
+}
+
+// Under lanMutex.
+void saveLan() {
+  std::string text;
+  for (const auto &[host, addrs] : lanHosts) text += host + "\t" + addrs + "\n";
+  Preferences prefs;
+  if (prefs.begin(kNamespace, false)) {
+    prefs.putString("lan", text.c_str());
+    prefs.end();
+  }
+}
+
+// The key a host is remembered by: what the settings name, lower case, no trailing dot.
+std::string lanKey(const std::string &host) { return lower(bareName(host.c_str())); }
+
+// How likely a private address is the machine's LAN one, lower first: on the board's own /16,
+// then 192.168/16, 10/8, and 172.16/12 last, where Docker puts its bridges (a server lists
+// several, before its LAN address: found on the board 2026-11-21).
+int lanRank(uint32_t ip, uint32_t own) {
+  const int range = (ip >> 16) == 0xC0A8 ? 1 : (ip >> 24) == 10 ? 2 : 3;
+  return (own && (ip >> 16) == (own >> 16) ? 0 : range * 2) + ((ip >> 20) == 0xAC1);
+}
+
+// The address the LAN's own DNS gives a name, in host byte order; 0 for none, an address, a
+// MagicDNS name (the LAN's DNS can't know it) or a tailnet address.
+uint32_t lanDns(const std::string &host) {
+  const std::string name = bareName(host.c_str());
+  if (name.empty() || parseIp(name) || endsWith(lower(name), ".ts.net")) return 0;
+  std::lock_guard<std::mutex> g(lanDnsMutex);
+  lanLookupTask = xTaskGetCurrentTaskHandle();
+  addrinfo hints = {};
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+  addrinfo *res = nullptr;
+  const int rc = getaddrinfo(name.c_str(), nullptr, &hints, &res);
+  lanLookupTask = nullptr;
+  if (rc != 0 || !res) return 0;
+  const uint32_t ip = ntohl(reinterpret_cast<const sockaddr_in *>(res->ai_addr)->sin_addr.s_addr);
+  freeaddrinfo(res);
+  return (ip & 0xFFC00000u) == 0x64400000u ? 0 : ip;
+}
+
+// Keeps the LAN addresses the map gives for the peer at vpnIp, if they changed.
+void rememberLan(microlink_t *m, const std::string &host, uint32_t vpnIp) {
+  uint32_t found[8];  // all a peer can have (ML_MAX_ENDPOINTS)
+  const int n = ml_inkdeck_peer_lan_addresses(m, vpnIp, found, 8);
+  const std::string key = lanKey(host);
+  if (n == 0 || key.empty()) return;
+  const uint32_t own = ntohl(WiFi.localIP());
+  std::stable_sort(found, found + n,
+                   [own](uint32_t a, uint32_t b) { return lanRank(a, own) < lanRank(b, own); });
+  std::string addrs;
+  for (int i = 0; i < std::min(n, kMaxLanAddresses); ++i) addrs += (i ? "," : "") + ipText(found[i]);
+  std::lock_guard<std::mutex> g(lanMutex);
+  loadLan();
+  const auto known = std::find_if(lanHosts.begin(), lanHosts.end(),
+                                  [&](const auto &h) { return h.first == key; });
+  if (known != lanHosts.end() && known->second == addrs && known == lanHosts.begin()) return;
+  if (known != lanHosts.end()) lanHosts.erase(known);
+  lanHosts.insert(lanHosts.begin(), {key, addrs});
+  if (static_cast<int>(lanHosts.size()) > kMaxLanHosts) lanHosts.resize(kMaxLanHosts);
+  saveLan();
+  log_i("tailnet: %s's LAN addresses: %s", key.c_str(), addrs.c_str());
 }
 
 // Which auth key the board's identity came from, without keeping the key itself twice: FNV-1a.
@@ -393,6 +494,7 @@ bool reach(const std::string &host, uint32_t timeoutMs) {
   uint32_t ip = parseIp(host);
   if (!ip) ip = microlink_resolve(m, bareName(host.c_str()).c_str());
   if (!ip) return false;
+  rememberLan(m, host, ip);  // for connectLan() next time
   if (ml_inkdeck_peer_is_up(m, ip)) return true;
   const uint32_t t0 = millis();
   uint32_t wokeAt = t0;
@@ -415,6 +517,92 @@ bool reach(const std::string &host, uint32_t timeoutMs) {
         static_cast<unsigned>(ml_inkdeck_peer_region(m, ip)),
         static_cast<unsigned>(ml_inkdeck_home_region(m)));
   return false;
+}
+
+int connectLan(const std::string &host, uint16_t port, uint32_t timeoutMs, std::string *address) {
+  std::vector<uint32_t> addrs;
+  if (const uint32_t ip = lanDns(host)) addrs.push_back(ip);
+  {
+    std::lock_guard<std::mutex> g(lanMutex);
+    loadLan();
+    for (const auto &[key, list] : lanHosts) {
+      if (key != lanKey(host)) continue;
+      for (size_t pos = 0; pos < list.size();) {
+        size_t comma = list.find(',', pos);
+        if (comma == std::string::npos) comma = list.size();
+        const uint32_t ip = parseIp(list.substr(pos, comma - pos));
+        if (ip && std::find(addrs.begin(), addrs.end(), ip) == addrs.end()) addrs.push_back(ip);
+        pos = comma + 1;
+      }
+    }
+  }
+  if (addrs.empty()) return -1;
+  // A non-blocking connect to each; the first to complete wins.
+  const uint32_t t0 = millis();
+  std::vector<std::pair<int, uint32_t>> tries;  // socket, address
+  int winner = -1;
+  uint32_t winnerIp = 0;
+  for (const uint32_t ip : addrs) {
+    const int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (fd < 0) continue;
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    sockaddr_in a = {};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(port);
+    a.sin_addr.s_addr = htonl(ip);
+    if (::connect(fd, reinterpret_cast<sockaddr *>(&a), sizeof a) == 0) {
+      winner = fd;
+      winnerIp = ip;
+      break;
+    }
+    if (errno == EINPROGRESS) {
+      tries.push_back({fd, ip});
+    } else {
+      ::close(fd);
+    }
+  }
+  while (winner < 0 && !tries.empty() && millis() - t0 < timeoutMs) {
+    fd_set w;
+    FD_ZERO(&w);
+    int top = -1;
+    for (const auto &[fd, ip] : tries) {
+      FD_SET(fd, &w);
+      top = std::max(top, fd);
+    }
+    const uint32_t left = timeoutMs - (millis() - t0);
+    timeval tv = {static_cast<time_t>(left / 1000), static_cast<suseconds_t>(left % 1000 * 1000)};
+    if (select(top + 1, nullptr, &w, nullptr, &tv) <= 0) break;
+    for (auto it = tries.begin(); it != tries.end();) {
+      if (!FD_ISSET(it->first, &w)) {
+        ++it;
+        continue;
+      }
+      int err = 0;
+      socklen_t len = sizeof err;
+      getsockopt(it->first, SOL_SOCKET, SO_ERROR, &err, &len);
+      if (err == 0 && winner < 0) {
+        winner = it->first;
+        winnerIp = it->second;
+      } else {
+        ::close(it->first);
+      }
+      it = tries.erase(it);
+    }
+  }
+  for (const auto &[fd, ip] : tries) {
+    if (fd != winner) ::close(fd);
+  }
+  const std::string key = lanKey(host);
+  if (winner < 0) {
+    log_i("tailnet: %s isn't on this LAN (%u addresses tried, %lu ms)", key.c_str(),
+          static_cast<unsigned>(addrs.size()), static_cast<unsigned long>(millis() - t0));
+    return -1;
+  }
+  fcntl(winner, F_SETFL, fcntl(winner, F_GETFL, 0) & ~O_NONBLOCK);
+  log_i("tailnet: %s answered on the LAN at %s in %lu ms", key.c_str(), ipText(winnerIp).c_str(),
+        static_cast<unsigned long>(millis() - t0));
+  if (address) *address = ipText(winnerIp);
+  return winner;
 }
 
 std::string address() {
@@ -448,6 +636,7 @@ extern "C" int lwip_hook_netconn_external_resolve(const char *name, ip_addr_t *a
                                                   u8_t addrtype, err_t *err) {
   microlink_t *m = tailnet::live;
   if (!m || !name || !addr || !err) return 0;
+  if (xTaskGetCurrentTaskHandle() == tailnet::lanLookupTask) return 0;  // asking the LAN (lanDns())
   if (addrtype == NETCONN_DNS_IPV6) return 0;  // the tailnet's addresses here are IPv4
   if (!microlink_is_connected(m)) return 0;
   const std::string bare = tailnet::bareName(name);
@@ -473,6 +662,7 @@ void release() {}
 void join() {}
 void leave() {}
 bool reach(const std::string &, uint32_t) { return false; }
+int connectLan(const std::string &, uint16_t, uint32_t, std::string *) { return -1; }
 std::string address() { return ""; }
 std::string name() { return settings::tailscaleName(); }
 std::string describe() { return "not in this build"; }

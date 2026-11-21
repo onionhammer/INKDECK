@@ -33,6 +33,10 @@ uint16_t ml_inkdeck_peer_region(microlink_t *ml, uint32_t vpn_ip);
 // The region most peers are homed in, counting online ones only if any are; 0 if none says.
 uint16_t ml_inkdeck_common_region(microlink_t *ml);
 
+// The private IPv4 addresses (10/8, 172.16/12, 192.168/16) among a peer's endpoints, as the map
+// gave them: its LAN addresses, a Docker bridge's. Host byte order, at most `max`; the count.
+int ml_inkdeck_peer_lan_addresses(microlink_t *ml, uint32_t vpn_ip, uint32_t *out, int max);
+
 #ifdef __cplusplus
 }
 #endif

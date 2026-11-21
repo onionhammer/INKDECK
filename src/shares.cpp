@@ -578,23 +578,34 @@ bool acquire(int i, std::string &error) {
   }
 
   Mount &m = *mounts[i];
-  // A server on the tailnet: join it first. libsmb2 and the NFS client resolve the name with
-  // getaddrinfo(), which then knows the tailnet's machines.
-  const bool viaTailnet = tailnet::routes(m.share.host);
-  if (viaTailnet) {
-    if (!tailnet::hold(kConnectTimeoutMs, why)) {
-      error = why;
-      wlan::disconnect();
-      return false;
+  // A server on the tailnet: on this LAN as well (at home), straight there by the address that
+  // answered; else join the tailnet first. libsmb2 and the NFS client resolve the name with
+  // getaddrinfo(), which then knows the tailnet's machines (tailnet.h).
+  Share target = m.share;
+  bool viaTailnet = false;
+  if (tailnet::routes(m.share.host)) {
+    const uint16_t probe = m.share.port ? m.share.port : m.share.kind == Kind::Smb ? 445 : 111;
+    std::string lan;
+    const int fd = tailnet::connectLan(m.share.host, probe, 1000, &lan);
+    if (fd >= 0) {
+      close(fd);
+      target.host = lan;
+    } else {
+      viaTailnet = true;
+      if (!tailnet::hold(kConnectTimeoutMs, why)) {
+        error = why;
+        wlan::disconnect();
+        return false;
+      }
+      tailnet::reach(m.share.host, 8000);
     }
-    tailnet::reach(m.share.host, 8000);
   }
   const uint32_t t0 = millis();
   std::unique_ptr<Backend> backend =
       m.share.kind == Kind::Smb ? makeSmbBackend() : makeNfsBackend();
   const std::string password =
       m.share.kind == Kind::Smb ? settings::sharePassword(m.share.credentialId()) : "";
-  if (!backend->mount(m.share, password, error)) {  // outside the lock: others keep going
+  if (!backend->mount(target, password, error)) {  // outside the lock: others keep going
     log_w("shares: %s: %s", m.share.url().c_str(), error.c_str());
     backend.reset();
     if (viaTailnet) tailnet::release();

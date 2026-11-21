@@ -112,8 +112,12 @@ your tailnet whenever something needs a machine there, through
 [MicroLink](lib/microlink/README.md), a Tailscale client for the ESP32 (`src/tailnet.h`). So
 `voice_host` can be your computer's name on the tailnet (`macbook`, or
 `macbook.tail1234.ts.net`) or its 100.x address, and the board reaches inkharness from any Wi-Fi
-it can join, a phone's hotspot included. A share in Files or a podcast feed can be on a tailnet
-machine the same way. While Wi-Fi Drive or Update over Wi-Fi is open, the board answers on the
+it can join, a phone's hotspot included. With a name, the board tries the LAN first: the
+address your router's DNS gives the name, and the addresses the machine last gave the tailnet.
+At home one answers within milliseconds and the board connects there without joining (voice
+starts about 2.6 s after you press BOOT); elsewhere nothing answers within a second and it goes
+through the tailnet. A 100.x address always goes through the tailnet. A share in Files works
+the same way (`smb://erik@macbook/share`), and a podcast feed can be on a tailnet machine too. While Wi-Fi Drive or Update over Wi-Fi is open, the board answers on the
 tailnet too, at `http://inkdeck` or its 100.x address (the screen shows it), so you can copy
 books or push an update from elsewhere. A host counts as on the tailnet when it's a
 100.64.0.0/10 address, ends in `.ts.net`, or has no dots (a machine's name there); the board
