@@ -35,13 +35,14 @@ struct Values {
   std::string tailscaleName;  // "": the default
   bool tailscaleExitNode = false;
   bool agentFaceDetails = false;
+  int newsEdition = -1;  // minutes after midnight; -1: none
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
            wifiSsids == o.wifiSsids && shares == o.shares && lockMinutes == o.lockMinutes &&
            agentHost == o.agentHost && agentPort == o.agentPort && agentToken == o.agentToken &&
            tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode &&
-           agentFaceDetails == o.agentFaceDetails;
+           agentFaceDetails == o.agentFaceDetails && newsEdition == o.newsEdition;
   }
 };
 
@@ -156,6 +157,12 @@ constexpr const char *kTemplate =
     "; board's flash. On, it shows everything, for a board that stays on a desk at home.\n"
     "; agent_face_details = off\n"
     "\n"
+    "[news]\n"
+    "; A morning edition: PWR on a News screen leaves the board off behind a front page of the\n"
+    "; feeds in SD:/News/feeds.txt. With a time here, the board wakes at it each day, syncs the\n"
+    "; feeds and draws a new one (not below 15 % battery). off, or no line: no wakes.\n"
+    "; news_edition = 06:30\n"
+    "\n"
     "[tailscale]\n"
     "; Puts the board on your tailnet when something needs a machine there: an agent_host, a share's\n"
     "; server or a feed's host given as a tailnet name or 100.x address. Wi-Fi Drive and Update\n"
@@ -245,6 +252,7 @@ void loadNvs() {
   card.tailscaleName = nvsString(prefs, "tsname");
   card.tailscaleExitNode = prefs.getBool("tsexit", false);
   card.agentFaceDetails = prefs.getBool("afacedet", false);
+  card.newsEdition = prefs.getInt("nedition", -1);
   tailscaleKeySet = prefs.isKey("tskey");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
@@ -267,6 +275,7 @@ void saveNvs() {
   prefs.putString("tsname", card.tailscaleName.c_str());
   prefs.putBool("tsexit", card.tailscaleExitNode);
   prefs.putBool("afacedet", card.agentFaceDetails);
+  prefs.putInt("nedition", card.newsEdition);
   prefs.end();
 }
 
@@ -616,6 +625,16 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
     } else if (key == "agent_face_details") {
       if (!parseOnOff(value, v.agentFaceDetails)) {
         log_w("settings: %s: agent_face_details must be on or off", kFile);
+      }
+    } else if (key == "news_edition") {
+      int h = -1, m = -1, used = 0;
+      if (isOff(value)) {
+        v.newsEdition = -1;
+      } else if (siscanf(value.c_str(), "%d:%d%n", &h, &m, &used) == 2 &&
+                 used == static_cast<int>(value.size()) && h >= 0 && h < 24 && m >= 0 && m < 60) {
+        v.newsEdition = h * 60 + m;
+      } else {
+        log_w("settings: %s: news_edition must be a time like 06:30, or off", kFile);
       }
     } else if (key == "tailscale_exit_node") {
       if (!parseOnOff(value, v.tailscaleExitNode)) {
@@ -1031,6 +1050,11 @@ bool tailscaleExitNode() {
 bool agentFaceDetails() {
   loadNvs();
   return card.agentFaceDetails;
+}
+
+int newsEdition() {
+  loadNvs();
+  return card.newsEdition;
 }
 
 PinChange pendingPin() { return pending; }

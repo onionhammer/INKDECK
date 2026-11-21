@@ -14,6 +14,7 @@
 #include "apps/lock.h"
 #include "apps/music.h"
 #include "apps/podcasts.h"
+#include "apps/news.h"
 #include "apps/recorder.h"
 #include "apps/reader.h"
 #include "apps/sensors.h"
@@ -29,6 +30,7 @@
 #include "fonts.h"
 #include "pmic.h"
 #include "podcast_library.h"
+#include "news_library.h"
 #include "readstate.h"
 #include "rtc.h"
 #include "flashfs.h"
@@ -49,7 +51,7 @@ using ui::Key;
 using ui::Rect;
 
 enum class Kind : uint8_t {
-  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder,
+  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder, News,
 #if INKDECK_AGENT
   Agent,
 #endif
@@ -65,7 +67,8 @@ struct Module {
 
 // Copy from the design canvas, trimmed to what the firmware does today. The order is the
 // user's (2026-11-13; AGENT up to 03 and MUSIC down to 07 on 2026-11-20, issue #52): what's
-// used most first, related modules together. Screen tags follow it through moduleTag().
+// used most first, related modules together. NEWS, the newest, comes last (12). Screen tags
+// follow it through moduleTag().
 // The \xC2\xB7 escapes in these strings are the middle dot (UTF-8 U+00B7).
 constexpr Module kModules[] = {
     {"READER", "SD", "EPUB books from microSD. Opens where you left off.",
@@ -94,6 +97,8 @@ constexpr Module kModules[] = {
      "SDMMC 4-bit \xC2\xB7 16 MB flash", Kind::Files},
     {"SYSTEM", "PMIC", "Battery, power rails, sleep schedule, Wi-Fi and firmware updates.",
      "TG28 (AXP2101) @ 0x34", Kind::System},
+    {"NEWS", "NET", "RSS and Atom feeds over Wi-Fi, kept on the card to read offline.",
+     "Wi-Fi \xC2\xB7 microSD", Kind::News},
 };
 constexpr int kModuleCount = sizeof kModules / sizeof kModules[0];
 
@@ -263,6 +268,35 @@ int statsFor(const Module &m, Stat out[4]) {
       out[3] = {"ON SD", buf};
       return 4;
     }
+    case Kind::News: {
+      static bool loaded = false;  // the library is read when the row is first shown
+      if (!loaded) loaded = news::load(false);
+      const int fresh = news::freshCount();
+      out[0] = {"NEW", fresh ? std::to_string(fresh) : ui::glyph::kEmDash};
+      const int feeds = news::feedCount();
+      out[1] = {"FEEDS", feeds ? std::to_string(feeds) : "NONE"};
+      const int saved = news::savedCount();
+      out[2] = {"SAVED", saved ? std::to_string(saved) : ui::glyph::kEmDash};
+      const news::Activity a = news::activity();
+      std::string synced = a.busy ? a.text : std::string();
+      if (!a.busy) {
+        const time_t t = news::lastSync();
+        if (!t) {
+          synced = "NEVER";
+        } else {
+          tm l, today;
+          localtime_r(&t, &l);
+          const time_t now = time(nullptr);
+          localtime_r(&now, &today);
+          char buf[16];
+          const bool sameDay = l.tm_yday == today.tm_yday && l.tm_year == today.tm_year;
+          strftime(buf, sizeof buf, sameDay ? "%H:%M" : "%d %b", &l);
+          synced = ui::upper(buf);
+        }
+      }
+      out[3] = {a.busy ? "NETWORK" : "SYNCED", synced};
+      return 4;
+    }
     case Kind::Weather: {
       weather::Forecast f;
       const time_t now = time(nullptr);
@@ -426,6 +460,10 @@ class HomeScreen : public ui::Screen {
     const weather::Phase w = weather::status().phase;
     changed |= w != drawnWeather_ && kind == Kind::Weather;
     drawnWeather_ = w;
+    // A news sync starting or finishing.
+    const bool n = news::busy();
+    changed |= n != drawnNews_ && kind == Kind::News;
+    drawnNews_ = n;
 #if INKDECK_AGENT
     // The Agent's row tag and preview follow the list.
     const agent::Glance a = agent::glance();
@@ -478,6 +516,7 @@ class HomeScreen : public ui::Screen {
       case Kind::Weather: ui::nav::push(makeWeather()); break;
       case Kind::Level: ui::nav::push(makeLevel()); break;
       case Kind::Recorder: ui::nav::push(makeRecorder()); break;
+      case Kind::News: ui::nav::push(makeNews()); break;
 #if INKDECK_AGENT
       case Kind::Agent: openGuarded(Guarded::Agent, makeAgent); break;
 #endif
@@ -489,7 +528,8 @@ class HomeScreen : public ui::Screen {
     using namespace ui;
     const Module &m = kModules[i];
     // 10 px above and 8 below: with 11 modules in the list the preview is 34 px shorter than
-    // the canvas drew it, and the stats would otherwise meet the OPEN button.
+    // the canvas drew it, and the stats would otherwise meet the OPEN button. With 12 it's 68 px
+    // shorter, and the button goes.
     const Rect p{area.x + 20, area.y + 10, area.w - 40, area.h - 10 - 8};
 
     const std::string num = twoDigits(i + 1);
@@ -539,14 +579,19 @@ class HomeScreen : public ui::Screen {
                stats[k].key, stats[k].value);
     }
 
-    const Rect button = drawButton(c, p.right() - 6, p.bottom() - 44, glyph::kPress, "OPEN");
-    drawText(c, {p.x, button.y, button.x - p.x - 14, button.h},
-             std::string("HW ") + glyph::kPointer + " " + m.hw, style::kLabel);
+    // With twelve modules the list leaves no room under the stats for the HW line and the OPEN
+    // button (the hint bar says OPEN too).
+    if (p.bottom() - 44 >= y + 2 * 48) {
+      const Rect button = drawButton(c, p.right() - 6, p.bottom() - 44, glyph::kPress, "OPEN");
+      drawText(c, {p.x, button.y, button.x - p.x - 14, button.h},
+               std::string("HW ") + glyph::kPointer + " " + m.hw, style::kLabel);
+    }
   }
 
   ui::ListCursor cursor_;
   uint32_t drawnGeneration_ = 0;
   weather::Phase drawnWeather_ = weather::Phase::Idle;
+  bool drawnNews_ = false;
 #if INKDECK_AGENT
   uint32_t drawnAgent_ = 0;
 #endif

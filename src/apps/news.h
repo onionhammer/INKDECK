@@ -1,0 +1,35 @@
+// News (the "News" design canvas, docs/ui-design.md): RSS and Atom feeds, read offline. The
+// library is news_library.h; the morning edition, its off face, is apps/news_edition.h.
+//
+//   Stories:  every feed's stories in one list, newest first, grouped by day: a solid square and
+//             a bold headline for a new one, SAVED outlined. A card under the list shows the
+//             selected story's whole headline and summary; a strip at the foot, the last sync.
+//             ▲▼ move   ● read   HOLD ● menu   BOOT back
+//             The menu (// NEWS): SAVE STORY, SHOW (ALL / NEW / SAVED), SYNC NOW, FEEDS,
+//             MARK ALL READ.
+//   Story:    the Note screen's body (notedoc.h): the headline in 28 px capitals, a byline, then
+//             the text in Literata a page at a time. Opening it marks it read.
+//             ▲ previous page   ▼ next page, past the last the next story   ● menu   BOOT back
+//             The menu (// STORY): SAVE, TEXT SIZE, MARK UNREAD, MORE FROM the feed, TO START.
+//   Feeds:    ALL FEEDS, then each feed with its new stories, ! for one whose last sync failed;
+//             a card for the selection.
+//             ▲▼ move   ● its stories   HOLD ● sync it (ALL FEEDS: every feed)   BOOT back
+//
+// A News screen opening syncs the feeds when the last sync is half an hour old; while one is
+// open, and on USB power, they sync every hour (pollNews()).
+#pragma once
+#include <memory>
+
+#include "ui/nav.h"
+
+namespace apps {
+
+std::unique_ptr<ui::Screen> makeNews();
+
+// From loop(): News's hourly syncs, while a News screen is open or the board is on USB power.
+void pollNews();
+
+// A News screen is the base (under a sheet or menu too): PWR shows the edition.
+bool newsOnScreen();
+
+}  // namespace apps

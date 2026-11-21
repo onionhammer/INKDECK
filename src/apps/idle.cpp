@@ -11,12 +11,14 @@
 #include "apps/clock.h"
 #include "apps/closed_book.h"
 #include "apps/lock.h"
+#include "apps/news_edition.h"
 #include "apps/sleep.h"
 #include "agent_client.h"
 #include "audio.h"
 #include "features.h"
 #include "file_copy.h"
 #include "input.h"
+#include "news_library.h"
 #include "ota.h"
 #include "pmic.h"
 #include "podcast_library.h"
@@ -64,6 +66,7 @@ bool mayNap() {
   // A paused player doesn't count: pause switches the audio output off (audio.h).
   if (!readingNow() || audio::busy() || wlan::radioOn()) return false;
   if (weather::syncing() || podcasts::busy() || ota::active() || filecopy::busy()) return false;
+  if (news::busy()) return false;
   const timesync::Phase t = timesync::status().phase;
   if (t == timesync::Phase::Connecting || t == timesync::Phase::Asking) return false;
   if (millis() - keyWakeMs < kKeyWakeGuardMs) return false;
@@ -112,7 +115,8 @@ void restartIfUsbStuck() {
 }  // namespace
 
 void pollPower() {
-  pollAgentFace();  // the dev tool's
+  pollAgentFace();  // the dev tools'
+  pollEdition();
   const int request = standbyRequest.exchange(-1);
   if (request >= 0) {
     stopNapping();
@@ -139,10 +143,18 @@ void pollPower() {
   stopNapping();
   const pmic::Status p = pmic::status();
   const bool low = p.percent >= 0 && p.percent < power::kLowBatteryPercent;
-  const bool agentFace = !low && agentFaceWanted();
+  // From News, its edition; from the Agent (or with a session asking or working), its face.
+  const bool edition = !low && editionWanted();
+  const bool agentFace = !low && !edition && agentFaceWanted();
   log_i("idle on battery (%d %%): %s", p.percent,
-        agentFace ? "the Agent face" : !low ? "standby" : book ? "closing the book" : "sleep");
-  if (agentFace) {
+        edition     ? "the edition"
+        : agentFace ? "the Agent face"
+        : !low      ? "standby"
+        : book      ? "closing the book"
+                    : "sleep");
+  if (edition) {
+    showEdition(false);
+  } else if (agentFace) {
     showAgentFace(false);
   } else if (!low) {
     enterStandby(0);
@@ -154,20 +166,26 @@ void pollPower() {
 }
 
 void powerKey() {
-  if (wakeDesk() || reopenBook() || wakeAgentFace()) return;
-  // Whether the Agent's face is wanted, worked out before the PIN is forgotten.
-  const bool agentFace = agentFaceWanted();
+  if (wakeDesk() || reopenBook() || wakeAgentFace() || wakeEdition()) return;
+  // On News, its edition; whether the Agent's face is wanted, worked out before the PIN is
+  // forgotten.
+  const bool edition = editionWanted();
+  const bool agentFace = !edition && agentFaceWanted();
   forgetGuard(Guarded::Agent);  // back from the desk face, the Agent asks for the PIN again
   const pmic::Status p = pmic::status();
   const ui::Screen *base = ui::nav::base();
   if (p.ok && p.vbus) {
-    if (agentFace) {
+    if (edition) {
+      showEdition(true);  // live, in place of the desk face
+    } else if (agentFace) {
       showAgentFace(true);  // live, in place of the desk face
     } else {
       enterDesk();
     }
   } else if (base && base->closesWhenIdle()) {
     closeBook();  // a book open in the Reader: off behind its cover, as the idle timeout does
+  } else if (edition) {
+    showEdition(false);
   } else if (agentFace) {
     showAgentFace(false);
   } else {

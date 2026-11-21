@@ -10,8 +10,10 @@
 //            opens the book again, whatever started the board.
 //   Agent    the Agent face (apps/agent_face.h); wakes to check in with inkharness, and for
 //            alarms. HOLD PWR opens the Agent.
-// Sleep, Standby and Book also wake when inkharness asks for a check-in (a schedule that wakes
-// the board).
+//   Edition  News's morning edition (apps/news_edition.h); wakes at news_edition each day to sync
+//            the feeds and draw the next one, and for alarms. HOLD PWR opens News.
+// Sleep, Standby, Book and Edition also wake when inkharness asks for a check-in (a schedule that
+// wakes the board).
 #pragma once
 #include <stdint.h>
 #include <time.h>
@@ -19,7 +21,7 @@
 namespace power {
 
 enum class Wake : uint8_t { Reset, PowerKey, Alarm, Usb, Other };
-enum class Mode : uint8_t { On, Sleep, Standby, Book, Agent };
+enum class Mode : uint8_t { On, Sleep, Standby, Book, Agent, Edition };
 
 // Early in setup(), after Wire.begin(), pmic::configure() and rtc::begin(): works out why the
 // board started and releases the RTC's interrupt (while it holds PWRON low, 4 s of that would
@@ -44,7 +46,7 @@ void off(Mode mode, time_t wakeAt, int standbyCycles = 0);
 constexpr int kLowBatteryPercent = 15;
 
 // True when the board should power itself off: on battery, no key for 10 minutes, no alarm
-// ringing, no time or weather sync, podcast download or Wi-Fi drive (webdav.h). While reading
+// ringing, no time, weather or news sync, podcast download or Wi-Fi drive (webdav.h). While reading
 // (the Reader is open) or while music plays, only once the battery is below kLowBatteryPercent
 // as well.
 bool idle(bool reading);

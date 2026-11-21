@@ -35,6 +35,10 @@ class NoteDoc {
   // title: UTF-8, plain (may be empty: then a first heading becomes it). markdown: the rest.
   void parse(const std::string &title, const std::string &markdown);
 
+  // A line under the title's rule in the UI's small capitals, `left` on the left and `right` on
+  // the right (News: the byline, and how long the story is). Call before layout().
+  void setByline(const std::string &left, const std::string &right);
+
   // Lays the note out in pages width x height px, the text in body's faces. Call again after
   // changing the size.
   void layout(const FontFamily &body, int width, int height);
@@ -61,7 +65,7 @@ class NoteDoc {
     uint32_t start, end;  // its text in text_: flow (text.h) with '\n' for a line break
     std::string marker;   // Number: "12."
   };
-  enum class LineKind : uint8_t { Title, TitleRule, Text, Heading, Rule };
+  enum class LineKind : uint8_t { Title, TitleRule, Byline, Text, Heading, Rule };
   struct Line {
     uint32_t start, end;  // its text: in title_ for a title line, else in text_
     int16_t x, y;         // the text's left edge in the column, and the line's top in the page
@@ -87,6 +91,8 @@ class NoteDoc {
   void drawMarker(GFXcanvas1 &canvas, const Block &b, int right, int baseline) const;
 
   std::string title_;  // flow in the title font's slots, capitals
+  std::string bylineLeft_;   // UTF-8
+  std::string bylineRight_;
   std::string text_;
   std::vector<Block> blocks_;
   std::vector<Line> lines_;

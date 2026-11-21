@@ -40,8 +40,8 @@ time_t agentCheckWake();
 // The earlier of two wakes, 0 meaning none.
 time_t earliestWake(time_t a, time_t b);
 
-// From setup(), right after standbyWake(): an RTC wake from the Agent face, Sleep or a closed
-// book with a check-in due. Checks in and powers off again; false means boot normally.
+// From setup(), right after standbyWake(): an RTC wake from the Agent face, Sleep, a closed book
+// or the edition with a check-in due. Checks in and powers off again; false means boot normally.
 bool agentWake();
 // From standbyWake(), before it draws: a check-in riding the minute wake when one is due. True
 // if it showed a note (the board then powers off in Sleep).

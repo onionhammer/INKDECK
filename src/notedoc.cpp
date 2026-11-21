@@ -21,6 +21,10 @@ constexpr int kTitleMaxLines = 3;
 constexpr int kTitleRuleGap = 10;  // the title's last line to its rule
 constexpr int kTitleRuleH = 3;
 constexpr int kAfterTitle = 22;  // the rule to the first block
+constexpr int kBylineGap = 12;   // the rule to the byline
+constexpr int kBylineH = 17;
+constexpr int kAfterByline = 18;  // the byline to the first block
+constexpr ui::TextStyle kBylineStyle{&ui::fonts::kMono13Bold, 1};
 const GFXfont *const kHeadingFont = &ui::fonts::kMono15ExtraBold;
 constexpr int kHeadingTracking = 1;
 constexpr int kHeadingDashGap = 12;  // a heading to its dashed rule
@@ -542,6 +546,11 @@ void NoteDoc::parse(const std::string &title, const std::string &markdown) {
   }
 }
 
+void NoteDoc::setByline(const std::string &left, const std::string &right) {
+  bylineLeft_ = left;
+  bylineRight_ = right;
+}
+
 template <typename FaceFor>
 void NoteDoc::wrap(const std::string &src, uint32_t from, uint32_t to, int width, int tracking,
                    FaceFor faceFor, std::vector<Span> &out) {
@@ -659,6 +668,8 @@ void NoteDoc::layout(const FontFamily &body, int width, int height) {
     }
     place({0, 0, 0, 0, 0, 0, LineKind::TitleRule, false, false}, kTitleRuleGap, kTitleRuleH);
   }
+  const bool byline = !bylineLeft_.empty() || !bylineRight_.empty();
+  if (byline) place({0, 0, 0, 0, 0, 0, LineKind::Byline, false, false}, kBylineGap, kBylineH);
 
   const FontFamily *family = body_;
   auto bodyFace = [family](uint8_t s) { return family->face[s & 3]; };
@@ -667,7 +678,7 @@ void NoteDoc::layout(const FontFamily &body, int width, int height) {
     const Block &b = blocks_[i];
     int gap = lh / 2;
     if (i == 0) {
-      gap = title_.empty() ? 0 : kAfterTitle;
+      gap = byline ? kAfterByline : title_.empty() ? 0 : kAfterTitle;
     } else if (prev == Kind::Heading) {
       gap = lh / 4;
     } else if (b.kind == Kind::Heading) {
@@ -757,6 +768,17 @@ void NoteDoc::drawPage(GFXcanvas1 &canvas, int page, int x, int y) const {
       case LineKind::TitleRule:
         canvas.fillRect(x, top, width_, kTitleRuleH, gfx::kBlack);
         break;
+      case LineKind::Byline: {
+        const int base = ui::baselineCentered(kBylineStyle, top, kBylineH);
+        const int rightW = bylineRight_.empty() ? 0 : ui::textWidth(kBylineStyle, bylineRight_);
+        if (rightW) ui::drawText(canvas, x + width_ - rightW, base, bylineRight_, kBylineStyle);
+        const int leftW = width_ - (rightW ? rightW + 16 : 0);
+        if (!bylineLeft_.empty() && leftW > 0) {
+          ui::drawText(canvas, x, base, ui::ellipsize(kBylineStyle, bylineLeft_, leftW),
+                       kBylineStyle);
+        }
+        break;
+      }
       case LineKind::Rule:
         ui::dashedH(canvas, x, top + lh / 4, width_);
         break;
@@ -790,7 +812,8 @@ void NoteDoc::drawPage(GFXcanvas1 &canvas, int page, int x, int y) const {
 uint32_t NoteDoc::pageOffset(int page) const {
   if (page <= 0 || page >= static_cast<int>(pages_.size())) return 0;
   for (size_t i = pages_[page]; i < lines_.size(); ++i) {
-    if (lines_[i].kind != LineKind::Title && lines_[i].kind != LineKind::TitleRule) {
+    if (lines_[i].kind != LineKind::Title && lines_[i].kind != LineKind::TitleRule &&
+        lines_[i].kind != LineKind::Byline) {
       return lines_[i].start;
     }
   }

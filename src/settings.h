@@ -20,6 +20,8 @@
 //   agent_port = 7391
 //   agent_token = something-long         ; stays on the card: it keys the agent link (agent_noise.h)
 //   agent_face_details = on              ; the Agent face shows titles even with a PIN on the Agent
+//   [news]
+//   news_edition = 06:30                 ; wake each day for News's morning edition (apps/news_edition.h)
 //   [tailscale]
 //   tailscale_key = tskey-auth-...       ; the board keeps it and replaces the line with a note (tailnet.h)
 //   tailscale_name = inkdeck             ; the board's name on the tailnet
@@ -118,6 +120,10 @@ std::string agentToken();  // "" if the daemon asks for none
 // agent_face_details = on: the Agent face (and its copy in NVS) keeps titles and the question
 // even when the PIN guards the Agent. Off by default: counts only.
 bool agentFaceDetails();
+
+// news_edition: when the morning edition wakes the board (apps/news_edition.h), in minutes after
+// local midnight; -1 for none (off, or no line).
+int newsEdition();
 
 // The tailnet (tailnet.h). hasTailscale(): the board has an auth key.
 bool hasTailscale();

@@ -10,6 +10,7 @@
 #include "board_pins.h"
 #include "file_copy.h"
 #include "input.h"
+#include "news_library.h"
 #include "ota.h"
 #include "pmic.h"
 #include "podcast_library.h"
@@ -44,6 +45,7 @@ const char *modeName(Mode m) {
     case Mode::Standby: return "standby";
     case Mode::Book: return "book";
     case Mode::Agent: return "agent";
+    case Mode::Edition: return "edition";
     case Mode::On: break;
   }
   return "-";
@@ -53,6 +55,7 @@ const char *modeName(Mode m) {
 // power-off would cut short.
 bool working() {
   if (weather::syncing() || podcasts::busy() || ota::active() || webdav::active()) return true;
+  if (news::busy()) return true;
   if (filecopy::busy()) return true;
 #if INKDECK_AGENT
   if (agent::busy()) return true;
@@ -88,7 +91,7 @@ void begin() {
     cyclesLeft = prefs.getInt("cycles", 0);
     prefs.end();
   }
-  if (mode > Mode::Agent) mode = Mode::On;
+  if (mode > Mode::Edition) mode = Mode::On;
   log_i("power: woke by %s (reset %d, PMIC 0x20 = %02X), last off: %s, armed %ld", wakeName(wakeReason),
         static_cast<int>(reset), bits, modeName(mode), static_cast<long>(armed));
 }

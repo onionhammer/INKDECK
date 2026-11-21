@@ -33,6 +33,7 @@ void pollAgentFace() {}
 #include "apps/clock.h"
 #include "apps/home.h"
 #include "apps/lock.h"
+#include "apps/news_edition.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "fonts.h"
@@ -456,7 +457,8 @@ time_t agentCheckWake() {
 bool agentWake() {
   if (power::wake() != power::Wake::Alarm || !rtc::timeValid()) return false;
   const power::Mode mode = power::lastMode();
-  if (mode != power::Mode::Agent && mode != power::Mode::Sleep && mode != power::Mode::Book) {
+  if (mode != power::Mode::Agent && mode != power::Mode::Sleep && mode != power::Mode::Book &&
+      mode != power::Mode::Edition) {
     return false;
   }
   const time_t now = time(nullptr);
@@ -465,8 +467,9 @@ bool agentWake() {
   if (ring && ring <= now + 1) return false;  // an alarm: boot, and it rings
   const uint32_t due = loadU32("next");
   if (due == 0 || now + 30 < static_cast<time_t>(due)) {
-    // Woken for something else (an alarm snoozed or deleted since): Sleep and a book boot as
-    // they always have; the face goes back off.
+    // Woken for something else (an alarm snoozed or deleted since, the edition): Sleep and a
+    // book boot as they always have, the edition's wake draws it (apps/news_edition.h); the face
+    // goes back off.
     if (mode != power::Mode::Agent) return false;
   }
   if (batteryLow()) {
@@ -499,9 +502,11 @@ bool agentWake() {
     return false;
   }
   if (mode != power::Mode::Agent) {
-    // Sleep and a book: no chirp, no redraw (the result waits on Home).
+    // Sleep, a book and the edition: no chirp, no redraw (the result waits on Home). The
+    // edition keeps its own wake.
     agent::markSeen(std::max(seenAsk, g.latestAsk), std::max(seenDone, g.latestDone));
-    power::off(mode, earliestWake(ring, agentCheckWake()));
+    const time_t edition = mode == power::Mode::Edition ? editionWakeAt() : 0;
+    power::off(mode, earliestWake(earliestWake(ring, agentCheckWake()), edition));
     return false;
   }
   // The face: a chirp for what's new, a redraw for what changed, the ladder for the next.

@@ -1,4 +1,4 @@
-// Home (the "Main" artboard): preview of the selected module above the 10-row module list.
+// Home (the "Main" artboard): preview of the selected module above the module list (12 rows).
 // The navigator's root screen.
 #pragma once
 #include <memory>
