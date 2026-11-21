@@ -23,6 +23,7 @@
 #include "input.h"
 #include "ota.h"  // kHostname: the board is inkdeck.local for both
 #include "sdcard.h"
+#include "tailnet.h"
 #include "wlan.h"
 
 namespace webdav {
@@ -1452,6 +1453,7 @@ std::string serveCard() {
   phase = Phase::Serving;
   log_i("webdav: serving the card at http://%s.local/ (%s)", ota::kHostname,
         WiFi.localIP().toString().c_str());
+  tailnet::join();  // on the tailnet too, once it's up (tailnet.h)
 
   bool timedOut = false;
   while (!stopRequested) {
@@ -1487,6 +1489,7 @@ std::string serveCard() {
   const uint32_t t0 = millis();
   while (reap() > 0 && millis() - t0 < 5000) delay(50);
   MDNS.end();
+  tailnet::leave();
   WiFi.setSleep(true);
   wlan::disconnect();
   log_i("webdav: stopped%s: %llu bytes read, %llu written, least connection stack left %lu",

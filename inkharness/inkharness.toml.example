@@ -109,6 +109,7 @@ api_key_env = "OPENAI_API_KEY"
 # token_env = "HOME_ASSISTANT_TOKEN"
 # tools = ["HassTurnOn", "HassTurnOff", "HassLightSet"]   # optional allowlist; unset: all
 # timeout_ms = 20000
+# talk = true                 # false: talk turns (HOLD BOOT outside the Agent) don't get its tools
 #
 # A local server started as a command (stdio). cargo build --release --example mcp_demo
 # builds a small demo one.
@@ -153,3 +154,80 @@ api_key_env = "OPENAI_API_KEY"
 # dirs adds others.
 # [skills]
 # dirs = ["../shared-skills"]   # relative to this file
+
+# --- Agent sessions --------------------------------------------------------------------
+# Tasks that live on the daemon, are kept on disk and go on working with no board connected:
+# a board starts one by talking on its Agent screen, follows its plan and log, and answers its
+# questions; programs do the same over HTTP (/sessions). Sessions run on [agent.llm] if it is
+# there, else [chat.llm], else [llm], with the tools above plus plan and ask_choice. Without
+# this section there are none, and boards talk as before.
+# [agent]
+# dir = "sessions"            # where they are kept, relative to this file
+# place = "ONIONSERVE"        # the name boards show for where they run; default: the host's name
+# pin_sha256 = "..."          # optional: printf %s 1234 | sha256sum. A board must unlock with the
+#                             # PIN (HTTP sends X-Inkharness-Pin) before it sees or does anything
+#                             # with sessions; the token alone is on the board's card
+# ticket_minutes = 60         # how long an unlock lets the board's new connections back in
+# keep_days = 30              # finished sessions older than this are deleted
+# max_rounds = 40             # model rounds per run before a session fails ("too many steps")
+# reply = "spoken"            # an agent turn's reply: "spoken", a sentence or two; "none", no
+#                             # reply (the words are written down and go to the session, the
+#                             # board hears which session took them)
+#
+# The model sessions run on, any [llm] backend: a text model that is good with tools, as a
+# session works through many steps on its own. Through OpenRouter:
+# [agent.llm]
+# backend = "openai_compat"
+# base_url = "https://openrouter.ai/api/v1"
+# model = "anthropic/claude-haiku-5.5"
+# api_key_env = "OPENROUTER_API_KEY"
+# reasoning = "low"           # optional, as under [llm]
+#
+# What new sessions run on: "api" (the model above), "claude" (Claude Code, [agent.claude]) or
+# "herdr" (a program in a new herdr terminal, [herdr] default_program).
+# backend = "api"
+#
+# Claude Code in print mode, one run per session. It pays with ANTHROPIC_API_KEY if that is set
+# (here in the environment or the .env), else with the subscription `claude` is logged in with.
+# [agent.claude]
+# command = ["claude"]
+# model = ""                  # --model; empty: Claude Code's default
+# permission_mode = "default"
+# allowed_tools = ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]
+# disallowed_tools = []
+# dir = "work"                # each session works in <dir>/<id>, relative to this file
+# max_turns = 40
+#
+# The api backend's own tools (Claude Code has its own). Files live in <[agent] dir>/work/<id>
+# and go with the session.
+# [agent.tools]
+# files = true                # read_file, write_file, list_files
+# http = "allow"              # http_fetch: pages and APIs on the internet
+# http_private = false        # true: it may reach loopback, LAN and tailnet addresses too
+# shell = "deny"              # "allow": sh -c in the work folder, as the daemon's user
+# shell_timeout_s = 60
+
+# --- herdr -----------------------------------------------------------------------------
+# Programs in herdr terminals (Claude Code, Codex, a shell…), here or on other herdr machines,
+# as sessions of their own, followed through `hc connect`. With an [agent] table.
+# [herdr]
+# command = ["hc"]            # or ["ssh", "box", "hc"]
+# machines = []               # whose terminals count; empty: all
+# programs = []               # which programs count; empty: any that reports a status
+# run = "allow"               # herdr_run, and [agent] backend = "herdr"
+# answer = "allow"            # press the keys of a question's choice
+# send = "allow"              # type words into it
+# interrupt = "deny"          # press its stop key
+# kill = "deny"               # end its program
+# templates = { claude = ["claude"], codex = ["codex", "--no-daemon"] }
+# default_program = "claude"
+# default_machine = ""
+
+# --- Talk ------------------------------------------------------------------------------
+# What a talk turn (HOLD BOOT outside the Agent, and every board from before sessions) may
+# use: tool names, or prefixes ending in *. The board's own tools always stay. Unset: every
+# tool. Talk turns never see the sessions, whatever this says; their one way in is
+# propose_job, which files a job for someone behind the PIN to start (list it, or leave it
+# out of `tools` to keep talk from filing any).
+# [talk]
+# tools = ["run_js", "web_search", "think_harder", "home_*"]

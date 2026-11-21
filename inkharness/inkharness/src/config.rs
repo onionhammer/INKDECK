@@ -50,6 +50,266 @@ pub struct Config {
     /// order until one answers.
     #[serde(default, deserialize_with = "one_or_more")]
     pub search: Vec<Search>,
+    /// Agent sessions (agent/): without this table there are none, and only talk turns work.
+    pub agent: Option<Agent>,
+    /// herdr terminals as sessions (herdr.rs), when there is also an [agent] table.
+    pub herdr: Option<Herdr>,
+    #[serde(default)]
+    pub talk: Talk,
+}
+
+/// [agent]: sessions that live on the daemon and work with no board connected (issue #52).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Agent {
+    /// Where sessions are kept, relative to the config file it is in (place.rs makes it
+    /// absolute).
+    #[serde(default = "default_agent_dir")]
+    pub dir: String,
+    /// The name the board shows for where sessions run. Unset: the hostname, uppercased.
+    pub place: Option<String>,
+    /// The SHA-256 of the PIN, in hex. With it, a connection must unlock before it sees or
+    /// does anything with sessions, and HTTP requests send the PIN.
+    pub pin_sha256: Option<String>,
+    /// How long an unlock ticket lets a new connection back in without the PIN.
+    #[serde(default = "default_ticket_minutes")]
+    pub ticket_minutes: u64,
+    /// Finished sessions older than this are deleted.
+    #[serde(default = "default_keep_days")]
+    pub keep_days: u64,
+    /// Model rounds per run before a session fails with "too many steps".
+    #[serde(default = "default_max_rounds")]
+    pub max_rounds: usize,
+    /// [agent.llm]: the model sessions run on, any [llm] backend. Unset: [chat.llm], else
+    /// [llm] (Config::agent_model).
+    pub llm: Option<Llm>,
+    /// What new sessions run on.
+    #[serde(default)]
+    pub backend: BackendName,
+    /// What an agent turn answers with: a short spoken reply, or none (the words only go to
+    /// the session).
+    #[serde(default)]
+    pub reply: Reply,
+    /// [agent.claude]: the claude backend, headless Claude Code.
+    pub claude: Option<Claude>,
+    /// [agent.tools]: the api backend's own tools.
+    #[serde(default)]
+    pub tools: AgentTools,
+}
+
+/// [agent.tools]: what an api session may do besides the daemon's tools: files in its own work
+/// folder, fetching URLs, and running commands. The claude backend has Claude Code's own.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTools {
+    /// read_file, write_file, list_files in `<dir>/work/<session>`.
+    #[serde(default = "default_true")]
+    pub files: bool,
+    /// http_fetch.
+    #[serde(default = "allow")]
+    pub http: Policy,
+    /// Let http_fetch reach loopback, private and tailnet addresses (the daemon's own HTTP,
+    /// Home Assistant, the router). Off: refused.
+    #[serde(default)]
+    pub http_private: bool,
+    /// shell: `sh -c` in the work folder, as the daemon's user. Denied unless allowed here.
+    #[serde(default = "deny")]
+    pub shell: Policy,
+    /// A command that runs longer is ended (the model can ask for up to 600 s).
+    #[serde(default = "default_shell_timeout_s")]
+    pub shell_timeout_s: u64,
+}
+
+impl Default for AgentTools {
+    fn default() -> Self {
+        AgentTools {
+            files: true,
+            http: Policy::Allow,
+            http_private: false,
+            shell: Policy::Deny,
+            shell_timeout_s: default_shell_timeout_s(),
+        }
+    }
+}
+
+fn default_shell_timeout_s() -> u64 {
+    60
+}
+
+/// `[agent] reply`: what an agent turn answers with.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reply {
+    /// A sentence or two, spoken: what the session will do, or an acknowledgement.
+    #[default]
+    Spoken,
+    /// Nothing: the words are written down and handed to the session, and the turn ends.
+    None,
+}
+
+/// What a session runs on, as `[agent] backend` names it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendName {
+    /// A model through its provider's API ([agent.llm], [chat.llm] or [llm]).
+    #[default]
+    Api,
+    /// Claude Code in print mode, one run per session ([agent.claude]).
+    Claude,
+    /// A program in a new herdr terminal ([herdr] default_program).
+    Herdr,
+}
+
+/// [agent.claude]: Claude Code in print mode, one run per session. It uses ANTHROPIC_API_KEY
+/// if that is set, else the subscription it is logged in with.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Claude {
+    /// The command, as a list: `["claude"]`, or `["ssh", "box", "claude"]`.
+    #[serde(default = "default_claude_command")]
+    pub command: Vec<String>,
+    /// Passed as --model when set.
+    #[serde(default)]
+    pub model: String,
+    /// Passed as --permission-mode.
+    #[serde(default = "default_permission_mode")]
+    pub permission_mode: String,
+    /// Passed as --allowedTools (inkharness's own tools are added).
+    #[serde(default = "default_allowed_tools")]
+    pub allowed_tools: Vec<String>,
+    /// Passed as --disallowedTools.
+    #[serde(default)]
+    pub disallowed_tools: Vec<String>,
+    /// Each session works in <dir>/<id>; relative to the config file (place.rs).
+    #[serde(default = "default_claude_dir")]
+    pub dir: String,
+    /// Passed as --max-turns.
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
+}
+
+impl Default for Claude {
+    fn default() -> Self {
+        Claude {
+            command: default_claude_command(),
+            model: String::new(),
+            permission_mode: default_permission_mode(),
+            allowed_tools: default_allowed_tools(),
+            disallowed_tools: Vec::new(),
+            dir: default_claude_dir(),
+            max_turns: default_max_turns(),
+        }
+    }
+}
+
+fn default_claude_command() -> Vec<String> {
+    vec!["claude".into()]
+}
+fn default_permission_mode() -> String {
+    "default".into()
+}
+fn default_allowed_tools() -> Vec<String> {
+    ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]
+        .map(String::from)
+        .to_vec()
+}
+pub(crate) fn default_claude_dir() -> String {
+    "work".into()
+}
+fn default_max_turns() -> u32 {
+    40
+}
+
+/// Allow or deny, for what [herdr] lets inkharness do to a terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Policy {
+    Allow,
+    Deny,
+}
+
+/// [herdr]: programs in herdr terminals (Claude Code, Codex, a shell…), here or on other
+/// herdr machines, followed as sessions and driven through `hc connect`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Herdr {
+    /// Spoken to as `<command> connect` (JSON-RPC over stdio): `["hc"]`, or
+    /// `["ssh", "box", "hc"]`.
+    #[serde(default = "default_hc_command")]
+    pub command: Vec<String>,
+    /// Which herdr machines' terminals count; empty: all.
+    #[serde(default)]
+    pub machines: Vec<String>,
+    /// Which programs count as agents (by foreground name, status app or label); empty: any
+    /// that reports a status.
+    #[serde(default)]
+    pub programs: Vec<String>,
+    /// Start a program in a new terminal (herdr_run).
+    #[serde(default = "allow")]
+    pub run: Policy,
+    /// Press the keys a question's choice stands for.
+    #[serde(default = "allow")]
+    pub answer: Policy,
+    /// Type words into it (talking into the session, an answer in words).
+    #[serde(default = "allow")]
+    pub send: Policy,
+    /// Press its stop key (the board's STOP).
+    #[serde(default = "deny")]
+    pub interrupt: Policy,
+    /// End its program (HTTP's /kill).
+    #[serde(default = "deny")]
+    pub kill: Policy,
+    /// Names for programs: `{ claude = ["claude"], codex = ["codex", "--no-daemon"] }`.
+    #[serde(default)]
+    pub templates: std::collections::BTreeMap<String, Vec<String>>,
+    /// What a new session from the board starts with `[agent] backend = "herdr"`: a template
+    /// name or a command.
+    #[serde(default = "default_herdr_program")]
+    pub default_program: String,
+    /// The herdr machine it starts on; empty: this one.
+    #[serde(default)]
+    pub default_machine: String,
+}
+
+impl Default for Herdr {
+    fn default() -> Self {
+        toml::from_str("").expect("every [herdr] key has a default")
+    }
+}
+
+fn default_hc_command() -> Vec<String> {
+    vec!["hc".into()]
+}
+fn allow() -> Policy {
+    Policy::Allow
+}
+fn deny() -> Policy {
+    Policy::Deny
+}
+fn default_herdr_program() -> String {
+    "claude".into()
+}
+
+/// [talk]: what a talk turn (HOLD BOOT outside the Agent) may use.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Talk {
+    /// Tool names, or prefixes ending in `*`. The device's tools always stay. Unset: every
+    /// tool.
+    pub tools: Option<Vec<String>>,
+}
+
+pub(crate) fn default_agent_dir() -> String {
+    "sessions".into()
+}
+fn default_ticket_minutes() -> u64 {
+    60
+}
+fn default_keep_days() -> u64 {
+    30
+}
+fn default_max_rounds() -> usize {
+    40
 }
 
 /// A table, or an array of them.
@@ -172,6 +432,9 @@ pub struct McpServer {
     /// A call that takes longer fails.
     #[serde(default = "default_mcp_timeout_ms")]
     pub timeout_ms: u64,
+    /// False: talk turns (HOLD BOOT outside the Agent) don't get its tools; sessions do.
+    #[serde(default = "default_true")]
+    pub talk: bool,
 }
 
 /// The run_js tool (js.rs): a JavaScript sandbox for arithmetic and for chaining tool calls.
@@ -356,6 +619,18 @@ impl Llm {
 }
 
 impl Config {
+    /// The model agent sessions run on, and the table it comes from: [agent.llm], else
+    /// [chat.llm], else [llm].
+    pub fn agent_model(&self) -> (&'static str, &Llm) {
+        if let Some(llm) = self.agent.as_ref().and_then(|a| a.llm.as_ref()) {
+            return ("[agent.llm]", llm);
+        }
+        match &self.chat {
+            Some(chat) => ("[chat.llm]", &chat.llm),
+            None => ("[llm]", &self.llm),
+        }
+    }
+
     /// The stages a model needs are there: a transcript for a model that reads, speech for
     /// one that writes.
     pub fn check(&self) -> Result<()> {
@@ -642,6 +917,82 @@ mod tests {
                 .contains("[think.llm]")
         );
         assert!(check(&format!("{stt}{HEARS}{tts}{think}")).is_ok());
+    }
+
+    #[test]
+    fn sessions_use_agent_llm_then_chat_llm_then_llm() {
+        let cfg = |toml: &str| -> super::Config { toml::from_str(toml).unwrap() };
+        let llm = "[llm]\nbackend = \"mock\"\n";
+        let chat = "[chat.llm]\nbackend = \"openai_compat\"\nbase_url = \"u\"\nmodel = \"chat\"\n";
+        let agent = "[agent]\n[agent.llm]\nbackend = \"openai_compat\"\nbase_url = \"u\"\nmodel = \"anthropic/claude-haiku-5.5\"\nreasoning = \"low\"\n";
+        let names = |c: &super::Config| {
+            let (table, model) = c.agent_model();
+            (table, model.name().to_string())
+        };
+        assert_eq!(
+            names(&cfg(&format!("{llm}{chat}{agent}"))),
+            ("[agent.llm]", "anthropic/claude-haiku-5.5".into())
+        );
+        assert_eq!(
+            names(&cfg(&format!("{llm}{chat}[agent]\n"))),
+            ("[chat.llm]", "chat".into())
+        );
+        assert_eq!(
+            names(&cfg(&format!("{llm}[agent]\n"))),
+            ("[llm]", "mock".into())
+        );
+    }
+
+    #[test]
+    fn backends_and_their_defaults() {
+        let cfg: super::Config = toml::from_str(
+            "[llm]\nbackend = \"mock\"\n[agent]\nbackend = \"claude\"\n[agent.claude]\nmodel = \"haiku\"\n[herdr]\nmachines = [\"desktop\"]\n",
+        )
+        .unwrap();
+        let agent = cfg.agent.unwrap();
+        assert_eq!(agent.backend, super::BackendName::Claude);
+        assert_eq!(agent.reply, super::Reply::Spoken);
+        let quiet: super::Config =
+            toml::from_str("[llm]\nbackend = \"mock\"\n[agent]\nreply = \"none\"\n").unwrap();
+        assert_eq!(quiet.agent.unwrap().reply, super::Reply::None);
+        let claude = agent.claude.unwrap();
+        assert_eq!(
+            (claude.command.as_slice(), claude.model.as_str()),
+            (["claude".to_string()].as_slice(), "haiku")
+        );
+        assert_eq!(
+            (
+                claude.permission_mode.as_str(),
+                claude.max_turns,
+                claude.dir.as_str()
+            ),
+            ("default", 40, "work")
+        );
+        assert_eq!(
+            claude.allowed_tools,
+            ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]
+        );
+        let herdr = cfg.herdr.unwrap();
+        assert_eq!(herdr.command, ["hc"]);
+        assert_eq!(herdr.machines, ["desktop"]);
+        use super::Policy::{Allow, Deny};
+        assert_eq!(
+            (
+                herdr.run,
+                herdr.answer,
+                herdr.send,
+                herdr.interrupt,
+                herdr.kill
+            ),
+            (Allow, Allow, Allow, Deny, Deny)
+        );
+        assert_eq!(herdr.default_program, "claude");
+        let bad: Result<super::Config, _> =
+            toml::from_str("[llm]\nbackend = \"mock\"\n[agent]\nbackend = \"codex\"\n");
+        assert!(bad.is_err());
+        let bad: Result<super::Config, _> =
+            toml::from_str("[llm]\nbackend = \"mock\"\n[herdr]\nrun = \"maybe\"\n");
+        assert!(bad.is_err());
     }
 
     #[test]

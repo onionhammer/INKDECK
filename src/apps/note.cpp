@@ -194,7 +194,7 @@ class NoteScreen : public ui::Screen {
 
   const Note &note() const { return note_; }
 
-  std::string tag() const override { return moduleTag(fromFiles_ ? "FILES" : "VOICE"); }
+  std::string tag() const override { return moduleTag(fromFiles_ ? "FILES" : "AGENT"); }
   std::string context() const override { return ui::upper(note_.title); }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kUp, "PREV"};
@@ -206,7 +206,7 @@ class NoteScreen : public ui::Screen {
 
   bool reading() const override { return true; }  // light sleep between pages
   void onNap() override { save(); }
-  void onLeave() override { save(); }  // covered (the menu, the voice sheet), or closed
+  void onLeave() override { save(); }  // covered (the menu, the agent sheet), or closed
 
   bool onKey(Key key) override {
     switch (key) {

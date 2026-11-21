@@ -43,7 +43,7 @@ bool lastKeyRepeat();
 void inject(Key key, bool fast = false);
 
 // Ends a wait() early, as a timeout would, from any task: work for the UI task has come in
-// (apps/voice_tools.h).
+// (apps/board_tools.h).
 void wake();
 
 // Push-to-talk: while a handler is set, the wheel press reports its two edges instead of

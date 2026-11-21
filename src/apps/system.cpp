@@ -20,6 +20,7 @@
 #include "rtc.h"
 #include "screen.h"
 #include "sdcard.h"
+#include "tailnet.h"
 #include "settings.h"
 #include "sysinfo.h"
 #include "timesync.h"
@@ -42,7 +43,7 @@ constexpr TextStyle kActionSelected{&ui::fonts::kMono15ExtraBold, 0};
 
 constexpr int kRailH = 34;
 constexpr int kStateH = 21;
-constexpr int kStateRows = 8;
+constexpr int kStateRows = 9;
 constexpr int kStateKeyW = 104;
 constexpr int kPillW = 52;
 constexpr int kCells = 10;
@@ -191,9 +192,10 @@ class SystemScreen : public ui::Screen {
   // Live values: battery and power source (the PMIC status is cached for 5 s) and the uptime
   // minute. Voltage jitter alone doesn't redraw; it refreshes with the rest. A running time sync
   // redraws as it moves on (notice and WIFI row); moving the cursor hides its notice until then.
+  // The TAILNET row redraws when the board joins or leaves.
   bool onTick() override {
     if (rebootShown_) reboot();
-    bool changed = signature() != drawnSignature_;
+    bool changed = signature() != drawnSignature_ || tailnet::describe() != drawnTailnet_;
     if (syncing_) {
       const timesync::Status s = timesync::status();
       if (s.phase != shownPhase_) {
@@ -208,6 +210,7 @@ class SystemScreen : public ui::Screen {
 
   void draw(ui::Canvas &c, const Rect &body) override {
     drawnSignature_ = signature();
+    drawnTailnet_ = tailnet::describe();
     rebootShown_ = rebooting_;
     const pmic::Detail d = pmic::detail();
     Rect r = body;
@@ -463,6 +466,7 @@ class SystemScreen : public ui::Screen {
         {"NEXT WAKE", nextWake()},
         {"LAST BOOT", sysinfo::bootReason()},
         {"WIFI", sysinfo::wifi()},
+        {"TAILNET", tailnet::describe()},
         {"OTA", sysinfo::otaState()},
         {"MEMORY", sysinfo::memory()},
         {"SETTINGS", settings::describe()},
@@ -514,6 +518,7 @@ class SystemScreen : public ui::Screen {
   bool syncing_ = false;      // following a time sync
   timesync::Phase shownPhase_ = timesync::Phase::Idle;
   uint32_t drawnSignature_ = 0;
+  std::string drawnTailnet_;  // the TAILNET row as drawn
 };
 
 }  // namespace

@@ -2,6 +2,7 @@
 
 #include "input.h"
 
+#include <math.h>
 #include <stdio.h>
 
 #include <algorithm>
@@ -71,12 +72,17 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   }
   if (info.battery >= 0) blockW += kBatteryGlyphW;
   if (info.playback != Playback::None) blockW += kPlaybackW + kGap;
+  const std::string asks = info.asks > 0 ? "?" + std::to_string(info.asks) : std::string();
+  if (!asks.empty()) blockW += tagWidth(asks, style::kStatusTag, 5) + kGap;
   const int blockX = band.right() - std::max(blockW, 0) - 12;
   vrule(c, blockX - 12 - kRule, band.y, band.h);
   const int baseline = baselineCentered(style::kStatus, band.y, band.h);
   int x = blockX;
   if (info.playback != Playback::None) {
     x += drawPlaybackMark(c, x, band.centerY(), info.playback) + kGap;
+  }
+  if (!asks.empty()) {
+    x += drawTag(c, x, band.centerY(), 20, asks, style::kStatusTag, TagKind::Inverted, 5) + kGap;
   }
   for (int i = 0; i < 4; ++i) {
     if (texts[i].empty()) continue;
@@ -220,7 +226,8 @@ void drawRow(Canvas &c, const Rect &r, const Row &row, bool selected) {
   }
   if (!row.tag.empty()) {
     const int w = tagWidth(row.tag, style::kTag, 5);
-    drawTag(c, right - w, band.centerY(), 18, row.tag, style::kTag, TagKind::Outlined, 5, ink);
+    drawTag(c, right - w, band.centerY(), 18, row.tag, style::kTag,
+            row.tagInverted ? TagKind::Inverted : TagKind::Outlined, 5, ink);
     right -= w + kGap;
   }
 
@@ -235,8 +242,15 @@ void drawRow(Canvas &c, const Rect &r, const Row &row, bool selected) {
   const int block = capHeight(s) + kLineGap + capHeight(kSubtitle);
   const int titleBase = band.y + (band.h - block) / 2 + capHeight(s);
   drawText(c, x, titleBase, ellipsize(s, row.title, titleW), s, ink);
-  drawText(c, x, titleBase + kLineGap + capHeight(kSubtitle),
-           ellipsize(kSubtitle, row.subtitle, titleW), kSubtitle, ink);
+  int subX = x;
+  const int subBase = titleBase + kLineGap + capHeight(kSubtitle);
+  if (!row.subtitleMark.empty()) {
+    const int markW = drawTag(c, subX, subBase - capHeight(kSubtitle) / 2, 15, row.subtitleMark,
+                              style::kTag, TagKind::Outlined, 3, ink);
+    subX += markW + 5;
+  }
+  drawText(c, subX, subBase, ellipsize(kSubtitle, row.subtitle, titleW - (subX - x)), kSubtitle,
+           ink);
 }
 
 void ListCursor::reset(int count, int cursor) {
@@ -331,6 +345,57 @@ void drawStat(Canvas &c, const Rect &r, const std::string &key, const std::strin
   drawText(c, r.x, keyBase, ellipsize(style::kKey, key, r.w), style::kKey);
   drawText(c, r.x, keyBase + kLineGap + capHeight(style::kValue),
            ellipsize(style::kValue, value, r.w), style::kValue);
+}
+
+
+// --- Resume band ---------------------------------------------------------------------------
+
+void drawResumeBand(Canvas &c, const Rect &band, const std::string &right) {
+  constexpr TextStyle kBand{&fonts::kMono14Bold, 1};
+  constexpr TextStyle kBandCap{&fonts::kMono14ExtraBold, 0};
+  constexpr int kCapH = 24;
+  // A paper rule first, so a dark picture above doesn't run into the band.
+  const Rect ink{band.x, band.y + kRule, band.w, band.h - kRule};
+  fill(c, ink, kInk);
+  const Rect line{ink.x + kPadX, ink.y + (ink.h - kCapH) / 2, ink.w - 2 * kPadX, kCapH};
+  const int base = baselineCentered(kBand, line.y, line.h);
+  int x = drawText(c, line.x, base, "HOLD", kBand, kPaper) + 8;
+  const int capW = textWidth(kBandCap, "PWR") + 14 + 4;
+  frame(c, {x, line.y, capW, line.h}, 2, kPaper);
+  drawText(c, x + 9, baselineCentered(kBandCap, line.y, line.h), "PWR", kBandCap, kPaper);
+  x += capW + 8;
+  x = drawText(c, x, base, "TO RESUME", kBand, kPaper);
+  if (!right.empty()) {
+    drawText(c, {x + 10, line.y, line.right() - x - 10, line.h}, right, kBand, Align::Right,
+             kPaper);
+  }
+}
+
+// --- Sparkline -----------------------------------------------------------------------------
+
+void drawSparkline(Canvas &c, const Rect &r, const float *values, int count, float minSpan) {
+  fill(c, {r.x, r.bottom() - 2, r.w, 2}, kInk);
+  if (count <= 0 || r.h < 6) return;
+  float mn = values[0], mx = values[0];
+  for (int i = 1; i < count; ++i) {
+    mn = std::min(mn, values[i]);
+    mx = std::max(mx, values[i]);
+  }
+  if (mx - mn < minSpan || mx <= mn) {
+    const float mid = (mn + mx) / 2;
+    const float half = std::max(minSpan, 1e-3f) / 2;
+    mn = mid - half;
+    mx = mid + half;
+  }
+  constexpr int kGap = 2;
+  const int usable = r.h - 2 - 2;  // over the axis, a little air on top
+  for (int i = 0; i < count; ++i) {
+    const int x0 = r.x + i * (r.w + kGap) / count;
+    const int x1 = r.x + (i + 1) * (r.w + kGap) / count - kGap;
+    const float f = (values[i] - mn) / (mx - mn);
+    const int h = std::max(2, static_cast<int>(lroundf(2 + f * (usable - 2))));
+    fill(c, {x0, r.bottom() - 2 - h, std::max(1, x1 - x0), h}, kInk);
+  }
 }
 
 }  // namespace ui

@@ -12,7 +12,7 @@ Screens as the panel draws them, saved over USB with `tools/screenshot.py`.
 
 Home lists ten modules, each with a live preview. Every screen uses one key language: ▲▼ to
 move or adjust, ● for the main action, HOLD ● for the second one, BOOT for back (on Home, a
-full refresh), and HOLD BOOT on any screen to talk to the voice assistant (while music or a
+full refresh), and HOLD BOOT on any screen to talk to the agent (while music or a
 podcast plays, it raises a player sheet instead). Landscape screens (Clock, Level) turn the board
 so the wheel is on top; there, rolling it left is ▲ and right is ▼. Pictures turn with the
 board instead, and the wheel keeps its portrait sense there.
@@ -25,13 +25,14 @@ board instead, and the wheel keeps its portrait sense there.
 | **Weather** | Open-Meteo forecast: now, 12 hours and 6 days, with a detail sheet per day. Synced hourly (every half hour on USB; while the Reader naps, at the next page turn) and cached for offline use |
 | **Clock** | Landscape desk clock: calendar, sunrise and sunset, a weather strip, now-playing, and three alarms. An alarm can boot the board from power-off |
 | **Recorder** | Voice memos from the onboard mic as 16 kHz WAV, with a live waveform, input meter and gain. Memos play back on the device with a volume meter (▲▼), and can be deleted |
-| **Voice** | Hold BOOT on any screen (or the wheel on the Voice screen) and talk to an assistant on your network: a sheet rises over the lower half of the screen with what it heard and its reply; it speaks back, and can play music on speakers through Home Assistant. It can also use the board: find and open a book, read out the forecast, set an alarm, change the volume, open a screen, or say how the battery is (`src/apps/voice_tools.h`), and search the web (SearXNG, Brave or Tavily). A screen it opens comes up once the reply has been said. **Long answers go on the screen**: for a recipe, the steps of a how-to or a list, it says a sentence or two and puts the whole thing up as a **note** (`src/apps/note.h`), paged like the Reader (▲▼, Literata in three sizes), with headings, bullets, numbered steps and checklists. Each note is kept as Markdown in `SD:/Notes/` (the onboard flash without a card), where Files opens it again; "show me the recipe again" brings back the last one where it was left, and it can read the note on screen to answer a follow-up ("double it"). The board streams the mic, encrypted with the token both ends hold, to [`inkharness serve`](inkharness/README.md), a Rust daemon that runs speech-to-text, a language model and text-to-speech (hosted or local, each swappable; a model that hears or speaks can stand in for the first or last), and plays the reply as it arrives. Set `voice_host` in `SD:/inkdeck.ini`. Protocol: [`docs/voice-protocol.md`](docs/voice-protocol.md). The same program, installed with one line, is also a chat in the terminal and an HTTP API, using what it finds in the folder it starts in (`AGENTS.md`, skills, `.mcp.json`). **Not yet tested on the board** |
+| **Talk** | Hold BOOT on any screen and talk to an assistant on your network: a sheet rises over the lower half of the screen with what it heard and its reply; it speaks back, and can play music on speakers through Home Assistant. It can also use the board: find and open a book, read out the forecast, set an alarm, change the volume, open a screen, or say how the battery is (`src/apps/board_tools.h`), and search the web (SearXNG, Brave or Tavily). A screen it opens comes up once the reply has been said. **Long answers go on the screen**: for a recipe, the steps of a how-to or a list, it says a sentence or two and puts the whole thing up as a **note** (`src/apps/note.h`), paged like the Reader (▲▼, Literata in three sizes), with headings, bullets, numbered steps and checklists. Each note is kept as Markdown in `SD:/Notes/` (the onboard flash without a card), where Files opens it again; "show me the recipe again" brings back the last one where it was left, and it can read the note on screen to answer a follow-up ("double it"). The board streams the mic, encrypted with the token both ends hold, to [`inkharness serve`](inkharness/README.md), a Rust daemon that runs speech-to-text, a language model and text-to-speech (hosted or local, each swappable; a model that hears or speaks can stand in for the first or last), and plays the reply as it arrives. Set `agent_host` in `SD:/inkdeck.ini`: a machine on your network, or on your tailnet from any Wi-Fi (Tailnet, below). Protocol: [`docs/voice-protocol.md`](docs/voice-protocol.md). The same program, installed with one line, is also a chat in the terminal and an HTTP API, using what it finds in the folder it starts in (`AGENTS.md`, skills, `.mcp.json`). **Not yet tested on the board** |
+| **Agent** | Home → AGENT (03) lists the sessions inkharness runs for you: jobs that keep working on the daemon while the board sleeps, grouped NEEDS YOU, RUNNING, SCHEDULED and DONE (`src/apps/agent.h`). A session shows its plan as a checklist, the steps it has taken, its cost, and its result (● puts it up as a note); HOLD ● pauses, resumes, stops or deletes it. **Schedules** ("every weekday at seven, brief me") show their time, days, prompt and last runs, and can wake the board, show the result as a note, or say it on USB; **watches** ("tell me when the fare to Lisbon drops under $700") show their readings as a sparkline; a session can also draw a **panel** of its own (stats, rows, a chart, a choice). When one asks you to choose, an **ask sheet** rises over whatever you're doing (once per question; BOOT: in an hour), with a chirp, `?1` in the status bar and `1 ASK` on Home: ▲▼, ● sends, HOLD BOOT answers in words. HOLD BOOT on the Agent starts a session, or talks into the one on screen. Anywhere else HOLD BOOT is a talk turn: the limited assistant above, which can't see or start sessions, but can file a job that waits on the list until you start it. The board doesn't hold Wi-Fi for this: the connection is live on the Agent's screens and on USB, and otherwise the board checks in every 5 to 30 minutes, or when inkharness asks. PWR on the Agent, or while something runs or waits, shows the **Agent face** (`src/apps/agent_face.h`) and powers off; the RTC wakes the board to check in, chirp and redraw it, and HOLD PWR opens the Agent. With `agent` in `INKDECK_PIN_ON`, the Agent opens behind the PIN, which is asked again after every start or PWR, the same digits unlock inkharness's own PIN (`pin_sha256`), and the sheet, Home and the face show counts only (`agent_face_details = on` shows everything on the face). Needs an inkharness with an `[agent]` table (issue #52). Tested on the board 2026-11-21 against the live inkharness: the list, the ask sheet answered by key, the face, and its RTC check-in |
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, and a scan panel: the live I2C bus, the Wi-Fi networks in range or the Bluetooth LE devices around, the strongest seven of each. A CSV log to the card. Its menu opens the full scans. **Wi-Fi**: a 2.4 GHz channel chart and every network with its channel, width, security and generation; a network's detail follows its signal live (two minutes of history) and shows what the driver reports (ciphers, WPS, country, BSS colour, FTM) and the networks that share its channels. **Bluetooth LE**, in a build with `INKDECK_BLE=1` in `platformio.ini` (off by default: it keeps about 26 KB of internal RAM from boot and takes about 230 KB of flash; the S3 has no Bluetooth Classic): a proximity strip and every advertising device, named or decoded from its advert (Apple Continuity, Microsoft Swift Pair, iBeacon, Eddystone, Fast Pair, appearance, services, maker); a device's detail has its live signal, transmit power and path loss, advertising interval and raw advert bytes. Both details can beep once a second, higher as the signal gets stronger, to walk towards it |
 | **Level** | Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
 | **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. With a PIN set, it can ask for it first unless you used it in the last minute (see Lock). A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, they stay as they were (tilt decides, not the picture's shape). The wheel works
 the same way round in both. Phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short). A Markdown file (`.md`) in a folder called `Notes` opens as a note instead (see Voice) |
-| **Network shares** | Files also browses shares on the local network (a NAS, a home server, a Windows PC), listed in `inkdeck.ini` (below): **SMB** (SMB2/3, user name and password) and **NFS** (v3). Each share is a row on the card's root after ONBOARD FLASH, tagged SMB or NFS. Opening one joins Wi-Fi and mounts it (read-only, so HOLD ● doesn't delete there), and its books, music, pictures and text open as they do from the card. **HOLD ● saves** the selected file to the card, into the folder its type belongs in: an MP3 to Music or Podcasts (a sheet asks which), a WAV to Music, a picture to Pictures, an EPUB to Books, any other text to Documents. Music keeps the folders it was in below the share's own `music` folder (else the folder it's in, the album), and a podcast lands in its show's folder (the one below the share's `podcasts` folder), where Podcasts lists it. A file of the same name and size already there isn't copied again; a different one gets a ` (2)`. The header shows how far it has got and the time left, BOOT stops it (nothing is left behind), and the board doesn't power off until it's done. Wi-Fi stays on while the share is open in Files or a file on it is (music playing, a book open), and goes off 30 s after |
-| **System** | Battery and charger state, power rails, wake plan, Wi-Fi, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, how often the screen does a full refresh, the PIN lock, and the card as a network drive (all below). The actions are in a sheet that ● opens |
+| **Network shares** | Files also browses shares on the local network or your tailnet (a NAS, a home server, a Windows PC), listed in `inkdeck.ini` (below): **SMB** (SMB2/3, user name and password) and **NFS** (v3). Each share is a row on the card's root after ONBOARD FLASH, tagged SMB or NFS. Opening one joins Wi-Fi and mounts it (read-only, so HOLD ● doesn't delete there), and its books, music, pictures and text open as they do from the card. **HOLD ● saves** the selected file to the card, into the folder its type belongs in: an MP3 to Music or Podcasts (a sheet asks which), a WAV to Music, a picture to Pictures, an EPUB to Books, any other text to Documents. Music keeps the folders it was in below the share's own `music` folder (else the folder it's in, the album), and a podcast lands in its show's folder (the one below the share's `podcasts` folder), where Podcasts lists it. A file of the same name and size already there isn't copied again; a different one gets a ` (2)`. The header shows how far it has got and the time left, BOOT stops it (nothing is left behind), and the board doesn't power off until it's done. Wi-Fi stays on while the share is open in Files or a file on it is (music playing, a book open), and goes off 30 s after |
+| **System** | Battery and charger state, power rails, wake plan, Wi-Fi, the tailnet, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, how often the screen does a full refresh, the PIN lock, and the card as a network drive (all below). The actions are in a sheet that ● opens |
 
 **Power**
 - PWR shows a sleep screen and powers the board off completely. The e-paper keeps its image,
@@ -55,10 +56,11 @@ the same way round in both. Phone photos come out upright (EXIF orientation), an
   IMU's wake on motion wakes it when you turn the board.
 - Audio hardware (amp, codec, the codec's and mic's supply) is on only while something plays,
   rings or records. The PMIC outputs nothing uses stay off.
-- On USB, PWR shows the clock face instead and the board stays on.
+- On USB, PWR shows the clock face instead and the board stays on, and on the tailnet if it has
+  a Tailscale key (Tailnet, below).
 
 **Lock:** with a PIN set (System → PIN LOCK, or `inkdeck.ini` below), the board asks for it in
-the places the build names in `INKDECK_PIN_ON` (`platformio.ini`, set to `files`; all three
+the places the build names in `INKDECK_PIN_ON` (`platformio.ini`, set to `files,agent`; all four
 if it's unset):
 
 - `power_on`: whenever the board starts and whenever it wakes from the USB clock face. If
@@ -72,10 +74,13 @@ if it's unset):
   library (only books in `SD:/Books`) and Music (`SD:/Music`, only that folder: BOOT stops at it,
   and there's no delete, onboard flash or network shares there) still open without it. Without
   such a folder, or for a book kept elsewhere, they open Files with the PIN.
+- `agent`: the same for the **Agent**, except that every start and every PWR (the USB clock face
+  included) asks again, however recently you used it. The digits also unlock inkharness when it
+  has a PIN of its own.
 
-Leave `power_on` out to ask only for System and/or Files. Before System or Files, the wheels show
-under that module's tag with ● OPEN on the last one, and BOOT on the first wheel goes back to
-Home. Unlocking the lock counts as opening both. After three wrong PINs in a row, each try
+Leave `power_on` out to ask only for System, Files and/or the Agent. Before any of them, the
+wheels show under that module's tag with ● OPEN on the last one, and BOOT on the first wheel goes
+back to Home. Unlocking the lock counts as opening all three. After three wrong PINs in a row, each try
 waits: 30 s, then twice as long each time, up to 30 minutes. The count survives a restart (the
 wait starts again), and the right PIN clears it. You enter the PIN like a combination padlock: turn the wheel to pick each digit, then
 press to move to the next. BOOT goes back a digit. Alarms still ring over the lock, and
@@ -107,20 +112,63 @@ asks too, unless opening System already did. (The card as a USB drive was tried 
 dropped: macOS reads a FAT32 card's whole FAT before mounting it, and at USB full speed a big
 card's takes longer than macOS waits.)
 
+**Tailnet:** with a Tailscale auth key in `inkdeck.ini` (`[tailscale]`, below), the board joins
+your tailnet whenever something needs a machine there, through
+[MicroLink](lib/microlink/README.md), a Tailscale client for the ESP32 (`src/tailnet.h`). So
+`agent_host` can be your computer's name on the tailnet (`macbook`, or
+`macbook.tail1234.ts.net`) or its 100.x address, and the board reaches inkharness from any Wi-Fi
+it can join, a phone's hotspot included. With a name, the board tries the LAN first: the
+address your router's DNS gives the name, and the addresses the machine last gave the tailnet.
+At home one answers within milliseconds and the board connects there without joining (voice
+starts about 2.6 s after you press BOOT); elsewhere nothing answers within a second and it goes
+through the tailnet. A 100.x address always goes through the tailnet. A share in Files works
+the same way (`smb://erik@macbook/share`), and a podcast feed can be on a tailnet machine too. While Wi-Fi Drive or Update over Wi-Fi is open, the board answers on the
+tailnet too, at `http://inkdeck` or its 100.x address (the screen shows it), so you can copy
+books or push an update from elsewhere. A host counts as on the tailnet when it's a
+100.64.0.0/10 address, ends in `.ts.net`, or has no dots (a machine's name there); the board
+looks such names up in the tailnet's list of machines. On battery it leaves the tailnet a minute
+after the last thing using it lets go. **On USB power it stays on the tailnet**, Wi-Fi with it, so
+your other machines always find it; unplugged, it goes back to joining only when needed. System's
+TAILNET row says whether it's on and at what address.
+Make the key in Tailscale's admin console (Settings → Keys): reusable and not ephemeral, since
+the board is offline most of the time and Tailscale removes an ephemeral machine soon after it
+goes. Once the board shows up in Machines, turn off its key expiry, or it has to join again with
+a new key when that runs out. A different key joins the board as a new machine, and
+`tailscale_key = off` takes the key off it. The board relays through the same Tailscale relay
+region (DERP) as `agent_host`'s machine, or as most of your machines: it learns that at its first
+join after a start, joins again from there if it has to (about 4 s more, once), and keeps it. Joining
+takes about 4 s after Wi-Fi, and voice over the tailnet starts about 6.5 s after you press BOOT
+(measured with inkharness on a home server). While on the tailnet, MicroLink's four tasks take
+42 KB of internal RAM, and fetching the list of machines takes 512 KB of PSRAM. Voice over the
+tailnet is tested on the board; shares, feeds, Wi-Fi Drive and updates over it aren't yet.
+**Exit node:** with `tailscale_exit_node = on`, the board offers itself as an exit node, so a
+laptop or phone on the tailnet can send its internet traffic out through the board's Wi-Fi.
+Approve it in the admin console (Machines → the board → Edit route settings → Use as exit
+node); access rules other than the default must allow `autogroup:internet`. It's IPv4 only: the
+core's lwIP can't forward IPv6, so a machine using it falls back to IPv4 for sites that have
+both. It's there whenever the board is on the tailnet, so in practice on USB power, where the
+board also keeps Wi-Fi's modem sleep off. Everything is encrypted in software on a 240 MHz core
+over 2.4 GHz Wi-Fi, so it's much slower than a computer would be. System's TAILNET row ends in
+`exit node` while it offers itself. The board advertises the route and forwards with NAT
+(tested 2026-11-21: on USB it joined and turned it on, with the same 93 KB of internal RAM
+free); traffic through it isn't tested yet.
+
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
-Wi-Fi network, time zone and location without a rebuild, sets the lock and lists network shares
-(example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
+Wi-Fi network, time zone and location without a rebuild, sets the lock, lists network shares
+and puts the board on your tailnet (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
 the card has none, it writes one with every line commented out. It can list up to 8 Wi-Fi
 networks, each `ssid` line with its `password` under it: the board tries the one it last joined
 first, then the others in the file's order, moving on as soon as one is out of range (about
 3 s). **Passwords don't stay on the card**, since a card is easy to lift: the board keeps each
-Wi-Fi password and each SMB share's in its flash (NVS) and rewrites their lines without them. To
+Wi-Fi password, each SMB share's and the Tailscale key in its flash (NVS) and rewrites their
+lines without them. To
 change one, write it in again. The flash isn't encrypted, so someone with the board and a USB
 cable can read them, as they can the `.env` values built into the firmware.
 `INKDECK_FAHRENHEIT` in `platformio.ini` switches between
-US and metric units, and `INKDECK_VOICE` builds the voice assistant in (`1`, as set) or leaves
-it out (`0`): no VOICE on Home, and HOLD BOOT only raises the player sheet.
+US and metric units, and `INKDECK_AGENT` builds the agent in (`1`, as set) or leaves
+it out (`0`): no AGENT on Home, and HOLD BOOT only raises the player sheet. `INKDECK_TAILNET`
+does the same for the tailnet: `0` saves about 123 KB of flash and 7 KB of internal RAM.
 
 ```ini
 [wifi]
@@ -139,6 +187,13 @@ nfs = nfs://nas.local/volume1/books   ; up to 4 shares in all
 [lock]
 pin = 2468                            ; 4 to 8 digits; pin = off removes it
 lock_minutes = 5                      ; also lock after 5 minutes without a key
+[agent]
+agent_host = macbook                  ; inkharness, here on the tailnet
+agent_token = something-long
+[tailscale]
+tailscale_key = tskey-auth-...        ; the board keeps it and replaces the line with a note
+tailscale_name = inkdeck              ; its name on the tailnet
+tailscale_exit_node = on              ; offer the board as an exit node (IPv4)
 ```
 
 Each `smb =` or `nfs =` line is a share Files lists:

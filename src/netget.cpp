@@ -7,6 +7,8 @@
 #include <mbedtls/platform.h>
 #include <strings.h>
 
+#include "tailnet.h"
+
 namespace net {
 namespace {
 
@@ -18,6 +20,19 @@ bool isRedirect(int status) {
 }
 
 esp_http_client_handle_t handle(void *p) { return static_cast<esp_http_client_handle_t>(p); }
+
+// The host in scheme://[user@]host[:port]/path; "" if there's none.
+std::string hostOf(const std::string &url) {
+  size_t b = url.find("://");
+  if (b == std::string::npos) return "";
+  b += 3;
+  const size_t end = url.find_first_of("/?#", b);
+  std::string authority = url.substr(b, end == std::string::npos ? std::string::npos : end - b);
+  const size_t at = authority.rfind('@');
+  if (at != std::string::npos) authority.erase(0, at + 1);
+  if (!authority.empty() && authority[0] == '[') return "";  // IPv6: never the tailnet's here
+  return authority.substr(0, authority.find(':'));
+}
 
 // Blocks of 512 bytes and up (record buffers, certificates) from PSRAM, small ones from internal
 // RAM; either falls back to the other.
@@ -47,6 +62,13 @@ int Get::onEvent(void *event) {
 bool Get::open(const std::string &url, std::string &error, int64_t from,
                const std::string &ifRange) {
   close();
+  // A host on the tailnet (a feed on a home server): join it for as long as this request lasts.
+  const std::string host = hostOf(url);
+  if (tailnet::routes(host)) {
+    if (!tailnet::hold(kTimeoutMs, error)) return false;
+    tailnet_ = true;
+    tailnet::reach(host, 8000);
+  }
   esp_http_client_config_t cfg = {};
   cfg.event_handler = reinterpret_cast<http_event_handle_cb>(&Get::onEvent);
   cfg.user_data = this;
@@ -60,6 +82,7 @@ bool Get::open(const std::string &url, std::string &error, int64_t from,
   esp_http_client_handle_t c = esp_http_client_init(&cfg);
   if (!c) {
     error = "NO MEMORY FOR HTTP";
+    close();
     return false;
   }
   client_ = c;
@@ -111,10 +134,15 @@ int Get::read(char *buf, int len) {
 }
 
 void Get::close() {
-  if (!client_) return;
-  esp_http_client_close(handle(client_));
-  esp_http_client_cleanup(handle(client_));
-  client_ = nullptr;
+  if (client_) {
+    esp_http_client_close(handle(client_));
+    esp_http_client_cleanup(handle(client_));
+    client_ = nullptr;
+  }
+  if (tailnet_) {
+    tailnet_ = false;
+    tailnet::release();
+  }
 }
 
 }  // namespace net

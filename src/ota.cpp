@@ -11,6 +11,7 @@
 
 #include "audio.h"
 #include "inkdeck_secrets.h"  // OTA_PASSWORD_SHA256, generated from .env by scripts/gen_secrets.py
+#include "tailnet.h"
 #include "wlan.h"
 
 // The core marks a new image good in initArduino(), before setup(), unless this says the app
@@ -123,6 +124,7 @@ void run(void *) {
   phase = Phase::Listening;
   log_i("ota: listening at %s.local:%u for %lu min", kHostname, kPort,
         static_cast<unsigned long>(kListenMinutes));
+  tailnet::join();  // and at the board's tailnet address, once it's up (tailnet.h)
 
   bool timedOut = false;
   while (phase != Phase::Done && !stopRequested) {
@@ -135,6 +137,7 @@ void run(void *) {
   }
 
   ArduinoOTA.end();
+  tailnet::leave();
   WiFi.setSleep(true);
   wlan::disconnect();
   if (phase == Phase::Done) restart();  // even if stopped meanwhile: the new image is in

@@ -1,4 +1,4 @@
-// A note for the Note screen (apps/note.h): the text the voice assistant puts on the screen (a
+// A note for the Note screen (apps/note.h): the text the agent puts on the screen (a
 // recipe, steps, a list), in a small Markdown subset, parsed into blocks and laid out in pages.
 //
 // What it understands, one construct per line:

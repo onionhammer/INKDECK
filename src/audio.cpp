@@ -39,8 +39,8 @@ constexpr uint32_t kDmaDescriptors = 8;
 constexpr uint32_t kDmaFrames = 511;
 
 enum class Cmd : uint8_t {
-  Play, TogglePause, Next, Stop, Volume, Ring, Beep, Record, RecordStop, RecordPause, MicGain,
-  Capture, CaptureStop, StreamStart, StreamAbort
+  Play, TogglePause, Next, Stop, Volume, Ring, Beep, Chirp, Record, RecordStop, RecordPause,
+  MicGain, Capture, CaptureStop, StreamStart, StreamAbort
 };
 struct Command {
   Cmd cmd;
@@ -73,7 +73,7 @@ std::atomic<int> recLevelCenti{-9600};  // levelDb x 100
 std::atomic<int> micDigitalDb{12};  // on top of the PGA's 30 dB: 42 dB in all to start
 std::atomic<uint32_t> recGeneration{0};
 // Voice streams: PCM rings in PSRAM between the audio task and the one task that calls
-// capture*() and stream*() (voice_client.cpp). One writer and one reader each.
+// capture*() and stream*() (agent_client.cpp). One writer and one reader each.
 constexpr size_t kCaptureBytes = 256 * 1024;  // 8 s of the mic: rides out a Wi-Fi join
 constexpr size_t kStreamBytes = 256 * 1024;   // 5.3 s of a reply at 24 kHz
 StreamBufferHandle_t captureBuf = nullptr;
@@ -558,6 +558,11 @@ constexpr Tone kCue[] = {{30, 1500, 1500}, {20, 0, 0}, {30, 1500, 1500}, {20, 0,
 constexpr float kCueLevel = 0.3f;
 constexpr uint32_t kCueRampMs = 3;  // crisp pips, still without clicks
 
+// The agent's chirps (audio::chirp()), in the cue's voice: two pips a fourth apart, rising for
+// a question, falling for a session that finished.
+constexpr Tone kRise[] = {{45, 1125, 1125}, {35, 0, 0}, {70, 1500, 1500}};
+constexpr Tone kFall[] = {{45, 1500, 1500}, {35, 0, 0}, {70, 1125, 1125}};
+
 // ---------------------------------------------------------------------------------------------
 // WAV playback (audio task only): 16-bit PCM read straight into the output.
 
@@ -962,7 +967,10 @@ void recordStep() {
 }
 
 void handle(const Command &c) {
-  if (ring.on && c.cmd != Cmd::Ring && c.cmd != Cmd::Volume && c.cmd != Cmd::Beep) ringStop();
+  if (ring.on && c.cmd != Cmd::Ring && c.cmd != Cmd::Volume && c.cmd != Cmd::Beep &&
+      c.cmd != Cmd::Chirp) {
+    ringStop();
+  }
   // Playback (or the alarm) needs the I2S port: a recording in progress is finished first.
   if (recOn && (c.cmd == Cmd::Play || c.cmd == Cmd::TogglePause || c.cmd == Cmd::Stop ||
                 c.cmd == Cmd::StreamStart || (c.cmd == Cmd::Ring && c.arg))) {
@@ -981,6 +989,11 @@ void handle(const Command &c) {
   switch (c.cmd) {
     case Cmd::Beep:
       if (!recOn && !ring.on && !strm.on && state == State::Stopped) beepNow(c.arg, c.arg2, c.arg2);
+      break;
+    case Cmd::Chirp:
+      if (!recOn && !ring.on && !strm.on && !rec.capture && state == State::Stopped) {
+        tonesNow(c.arg ? kRise : kFall, 3, kCueLevel, kCueRampMs);
+      }
       break;
     case Cmd::Capture:
       ack(captureBegin(c.arg != 0));
@@ -1296,6 +1309,8 @@ void ring(bool on) { send(Cmd::Ring, on ? 1 : 0); }
 bool ringing() { return ringOn.load(); }
 
 void beep(uint32_t ms, uint32_t hz) { send(Cmd::Beep, static_cast<int>(ms), static_cast<int>(hz)); }
+
+void chirp(bool rising) { send(Cmd::Chirp, rising ? 1 : 0); }
 
 void record(const std::string &path) {
   if (!lock) return;

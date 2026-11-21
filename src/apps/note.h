@@ -1,5 +1,5 @@
-// Note: a long answer the voice assistant put on the screen (its show_note tool,
-// apps/voice_tools.h: a recipe, the steps of a how-to, a packing list), paged like the Reader so
+// Note: a long answer the agent put on the screen (its show_note tool,
+// apps/board_tools.h: a recipe, the steps of a how-to, a packing list), paged like the Reader so
 // it can be followed with the board on the counter. Layout and the Markdown it understands:
 // notedoc.h.
 //   ▲ previous page   ▼ next page   ● menu   BOOT back
@@ -10,7 +10,7 @@
 // Each note is kept as Markdown, "# Title" and then the text, in the Notes folder: SD:/Notes, or
 // FLASH:/Notes without a card. A note with the same title replaces it. Files opens a .md file in
 // any folder called Notes here instead of in the text reader, so they can be read again
-// without the assistant; the voice tool show {screen: "note"} brings back the last one. The
+// without the assistant; the agent's tool show {screen: "note"} brings back the last one. The
 // place is kept per note (readstate.h). Counts as reading: the board light-sleeps between pages,
 // and the idle power-off waits for a low battery, as in the text reader.
 #pragma once
@@ -53,7 +53,7 @@ const Note *noteOnScreen();
 bool isNotePath(const std::string &path);
 
 // The Note screen. fromFiles: under Files' tag, and the menu's FOLDER goes back to the Files
-// screen below; else under Voice's, and FOLDER opens the Notes folder in its place. atStart:
+// screen below; else under the Agent's, and FOLDER opens the Notes folder in its place. atStart:
 // the first page, not the saved place.
 std::unique_ptr<ui::Screen> makeNote(Note note, bool fromFiles, bool atStart);
 

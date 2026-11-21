@@ -60,7 +60,7 @@ nfs = nfs://nas.local/volume1/books
 
 [lock]
 ; A PIN of 4 to 8 digits locks the board when it powers on, and when it wakes from the desk
-; face. The firmware can be built to ask for it on opening System or Files instead, or as well
+; face. The firmware can be built to ask for it on opening System, Files or the Agent instead, or as well
 ; (INKDECK_PIN_ON). Turn the wheel to pick each digit, then press for the next, like a padlock.
 ; System > PIN LOCK sets, changes and clears it on the board as well. The board keeps the
 ; PIN and replaces this line with a note, so the PIN doesn't stay on the card. To change it
@@ -70,11 +70,34 @@ nfs = nfs://nas.local/volume1/books
 ; Also lock after this many minutes without a key (0: only at power-on). Power-on builds only.
 ; lock_minutes = 5
 
-[voice]
-; The machine on your network that runs inkharness, the assistant daemon (a name or an
+[agent]
+; The machine on your network that runs inkharness, the agent daemon (a name or an
 ; address), its port (7391 unless you changed it) and the token in its inkharness.toml. The
 ; token never leaves this file: it keys the connection's encryption, so make it long and random
-; (openssl rand -hex 24).
-; voice_host = nas.local
-; voice_port = 7391
-; voice_token = something-long
+; (openssl rand -hex 24). With [tailscale] set, agent_host can be the machine's name on your
+; tailnet (macbook, macbook.tail1234.ts.net) or its 100.x address, and the board reaches it
+; from any Wi-Fi. A name is tried on your LAN first, so at home the board doesn't join.
+; agent_host = nas.local
+; agent_port = 7391
+; agent_token = something-long
+; With a PIN on the Agent, the Agent face shows counts only, and its titles stay off the
+; board's flash. On, it shows everything, for a board that stays on a desk at home.
+; agent_face_details = off
+
+[tailscale]
+; Puts the board on your tailnet when something needs a machine there: an agent_host, a share's
+; server or a feed's host given as a tailnet name or 100.x address. Wi-Fi Drive and Update
+; over Wi-Fi answer on the tailnet too while they're open. Make an auth key in Tailscale's
+; admin console (Settings > Keys), reusable and not ephemeral: the board is offline most of
+; the time, and Tailscale removes an ephemeral machine soon after it goes. Once the board shows
+; up in Machines, turn off its key expiry there. The board keeps the key and replaces this
+; line with a note; a different key joins it as a new machine. tailscale_key = off removes it.
+; tailscale_key = tskey-auth-k1234567CNTRL-abcdefghijklmnopqrstuvwxyz
+; Its name on the tailnet: letters, digits and hyphens (inkdeck unless you change it).
+; tailscale_name = inkdeck
+; Offer the board as an exit node, IPv4 only: the tailnet's machines can send their internet
+; traffic out through its Wi-Fi. Approve it in the admin console (Machines, Edit route
+; settings); access rules other than the default must allow autogroup:internet. It's there
+; while the board is on the tailnet, all the time on USB power. Software encryption over
+; 2.4 GHz Wi-Fi: much slower than a computer would be.
+; tailscale_exit_node = on

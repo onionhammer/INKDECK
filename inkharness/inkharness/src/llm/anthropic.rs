@@ -268,6 +268,23 @@ impl ChatApi for Anthropic {
             .messages
             .push(json!({"role": "user", "content": results}));
     }
+
+    fn add_user(&self, conversation: &mut Conversation, text: &str) {
+        // After the tool results, in the same user message: the roles must alternate.
+        let block = json!({"type": "text", "text": text});
+        match conversation.messages.last_mut() {
+            Some(last) if last["role"] == "user" => match &mut last["content"] {
+                Value::Array(blocks) => blocks.push(block),
+                content => {
+                    let earlier = json!({"type": "text", "text": content.take()});
+                    *content = json!([earlier, block]);
+                }
+            },
+            _ => conversation
+                .messages
+                .push(json!({"role": "user", "content": [block]})),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -294,6 +311,33 @@ mod tests {
             max_tokens: 1000,
             fallbacks: true,
         })
+    }
+
+    #[test]
+    fn what_the_user_says_meanwhile_joins_the_tool_results() {
+        let api = client("http://unused").0;
+        let mut conversation = Conversation {
+            system: "sys".into(),
+            messages: vec![json!({"role": "user", "content": "find a plumber"})],
+        };
+        // Before any round: the user's own message takes it, as a list of blocks.
+        api.add_user(&mut conversation, "this week");
+        assert_eq!(
+            conversation.messages[0]["content"],
+            json!([{"type": "text", "text": "find a plumber"},
+                   {"type": "text", "text": "this week"}])
+        );
+        let call = Call::new("toolu_1".into(), "run_js".into(), r#"{"code": "1"}"#.into());
+        let result = CallResult {
+            text: "=> 1".into(),
+            is_error: false,
+        };
+        api.add_round(&mut conversation, vec![], &[call], &[result]);
+        api.add_user(&mut conversation, "make it Saturday");
+        assert_eq!(conversation.messages.len(), 3);
+        let last = &conversation.messages[2]["content"];
+        assert_eq!(last[0]["type"], "tool_result");
+        assert_eq!(last[1], json!({"type": "text", "text": "make it Saturday"}));
     }
 
     #[tokio::test]

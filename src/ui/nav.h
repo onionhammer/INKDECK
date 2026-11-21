@@ -12,8 +12,8 @@
 //            On the root, with nothing to pop, it redraws with a full refresh (cleans the
 //            screen)
 //   HOLD BOOT talk to the assistant, from any screen (onTalkKey(), apps/hold_boot.h; only in a
-//            build with the voice assistant, INKDECK_VOICE in features.h): held about
-//            half a second, the voice sheet rises over the lower half; let go to send. Not while
+//            build with the agent, INKDECK_AGENT in features.h): held about
+//            half a second, the agent sheet rises over the lower half; let go to send. Not while
 //            the lock is on the stack, under an off face, or over a screen that has the mic or
 //            the speaker (allowsTalk()). While music or a podcast plays, it raises the player
 //            sheet instead (apps/music.h). Screens never see it.
@@ -35,6 +35,13 @@ namespace ui {
 using input::Key;
 
 enum class Refresh : uint8_t { None, Partial, Full };
+
+// Where HOLD BOOT's words go (issue #52, "Security: talk and agent"). Talk is the default: the
+// limited assistant, which sees no sessions. The agent is only reached from the Agent's screens.
+struct TalkTo {
+  bool agent = false;
+  std::string session;  // with agent: the session to talk into; empty starts a new one
+};
 
 class Screen {
  public:
@@ -80,6 +87,9 @@ class Screen {
   // true for the last frame before a power-off (Sleep, Standby, a closed book): nothing else
   // starts a power-off or a sync while it's on top.
   virtual bool offFace() const { return false; }
+  // An off face that still chirps (the Agent face: a new question or result heard at a
+  // check-in, apps/agent_face.h). Others are powered off, and their news waits on Home.
+  virtual bool chirps() const { return false; }
   // false: HOLD BOOT doesn't talk over this screen (the Recorder, which has the mic; an alarm
   // ringing). Asked of the screen on top and the one under it when the stack changes.
   virtual bool allowsTalk() const { return true; }
@@ -89,6 +99,10 @@ class Screen {
   // true for the lock screen (apps/lock.h): nothing under it can be reached until it pops
   // itself, and HOLD BOOT doesn't talk while it's on the stack.
   virtual bool locks() const { return false; }
+  // Where HOLD BOOT's words go while this is the top screen that isn't a sheet (nav::base()):
+  // a talk turn, by default, or the agent (the Agent's screens, apps/agent.h). A sheet over it
+  // that says the agent (the ask sheet: words answer its question) speaks for both.
+  virtual TalkTo talkTo() const { return {}; }
 
   // Called when the screen becomes the top of the stack (pushed, or uncovered by a pop) and
   // when it stops being the top (popped, or covered by a push).
@@ -134,6 +148,9 @@ bool locked();   // a screen that locks() is on the stack
 // top, and the top screen and the one under it allowsTalk(). Any task may ask (input::onBackHold()
 // handlers do, in the timer task); it changes only with the stack.
 bool talkAllowed();
+// What nav::base() says HOLD BOOT talks to (Screen::talkTo()). Any task may ask; it changes
+// only with the stack.
+TalkTo talkTarget();
 
 // What a PWR press does (input::Key::Power; screens never see it).
 void onPowerKey(void (*handler)());
@@ -141,6 +158,8 @@ void onPowerKey(void (*handler)());
 // false). Called in the UI task whether or not talkAllowed(); screens never see these keys. A
 // redraw follows.
 void onTalkKey(void (*handler)(bool held));
+// Questions the agent has waiting, for the status bar's ?n (apps/agent.h); none without one.
+void onAsks(int (*count)());
 
 }  // namespace nav
 }  // namespace ui

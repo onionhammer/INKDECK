@@ -224,6 +224,20 @@ fn resolve_paths(table: &mut toml::Table, base: &Path) {
     {
         dirs.iter_mut().for_each(fix);
     }
+    // The sessions' folder, from the file whose [agent] table is used, and the claude
+    // backend's.
+    if let Some(toml::Value::Table(agent)) = table.get_mut("agent") {
+        let dir = agent
+            .entry("dir")
+            .or_insert_with(|| crate::config::default_agent_dir().into());
+        fix(dir);
+        if let Some(toml::Value::Table(claude)) = agent.get_mut("claude") {
+            let dir = claude
+                .entry("dir")
+                .or_insert_with(|| crate::config::default_claude_dir().into());
+            fix(dir);
+        }
+    }
     for stage in ["stt", "tts"] {
         let Some(toml::Value::Table(stage)) = table.get_mut(stage) else {
             continue;
@@ -271,9 +285,11 @@ struct McpJsonServer {
     headers: HashMap<String, String>,
     #[serde(default)]
     disabled: bool,
-    /// inkharness's own: an allowlist and a timeout, as in `[[mcp]]`.
+    /// inkharness's own: an allowlist, a timeout and whether talk gets its tools, as in
+    /// `[[mcp]]`.
     tools: Option<Vec<String>>,
     timeout_ms: Option<u64>,
+    talk: Option<bool>,
 }
 
 /// The servers in a .mcp.json. One that can't be used (a variable not set) is logged and left
@@ -336,6 +352,7 @@ fn mcp_server(name: &str, s: McpJsonServer) -> Result<McpServer> {
         headers: map(s.headers)?,
         tools: s.tools,
         timeout_ms: s.timeout_ms.unwrap_or_else(config::default_mcp_timeout_ms),
+        talk: s.talk.unwrap_or(true),
     })
 }
 
@@ -414,6 +431,16 @@ mod tests {
         let mut t = table("[tts]\nbackend = \"openai_compat\"\nvoice = \"alloy\"\n");
         resolve_paths(&mut t, Path::new("/base"));
         assert_eq!(t["tts"]["voice"].as_str(), Some("alloy"));
+        // The sessions' folder, given or not.
+        let mut t = table("[agent]\nplace = \"HOME\"\n");
+        resolve_paths(&mut t, Path::new("/base"));
+        assert_eq!(t["agent"]["dir"].as_str(), Some("/base/sessions"));
+        let mut t = table("[agent]\n[agent.claude]\nmodel = \"haiku\"\n");
+        resolve_paths(&mut t, Path::new("/base"));
+        assert_eq!(t["agent"]["claude"]["dir"].as_str(), Some("/base/work"));
+        let mut t = table("[agent]\ndir = \"~/s\"\n");
+        resolve_paths(&mut t, Path::new("/base"));
+        assert!(!t["agent"]["dir"].as_str().unwrap().starts_with("/base"));
     }
 
     #[test]

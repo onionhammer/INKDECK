@@ -1,3 +1,4 @@
+#include "apps/agent_face.h"
 #include "apps/sleep.h"
 
 #include <Arduino.h>
@@ -177,7 +178,8 @@ class SleepScreen : public ui::Screen {
     // The first tick can come straight after the refresh; wait for the next, so a key has a
     // second to cancel.
     if (!drawn_ || ++ticks_ < 2) return false;
-    power::off(power::Mode::Sleep, wakeAt_);
+    // Also when inkharness asks for a check-in (a schedule that wakes the board).
+    power::off(power::Mode::Sleep, earliestWake(wakeAt_, agentCheckWake()));
     ui::nav::pop();  // still here: the power-off failed
     return true;
   }

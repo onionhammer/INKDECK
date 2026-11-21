@@ -1,8 +1,10 @@
 #include "apps/home.h"
 
 #include <Arduino.h>
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "alarms.h"
 #include "apps/clock.h"
@@ -17,8 +19,9 @@
 #include "apps/sensors.h"
 #include "apps/system.h"
 #include "features.h"
-#if INKDECK_VOICE
-#include "apps/voice.h"
+#if INKDECK_AGENT
+#include "apps/agent.h"
+#include "agent_client.h"
 #endif
 #include "apps/weather.h"
 #include "audio.h"
@@ -47,8 +50,8 @@ using ui::Rect;
 
 enum class Kind : uint8_t {
   Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder,
-#if INKDECK_VOICE
-  Voice,
+#if INKDECK_AGENT
+  Agent,
 #endif
 };
 
@@ -61,26 +64,27 @@ struct Module {
 };
 
 // Copy from the design canvas, trimmed to what the firmware does today. The order is the
-// user's (2026-11-13): what's used most first, related modules together. Screen tags follow it
-// through moduleTag().
+// user's (2026-11-13; AGENT up to 03 and MUSIC down to 07 on 2026-11-20, issue #52): what's
+// used most first, related modules together. Screen tags follow it through moduleTag().
 // The \xC2\xB7 escapes in these strings are the middle dot (UTF-8 U+00B7).
 constexpr Module kModules[] = {
     {"READER", "SD", "EPUB books from microSD. Opens where you left off.",
      "microSD \xC2\xB7 SDMMC 4-bit", Kind::Reader},
     {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
      "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts},
-    {"MUSIC", "I2S", "MP3 files from microSD through the onboard codec and speaker.",
-     "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music},
+#if INKDECK_AGENT
+    {"AGENT", "NET",
+     "Long jobs inkharness runs while the board sleeps. It asks here when you need to choose.",
+     "Wi-Fi \xC2\xB7 ES8311 \xC2\xB7 inkharness", Kind::Agent},
+#endif
     {"WEATHER", "NET", "Now, hourly and 6-day forecast over Wi-Fi, every half hour on USB.",
      "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
      "PCF85063A @ 0x51", Kind::Clock},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
      "ES8311 ADC \xC2\xB7 ALDO2", Kind::Recorder},
-#if INKDECK_VOICE
-    {"VOICE", "NET", "Hold BOOT on any screen and talk to the assistant on your network. It speaks back.",
-     "Wi-Fi \xC2\xB7 ES8311 \xC2\xB7 inkharness", Kind::Voice},
-#endif
+    {"MUSIC", "I2S", "MP3 files from microSD through the onboard codec and speaker.",
+     "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music},
     {"SENSORS", "I2C", "Live readouts from every chip on the I2C bus, and Wi-Fi and Bluetooth LE scans.",
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},
     {"LEVEL", "IMU", "Bubble level for surfaces, a vial for edges, and a tone when it's level.",
@@ -119,6 +123,20 @@ struct Stat {
 };
 
 // Up to four live readings for the preview. Only real values; unbuilt modules say so.
+#if INKDECK_AGENT
+// The next scheduled run: "07:00", or "TUE 07:00" past the next 18 hours.
+std::string agentNext(uint32_t unix) {
+  const time_t now = time(nullptr);
+  const time_t t = static_cast<time_t>(unix);
+  tm local;
+  localtime_r(&t, &local);
+  char buf[16];
+  strftime(buf, sizeof buf, t - now < 18 * 3600 ? "%H:%M" : "%a %H:%M", &local);
+  for (char *p = buf; *p; ++p) *p = static_cast<char>(toupper(*p));
+  return buf;
+}
+#endif
+
 int statsFor(const Module &m, Stat out[4]) {
   switch (m.kind) {
     case Kind::Reader: {
@@ -320,12 +338,22 @@ int statsFor(const Module &m, Stat out[4]) {
       out[3] = {"MIC GAIN", std::to_string(r.gainDb) + " dB"};
       return 4;
     }
-#if INKDECK_VOICE
-    case Kind::Voice: {
-      out[0] = {"DAEMON", settings::hasVoice() ? settings::voiceHost() : "NOT SET"};
-      out[1] = {"PORT", std::to_string(settings::voicePort())};
-      out[2] = {"WI-FI", wlan::configured() ? wlan::network() : "NOT SET"};
-      out[3] = {"TALK", "HOLD BOOT"};
+#if INKDECK_AGENT
+    case Kind::Agent: {
+      // What the last list said (a locked one, or one kept from before a power-off, says only
+      // counts and times); until then, where. With the PIN on the Agent: counts and times only.
+      const agent::Glance g = agent::glance();
+      out[0] = {"NEEDS YOU", g.known ? std::to_string(g.asks + g.proposed) : "--"};
+      out[1] = {"RUNNING", g.known ? std::to_string(g.running) : "--"};
+      out[2] = {"NEXT", g.nextAt ? agentNext(g.nextAt) : g.known ? "NOTHING" : "--"};
+      if (guardApplies(Guarded::Agent)) {
+        out[3] = {"TALK", "HOLD BOOT"};
+      } else {
+        const agent::Sessions a = agent::sessions();
+        out[3] = {"HOST", !a.place.empty()          ? a.place
+                          : settings::hasAgent() ? settings::agentHost()
+                                                 : "NOT SET"};
+      }
       return 4;
     }
 #endif
@@ -333,9 +361,33 @@ int statsFor(const Module &m, Stat out[4]) {
   return 0;
 }
 
+// The list's row for module i: its bus tag, or for the Agent while questions wait, an inverted
+// "1 ASK".
+ui::Row moduleRow(int i) {
+  ui::Row row;
+  row.index = twoDigits(i + 1);
+  row.title = kModules[i].label;
+  row.tag = kModules[i].bus;
+#if INKDECK_AGENT
+  if (kModules[i].kind == Kind::Agent) {
+    const agent::Glance g = agent::glance();
+    if (g.known && g.asks > 0) {
+      row.tag = std::to_string(g.asks) + " ASK";
+      row.tagInverted = true;
+    }
+  }
+#endif
+  return row;
+}
+
 class HomeScreen : public ui::Screen {
  public:
   HomeScreen() { cursor_.reset(kModuleCount); }
+
+#if INKDECK_AGENT
+  // Home coming up: what the agent is doing is worth a look (at most once a minute).
+  void onEnter() override { agent::checkSoon(); }
+#endif
 
   std::string tag() const override { return "INKDECK/OS"; }
   std::string context() const override { return "~/home"; }
@@ -374,6 +426,14 @@ class HomeScreen : public ui::Screen {
     const weather::Phase w = weather::status().phase;
     changed |= w != drawnWeather_ && kind == Kind::Weather;
     drawnWeather_ = w;
+#if INKDECK_AGENT
+    // The Agent's row tag and preview follow the list.
+    const agent::Glance a = agent::glance();
+    const uint32_t sig = static_cast<uint32_t>(a.asks) * 1000003u + a.running * 1009u +
+                         a.proposed * 31u + a.nextAt;
+    changed |= sig != drawnAgent_;
+    drawnAgent_ = sig;
+#endif
     return changed;
   }
 
@@ -388,9 +448,7 @@ class HomeScreen : public ui::Screen {
 
     drawPreview(c, r, cursor_.cursor());
     ui::drawSectionHeader(c, header, "MODULES", cursor_.label());
-    ui::drawList(c, list, ui::kRowH, cursor_, [](int i) {
-      return ui::Row{twoDigits(i + 1), kModules[i].label, "", kModules[i].bus, ""};
-    });
+    ui::drawList(c, list, ui::kRowH, cursor_, moduleRow);
   }
 
  private:
@@ -420,8 +478,8 @@ class HomeScreen : public ui::Screen {
       case Kind::Weather: ui::nav::push(makeWeather()); break;
       case Kind::Level: ui::nav::push(makeLevel()); break;
       case Kind::Recorder: ui::nav::push(makeRecorder()); break;
-#if INKDECK_VOICE
-      case Kind::Voice: ui::nav::push(makeVoice()); break;
+#if INKDECK_AGENT
+      case Kind::Agent: openGuarded(Guarded::Agent, makeAgent); break;
 #endif
     }
   }
@@ -489,6 +547,9 @@ class HomeScreen : public ui::Screen {
   ui::ListCursor cursor_;
   uint32_t drawnGeneration_ = 0;
   weather::Phase drawnWeather_ = weather::Phase::Idle;
+#if INKDECK_AGENT
+  uint32_t drawnAgent_ = 0;
+#endif
 };
 
 }  // namespace

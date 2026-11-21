@@ -44,6 +44,8 @@ struct Server {
     name: String,
     client: Client,
     timeout: Duration,
+    /// Talk turns get its tools (`[[mcp]] talk`).
+    talk: bool,
 }
 
 #[derive(Default)]
@@ -74,6 +76,11 @@ impl Mcp {
                 }
                 Err(e) => Err(e),
             };
+            if attached.is_ok()
+                && let Some(server) = mcp.servers.last_mut()
+            {
+                server.talk = cfg.talk;
+            }
             match attached {
                 Ok(n) => tracing::info!(server = %cfg.name, tools = n, "MCP server connected"),
                 Err(e) => tracing::error!(server = %cfg.name, "MCP server left out: {e:#}"),
@@ -138,12 +145,22 @@ impl Mcp {
             name: name.to_string(),
             client,
             timeout,
+            talk: true,
         });
         Ok(added)
     }
 
     pub fn tools(&self) -> &[McpTool] {
         &self.tools
+    }
+
+    /// The tools of servers that talk turns don't get (`[[mcp]] talk = false`).
+    pub fn talk_hidden(&self) -> Vec<String> {
+        self.tools
+            .iter()
+            .filter(|t| self.servers.get(t.server).is_some_and(|s| !s.talk))
+            .map(|t| t.name.clone())
+            .collect()
     }
 
     /// The connected servers' names, with how many tools each gives.
@@ -379,6 +396,15 @@ pub(crate) mod tests {
             mcp.call("test_unlock_door", serde_json::json!({})).await,
             None
         );
+    }
+
+    /// The test server, said to stay out of talk (`[[mcp]] talk = false`).
+    pub async fn connected_quiet() -> Mcp {
+        let mut mcp = connected(None).await;
+        for server in &mut mcp.servers {
+            server.talk = false;
+        }
+        mcp
     }
 
     #[test]

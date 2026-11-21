@@ -15,10 +15,15 @@
 //   [lock]
 //   pin = 2468                           ; 4 to 8 digits; pin = off removes it
 //   lock_minutes = 5                     ; also lock after this long without a key (0: only at boot)
-//   [voice]
-//   voice_host = nas.local               ; the machine running inkharness serve (voice_client.h); only the card sets it
-//   voice_port = 7391
-//   voice_token = something-long         ; stays on the card: it keys the voice link (voice_noise.h)
+//   [agent]
+//   agent_host = nas.local               ; the machine running inkharness serve (agent_client.h); only the card sets it
+//   agent_port = 7391
+//   agent_token = something-long         ; stays on the card: it keys the agent link (agent_noise.h)
+//   agent_face_details = on              ; the Agent face shows titles even with a PIN on the Agent
+//   [tailscale]
+//   tailscale_key = tskey-auth-...       ; the board keeps it and replaces the line with a note (tailnet.h)
+//   tailscale_name = inkdeck             ; the board's name on the tailnet
+//   tailscale_exit_node = on             ; offer the board as an exit node, IPv4 (tailnet.h)
 //
 // and lists the network shares Files browses (shares.h has the syntax), one line each:
 //
@@ -46,6 +51,10 @@
 // joins its network with the password the board kept for that ssid, else as an open one. A
 // password the board kept for an ssid the file no longer lists is dropped. NVS isn't encrypted:
 // anyone with the board and a USB cable can read it, as they can the firmware's .env values.
+//
+// The Tailscale auth key works like the PIN below, without the wait: the board keeps it in NVS
+// and replaces its line with a note, a file without the line keeps the board's key, and
+// tailscale_key = off removes it.
 //
 // The PIN is the exception: a card is easy to lift, so the board keeps it in NVS (System's PIN
 // LOCK sets it too) and replaces the pin line on the card with a note once it has acted on it.
@@ -101,11 +110,20 @@ std::vector<ShareLine> shareLines();
 // The password the card gave for an SMB share (by shares::Share::credentialId()); "" if none.
 std::string sharePassword(const std::string &credentialId);
 
-// The voice daemon (voice_client.h, docs/voice-protocol.md). Only the card names one.
-bool hasVoice();
-std::string voiceHost();
-int voicePort();
-std::string voiceToken();  // "" if the daemon asks for none
+// The agent daemon (agent_client.h, docs/voice-protocol.md). Only the card names one.
+bool hasAgent();
+std::string agentHost();
+int agentPort();
+std::string agentToken();  // "" if the daemon asks for none
+// agent_face_details = on: the Agent face (and its copy in NVS) keeps titles and the question
+// even when the PIN guards the Agent. Off by default: counts only.
+bool agentFaceDetails();
+
+// The tailnet (tailnet.h). hasTailscale(): the board has an auth key.
+bool hasTailscale();
+std::string tailscaleKey();   // from NVS; "" if none
+std::string tailscaleName();  // tailscale_name, else "inkdeck"
+bool tailscaleExitNode();     // tailscale_exit_node = on: the board offers itself as an exit node
 
 // The lock. hasPin(): the board locks at boot, on waking the desk face and after lockMinutes()
 // without a key (0: never for that).

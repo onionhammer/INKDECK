@@ -3,7 +3,7 @@
 // shares.h).
 // Opens EPUBs in the reader, plays MP3s, queueing the rest of the folder's MP3s after the
 // chosen one, shows JPEG and PNG pictures full screen (apps/viewer.h), opens a Markdown file in
-// a folder called Notes as a note (apps/note.h: what the voice assistant put on the screen), and
+// a folder called Notes as a note (apps/note.h: what the agent put on the screen), and
 // any other file that reads as text in the text reader (apps/textview.h).
 //
 // The design canvas has no Files artboard, so this follows Home's list language:

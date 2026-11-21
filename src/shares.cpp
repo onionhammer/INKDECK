@@ -18,6 +18,7 @@
 
 #include "settings.h"
 #include "share_backend.h"
+#include "tailnet.h"
 #include "wlan.h"
 
 namespace shares {
@@ -38,6 +39,7 @@ struct Mount {
   Share share;
   std::unique_ptr<Backend> backend;  // set while mounted
   bool mounted = false;
+  bool tailnet = false;  // mounted through the tailnet: the mount holds it (tailnet.h)
   int users = 0;  // acquire()s not yet released, and open files
   uint32_t idleSince = 0;
   std::map<std::string, Cached> cache;  // attributes by path below the root ("" = the root)
@@ -419,12 +421,13 @@ bool registerVfs() {
 
 // --- Letting go ------------------------------------------------------------------------------
 
-// Unmounts shares nobody has used for kIdleMs, and lets Wi-Fi go with each. Runs while any
-// share is mounted.
+// Unmounts shares nobody has used for kIdleMs, and lets Wi-Fi (and the tailnet) go with each.
+// Runs while any share is mounted.
 void reaper(void *) {
   for (;;) {
     vTaskDelay(pdMS_TO_TICKS(1000));
     std::vector<std::unique_ptr<Backend>> idle;
+    int tailnetHolds = 0;
     bool anyMounted = false;
     {
       std::lock_guard<std::mutex> g(lock);
@@ -437,6 +440,8 @@ void reaper(void *) {
           m.mounted = false;
           m.cache.clear();
           idle.push_back(std::move(m.backend));
+          if (m.tailnet) ++tailnetHolds;
+          m.tailnet = false;
         } else {
           anyMounted = true;
         }
@@ -448,6 +453,7 @@ void reaper(void *) {
       if (!anyMounted && &backend == &idle.back()) WiFi.setSleep(true);  // as acquire() found it
       wlan::disconnect();
     }
+    for (; tailnetHolds > 0; --tailnetHolds) tailnet::release();
     if (!anyMounted) break;
   }
   vTaskDelete(nullptr);
@@ -572,14 +578,37 @@ bool acquire(int i, std::string &error) {
   }
 
   Mount &m = *mounts[i];
+  // A server on the tailnet: on this LAN as well (at home), straight there by the address that
+  // answered; else join the tailnet first. libsmb2 and the NFS client resolve the name with
+  // getaddrinfo(), which then knows the tailnet's machines (tailnet.h).
+  Share target = m.share;
+  bool viaTailnet = false;
+  if (tailnet::routes(m.share.host)) {
+    const uint16_t probe = m.share.port ? m.share.port : m.share.kind == Kind::Smb ? 445 : 111;
+    std::string lan;
+    const int fd = tailnet::connectLan(m.share.host, probe, 1000, &lan);
+    if (fd >= 0) {
+      close(fd);
+      target.host = lan;
+    } else {
+      viaTailnet = true;
+      if (!tailnet::hold(kConnectTimeoutMs, why)) {
+        error = why;
+        wlan::disconnect();
+        return false;
+      }
+      tailnet::reach(m.share.host, 8000);
+    }
+  }
   const uint32_t t0 = millis();
   std::unique_ptr<Backend> backend =
       m.share.kind == Kind::Smb ? makeSmbBackend() : makeNfsBackend();
   const std::string password =
       m.share.kind == Kind::Smb ? settings::sharePassword(m.share.credentialId()) : "";
-  if (!backend->mount(m.share, password, error)) {  // outside the lock: others keep going
+  if (!backend->mount(target, password, error)) {  // outside the lock: others keep going
     log_w("shares: %s: %s", m.share.url().c_str(), error.c_str());
     backend.reset();
+    if (viaTailnet) tailnet::release();
     wlan::disconnect();
     return false;
   }
@@ -593,6 +622,7 @@ bool acquire(int i, std::string &error) {
   m.backend = std::move(backend);
   m.cache.clear();
   m.mounted = true;
+  m.tailnet = viaTailnet;
   ++m.users;
   m.idleSince = millis();
   startReaper();

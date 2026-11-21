@@ -26,6 +26,7 @@ void pollAlarms();
 void enterDesk();
 // Closes the desk face (and a ring sheet over it); false if it isn't showing.
 bool wakeDesk();
+bool deskShowing();  // the desk face is up (nothing raises a sheet over it)
 
 // Standby (power.h): the Clock face stays on the panel while the board is off, and the RTC
 // wakes it every minute to redraw it. Shows the face, then powers off (Sleep instead if the

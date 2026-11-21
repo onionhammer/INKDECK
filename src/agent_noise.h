@@ -1,5 +1,5 @@
 // Protocol 2's encryption (docs/voice-protocol.md, "Encryption"): the board's side of a Noise
-// handshake, Noise_NNpsk0_25519_AESGCM_SHA256, keyed from voice_token, then a key per
+// handshake, Noise_NNpsk0_25519_AESGCM_SHA256, keyed from agent_token, then a key per
 // direction that seals every frame. On mbedTLS, which the firmware already carries for HTTPS:
 // X25519, and AES-GCM and SHA-256 on the S3's AES and SHA units. The daemon's side is
 // inkharness/voice-proto/src/crypto.rs, whose reference test runs these same steps against

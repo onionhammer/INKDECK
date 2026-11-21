@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <string>
 
+#include "apps/agent_face.h"
 #include "apps/idle.h"
 #include "audio.h"
 #include "board_pins.h"
@@ -160,16 +161,16 @@ void lineCommand(const String &line) {
     Serial.printf("devtools: appended %u bytes\n", static_cast<unsigned>(wrote));
     return;
   }
-#if INKDECK_VOICE
-  if (line == "voiceloop") {
+#if INKDECK_AGENT
+  if (line == "agentloop") {
     // The voice paths without a network: 3 s of the mic into the capture ring, then the same
     // samples back out through the stream ring (16 kHz).
     static uint8_t chunk[1024];
     if (!audio::captureStart()) {
-      Serial.println("voiceloop: the mic won't start");
+      Serial.println("agentloop: the mic won't start");
       return;
     }
-    Serial.println("voiceloop: speak for 3 s");
+    Serial.println("agentloop: speak for 3 s");
     std::string pcm;
     const uint32_t t0 = millis();
     while (millis() - t0 < 3000) {
@@ -186,10 +187,10 @@ void lineCommand(const String &line) {
                                              static_cast<uint8_t>(pcm[i + 1]) << 8);
       peak = std::max(peak, abs(static_cast<int>(v)));
     }
-    Serial.printf("voiceloop: captured %u bytes, peak %d; playing\n",
+    Serial.printf("agentloop: captured %u bytes, peak %d; playing\n",
                   static_cast<unsigned>(pcm.size()), peak);
     if (!audio::streamStart(audio::kRecordRate)) {
-      Serial.println("voiceloop: the output won't start");
+      Serial.println("agentloop: the output won't start");
       return;
     }
     for (size_t off = 0; off < pcm.size();) {
@@ -201,7 +202,7 @@ void lineCommand(const String &line) {
     audio::streamEnd();
     const uint32_t t1 = millis();
     while (audio::streaming() && millis() - t1 < 6000) delay(20);
-    Serial.printf("voiceloop: done in %lu ms\n", static_cast<unsigned long>(millis() - t1));
+    Serial.printf("agentloop: done in %lu ms\n", static_cast<unsigned long>(millis() - t1));
     return;
   }
 #endif
@@ -431,6 +432,7 @@ void task(void *) {
         case 'o': input::inject(Key::Power); break;
         case 'z': apps::requestStandby(2); break;
         case 'k': apps::requestCloseBook(); break;
+        case 'a': apps::requestAgentFace(); break;
         case 'h':
           Serial.printf("heap: internal %u free (largest %u, lowest %u), DMA %u free (largest %u), "
                         "PSRAM %u free\n",

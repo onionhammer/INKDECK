@@ -48,6 +48,34 @@ uint32_t nextCodepoint(const std::string &s, size_t &i) {
   return cp;
 }
 
+// What terminal programs draw with (a herdr agent's screen, apps/agent.h): box-drawing lines,
+// blocks, prompt arrows and spinner stars, as the nearest ASCII. 0 for anything else.
+static char terminalAscii(uint32_t cp) {
+  if (cp >= 0x2500 && cp <= 0x257F) {  // box drawing
+    switch (cp) {
+      case 0x2500: case 0x2501: case 0x2504: case 0x2505: case 0x2508: case 0x2509:
+      case 0x254C: case 0x254D: case 0x2550: case 0x2574: case 0x2576: case 0x2578:
+      case 0x257A: case 0x257C: case 0x257E:
+        return '-';
+      case 0x2502: case 0x2503: case 0x2506: case 0x2507: case 0x250A: case 0x250B:
+      case 0x254E: case 0x254F: case 0x2551: case 0x2575: case 0x2577: case 0x2579:
+      case 0x257B: case 0x257D: case 0x257F:
+        return '|';
+      default: return '+';  // corners and junctions
+    }
+  }
+  if (cp >= 0x2580 && cp <= 0x259F) return '#';  // block elements
+  switch (cp) {
+    case 0x276F: case 0x23F5: case 0x25B8: case 0x25BA: case 0x2192: return '>';
+    case 0x276E: case 0x23F4: case 0x25C2: case 0x25C4: case 0x2190: return '<';
+    case 0x23BF: case 0x2514: return '|';
+    case 0x23FA: case 0x2722: case 0x2733: case 0x2736: case 0x273B: case 0x273D:
+    case 0x203B:
+      return '*';
+    default: return 0;
+  }
+}
+
 void appendAscii(std::string &out, uint32_t cp) {
   if (cp >= 0x20 && cp < 0x7F) {
     out += static_cast<char>(cp);
@@ -120,6 +148,8 @@ void appendAscii(std::string &out, uint32_t cp) {
     out += kLatin1[cp - 0xC0];
   } else if (cp >= 0x100 && cp <= 0x17F) {
     out += kLatinExtA[cp - 0x100];
+  } else if (const char c = terminalAscii(cp)) {
+    out += c;
   } else if (cp >= 0x20) {
     out += '?';
   }

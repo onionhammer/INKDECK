@@ -1,8 +1,8 @@
 #include "features.h"
 
-#if INKDECK_VOICE  // the whole file (features.h)
+#if INKDECK_AGENT  // the whole file (features.h)
 
-#include "voice_noise.h"
+#include "agent_noise.h"
 
 #include <esp_random.h>
 #include <mbedtls/ecdh.h>
@@ -241,4 +241,4 @@ bool Initiator::finish(const uint8_t *msg, size_t len, std::string &payload, Cip
 
 }  // namespace noise
 
-#endif  // INKDECK_VOICE
+#endif  // INKDECK_AGENT
