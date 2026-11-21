@@ -218,6 +218,8 @@ The daemon's `hello` gains `agent` when it has sessions:
 | `pause` | `session` | Pauses a working or asking session, a schedule or a watch (state `paused`): its run stops, and it keeps its plan, what it was told and its question. A deadline doesn't run out while paused. Not for herdr sessions |
 | `resume` | `session` | Picks a paused session up where it was: an asking one asks again, a working one starts a new run that is told it was paused, a schedule or a watch waits for its next time |
 | `run` | `session` | A schedule: runs now. A watch: looks now |
+| `panel_choice` | `session`, `block` (a `choice` block's `id`), `choice` (an index into its `options`) | Answers a choice on the session's panel ([Panels](#panels)): the session hears it as the user's words |
+| `speak` | `session` | Says the session's last result (a schedule with `speak`, on a board on USB): answered like a turn's reply, `text`, `reply_start`, audio and `reply_end`, with no `stt`; `refused` (`nothing to say`) when it has no result |
 | `approve` | `session` | Starts a job talk filed (a `proposed` session). With `[agent] backend = "herdr"`, it starts as a program of its own, under a new id, and the job goes |
 | `delete` | `session` | Deletes a session for good |
 | `send_draft` | `session`, `draft` (the `draft` message's `id`) | Types a herdr session's draft into its program ([Drafts](#drafts)) |
@@ -362,6 +364,29 @@ daemon takes the audio, and after `listen_stop` answers with `error {message}` (
   `result` is the last run's.
 - `watch` (a watch): `condition`, `every_minutes`, `next` (the next look; null once met),
   `values` (the last readings, oldest first) and `met`.
+- `panel`: the screen the session drew last ([Panels](#panels)), absent before it draws one.
+
+### Panels
+
+A session draws a screen on the board with `show_panel {title, blocks}`: it comes as the
+session's `panel`, `{"title", "blocks", "at"}`, and the board lays the blocks out top to bottom
+in its own type and 1-bit rules, under its own status bar and hints. The model never sends
+pixels, fonts or HTML. The same title again replaces the screen in place. At most 40 blocks and
+8 KB. Each block is an object with a `kind`:
+
+| `kind` | Fields |
+| --- | --- |
+| `section` | `label`, `right` (optional): a header line |
+| `stat` | `items`: up to 4 `{label, value}`, big figures in a row |
+| `kv` | `items`: `{key, value}` lines |
+| `rows` | `items`: `{title, sub, right, tag}` (all but `title` optional) |
+| `meter` | `label`, `value`, `max`, `right` (optional): a bar |
+| `spark` | `label`, `values` (numbers), `right` (optional): a small chart |
+| `text` | `markdown`: the Note's subset |
+| `choice` | `id`, `question`, `options` (2 to 6 `{title, right}`), `recommend` (optional): pinned at the foot; the board sends `panel_choice` |
+
+A board skips a kind it doesn't know. Too tall for the screen, it scrolls, with a `choice` kept
+at the foot.
 
 ### Schedules and watches
 

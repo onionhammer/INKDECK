@@ -12,7 +12,8 @@
 //! - "schedule": makes the session a schedule, weekdays at 07:00, waking the board; its runs
 //!   end with a result (or fail, with "fail");
 //! - "watch": makes it a watch, every 5 minutes; each look reads 712, until a look whose
-//!   condition says "DROPPED", which holds.
+//!   condition says "DROPPED", which holds;
+//! - "panel": draws a fare panel with every kind of block, a choice at its foot.
 //!
 //! Talked into afterwards, it answers "You said: …".
 
@@ -23,7 +24,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::tools::{ASK_TOOL, PLAN_TOOL, SCHEDULE_TOOL, WATCH_TOOL};
+use super::tools::{ASK_TOOL, PANEL_TOOL, PLAN_TOOL, SCHEDULE_TOOL, WATCH_TOOL};
 use crate::llm::{Llm, Outcome, Piece, Request};
 use crate::tools::JS_TOOL;
 
@@ -104,6 +105,9 @@ impl Llm for MockAgent {
         call(JS_TOOL, json!({"code": "1 + 1"})).await?.ok();
         tokio::time::sleep(pause).await;
         call(PLAN_TOOL, plan(2)).await?.ok();
+        if words.contains("panel") {
+            call(PANEL_TOOL, fare_panel()).await?.ok();
+        }
         let mut chose = String::new();
         if words.contains("ask") || words.contains("choose") || words.contains("deadline") {
             let mut question = json!({
@@ -141,4 +145,21 @@ impl Llm for MockAgent {
         say(result).await?;
         Ok(Outcome::Done)
     }
+}
+
+/// The panel "panel" draws: one of each block.
+pub fn fare_panel() -> serde_json::Value {
+    json!({
+        "title": "Lisbon fare",
+        "blocks": [
+            {"kind": "section", "label": "LIS · 12–19 MAR", "right": "TAP"},
+            {"kind": "stat", "items": [{"label": "NOW", "value": "$712"}, {"label": "LOW", "value": "$688"}, {"label": "GOAL", "value": "$700"}]},
+            {"kind": "spark", "label": "LAST 7 DAYS", "values": [760, 741, 755, 730, 712, 698, 712], "right": "-6%"},
+            {"kind": "meter", "label": "TO GOAL", "value": 12, "max": 60, "right": "$12 OVER"},
+            {"kind": "kv", "items": [{"key": "OUT", "value": "Thu 12 Mar 07:40"}, {"key": "BACK", "value": "Thu 19 Mar 18:05"}]},
+            {"kind": "rows", "items": [{"title": "TAP 1352", "sub": "direct · 7h05", "right": "$712", "tag": "BEST"}, {"title": "Iberia 3141", "sub": "1 stop · 9h40", "right": "$744"}]},
+            {"kind": "text", "markdown": "Fares usually dip **mid-week**. I'll keep looking every 30 minutes."},
+            {"kind": "choice", "id": "book", "question": "Book it now?", "options": [{"title": "Book TAP 1352", "right": "$712"}, {"title": "Keep watching"}], "recommend": 1}
+        ]
+    })
 }

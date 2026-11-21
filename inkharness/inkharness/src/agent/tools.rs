@@ -19,11 +19,21 @@ pub const PLAN_TOOL: &str = "plan";
 pub const SCHEDULE_TOOL: &str = "schedule";
 pub const WATCH_TOOL: &str = "watch";
 pub const PROPOSE_TOOL: &str = "propose_job";
+pub const PANEL_TOOL: &str = "show_panel";
 
-/// Tools that show for themselves (the plan, the question, the schedule): kept out of the log.
+/// Tools that show for themselves (the plan, the question, the schedule, the panel): kept out
+/// of the log.
 pub fn shows_itself(name: &str) -> bool {
-    [ASK_TOOL, PLAN_TOOL, SCHEDULE_TOOL, WATCH_TOOL].contains(&name)
+    [ASK_TOOL, PLAN_TOOL, SCHEDULE_TOOL, WATCH_TOOL, PANEL_TOOL].contains(&name)
 }
+
+/// The blocks a board knows how to draw (it skips any other kind).
+const BLOCK_KINDS: &[&str] = &[
+    "section", "stat", "kv", "rows", "meter", "spark", "text", "choice",
+];
+const MAX_BLOCKS: usize = 40;
+/// A panel's JSON at most: it goes to a board with little memory.
+const PANEL_BYTES: usize = 8 * 1024;
 
 const MIN_OPTIONS: usize = 2;
 const MAX_OPTIONS: usize = 6;
@@ -86,6 +96,7 @@ impl Extra for SessionTools {
             ask_definition(),
             schedule_definition(),
             watch_definition(),
+            panel_definition(),
         ];
         if self.agent.herdr.get().is_some_and(|h| h.runs()) {
             defs.push(run_definition());
@@ -103,6 +114,7 @@ impl Extra for SessionTools {
             PLAN_TOOL => self.plan(input),
             SCHEDULE_TOOL => self.schedule(input),
             WATCH_TOOL => self.watch(input),
+            PANEL_TOOL => self.panel(input),
             _ => return None,
         })
     }
@@ -354,6 +366,103 @@ impl SessionTools {
     }
 }
 
+impl SessionTools {
+    fn panel(&self, input: &Value) -> Result<String, String> {
+        let title = input["title"]
+            .as_str()
+            .map(|t| one_line(t, TITLE_CHARS))
+            .filter(|t| !t.is_empty())
+            .ok_or("invalid input: title is required")?;
+        let blocks = check_blocks(&input["blocks"])?;
+        let replaced = self.agent.set_panel(
+            &self.id,
+            self.run,
+            voice_proto::Panel {
+                title: title.clone(),
+                blocks,
+                at: store::now(),
+            },
+        )?;
+        Ok(if replaced {
+            format!("The panel \"{title}\" is updated on the board.")
+        } else {
+            format!(
+                "The panel \"{title}\" is on the board. A choice on it comes back to you as \
+                 the user's words."
+            )
+        })
+    }
+}
+
+/// A panel's blocks, checked: objects with a `kind`, at most MAX_BLOCKS and PANEL_BYTES, and a
+/// `choice` with an `id`, a question and 2 to 6 options. A kind the board doesn't know is kept:
+/// a later board may draw it.
+pub fn check_blocks(blocks: &Value) -> Result<Vec<Value>, String> {
+    let blocks = blocks
+        .as_array()
+        .ok_or("invalid input: blocks is a list of blocks")?;
+    if blocks.is_empty() || blocks.len() > MAX_BLOCKS {
+        return Err(format!("invalid input: give 1 to {MAX_BLOCKS} blocks"));
+    }
+    let mut ids = Vec::new();
+    for block in blocks {
+        let kind = block["kind"]
+            .as_str()
+            .ok_or("invalid input: every block needs a kind")?;
+        if kind == "choice" {
+            let id = block["id"]
+                .as_str()
+                .filter(|id| !id.trim().is_empty())
+                .ok_or("invalid input: a choice block needs an id")?;
+            if ids.contains(&id) {
+                return Err(format!("invalid input: two choice blocks are called {id}"));
+            }
+            ids.push(id);
+            let options = block["options"].as_array().map_or(0, Vec::len);
+            if !(MIN_OPTIONS..=MAX_OPTIONS).contains(&options) {
+                return Err(format!(
+                    "invalid input: a choice block has {MIN_OPTIONS} to {MAX_OPTIONS} options"
+                ));
+            }
+        } else if !BLOCK_KINDS.contains(&kind) {
+            tracing::debug!(kind, "a panel block no board draws yet");
+        }
+    }
+    let bytes = serde_json::to_string(blocks).map_or(usize::MAX, |j| j.len());
+    if bytes > PANEL_BYTES {
+        return Err(format!(
+            "the panel is {bytes} bytes: keep it under {PANEL_BYTES} (fewer rows, shorter text)"
+        ));
+    }
+    Ok(blocks.clone())
+}
+
+/// What a choice on a panel says to the session, and the option's title for the log: None if
+/// the panel has no such choice block or option.
+pub fn panel_answer(
+    panel: &voice_proto::Panel,
+    block: &str,
+    choice: usize,
+) -> Option<(String, String)> {
+    let found = panel
+        .blocks
+        .iter()
+        .find(|b| b["kind"] == "choice" && b["id"] == block)?;
+    let option = &found["options"].as_array()?.get(choice)?;
+    let title = option["title"]
+        .as_str()
+        .or_else(|| option.as_str())?
+        .to_string();
+    let question = found["question"].as_str().unwrap_or(block);
+    Some((
+        format!(
+            "(On the panel \"{}\", for \"{question}\", the user chose: {title}.)",
+            panel.title
+        ),
+        title,
+    ))
+}
+
 /// Talk's one way into the Agent: files a job that waits on the list until someone behind the
 /// PIN starts it. Talk sees nothing of the sessions, this one included.
 pub struct ProposeTool {
@@ -548,6 +657,37 @@ fn watch_definition() -> ToolDef {
     }
 }
 
+fn panel_definition() -> ToolDef {
+    ToolDef {
+        name: PANEL_TOOL.into(),
+        description: format!(
+            "Draws a screen on the user's board from blocks, top to bottom, in its own type: \
+             for something they keep an eye on (a fare watch, a parcel, a comparison). The same \
+             title again updates it in place. Blocks, each an object with a kind:\n\
+             - section {{label, right?}}: a header line\n\
+             - stat {{items: [{{label, value}}]}}: up to 4 big figures in a row\n\
+             - kv {{items: [{{key, value}}]}}: key and value lines\n\
+             - rows {{items: [{{title, sub?, right?, tag?}}]}}: a list\n\
+             - meter {{label, value, max, right?}}: a bar\n\
+             - spark {{label, values: [numbers], right?}}: a small chart\n\
+             - text {{markdown}}: a paragraph or a short list\n\
+             - choice {{id, question, options: [{{title, right?}}], recommend?}}: pinned at \
+             the foot; the user's pick comes back to you as their words\n\
+             Keep it short: the screen is 480 px wide, black and white. At most {MAX_BLOCKS} \
+             blocks and {PANEL_BYTES} bytes."
+        ),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": format!("At most {TITLE_CHARS} characters")},
+                "blocks": {"type": "array", "items": {"type": "object"}, "description": "The blocks, top to bottom"}
+            },
+            "required": ["title", "blocks"],
+            "additionalProperties": false
+        }),
+    }
+}
+
 fn propose_definition() -> ToolDef {
     ToolDef {
         name: PROPOSE_TOOL.into(),
@@ -596,6 +736,27 @@ mod tests {
                 .count()
                 <= LOG_CHARS
         );
+    }
+
+    #[test]
+    fn panels_are_checked() {
+        let panel = super::super::mock::fare_panel();
+        let blocks = check_blocks(&panel["blocks"]).unwrap();
+        assert_eq!(blocks.len(), 8);
+        // A kind no board knows yet is kept.
+        assert!(check_blocks(&json!([{"kind": "map", "lat": 1}])).is_ok());
+        for bad in [
+            json!([]),
+            json!("blocks"),
+            json!([{"label": "no kind"}]),
+            json!([{"kind": "choice", "question": "q", "options": [{"title": "a"}, {"title": "b"}]}]),
+            json!([{"kind": "choice", "id": "c", "options": [{"title": "only one"}]}]),
+            json!([{"kind": "text", "markdown": "x".repeat(9000)}]),
+        ] {
+            assert!(check_blocks(&bad).is_err(), "{bad}");
+        }
+        let two = json!({"kind": "choice", "id": "c", "options": [{"title": "a"}, {"title": "b"}]});
+        assert!(check_blocks(&json!([two.clone(), two])).is_err());
     }
 
     #[test]

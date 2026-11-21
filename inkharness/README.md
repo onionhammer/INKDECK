@@ -157,7 +157,9 @@ tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixe
   minutes or days, for the answer (with `deadline_minutes`, then asks again, takes its
   recommendation or gives up); `schedule`, which makes the session run its prompt at a time of
   day on some days ("every weekday at seven"), each run fresh, its result on the board; and
-  `watch`, which makes it look every so often (at least 5 minutes) until a condition holds.
+  `watch`, which makes it look every so often (at least 5 minutes) until a condition holds;
+  and `show_panel`, which draws a simple screen on the board from blocks (stats, rows, a
+  sparkline, a choice whose answer comes back as the user's words).
   The board's tools stay out: it may be off. The prompt tells
   the model it works alone for someone who reads results on a small e-paper screen: plan first,
   keep the log terse, ask only when the choice is the user's, end with a short Markdown result,
@@ -207,6 +209,7 @@ with a wrong one, 429 while wrong ones back off):
 | `POST /sessions/{id}/pause` | Pauses it; `resume` picks it up again |
 | `POST /sessions/{id}/run` | A schedule: runs now. A watch: looks now |
 | `POST /sessions/{id}/approve` | Starts a job talk filed: `{"session": "k7q2"}` |
+| `POST /sessions/{id}/panel_choice` | `{"block": "book", "choice": 1}` answers a choice on its panel |
 | `POST /sessions/{id}/kill` | A herdr session: ends its program (`[herdr] kill`) |
 | `DELETE /sessions/{id}` | Deletes it (a herdr session: takes it off the list) |
 
@@ -221,7 +224,7 @@ plan of three steps, a tool call and a result; "ask" in the task asks which of t
 book, "slow" takes 3 s a step, "note" makes it a note, "fail" fails it, "deadline" gives the
 question a minute, "expect" says it will take 30 minutes, "schedule" makes it a weekday 07:00
 schedule that wakes the board, and "watch" a 5-minute watch (a look whose condition says
-"DROPPED" holds).
+"DROPPED" holds), and "panel" draws a fare panel with every kind of block.
 
 ### Backends
 
@@ -348,7 +351,7 @@ scripts can't call the skill tools.
 | Path | |
 | --- | --- |
 | `voice-proto/` | Framing and messages, shared by the daemon and the test client |
-| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch` and talk's `propose_job`, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
+| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
 | `voice-client/` | Plays a board's part from a WAV file |
 | `skills/` | Agent Skills, found when inkharness starts in this folder; `goodnight` pauses every speaker that's playing in one `run_js` script |
 | `install.sh` | Installs inkharness from this checkout (`cargo install --path`) |

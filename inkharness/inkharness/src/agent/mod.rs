@@ -64,7 +64,9 @@ const TICK_MAX: u64 = 300;
 /// A run missed by more than this (the daemon was down) is skipped, not run late.
 const MISSED_AFTER: u64 = 3600;
 /// What this daemon can do beyond the first version, for the board (AgentHello::features).
-pub const FEATURES: &[&str] = &["pause", "run", "jobs", "schedule", "watch", "deadline"];
+pub const FEATURES: &[&str] = &[
+    "pause", "run", "jobs", "schedule", "watch", "deadline", "panel", "speak",
+];
 /// How long words for a herdr session wait for the board to send them.
 #[cfg(not(test))]
 const DRAFT_TTL: Duration = Duration::from_secs(120);
@@ -1732,6 +1734,57 @@ impl Agent {
         Ok(())
     }
 
+    /// show_panel: the session's screen, replacing the one before. True if it had one by
+    /// that title.
+    fn set_panel(&self, id: &str, run: u64, panel: voice_proto::Panel) -> Result<bool, String> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let live = own(&mut sessions, id, run).ok_or("the session was stopped")?;
+        let s = &mut live.session;
+        let replaced = s.panel.as_ref().is_some_and(|p| p.title == panel.title);
+        if !replaced {
+            s.add_log(&format!("showed the panel {}", panel.title), panel.at);
+        }
+        s.updated = panel.at;
+        s.panel = Some(panel);
+        self.save(s);
+        self.notify(id, false);
+        Ok(replaced)
+    }
+
+    /// A choice on a session's panel: it reaches the session as the user's words.
+    pub async fn panel_choice(
+        self: &Arc<Self>,
+        id: &str,
+        block: &str,
+        choice: usize,
+    ) -> Result<Said, Refusal> {
+        let (text, title) = {
+            let sessions = self.sessions.lock().unwrap();
+            let live = sessions.get(id).ok_or(Refusal::NoSuchSession)?;
+            let panel = live
+                .session
+                .panel
+                .as_ref()
+                .ok_or(Refusal::Other("no panel".into()))?;
+            tools::panel_answer(panel, block, choice).ok_or(Refusal::NoSuchChoice)?
+        };
+        tracing::info!(session = %id, block, "panel choice: {title}");
+        self.say(id, &text).await
+    }
+
+    /// A session's last result as words to say (a schedule with speak): plain text, no
+    /// Markdown, cut to a minute or so.
+    pub fn result_to_say(&self, id: &str) -> Option<String> {
+        let sessions = self.sessions.lock().unwrap();
+        let result = sessions.get(id)?.session.result.clone()?;
+        let lines: Vec<String> = result
+            .lines()
+            .map(store::plain)
+            .filter(|l| !l.trim().is_empty())
+            .collect();
+        Some(store::cut(&lines.join(". ").replace("..", "."), 1200))
+    }
+
     /// Whether a session is a watch (for the tool, which sets one up or takes a reading).
     fn is_watch(&self, id: &str) -> bool {
         let sessions = self.sessions.lock().unwrap();
@@ -2696,5 +2749,40 @@ pub(crate) mod tests {
         agent.answer(&id, &ask.id, 0).await.unwrap();
         until(&agent, &id, State::Done).await;
         assert_eq!(agent.list(false).check_at, None);
+    }
+
+    #[tokio::test]
+    async fn a_session_draws_a_panel_and_hears_its_choice() {
+        let dir = crate::skills::tests::scratch("agent-panel");
+        let agent = mock(&dir);
+        let id = agent.start("show a panel").await.unwrap();
+        let view = until(&agent, &id, State::Done).await;
+        let panel = view.panel.unwrap();
+        assert_eq!(
+            (panel.title.as_str(), panel.blocks.len()),
+            ("Lisbon fare", 8)
+        );
+        assert!(logged(
+            &agent.view(&id).unwrap(),
+            "showed the panel Lisbon fare"
+        ));
+        assert_eq!(
+            agent.panel_choice(&id, "book", 9).await,
+            Err(Refusal::NoSuchChoice)
+        );
+        assert_eq!(
+            agent.panel_choice(&id, "nope", 0).await,
+            Err(Refusal::NoSuchChoice)
+        );
+        agent.panel_choice(&id, "book", 1).await.unwrap();
+        let view = until(&agent, &id, State::Done).await;
+        let result = view.result.unwrap();
+        assert!(
+            result.contains("Book it now?") && result.contains("Keep watching"),
+            "{result}"
+        );
+        // What a board says aloud: the result as plain sentences.
+        let said = agent.result_to_say(&id).unwrap();
+        assert!(!said.contains("**") && !said.contains('\n'), "{said}");
     }
 }

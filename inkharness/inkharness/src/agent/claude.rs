@@ -25,7 +25,7 @@ use tokio::sync::Notify;
 use voice_proto::State;
 
 use super::store::{self, Who};
-use super::tools::{self, ASK_TOOL, PLAN_TOOL, SCHEDULE_TOOL, WATCH_TOOL};
+use super::tools::{self, ASK_TOOL, PANEL_TOOL, PLAN_TOOL, SCHEDULE_TOOL, WATCH_TOOL};
 use super::{Agent, bridge};
 use crate::config;
 use crate::meter;
@@ -193,6 +193,8 @@ pub fn prompt() -> String {
          - For something every day or every week (\"every weekday at seven, brief me\"), call \
          mcp__{s}__{SCHEDULE_TOOL}; to keep an eye on something until a condition holds (a \
          fare under $700), call mcp__{s}__{WATCH_TOOL}. Don't wait or loop yourself.\n\
+         - For something they keep an eye on, mcp__{s}__{PANEL_TOOL} draws a simple screen on \
+         their board.\n\
          - Keep what you write between tool calls to a few words.\n\
          - End with the result in Markdown, short and to the point as it should read on that \
          screen. If it is something to keep and read later (a brief, a summary, a recipe), \
@@ -967,7 +969,10 @@ while read -r line; do result "heard: $(text_of "$line")"; done
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(names, ["plan", "ask_choice", "schedule", "watch"]);
+        assert_eq!(
+            names,
+            ["plan", "ask_choice", "schedule", "watch", "show_panel"]
+        );
         assert!(got[&2]["result"]["tools"][1]["inputSchema"]["properties"]["options"].is_object());
         assert_eq!(
             got[&3]["result"]["content"][0]["text"],

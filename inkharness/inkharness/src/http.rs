@@ -32,6 +32,7 @@
 //! POST   /sessions/{id}/resume          picks it up where it was
 //! POST   /sessions/{id}/run             a schedule: runs now; a watch: looks now
 //! POST   /sessions/{id}/approve         starts a job talk filed: {"session": "k7q2"}
+//! POST   /sessions/{id}/panel_choice {"block", "choice"}   answers a choice on its panel
 //! POST   /sessions/{id}/kill            a herdr session: end its program ([herdr] kill)
 //! DELETE /sessions/{id}
 //! ```
@@ -150,6 +151,7 @@ pub async fn serve(listener: TcpListener, api: Arc<Api>) -> Result<()> {
         .route("/sessions/{id}/resume", post(resume_session))
         .route("/sessions/{id}/run", post(run_session))
         .route("/sessions/{id}/approve", post(approve_session))
+        .route("/sessions/{id}/panel_choice", post(panel_choice))
         .route("/sessions/{id}/kill", post(kill_session))
         .route("/sessions/{id}/send_draft", post(send_draft))
         .route("/sessions/{id}/drop_draft", post(drop_draft))
@@ -309,6 +311,12 @@ struct DraftRequest {
 }
 
 #[derive(Deserialize)]
+struct PanelChoiceRequest {
+    block: String,
+    choice: usize,
+}
+
+#[derive(Deserialize)]
 struct AnswerRequest {
     ask: String,
     choice: usize,
@@ -445,6 +453,23 @@ async fn approve_session(
             Ok(id) => Json(json!({"session": id})).into_response(),
             Err(refusal) => refused(refusal),
         },
+        Err(response) => *response,
+    }
+}
+
+async fn panel_choice(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<PanelChoiceRequest>,
+) -> Response {
+    match sessions(&api, &headers) {
+        Ok(agent) => done(
+            agent
+                .panel_choice(&id, &request.block, request.choice)
+                .await
+                .map(|_| ()),
+        ),
         Err(response) => *response,
     }
 }

@@ -428,12 +428,38 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                             }
                             Err(message) => refuse(&tx, "approve", Some(id), &message).await,
                         },
-                        ClientMsg::PanelChoice { session: id, .. } => {
-                            refuse(&tx, "panel_choice", Some(id), "not on this daemon").await
-                        }
-                        ClientMsg::Speak { session: id } => {
-                            refuse(&tx, "speak", Some(id), "not on this daemon").await
-                        }
+                        ClientMsg::PanelChoice {
+                            session: id,
+                            block,
+                            choice,
+                        } => match gate(&agent, unlocked) {
+                            Ok(a) => {
+                                let (a, tx) = (a.clone(), tx.clone());
+                                tokio::spawn(async move {
+                                    if let Err(r) = a.panel_choice(&id, &block, choice).await {
+                                        refuse(&tx, "panel_choice", Some(id), &r.to_string()).await;
+                                    }
+                                });
+                            }
+                            Err(message) => refuse(&tx, "panel_choice", Some(id), &message).await,
+                        },
+                        // A reply with no turn before it: the session's last result, said.
+                        ClientMsg::Speak { session: id } => match gate(&agent, unlocked) {
+                            Ok(a) => match a.result_to_say(&id) {
+                                Some(text) => {
+                                    if cancel(&mut turn) {
+                                        send(&tx, ServerMsg::ReplyEnd).await;
+                                    }
+                                    turn = Some(tokio::spawn(say_result(
+                                        app.clone(),
+                                        tx.clone(),
+                                        text,
+                                    )));
+                                }
+                                None => refuse(&tx, "speak", Some(id), "nothing to say").await,
+                            },
+                            Err(message) => refuse(&tx, "speak", Some(id), &message).await,
+                        },
                         ClientMsg::Delete { session: id } => match gate(&agent, unlocked) {
                             Ok(a) => {
                                 let (a, tx) = (a.clone(), tx.clone());
@@ -1162,6 +1188,21 @@ async fn speak(
     }
 }
 
+/// Says `text` as a reply (`speak`): its words as `text`, its audio, then `reply_end`.
+async fn say_result(app: Arc<App>, tx: mpsc::Sender<Frame>, text: String) {
+    let started = Instant::now();
+    let ms = || started.elapsed().as_millis() as u64;
+    let (piece_tx, piece_rx) = mpsc::channel::<Piece>(4);
+    let feed = async move {
+        let _ = piece_tx.send(Piece::Text(text)).await;
+    };
+    let ((), spoken) = tokio::join!(feed, speak(&app, &tx, &ms, piece_rx));
+    if let Err(e) = spoken.result {
+        tracing::warn!("couldn't say a result: {e:#}");
+    }
+    send(&tx, ServerMsg::ReplyEnd).await;
+}
+
 async fn run_agent_turn(
     app: Arc<App>,
     agent: Arc<Agent>,
@@ -1713,6 +1754,50 @@ mod tests {
             writer.write(&Frame::Audio(chunk.to_vec())).await.unwrap();
         }
         put(writer, ClientMsg::ListenStop).await;
+    }
+
+    #[tokio::test]
+    async fn a_board_hears_a_result_said() {
+        let (addr, agent) = agent_daemon_with(
+            "conn-speak",
+            None,
+            llm::build(&config::Llm::Mock, reqwest::Client::new()).unwrap(),
+            |_| {},
+        )
+        .await;
+        let id = agent.start("a brief").await.unwrap();
+        agent::tests::until(&agent, &id, State::Done).await;
+        let (_, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        let (mut reader, mut writer) = board.unwrap();
+        put(
+            &mut writer,
+            ClientMsg::Speak {
+                session: id.clone(),
+            },
+        )
+        .await;
+        let (_, reply) = until(&mut reader, |m| *m == ServerMsg::ReplyEnd).await;
+        assert!(
+            reply
+                .iter()
+                .any(|m| matches!(m, ServerMsg::Text { delta } if delta.contains("a brief")))
+        );
+        assert!(
+            reply
+                .iter()
+                .any(|m| matches!(m, ServerMsg::ReplyStart { .. }))
+        );
+        put(
+            &mut writer,
+            ClientMsg::Speak {
+                session: "none".into(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            next(&mut reader).await,
+            ServerMsg::Refused { request, .. } if request == "speak"
+        ));
     }
 
     #[tokio::test]
