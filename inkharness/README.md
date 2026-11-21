@@ -61,7 +61,7 @@ From the folder it starts in, and from the global config folder (`~/.config/inkh
 `${VAR}` and `${VAR:-default}` come from the environment and `.env`; a server whose variable isn't
 set is left out. `type` is `stdio` (the default with a `command`) or `http`; `sse` is tried as
 streamable HTTP. `"disabled": true` skips a server, and inkharness also reads `tools` (an
-allowlist) and `timeout_ms`. A folder's commands run when inkharness starts there, so read a
+allowlist), `timeout_ms` and `talk` (false: talk turns don't get its tools, only sessions). A folder's commands run when inkharness starts there, so read a
 `.mcp.json` you didn't write first.
 
 The conversation's first lines say what it read. `-v` logs each step, `-C DIR` starts as if in
@@ -144,6 +144,11 @@ base_url = "https://openrouter.ai/api/v1"
 model = "anthropic/claude-haiku-5.5"
 api_key_env = "OPENROUTER_API_KEY"
 
+[agent.tools]           # the api backend's own tools (Claude Code has its own)
+files = true            # read_file, write_file, list_files in <dir>/work/<session>
+http = "allow"          # http_fetch; loopback, LAN and tailnet addresses only with http_private = true
+shell = "deny"          # "allow": sh -c in the work folder, as the daemon's user (shell_timeout_s = 60)
+
 [talk]                  # what HOLD BOOT outside the Agent may use; unset: every tool
 tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixes ending in *; the board's own always stay
 ```
@@ -159,8 +164,10 @@ tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixe
   day on some days ("every weekday at seven"), each run fresh, its result on the board; and
   `watch`, which makes it look every so often (at least 5 minutes) until a condition holds;
   and `show_panel`, which draws a simple screen on the board from blocks (stats, rows, a
-  sparkline, a choice whose answer comes back as the user's words).
-  The board's tools stay out: it may be off. The prompt tells
+  sparkline, a choice whose answer comes back as the user's words). On the api backend it also
+  gets `[agent.tools]`: files in a work folder of its own, `http_fetch` (redirects reported, not
+  followed, and private addresses refused unless allowed), and `shell` when allowed (denied by
+  default). The board's tools stay out: it may be off. The prompt tells
   the model it works alone for someone who reads results on a small e-paper screen: plan first,
   keep the log terse, ask only when the choice is the user's, end with a short Markdown result,
   and open it with a heading when it is meant to be kept (the session is then a note).
@@ -351,7 +358,7 @@ scripts can't call the skill tools.
 | Path | |
 | --- | --- |
 | `voice-proto/` | Framing and messages, shared by the daemon and the test client |
-| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
+| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `work.rs` the api backend's files, http_fetch and shell, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
 | `voice-client/` | Plays a board's part from a WAV file |
 | `skills/` | Agent Skills, found when inkharness starts in this folder; `goodnight` pauses every speaker that's playing in one `run_js` script |
 | `install.sh` | Installs inkharness from this checkout (`cargo install --path`) |

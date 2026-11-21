@@ -285,9 +285,11 @@ struct McpJsonServer {
     headers: HashMap<String, String>,
     #[serde(default)]
     disabled: bool,
-    /// inkharness's own: an allowlist and a timeout, as in `[[mcp]]`.
+    /// inkharness's own: an allowlist, a timeout and whether talk gets its tools, as in
+    /// `[[mcp]]`.
     tools: Option<Vec<String>>,
     timeout_ms: Option<u64>,
+    talk: Option<bool>,
 }
 
 /// The servers in a .mcp.json. One that can't be used (a variable not set) is logged and left
@@ -350,6 +352,7 @@ fn mcp_server(name: &str, s: McpJsonServer) -> Result<McpServer> {
         headers: map(s.headers)?,
         tools: s.tools,
         timeout_ms: s.timeout_ms.unwrap_or_else(config::default_mcp_timeout_ms),
+        talk: s.talk.unwrap_or(true),
     })
 }
 

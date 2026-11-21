@@ -101,6 +101,10 @@ impl Extra for SessionTools {
         if self.agent.herdr.get().is_some_and(|h| h.runs()) {
             defs.push(run_definition());
         }
+        // Claude Code has its own files, shell and fetch.
+        if self.agent.backend_of(&self.id) == Some(Backend::Api) {
+            defs.extend(super::work::definitions(&self.agent.work));
+        }
         defs
     }
 
@@ -115,6 +119,11 @@ impl Extra for SessionTools {
             SCHEDULE_TOOL => self.schedule(input),
             WATCH_TOOL => self.watch(input),
             PANEL_TOOL => self.panel(input),
+            _ if self.agent.backend_of(&self.id) == Some(Backend::Api) => {
+                let root = self.agent.work_dir(&self.id);
+                return super::work::call(&self.agent.work, &self.agent.http, &root, name, input)
+                    .await;
+            }
             _ => return None,
         })
     }

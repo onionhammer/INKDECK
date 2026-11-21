@@ -705,6 +705,7 @@ while read -r line; do result "heard: $(text_of "$line")"; done
         let backends = Backends {
             default: Backend::Claude,
             claude: Some(fake(&dir, env(key))),
+            ..Default::default()
         };
         let agent = Agent::open(
             &cfg(&dir),
@@ -863,6 +864,7 @@ while read -r line; do result "heard: $(text_of "$line")"; done
         let backends = Backends {
             default: Backend::Api,
             claude: Some(fake(&dir, env(None))),
+            ..Default::default()
         };
         let agent = Agent::open(
             &cfg(&dir),

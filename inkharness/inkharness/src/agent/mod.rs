@@ -26,6 +26,7 @@ mod mock;
 mod schedule;
 pub mod store;
 mod tools;
+mod work;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -110,6 +111,9 @@ pub struct Agent {
     next_draft: std::sync::atomic::AtomicU64,
     /// Wakes the scheduler (tick) after any change: a new schedule, a deadline, a pause.
     clock: Arc<Notify>,
+    /// The api backend's own tools ([agent.tools]), and the client http_fetch uses.
+    work: config::AgentTools,
+    http: reqwest::Client,
 }
 
 /// What sessions can run on besides the api backend, built at startup (agent::start).
@@ -118,6 +122,8 @@ pub struct Backends {
     /// What new sessions run on.
     pub default: Backend,
     pub claude: Option<Claude>,
+    /// For http_fetch (redirects aren't followed: each hop is checked).
+    pub http: reqwest::Client,
 }
 
 /// A session and what is working on it.
@@ -278,6 +284,10 @@ pub async fn start(cfg: &config::Config, harness: &Harness) -> Result<Option<Arc
             config::BackendName::Herdr => Backend::Herdr,
         },
         claude: None,
+        http: reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_default(),
     };
     if agent_cfg.claude.is_some() || backends.default == Backend::Claude {
         let claude = Claude::new(&agent_cfg.claude.clone().unwrap_or_default());
@@ -432,6 +442,8 @@ impl Agent {
             drafts: Mutex::default(),
             next_draft: Default::default(),
             clock: Arc::new(Notify::new()),
+            work: cfg.tools.clone(),
+            http: backends.http,
         });
         if agent.claude.is_some() {
             let bridge = bridge::Bridge::start(Arc::downgrade(&agent))?;
@@ -1966,6 +1978,7 @@ pub(crate) mod tests {
             backend: Default::default(),
             claude: None,
             reply: Default::default(),
+            tools: Default::default(),
         }
     }
 

@@ -58,9 +58,11 @@ pub struct ToolSet {
     js: Option<js::Limits>,
     skills: Arc<Skills>,
     extra: Option<Arc<dyn Extra>>,
-    /// Only the tools these name (a name, or a prefix ending in `*`), besides the device's and
-    /// the extra ones. None: all.
+    /// Only the tools these name (a name, or a prefix ending in `*`), besides the device's.
+    /// None: all.
     allow: Option<Arc<Vec<String>>>,
+    /// Never these (exact names): MCP servers' tools that talk doesn't get.
+    deny: Option<Arc<Vec<String>>>,
 }
 
 /// What runs the tools a script can call too.
@@ -145,6 +147,7 @@ impl ToolSet {
             skills,
             extra: None,
             allow: None,
+            deny: None,
         };
         tools.assemble();
         Ok(tools)
@@ -181,6 +184,13 @@ impl ToolSet {
     /// True if `[talk]` (or whoever narrowed the set) lets the model have this tool. The
     /// device's tools always stay.
     fn allows(&self, name: &str) -> bool {
+        if self
+            .deny
+            .as_ref()
+            .is_some_and(|deny| deny.iter().any(|d| d == name))
+        {
+            return false;
+        }
         let Some(allow) = &self.allow else {
             return true;
         };
@@ -196,6 +206,19 @@ impl ToolSet {
     pub fn only(&self, patterns: &[String]) -> ToolSet {
         let mut tools = self.clone();
         tools.allow = Some(Arc::new(patterns.to_vec()));
+        tools.assemble();
+        tools
+    }
+
+    /// The same tools for talk turns: without the MCP servers that say `talk = false`, for the
+    /// model and for its scripts alike.
+    pub fn for_talk(&self) -> ToolSet {
+        let hidden = self.backends.mcp.talk_hidden();
+        if hidden.is_empty() {
+            return self.clone();
+        }
+        let mut tools = self.clone();
+        tools.deny = Some(Arc::new(hidden));
         tools.assemble();
         tools
     }
@@ -809,6 +832,35 @@ mod tests {
             )
             .await;
         assert_eq!(out, Ok(r#"=> ["function","undefined"]"#.into()));
+    }
+
+    #[tokio::test]
+    async fn an_mcp_server_can_stay_out_of_talk() {
+        let mcp = Arc::new(crate::mcp::tests::connected_quiet().await);
+        let all = ToolSet::build(
+            None,
+            &config::Js::default(),
+            mcp,
+            Default::default(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        // Sessions get its tools; talk doesn't, not even through a script.
+        assert!(all.defs().iter().any(|d| d.name == "test_add"));
+        let talk = all.for_talk();
+        let names: Vec<&str> = talk.defs().iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["run_js"]);
+        assert_eq!(
+            talk.call("test_add", json!({"a": 1, "b": 2})).await,
+            Err("no tool named test_add".into())
+        );
+        let out = talk
+            .call(JS_TOOL, json!({"code": "typeof tools.test_add"}))
+            .await;
+        assert_eq!(out, Ok("=> undefined".into()));
+        // Narrowed as well, it stays out.
+        let narrowed = talk.only(&["test_*".into()]);
+        assert!(narrowed.defs().is_empty());
     }
 
     #[tokio::test]

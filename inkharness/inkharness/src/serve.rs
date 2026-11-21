@@ -103,11 +103,13 @@ fn device_app(
     let cfg = &place.config;
     let http = &harness.http;
     // Talk's one way into the Agent: filing a job (before `[talk] tools`, which can drop it).
+    // MCP servers with `talk = false` stay out of talk, for the model and its scripts.
+    let talk = harness.tools.for_talk();
     let base = match &agent {
-        Some(agent) => harness.tools.with_extra(Arc::new(agent::ProposeTool {
+        Some(agent) => talk.with_extra(Arc::new(agent::ProposeTool {
             agent: agent.clone(),
         })),
-        None => harness.tools.clone(),
+        None => talk,
     };
     let tools = match &cfg.talk.tools {
         Some(patterns) => {

@@ -1777,7 +1777,7 @@ mod tests {
             "test",
             Backends {
                 default: Backend::Herdr,
-                claude: None,
+                ..Default::default()
             },
         )
         .unwrap();

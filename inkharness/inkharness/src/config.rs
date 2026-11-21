@@ -92,6 +92,48 @@ pub struct Agent {
     pub reply: Reply,
     /// [agent.claude]: the claude backend, headless Claude Code.
     pub claude: Option<Claude>,
+    /// [agent.tools]: the api backend's own tools.
+    #[serde(default)]
+    pub tools: AgentTools,
+}
+
+/// [agent.tools]: what an api session may do besides the daemon's tools: files in its own work
+/// folder, fetching URLs, and running commands. The claude backend has Claude Code's own.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTools {
+    /// read_file, write_file, list_files in `<dir>/work/<session>`.
+    #[serde(default = "default_true")]
+    pub files: bool,
+    /// http_fetch.
+    #[serde(default = "allow")]
+    pub http: Policy,
+    /// Let http_fetch reach loopback, private and tailnet addresses (the daemon's own HTTP,
+    /// Home Assistant, the router). Off: refused.
+    #[serde(default)]
+    pub http_private: bool,
+    /// shell: `sh -c` in the work folder, as the daemon's user. Denied unless allowed here.
+    #[serde(default = "deny")]
+    pub shell: Policy,
+    /// A command that runs longer is ended (the model can ask for up to 600 s).
+    #[serde(default = "default_shell_timeout_s")]
+    pub shell_timeout_s: u64,
+}
+
+impl Default for AgentTools {
+    fn default() -> Self {
+        AgentTools {
+            files: true,
+            http: Policy::Allow,
+            http_private: false,
+            shell: Policy::Deny,
+            shell_timeout_s: default_shell_timeout_s(),
+        }
+    }
+}
+
+fn default_shell_timeout_s() -> u64 {
+    60
 }
 
 /// `[agent] reply`: what an agent turn answers with.
@@ -390,6 +432,9 @@ pub struct McpServer {
     /// A call that takes longer fails.
     #[serde(default = "default_mcp_timeout_ms")]
     pub timeout_ms: u64,
+    /// False: talk turns (HOLD BOOT outside the Agent) don't get its tools; sessions do.
+    #[serde(default = "default_true")]
+    pub talk: bool,
 }
 
 /// The run_js tool (js.rs): a JavaScript sandbox for arithmetic and for chaining tool calls.
