@@ -17,7 +17,9 @@
 #include <mutex>
 #include <vector>
 
+#include "article.h"
 #include "audio.h"
+#include "cache_file.h"
 #include "dirlist.h"
 #include "netget.h"
 #include "rss.h"
@@ -99,84 +101,12 @@ std::atomic<bool> scanning{false};
 
 // --- Small helpers -------------------------------------------------------------------------
 
-std::string hashKey(const std::string &s) {
-  uint32_t h = 2166136261u;  // FNV-1a
-  for (const char c : s) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
-  char buf[12];
-  snprintf(buf, sizeof buf, "%08lx", static_cast<unsigned long>(h));
-  return buf;
-}
-
-std::string clean(const std::string &s) {  // one line, no tabs: a field in our files
-  std::string out = s;
-  for (char &c : out) {
-    if (c == '\t' || c == '\n' || c == '\r') c = ' ';
-  }
-  return out;
-}
-
-std::vector<std::string> splitTabs(const std::string &line) {
-  std::vector<std::string> out;
-  size_t start = 0;
-  while (true) {
-    const size_t tab = line.find('\t', start);
-    out.push_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
-    if (tab == std::string::npos) break;
-    start = tab + 1;
-  }
-  return out;
-}
-
-bool readFile(const std::string &path, std::string &out) {
-  FILE *f = fopen(path.c_str(), "rb");
-  if (!f) return false;
-  fseek(f, 0, SEEK_END);
-  const long n = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  out.resize(n > 0 ? n : 0);
-  const bool ok = n <= 0 || fread(&out[0], 1, n, f) == static_cast<size_t>(n);
-  fclose(f);
-  return ok;
-}
-
-template <typename Fn>
-void forEachLine(const std::string &data, Fn fn) {
-  size_t pos = 0;
-  while (pos < data.size()) {
-    size_t nl = data.find('\n', pos);
-    if (nl == std::string::npos) nl = data.size();
-    std::string line = data.substr(pos, nl - pos);
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    fn(line);
-    pos = nl + 1;
-  }
-}
-
 int64_t fileSize(const std::string &path) {
   struct stat st;
   return stat(path.c_str(), &st) == 0 ? static_cast<int64_t>(st.st_size) : -1;
 }
 
-void ensureCacheDir() {
-  mkdir((std::string(sdcard::kMountPoint) + "/.inkdeck").c_str(), 0777);
-  mkdir(kCacheDir, 0777);
-}
-
-// Writes via a temporary file, so a power cut never leaves half a file.
-bool writeAtomically(const std::string &path, const std::string &data) {
-  ensureCacheDir();
-  const std::string tmp = path + ".tmp";
-  FILE *f = fopen(tmp.c_str(), "wb");
-  if (!f) {
-    log_w("podcasts: can't write %s", tmp.c_str());
-    return false;
-  }
-  const bool ok = fwrite(data.data(), 1, data.size(), f) == data.size();
-  fclose(f);
-  if (!ok) return false;
-  remove(path.c_str());
-  return rename(tmp.c_str(), path.c_str()) == 0;
-}
+void ensureCacheDir() { cachefile::ensureDir(kCacheDir); }
 
 // A FAT-safe file or folder name: ASCII, no \ / : * ? " < > |, no trailing dots or spaces.
 std::string safeName(const std::string &utf8, size_t maxLen) {
@@ -196,12 +126,6 @@ std::string safeName(const std::string &utf8, size_t maxLen) {
   }
   while (!out.empty() && (out.back() == ' ' || out.back() == '.')) out.pop_back();
   return out.empty() ? "Untitled" : out;
-}
-
-std::string hostOf(const std::string &url) {
-  const size_t start = url.find("://");
-  const size_t from = start == std::string::npos ? 0 : start + 3;
-  return url.substr(from, url.find('/', from) - from);
 }
 
 bool isMp3Episode(const rss::Episode &e) {
@@ -249,10 +173,10 @@ std::string cachePath(const std::string &key, const char *ext) {
 
 void readFeedCache(Show &s) {
   std::string data;
-  if (!readFile(cachePath(s.key, ".feed"), data)) return;
+  if (!cachefile::read(cachePath(s.key, ".feed"), data)) return;
   bool header = false;
-  forEachLine(data, [&](const std::string &line) {
-    const std::vector<std::string> f = splitTabs(line);
+  cachefile::forEachLine(data, [&](const std::string &line) {
+    const std::vector<std::string> f = cachefile::split(line);
     if (f[0] == "F" && f.size() >= 6) {
       s.fetched = atoll(f[2].c_str());
       s.folder = f[3];
@@ -280,23 +204,23 @@ void writeFeedCache(const Show &s) {
   std::string out = "INKFEED1\n";
   char num[96];
   snprintf(num, sizeof num, "%lld", static_cast<long long>(s.fetched));
-  out += "F\t" + clean(s.url) + "\t" + num + "\t" + clean(s.folder) + "\t" + clean(s.title) +
-         "\t" + clean(s.description) + "\n";
+  out += "F\t" + cachefile::field(s.url) + "\t" + num + "\t" + cachefile::field(s.folder) + "\t" + cachefile::field(s.title) +
+         "\t" + cachefile::field(s.description) + "\n";
   for (const rss::Episode &e : s.episodes) {
     snprintf(num, sizeof num, "%lld\t%lu\t%lld\t%d", static_cast<long long>(e.published),
              static_cast<unsigned long>(e.seconds), static_cast<long long>(e.bytes), e.number);
-    out += "E\t" + clean(e.guid) + "\t" + num + "\t" + clean(e.type) + "\t" + clean(e.url) +
-           "\t" + clean(e.title) + "\t" + clean(e.description) + "\n";
+    out += "E\t" + cachefile::field(e.guid) + "\t" + num + "\t" + cachefile::field(e.type) + "\t" + cachefile::field(e.url) +
+           "\t" + cachefile::field(e.title) + "\t" + cachefile::field(e.description) + "\n";
   }
-  writeAtomically(cachePath(s.key, ".feed"), out);
+  cachefile::writeWhole(cachePath(s.key, ".feed"), out);
 }
 
 std::map<std::string, EpState> readState(const std::string &key) {
   std::map<std::string, EpState> state;
   std::string data;
-  if (!readFile(cachePath(key, ".state"), data)) return state;
-  forEachLine(data, [&](const std::string &line) {
-    const std::vector<std::string> f = splitTabs(line);
+  if (!cachefile::read(cachePath(key, ".state"), data)) return state;
+  cachefile::forEachLine(data, [&](const std::string &line) {
+    const std::vector<std::string> f = cachefile::split(line);
     if (f[0] != "S" || f.size() < 6) return;
     EpState st;
     st.position = strtoul(f[2].c_str(), nullptr, 10);
@@ -315,9 +239,9 @@ void writeState(const std::string &key, const std::map<std::string, EpState> &st
     const EpState &st = kv.second;
     snprintf(num, sizeof num, "%lu\t%d\t%lld", static_cast<unsigned long>(st.position),
              st.played ? 1 : 0, static_cast<long long>(st.last));
-    out += "S\t" + clean(kv.first) + "\t" + num + "\t" + clean(st.file) + "\n";
+    out += "S\t" + cachefile::field(kv.first) + "\t" + num + "\t" + cachefile::field(st.file) + "\n";
   }
-  writeAtomically(cachePath(key, ".state"), out);
+  cachefile::writeWhole(cachePath(key, ".state"), out);
 }
 
 // A feed's downloads that have gone missing (deleted on a computer) are forgotten.
@@ -461,33 +385,6 @@ void startScan() {
 
 // --- Network jobs (worker task) ------------------------------------------------------------
 
-// Reads a feed until it has kMaxEpisodes complete items (or ends): long feeds are megabytes.
-bool fetchFeed(const std::string &url, std::string &body, std::string &error) {
-  net::Get get;
-  if (!get.open(url, error)) return false;
-  body.clear();
-  body.reserve(256 * 1024);
-  std::unique_ptr<char[]> buf(new char[8192]);
-  int items = 0;
-  while (body.size() < kFeedCap) {
-    const int n = get.read(buf.get(), 8192);
-    if (n < 0) {
-      if (items > 0) break;  // keep what arrived
-      error = "CONNECTION LOST";
-      return false;
-    }
-    if (n == 0) break;
-    const size_t from = body.size() > 6 ? body.size() - 6 : 0;
-    body.append(buf.get(), n);
-    for (size_t at = body.find("</item>", from); at != std::string::npos;
-         at = body.find("</item>", at + 7)) {
-      ++items;
-    }
-    if (items >= kMaxEpisodes) break;
-  }
-  return true;
-}
-
 void runRefresh() {
   std::vector<std::pair<std::string, std::string>> feeds;  // key, url
   {
@@ -507,7 +404,7 @@ void runRefresh() {
     const uint32_t t0 = millis();
     std::string body, error;
     rss::Channel channel;
-    bool good = fetchFeed(feeds[i].second, body, error);
+    bool good = net::getFeed(feeds[i].second, body, error, kFeedCap, kMaxEpisodes);
     if (good && !rss::parse(body.data(), body.size(), kMaxEpisodes, channel)) {
       good = false;
       error = "NOT A PODCAST FEED";
@@ -575,7 +472,7 @@ void runDownload(const std::string &key, const std::string &id) {
   const std::string partId = part + ".id";  // the version of the file the .part holds
   int64_t have = std::max<int64_t>(0, fileSize(part));
   std::string version;
-  if (have > 0 && (!readFile(partId, version) || version.empty())) have = 0;  // can't resume safely
+  if (have > 0 && (!cachefile::read(partId, version) || version.empty())) have = 0;  // can't resume safely
   dlDone = have;
   dlTotal = expected;
 
@@ -604,7 +501,7 @@ void runDownload(const std::string &key, const std::string &id) {
           static_cast<long long>(get.length() >> 10));
     if (!have) {
       const std::string id = get.validator();
-      if (id.empty() || !writeAtomically(partId, id)) remove(partId.c_str());
+      if (id.empty() || !cachefile::writeWhole(partId, id)) remove(partId.c_str());
     }
     FILE *f = fopen(part.c_str(), have ? "ab" : "wb");
     if (!f) {
@@ -803,7 +700,7 @@ bool load(bool create) {
     mkdir(kRoot, 0777);
     if (fileSize(kFeedsFile) < 0) {
       // Written from RAM, not straight from flash (AGENTS.md, Gotchas).
-      writeAtomically(kFeedsFile,
+      cachefile::writeWhole(kFeedsFile,
                       "# INKDECK podcasts: one RSS feed URL per line. Lines starting with # are "
                       "skipped.\n"
                       "# Downloads go to a folder per show next to this file. Folders of MP3s "
@@ -813,8 +710,8 @@ bool load(bool create) {
   }
   std::vector<Show> fresh;
   std::string list;
-  if (readFile(kFeedsFile, list)) {
-    forEachLine(list, [&](const std::string &raw) {
+  if (cachefile::read(kFeedsFile, list)) {
+    cachefile::forEachLine(list, [&](const std::string &raw) {
       size_t b = raw.find_first_not_of(" \t");
       if (b == std::string::npos || raw[b] == '#') return;
       std::string url = raw.substr(b, raw.find_last_not_of(" \t") - b + 1);
@@ -825,9 +722,9 @@ bool load(bool create) {
       Show s;
       s.feed = true;
       s.url = url;
-      s.key = hashKey(url);
+      s.key = cachefile::hexKey(url);
       readFeedCache(s);
-      if (s.title.empty()) s.title = hostOf(url);
+      if (s.title.empty()) s.title = article::host(url);
       s.state = readState(s.key);
       s.stateLoaded = true;
       checkFiles(s);
@@ -845,7 +742,7 @@ bool load(bool create) {
       Show s;
       s.folder = entry.name;
       s.title = entry.name;
-      s.key = hashKey("dir:" + entry.name);
+      s.key = cachefile::hexKey("dir:" + entry.name);
       fresh.push_back(std::move(s));
     }
   }

@@ -7,6 +7,8 @@
 #include <mbedtls/platform.h>
 #include <strings.h>
 
+#include <memory>
+
 #include "tailnet.h"
 
 namespace net {
@@ -150,6 +152,35 @@ void Get::close() {
     tailnet_ = false;
     tailnet::release();
   }
+}
+
+bool getFeed(const std::string &url, std::string &body, std::string &error, size_t maxBytes,
+             int maxItems) {
+  Get get;
+  if (!get.open(url, error)) return false;
+  body.clear();
+  body.reserve(128 * 1024);
+  std::unique_ptr<char[]> buf(new char[8192]);
+  int items = 0;
+  while (body.size() < maxBytes) {
+    const int n = get.read(buf.get(), 8192);
+    if (n < 0) {
+      if (items > 0) break;  // keep what arrived
+      error = "CONNECTION LOST";
+      return false;
+    }
+    if (n == 0) break;
+    const size_t from = body.size() > 8 ? body.size() - 8 : 0;
+    body.append(buf.get(), n);
+    for (const char *close : {"</item>", "</entry>"}) {
+      for (size_t at = body.find(close, from); at != std::string::npos;
+           at = body.find(close, at + 6)) {
+        ++items;
+      }
+    }
+    if (items >= maxItems) break;
+  }
+  return true;
 }
 
 }  // namespace net
