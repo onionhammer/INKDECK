@@ -77,18 +77,20 @@ Device → daemon:
 | `listen_stop` | | The utterance is complete; the daemon answers |
 | `abort` | | Drop the utterance or the reply in progress |
 | `tool_result` | `id`, `text`, `error` (optional, default false) | The answer to a `tool_call` with that `id`: what the tool did or found, or with `error` why it couldn't |
+| `read` | `id` (a number), `url` | Fetch a web page and read its article ([Reading a page](#reading-a-page)). Only to a daemon whose hello has `reader` |
 
 Daemon → device:
 
 | `type` | Fields | Meaning |
 | --- | --- | --- |
-| `hello` | `proto`, `session` (this connection's name), `agent` (when the daemon has [agent sessions](#agent-sessions)) | Answer to the device's hello, in the handshake's message 2 |
+| `hello` | `proto`, `session` (this connection's name), `agent` (when the daemon has [agent sessions](#agent-sessions)), `reader` (true when it answers `read`) | Answer to the device's hello, in the handshake's message 2 |
 | `stt` | `text` | What the daemon heard (may be empty). When the model hears the recording itself, this comes alongside the reply, or not at all if the daemon has no speech-to-text |
 | `text` | `delta` | The reply's text as it is generated, for the display. Can arrive before `reply_start` |
 | `reply_start` | `rate` (Hz) | Audio frames follow at this sample rate |
 | `reply_end` | | The turn is over |
 | `error` | `message` | Something failed; a `reply_end` follows unless the connection closes |
 | `tool_call` | `id` (a number), `name`, `input` (an object) | The model calls one of the device's tools; answer with `tool_result` |
+| `page` | `id`, then `title`, `byline`, `site`, `published` (Unix seconds), `markdown`, or `error` | The answer to `read` with that `id` |
 
 ## A turn
 
@@ -148,6 +150,35 @@ During a turn, between `listen_stop` and `reply_end`:
   the calls still waiting, and ignores an answer that comes for them. The device should not run a
   call from the old turn (one that arrives before that turn's `reply_end`).
 - The answer is text for the model: short, plain and complete, since the model sees nothing else.
+
+## Reading a page
+
+News on the board asks the daemon for a web page's article when a feed gives only a summary and
+a link (BBC News), and for the pages a story links to. The daemon fetches the page (20 s, 5 MB at
+most, as a browser would ask) and finds the article with dom_smoothie, a port of Mozilla's
+Readability (Firefox's Reader View; `inkharness/src/reader.rs`). It sends the article as
+Markdown for the board's NoteDoc: paragraphs, headings, lists and quotes, links as
+`[text](url)` with absolute addresses, and no pictures, captions, players or page furniture,
+cut at a paragraph past 40 KB so the message fits one frame.
+
+```
+  read {id: 7, url: "https://www.bbc.co.uk/news/articles/cj752ddve27ko"}  →
+                                 ←       page {id: 7, title: "Russia-bound ship still on fire…",
+                                               byline: "Hafsa Khalil", site: "BBC News",
+                                               published: 1795285329, markdown: "…"}
+  read {id: 8, url: "https://example.com/members-only"}  →
+                                 ←       page {id: 8, error: "HTTP 403"}
+```
+
+- It isn't a turn: it can come at any time, and pages and turns don't wait for each other.
+  Answers can come out of order; match them by `id`.
+- `error` is for the screen, in a few words ("HTTP 403", "the site took too long", "no article
+  on the page"). The board doesn't fetch a page itself after the daemon reports an error, since
+  the site would say the same; it does when the daemon isn't there to ask, or its hello has no
+  `reader`.
+- It doesn't need the agent's PIN: the page is on the open web, and the board already proved
+  the token.
+- `GET /read?url=` on the HTTP API answers the same, and `inkharness read <url>` prints it.
 
 ## Rules
 

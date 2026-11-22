@@ -91,6 +91,24 @@ void setTools(const char *definitions, ToolCall call);
 // What a call gave, or why it failed (error). Dropped if the session has ended since.
 void toolResult(uint32_t id, const std::string &text, bool error = false);
 
+// --- Reading pages -----------------------------------------------------------------------------
+
+// A web page's article, as inkharness reads it (docs/voice-protocol.md, "Reading a page").
+struct Page {
+  std::string title, byline, site;
+  uint32_t published = 0;  // Unix seconds; 0 if the page doesn't say
+  std::string markdown;    // NoteDoc's Markdown, links as [text](url)
+};
+
+// Asks inkharness for the article in the page at url (News, page_fetch.h): joins Wi-Fi and
+// connects if need be (quietly, as a poll does), then waits up to timeoutMs in all for the
+// answer, or until abandon() says so. From a background task. False if there's no article:
+// error says why, and reached says whether inkharness had a go (a site's "HTTP 403", "no
+// article on the page") or wasn't there to ask (no daemon, no connection, one from before
+// `read`), when the caller can fetch the page itself.
+bool readPage(const std::string &url, uint32_t timeoutMs, Page &out, std::string &error,
+              bool &reached, bool (*abandon)(void *) = nullptr, void *context = nullptr);
+
 // --- The agent ---------------------------------------------------------------------------------
 
 // Where an utterance goes: asked by the agent task as each one starts.

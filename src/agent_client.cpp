@@ -53,7 +53,7 @@ constexpr uint32_t kAnswerTimeoutMs = 45000;  // of silence from the daemon in a
 constexpr uint32_t kLingerMs = 2500;
 
 enum class Event : uint8_t {
-  Open, Close, TalkStart, TalkStop, Hold, Release, Retry, Kick, CheckIn, Speak
+  Open, Close, TalkStart, TalkStop, Hold, Release, Retry, Kick, CheckIn, Speak, Read
 };
 
 // Check-ins: the poll ladder (minutes), and how long a poll may take.
@@ -113,6 +113,21 @@ std::atomic<uint32_t> checkedAtUnix{0};
 uint32_t checkedSavedUnix = 0;
 bool (*contentPolicy)() = nullptr;
 
+// readPage()'s request, waiting for its page (guarded by `lock`, except the atomics).
+struct ReadRequest {
+  uint32_t id = 0;
+  std::string url;
+  bool sent = false;
+  bool done = false;
+  bool reached = false;  // the daemon answered
+  Page page;
+  std::string error;
+};
+ReadRequest reading;
+uint32_t nextReadId = 1;
+std::atomic<bool> readActive{false};  // a readPage() is waiting: the connection stays up
+SemaphoreHandle_t readDone = nullptr;
+
 // The board's tools (setTools()), and the answers waiting to go out (toolResult()).
 const char *toolDefinitions = nullptr;
 ToolCall toolCall = nullptr;
@@ -135,6 +150,7 @@ struct Link {
   bool wifi = false;       // we hold a wlan::connect()
   bool tailnet = false;    // and a tailnet::hold(): agent_host is on the tailnet
   bool hello = false;      // the daemon answered ours
+  bool reader = false;     // and it reads pages (`read`)
   bool sealed = false;     // the handshake is done: every frame is sealed both ways
   std::unique_ptr<noise::Initiator> handshake;  // between message 1 and message 2
   std::string refusal;     // why the daemon turned the session down, before hanging up
@@ -184,6 +200,19 @@ void post(Event e) {
 void agentChanged() { agentShared.generation++; }
 
 // The connection has ended: what the agent knew of it goes with it, the last list stays.
+// readPage()'s answer: the page (error empty) or why not.
+void finishRead(bool reached, const std::string &error, Page page = {}) {
+  {
+    Locked l;
+    if (!readActive.load() || reading.done) return;
+    reading.done = true;
+    reading.reached = reached;
+    reading.error = error;
+    reading.page = std::move(page);
+  }
+  xSemaphoreGive(readDone);
+}
+
 void forgetAgentConnection() {
   s.agentSupported = s.agentPin = s.agentUnlocked = false;
   s.unlockSent = s.unlockByTicket = s.synced = false;
@@ -221,7 +250,8 @@ void forgetKeys() {
 void drop(const char *why) {
   if (s.fd >= 0) ::close(s.fd);
   s.fd = -1;
-  s.hello = s.turnOpen = false;
+  s.hello = s.reader = s.turnOpen = false;
+  finishRead(false, "CONNECTION LOST");
   s.staleEnds = 0;
   s.rxLen = 0;
   forgetKeys();
@@ -795,6 +825,26 @@ void onControl(const uint8_t *payload, size_t len) {
   const std::string type = field(json, "type");
   if (type == "hello") {
     s.hello = true;
+    s.reader = flag(json, "reader");
+  } else if (type == "page") {
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(json, "id");
+    bool mine = false;
+    {
+      Locked l;
+      mine = cJSON_IsNumber(id) && static_cast<uint32_t>(id->valuedouble) == reading.id;
+    }
+    if (mine) {
+      const std::string error = field(json, "error");
+      Page page;
+      if (error.empty()) {
+        page.title = field(json, "title");
+        page.byline = field(json, "byline");
+        page.site = field(json, "site");
+        page.published = timeField(json, "published");
+        page.markdown = field(json, "markdown");
+      }
+      finishRead(true, error, std::move(page));
+    }
   } else if (type == "sessions") {
     onSessions(json);
   } else if (type == "session") {
@@ -926,6 +976,7 @@ void onHandshake(const uint8_t *msg, size_t len) {
   const std::string type = field(json, "type");
   if (type == "hello") {
     s.hello = true;
+    s.reader = flag(json, "reader");
     s.refusal.clear();
     onAgentHello(json);
   } else if (type == "error") {
@@ -1077,7 +1128,29 @@ bool heldActive() {
 }
 
 // Whether the connection should be up: an Agent screen in use, the sheet, USB power, a poll.
-bool wantLink() { return heldActive() || s.wanted || usbLive || pollActive.load(); }
+bool wantLink() {
+  return heldActive() || s.wanted || usbLive || pollActive.load() || readActive.load();
+}
+
+// Sends readPage()'s request once the daemon has said hello, or ends it if it can't read.
+void readPump() {
+  if (s.fd < 0 || !s.hello || !readActive.load()) return;
+  std::string json;
+  {
+    Locked l;
+    if (reading.sent || reading.done) return;
+    if (s.reader) {
+      json = "{\"type\":\"read\",\"id\":" + std::to_string(reading.id) +
+             ",\"url\":" + quoted(reading.url) + "}";
+      reading.sent = true;
+    }
+  }
+  if (json.empty()) {
+    finishRead(false, "INKHARNESS CAN'T READ PAGES");
+    return;
+  }
+  sendControl(json);
+}
 
 // Ends the connection once nobody holds it, after kLingerMs.
 void lingerOrClose() {
@@ -1237,7 +1310,8 @@ void connectSession() { connectLink(false, millis() + 45000); }
 void closeSession() {
   if (s.fd >= 0) ::close(s.fd);
   s.fd = -1;
-  s.hello = s.turnOpen = false;
+  s.hello = s.reader = s.turnOpen = false;
+  finishRead(false, "NO CONNECTION TO INKHARNESS");
   s.staleEnds = 0;
   s.lingerUntilMs = 0;
   forgetKeys();
@@ -1579,6 +1653,12 @@ void handle(Event e) {
     case Event::TalkStop: endTalk(); break;
     case Event::CheckIn: checkIn(); break;
     case Event::Speak: sayResult(); break;
+    case Event::Read:
+      if (s.fd < 0 && readActive.load() && !connectLink(true, millis() + kPollDeadlineMs)) {
+        finishRead(false, "CAN'T REACH INKHARNESS");
+        if (!wantLink()) closeSession();  // lets Wi-Fi go
+      }
+      break;
   }
 }
 
@@ -1601,6 +1681,8 @@ void task(void *) {
     pump(sent || s.capturing ? 0 : 20);
     if (s.fd < 0) continue;
     sendAnswers();
+    if (s.fd < 0) continue;
+    readPump();
     if (s.fd < 0) continue;
     agentPump();
     if (s.fd < 0) continue;
@@ -1645,6 +1727,7 @@ void start() {
   cJSON_InitHooks(&hooks);
   lock = xSemaphoreCreateMutex();
   checkInDone = xSemaphoreCreateBinary();
+  readDone = xSemaphoreCreateBinary();
   loadSummary();
   events = xQueueCreate(8, sizeof(Event));
   xTaskCreate(task, "agent", 10240, nullptr, 4, nullptr);
@@ -1885,6 +1968,47 @@ bool polling() {
   if (pollActive.load()) return true;
   if (!pollIsDue() && !soon.load()) return false;
   post(Event::Kick);  // the task may be asleep in its wait: it polls now
+  return true;
+}
+
+bool readPage(const std::string &url, uint32_t timeoutMs, Page &out, std::string &error,
+              bool &reached, bool (*abandon)(void *), void *context) {
+  reached = false;
+  if (!configured()) {
+    error = "NO INKHARNESS";
+    return false;
+  }
+  start();
+  {
+    Locked l;
+    reading = ReadRequest{};
+    reading.id = nextReadId++;
+    reading.url = url;
+  }
+  xSemaphoreTake(readDone, 0);  // a stale give from before
+  readActive = true;
+  post(Event::Read);
+  const uint32_t until = millis() + timeoutMs;
+  bool done = false;
+  while (static_cast<int32_t>(until - millis()) > 0) {
+    if (xSemaphoreTake(readDone, pdMS_TO_TICKS(100)) == pdTRUE) {
+      done = true;
+      break;
+    }
+    if (abandon && abandon(context)) break;
+  }
+  Locked l;
+  readActive = false;  // the connection lingers, then goes, unless something else holds it
+  if (!done) {
+    reading.done = true;
+    error = "INKHARNESS DIDN'T ANSWER";
+    reached = reading.sent;
+    return false;
+  }
+  reached = reading.reached;
+  error = reading.error;
+  if (!error.empty()) return false;
+  out = std::move(reading.page);
   return true;
 }
 

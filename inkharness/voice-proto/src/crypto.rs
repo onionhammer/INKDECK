@@ -220,6 +220,7 @@ mod tests {
             proto: crate::PROTO_VERSION,
             session: "s1".into(),
             agent: None,
+            reader: false,
         }
     }
 

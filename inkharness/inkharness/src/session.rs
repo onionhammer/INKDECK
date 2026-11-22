@@ -38,6 +38,7 @@ use crate::agent::{self, Agent, Unlock};
 use crate::device::Device;
 use crate::llm::{self, Llm, Outcome, Piece, Recording, Role, Turn};
 use crate::meter;
+use crate::reader;
 use crate::sentence::Splitter;
 use crate::stt::{Stt, SttSession};
 use crate::tools::ToolSet;
@@ -250,6 +251,12 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                     };
                     match msg {
                         ClientMsg::Hello { .. } => tracing::debug!("ignoring a second hello"),
+                        ClientMsg::Read { id, url } => {
+                            let tx = tx.clone();
+                            tokio::spawn(async move {
+                                send(&tx, read_page(id, &url).await).await;
+                            });
+                        }
                         ClientMsg::ListenStart {
                             mode,
                             session: target,
@@ -718,6 +725,7 @@ async fn open(
                     proto: PROTO_VERSION,
                     session: session.into(),
                     agent,
+                    reader: true,
                 },
                 Err(e) => ServerMsg::Error {
                     message: format!("{e:#}"),
@@ -753,6 +761,7 @@ async fn open(
                         proto: PROTO_PLAINTEXT,
                         session: session.into(),
                         agent: None,
+                        reader: true,
                     };
                     writer.write(&Frame::control(&answer)?).await?;
                     Ok(hello)
@@ -812,6 +821,42 @@ async fn write_loop(mut writer: FrameWriter<OwnedWriteHalf>, mut rx: mpsc::Recei
         if let Err(e) = writer.write(&frame).await {
             tracing::debug!("write failed: {e}");
             break;
+        }
+    }
+}
+
+/// The answer to `read`: the article, or why there isn't one.
+async fn read_page(id: u32, url: &str) -> ServerMsg {
+    let started = Instant::now();
+    match reader::read(url).await {
+        Ok(page) => {
+            tracing::info!(
+                url,
+                ms = started.elapsed().as_millis() as u64,
+                bytes = page.markdown.len(),
+                "read a page"
+            );
+            ServerMsg::Page {
+                id,
+                title: page.title,
+                byline: page.byline,
+                site: page.site,
+                published: page.published,
+                markdown: page.markdown,
+                error: String::new(),
+            }
+        }
+        Err(e) => {
+            tracing::info!(url, "couldn't read the page: {e:#}");
+            ServerMsg::Page {
+                id,
+                title: String::new(),
+                byline: String::new(),
+                site: String::new(),
+                published: 0,
+                markdown: String::new(),
+                error: format!("{e:#}"),
+            }
         }
     }
 }
@@ -1494,6 +1539,85 @@ mod tests {
         }
     }
 
+    /// A web server with one article at /story; its address.
+    async fn news_site() -> std::net::SocketAddr {
+        let para = "The ship was bound for Kaliningrad when it was hit on Saturday morning, \
+                    before drifting into Finnish waters, the border guard said. ";
+        let html = format!(
+            "<html><head><title>Ship on fire - Test News</title>\
+             <meta property=\"og:site_name\" content=\"Test News\"></head><body>\
+             <nav><a href=\"/\">Home</a></nav><article><h1>Ship on fire</h1>\
+             <p>{para}{para}<a href=\"/earlier\">An earlier attack</a>.</p>\
+             <p>{para}{para}</p><p>{para}</p></article></body></html>"
+        );
+        let app = axum::Router::new().route(
+            "/story",
+            axum::routing::get(move || {
+                let html = html.clone();
+                async move { ([("content-type", "text/html; charset=utf-8")], html) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        addr
+    }
+
+    /// The `page` that answers a board's `read`.
+    async fn read_over_the_wire(url: String) -> ServerMsg {
+        let addr = daemon("t", false).await;
+        let (answer, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        assert!(matches!(answer, ServerMsg::Hello { reader: true, .. }));
+        let (mut reader, mut writer) = board.unwrap();
+        put(&mut writer, ClientMsg::Read { id: 7, url }).await;
+        loop {
+            let Some(Frame::Control(json)) = reader.read().await.unwrap() else {
+                continue;
+            };
+            let msg = serde_json::from_str::<ServerMsg>(&json).unwrap();
+            if matches!(msg, ServerMsg::Page { .. }) {
+                return msg;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_board_reads_a_page() {
+        let site = news_site().await;
+        let ServerMsg::Page {
+            id,
+            site: name,
+            markdown,
+            error,
+            ..
+        } = read_over_the_wire(format!("http://{site}/story")).await
+        else {
+            unreachable!()
+        };
+        assert_eq!((id, error.as_str(), name.as_str()), (7, "", "Test News"));
+        assert!(markdown.contains("Kaliningrad"), "{markdown}");
+        assert!(
+            markdown.contains(&format!("[An earlier attack](http://{site}/earlier)")),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("Home"), "{markdown}");
+    }
+
+    #[tokio::test]
+    async fn a_page_that_isnt_there_says_why() {
+        let site = news_site().await;
+        let ServerMsg::Page {
+            id,
+            markdown,
+            error,
+            ..
+        } = read_over_the_wire(format!("http://{site}/gone")).await
+        else {
+            unreachable!()
+        };
+        assert_eq!((id, markdown.as_str(), error.as_str()), (7, "", "HTTP 404"));
+    }
+
     #[tokio::test]
     async fn the_model_calls_the_boards_tools() {
         let addr = daemon("t", false).await;
@@ -1509,6 +1633,7 @@ mod tests {
                 proto: PROTO_VERSION,
                 session: "s1".into(),
                 agent: None,
+                reader: true,
             }
         );
         let (mut reader, mut writer) = board.unwrap();
@@ -1893,6 +2018,7 @@ mod tests {
                     unlocked: false,
                     features: agent::FEATURES.iter().map(|f| f.to_string()).collect(),
                 }),
+                reader: true,
             }
         );
         let (mut reader, mut writer) = board.unwrap();
@@ -2576,6 +2702,7 @@ mod tests {
                 proto: PROTO_PLAINTEXT,
                 session: "s1".into(),
                 agent: None,
+                reader: true,
             }
         );
         assert_eq!(

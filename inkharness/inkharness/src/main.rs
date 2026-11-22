@@ -22,6 +22,7 @@ mod local;
 mod mcp;
 mod meter;
 mod place;
+mod reader;
 mod search;
 mod sentence;
 mod serve;
@@ -79,6 +80,14 @@ enum Command {
     /// daemon). Not for people.
     #[command(hide = true)]
     McpBridge,
+    /// Print the article in a web page, as a board's News gets it (reader view).
+    Read {
+        /// The page's address.
+        url: String,
+        /// Read this saved copy of the page instead of fetching it.
+        #[arg(long, value_name = "FILE")]
+        html: Option<PathBuf>,
+    },
     /// Write a starter inkharness.toml to the global config folder.
     Init {
         /// Write it in this folder instead.
@@ -128,6 +137,23 @@ async fn run() -> Result<()> {
     }
     if let Some(Command::Init { here, force }) = cli.command {
         return init(here, force);
+    }
+    if let Some(Command::Read { url, html }) = cli.command {
+        let page = match html {
+            Some(file) => reader::extract(
+                &std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading {}", file.display()))?,
+                &url,
+            )?,
+            None => reader::read(&url).await?,
+        };
+        println!("title: {}", page.title);
+        println!("byline: {}", page.byline);
+        println!("site: {}", page.site);
+        println!("published: {}", page.published);
+        println!("url: {}\n", page.url);
+        println!("{}", page.markdown);
+        return Ok(());
     }
 
     let here = std::env::current_dir()?;

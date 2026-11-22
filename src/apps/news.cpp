@@ -344,6 +344,7 @@ void drawFetchStrip(Canvas &c, const Rect &strip, const pagefetch::Status &st) {
       left = "LOADING " + std::to_string((st.bytes + 512) / 1024) + " KB";
       break;
     case pagefetch::Phase::Reading: left = "READING THE PAGE"; break;
+    case pagefetch::Phase::Asking: left = "ASKING INKHARNESS\xE2\x80\xA6"; break;
     default: left = "JOINING WI-FI\xE2\x80\xA6"; break;
   }
   const float f = st.progress();

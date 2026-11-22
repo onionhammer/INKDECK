@@ -3,6 +3,8 @@
 //!
 //! ```text
 //! GET  /health  {"ok": true, "model": "…"}, and with the token the tools and skills
+//! GET  /read?url=…  the article in a web page, as a board's News gets it (reader.rs):
+//!               {"title", "byline", "site", "published", "url", "markdown"}, or 422 {"error"}
 //! POST /chat    {"text": "…", "conversation": "c1"?, "stream": false?}
 //!               → {"reply": "…", "conversation": "c1", "tools": ["run_js"]}
 //! ```
@@ -12,7 +14,8 @@
 //! events, each a JSON object: `{"text": "…"}` as it is written, `{"tool": "…"}` as a call
 //! starts, then `{"done": true, "reply": "…", "conversation": "…"}` or `{"error": "…"}`.
 //!
-//! With a token set (`token`, the one devices send), /chat wants `Authorization: Bearer <token>`.
+//! With a token set (`token`, the one devices send), /chat and /read want
+//! `Authorization: Bearer <token>`.
 //!
 //! With an [agent] table, the agent sessions (agent/) too, with the same JSON a board gets
 //! (docs/voice-protocol.md, "Agent sessions"), and with a PIN set, `X-Inkharness-Pin: <pin>` on
@@ -138,10 +141,46 @@ impl Api {
     }
 }
 
+#[derive(Deserialize)]
+struct ReadQuery {
+    url: String,
+}
+
+async fn read_page(
+    State(api): State<Arc<Api>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<ReadQuery>,
+) -> Response {
+    if !api.authorized(&headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({"error": "wrong or missing token"})),
+        )
+            .into_response();
+    }
+    match crate::reader::read(&q.url).await {
+        Ok(p) => Json(json!({
+            "title": p.title,
+            "byline": p.byline,
+            "site": p.site,
+            "published": p.published,
+            "url": p.url,
+            "markdown": p.markdown,
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({"error": format!("{e:#}")})),
+        )
+            .into_response(),
+    }
+}
+
 pub async fn serve(listener: TcpListener, api: Arc<Api>) -> Result<()> {
     let app = axum::Router::new()
         .route("/health", get(health))
         .route("/chat", post(chat_turn))
+        .route("/read", get(read_page))
         .route("/sessions", get(list_sessions).post(start_session))
         .route("/sessions/{id}", get(get_session).delete(delete_session))
         .route("/sessions/{id}/say", post(say_session))

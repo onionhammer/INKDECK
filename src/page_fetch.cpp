@@ -10,7 +10,11 @@
 #include <mutex>
 #include <vector>
 
+#include "features.h"
 #include "netget.h"
+#if INKDECK_AGENT
+#include "agent_client.h"
+#endif
 #include "sdcard.h"
 #include "wlan.h"
 
@@ -21,6 +25,7 @@ constexpr const char *kDir = "/sdcard/.inkdeck/news/pages";
 constexpr size_t kPageCap = 3 * 1024 * 1024;  // of a page downloaded
 constexpr size_t kTextMax = 40 * 1024;        // of an article's text kept
 constexpr uint32_t kConnectTimeoutMs = 20000;
+constexpr uint32_t kAskTimeoutMs = 45000;  // inkharness: joining, connecting, its fetch
 constexpr uint32_t kLingerMs = 20000;  // Wi-Fi up after a page, for the next link
 constexpr int kKeepFiles = 200;
 constexpr float kGuessBytes = 600 * 1024;  // a page of unknown length
@@ -123,8 +128,51 @@ bool abandoned(const std::string &url) {
   return wanted != url;
 }
 
+bool abandonedFor(void *url) { return abandoned(*static_cast<const std::string *>(url)); }
+
+// The article, done: kept on the card and handed over.
+void finish(const std::string &url, article::Article a) {
+  save(url, a);
+  std::lock_guard<std::mutex> lock(mu);
+  if (url != current) return;
+  done = std::move(a);
+  state.phase = Phase::Done;
+}
+
 void fetchOne(const std::string &url, bool &connected) {
   Status s;
+#if INKDECK_AGENT
+  if (agent::configured()) {
+    s.phase = Phase::Asking;
+    setState(url, s);
+    agent::Page page;
+    std::string error;
+    bool reached = false;
+    const uint32_t t0 = millis();
+    const bool ok = agent::readPage(url, kAskTimeoutMs, page, error, reached, abandonedFor,
+                                    const_cast<std::string *>(&url));
+    log_i("page: inkharness %s in %u ms: %s", ok ? "read it" : "didn't",
+          static_cast<unsigned>(millis() - t0), ok ? url.c_str() : error.c_str());
+    if (abandoned(url)) return;
+    if (ok) {
+      article::Article a;
+      a.title = page.title;
+      a.byline = page.byline;
+      a.site = page.site;
+      a.published = page.published;
+      a.markdown = std::move(page.markdown);
+      finish(url, std::move(a));
+      return;
+    }
+    if (reached) {  // the daemon had a go: the site would say the same to the board
+      s.phase = Phase::Failed;
+      s.error = error;
+      setState(url, s);
+      return;
+    }
+    s = Status{};  // not there to ask: read it here
+  }
+#endif
   if (!connected) {
     s.phase = Phase::Joining;
     setState(url, s);
@@ -195,11 +243,7 @@ void fetchOne(const std::string &url, bool &connected) {
     setState(url, s);
     return;
   }
-  save(url, a);
-  std::lock_guard<std::mutex> lock(mu);
-  if (url != current) return;
-  done = std::move(a);
-  state.phase = Phase::Done;
+  finish(url, std::move(a));
 }
 
 void worker(void *) {
@@ -234,6 +278,7 @@ void worker(void *) {
 
 float Status::progress() const {
   switch (phase) {
+    case Phase::Asking: return 0.3f;
     case Phase::Joining: return 0.05f;
     case Phase::Loading: {
       const float total = this->total > 0 ? static_cast<float>(this->total) : kGuessBytes;
