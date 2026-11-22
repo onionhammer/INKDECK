@@ -34,7 +34,7 @@ void configure();
 // to settle before returning; false if the PMIC didn't take it. Safe from any task.
 //   ALDO2: the codec's analog supply (AVDD) and the mic. On only while audio plays or records
 //          (audio.h); the codec is put in power-down first.
-//   ALDO3: the panel's power switch. Off while the Reader naps (Epd::powerOff()).
+//   ALDO3: the panel's power switch. On only during a panel update (Epd::show()).
 bool setAudioRail(bool on);
 bool setPanelRail(bool on);
 

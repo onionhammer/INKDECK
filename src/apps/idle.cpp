@@ -207,9 +207,7 @@ bool napIfIdle() {
     napMotion = b && b->wakeOnMotion() && qmi8658::wakeOnMotion();
     if (!napMotion) qmi8658::setEnabled(false);
     if (b) b->onNap();
-    // The panel holds its image unpowered, and its switch draws about 0.3 mA while ALDO3 is on.
-    // The next refresh powers it again (Epd::show()).
-    screen::powerOff();
+    // The panel's power (ALDO3) is off already: every update ends by cutting it (Epd::show()).
   }
   // Until the next minute boundary (an alarm rings on the minute), a little after it.
   timeval tv;

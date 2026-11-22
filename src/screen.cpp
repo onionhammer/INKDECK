@@ -128,12 +128,6 @@ void presentOver(bool landscape, bool full, const std::function<void()> &drawOld
   unlock();
 }
 
-void powerOff() {
-  lock();  // not in the middle of a frame
-  epd.powerOff();
-  unlock();
-}
-
 void sleepWhileBusy(bool on) { epd.setSleepWhileBusy(on); }
 
 void setLandscape(bool landscape) { fb->setRotation(landscape ? kLandscapeRotation : kRotation); }

@@ -116,13 +116,6 @@ void lineCommand(const String &line) {
     weather::forget();
     return;
   }
-  if (line == "paneloff") {
-    // What a nap does to the panel (ALDO3 off); the next refresh powers it again. On USB the
-    // board never naps, so this is how that path gets tried there.
-    screen::powerOff();
-    Serial.println("devtools: panel power off until the next refresh");
-    return;
-  }
   if (line.startsWith("wxmodels ")) {
     weather::compareModels(line.substring(9).c_str());
     return;

@@ -185,7 +185,7 @@ bool Epd::show(const uint8_t *frame, bool full) {
   if (!hasPrev_) full = true;
 
   const uint32_t t0 = millis();
-  powerOn();  // after powerOff(); the reset and init below are the same either way
+  powerOn();  // the last update cut the supply; the reset and init below are the same either way
   epdSpi.beginTransaction(kSpiSettings);
   bool ok = initController(full);
   if (ok) {
@@ -206,6 +206,9 @@ bool Epd::show(const uint8_t *frame, bool full) {
   } else {
     hasPrev_ = false;  // unknown panel state: force a full refresh next time
   }
+  // The panel holds its image unpowered, and its power switch draws about 0.3 mA while ALDO3 is
+  // on, so the supply goes off again with every update.
+  powerOff();
   log_i("EPD: %s refresh %s in %lu ms", full ? "full" : "partial", ok ? "done" : "FAILED",
         (unsigned long)(millis() - t0));
   return ok;
