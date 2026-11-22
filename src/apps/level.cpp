@@ -22,7 +22,6 @@ using ui::TextStyle;
 // Sizes from the Level artboard.
 constexpr TextStyle kAngle{&ui::fonts::kMono40ExtraBold, -1};      // −2.1°
 constexpr TextStyle kEdgeAngle{&ui::fonts::kMono28ExtraBold, -1};  // +1.2°
-constexpr TextStyle kCellValue{&ui::fonts::kMono17ExtraBold, 0};
 
 constexpr int kLeftW = 300;        // the bubble's column, rule included
 constexpr int kTopH = 301;         // bubble and readings, above the vial band
@@ -354,20 +353,13 @@ class LevelScreen : public ui::Screen {
     // Stat cells along the bottom.
     const Rect cells{r.x, r.bottom() - 50, r.w, 50};
     hrule(c, cells.x, cells.y - kRule, cells.w);
-    const std::pair<const char *, std::string> stats[4] = {
+    const ui::Stat stats[4] = {
         {"TONE", tone_ ? "ON" : "OFF"},
         {"ZERO", zero_.set ? "SET" : "NONE"},
         {"RATE", "56 Hz"},
         {"IMU", "0x6B"},
     };
-    const int cellW = cells.w / 4;
-    for (int i = 0; i < 4; ++i) {
-      const int x = cells.x + i * cellW;
-      drawText(c, x + kPadX, cells.y + 8 + capHeight(style::kKey), stats[i].first, style::kKey);
-      drawText(c, {x + kPadX, cells.y + 26, cellW - 2 * kPadX + 6, 24}, stats[i].second,
-               kCellValue);
-      if (i < 3) dashedV(c, x + cellW - 1, cells.y, cells.h);
-    }
+    drawStatRow(c, cells, stats);
   }
 
   void drawEdge(ui::Canvas &c, Rect r) const {

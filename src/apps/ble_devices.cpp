@@ -47,10 +47,7 @@ Key6 keyOf(const Device &d) {
   return k;
 }
 
-struct Browse {
-  std::vector<Key6> order;
-  int index = 0;
-};
+using Browse = radio::Browse<Key6>;
 
 enum class Sort : uint8_t { Signal, Kind, Name };
 
@@ -63,11 +60,6 @@ const char *sortName(Sort s) {
   return "";
 }
 
-std::string twoOf(int i, int n) {
-  char buf[16];
-  snprintf(buf, sizeof buf, "%02d/%02d", i, n);
-  return buf;
-}
 
 using text::lower;
 
@@ -134,7 +126,7 @@ class BleDetail : public ui::Screen {
   std::string tag() const override { return moduleTag("SENSORS"); }
   std::string context() const override {
     return "BLE \xC2\xB7 " +
-           twoOf(browse_->index + 1, static_cast<int>(browse_->order.size()));
+           browse_->position();
   }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kDial, "DEVICE"};
@@ -225,9 +217,8 @@ class BleDetail : public ui::Screen {
   }
 
   bool step(int delta) {
-    const int count = static_cast<int>(browse_->order.size());
-    const int next = browse_->index + delta;
-    if (next < 0 || next >= count) return false;
+    const int next = browse_->step(delta);
+    if (next < 0) return false;
     const Key6 &k = browse_->order[next];
     Device d;
     if (!blesurvey::device(k.addr.data(), k.type, d)) return false;  // gone since; stay
@@ -387,10 +378,7 @@ class BleList : public ui::Screen {
 
   void onEnter() override {
     blesurvey::begin();
-    if (!browse_->order.empty() && browse_->index < static_cast<int>(browse_->order.size())) {
-      selected_ = browse_->order[browse_->index];
-      haveSelected_ = true;
-    }
+    if (browse_->current(selected_)) haveSelected_ = true;
     resort();
   }
   void onLeave() override { blesurvey::end(); }
@@ -470,15 +458,8 @@ class BleList : public ui::Screen {
   }
 
   void place() {
-    int at = 0;
-    if (haveSelected_) {
-      for (size_t i = 0; i < devs_.size(); ++i) {
-        if (keyOf(devs_[i]) == selected_) at = static_cast<int>(i);
-      }
-    }
-    cursor_.reset(static_cast<int>(devs_.size()), at);
-    browse_->order.clear();
-    for (const Device &d : devs_) browse_->order.push_back(keyOf(d));
+    cursor_.reset(static_cast<int>(devs_.size()),
+                  browse_->reorder(devs_, keyOf, haveSelected_, selected_));
     remember();
   }
 

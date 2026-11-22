@@ -1,6 +1,7 @@
 #include "text.h"
 
 #include <ctype.h>
+#include <stdio.h>
 
 #include "ui/fonts/glyphs.h"
 
@@ -225,6 +226,13 @@ uint32_t fnv1a(const std::string &s) {
   uint32_t h = 2166136261u;
   for (const char c : s) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
   return h;
+}
+
+std::string macText(const uint8_t mac[6]) {
+  char buf[18];
+  snprintf(buf, sizeof buf, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3],
+           mac[4], mac[5]);
+  return buf;
 }
 
 }  // namespace text

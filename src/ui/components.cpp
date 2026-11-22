@@ -113,6 +113,17 @@ void drawSectionHeader(Canvas &c, const Rect &r, const std::string &label,
   if (!right.empty()) drawText(c, band, right, style::kSection, Align::Right, ink);
 }
 
+void drawEmpty(Canvas &c, const Rect &r, const char *title, const std::string &text) {
+  const Rect p = r.inset(20, 24);
+  int y = p.y + capHeight(style::kTitle);
+  drawText(c, p.x, y, title, style::kTitle);
+  y += 24;
+  for (const auto &line : wrap(style::kBody, text, p.w, 4)) {
+    y += 22;
+    drawText(c, p.x, y, line, style::kBody);
+  }
+}
+
 void drawNotice(Canvas &c, const Rect &r, const std::string &text) {
   fill(c, r, kInk);
   drawText(c, {r.x + kPadX, r.y, r.w - 2 * kPadX, r.h - kRule}, "! " + text, style::kSection,
@@ -336,6 +347,17 @@ Rect drawButton(Canvas &c, int right, int top, const std::string &glyph,
 }
 
 // --- Stat cell ---------------------------------------------------------------------------
+
+void drawStatRow(Canvas &c, const Rect &r, const Stat (&cells)[4]) {
+  constexpr TextStyle kValue{&fonts::kMono17ExtraBold, 0};
+  const int cellW = r.w / 4;
+  for (int i = 0; i < 4; ++i) {
+    const int x = r.x + i * cellW;
+    drawText(c, x + kPadX, r.y + 8 + capHeight(style::kKey), cells[i].key, style::kKey);
+    drawText(c, {x + kPadX, r.y + 26, cellW - 2 * kPadX + 6, 24}, cells[i].value, kValue);
+    if (i < 3) dashedV(c, x + cellW - 1, r.y, r.h);
+  }
+}
 
 void drawStat(Canvas &c, const Rect &r, const std::string &key, const std::string &value) {
   dashedH(c, r.x, r.bottom() - 1, r.w);

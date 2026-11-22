@@ -27,7 +27,6 @@ using ui::Rect;
 using ui::TextStyle;
 
 constexpr TextStyle kTimeOf{&ui::fonts::kMono18Medium, 0};      // "/ 03:51"
-constexpr TextStyle kCellValue{&ui::fonts::kMono17ExtraBold, 0};
 
 constexpr int kPanelH = 228;    // state, timer, waveform, meter (under the section header)
 constexpr int kCellsH = 50;
@@ -300,20 +299,13 @@ class RecorderScreen : public ui::Screen {
       size = isPlaying ? megabytes(playingSize(play.path)) : megabytes(sel->size);
     }
     const pmic::Detail d = rail();
-    const std::pair<const char *, std::string> stats[4] = {
+    const ui::Stat stats[4] = {
         {"GAIN", std::to_string(rec.gainDb) + " dB"},
         {"SIZE", size},
         {"FREE", freeTime()},
         {"MIC", d.ok ? (d.aldo2.on ? "ALDO2" : "OFF") : "ALDO2"},
     };
-    const int cellW = cells.w / 4;
-    for (int i = 0; i < 4; ++i) {
-      const int x = cells.x + i * cellW;
-      drawText(c, x + kPadX, cells.y + 8 + capHeight(style::kKey), stats[i].first, style::kKey);
-      drawText(c, {x + kPadX, cells.y + 26, cellW - 2 * kPadX + 6, 24}, stats[i].second,
-               kCellValue);
-      if (i < 3) dashedV(c, x + cellW - 1, cells.y, cells.h);
-    }
+    drawStatRow(c, cells, stats);
 
     // Memos.
     hrule(c, r.x, r.y, r.w);

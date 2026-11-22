@@ -35,7 +35,6 @@ constexpr TextStyle kUnit{&ui::fonts::kMono18Bold, 0};           // °C, % RH
 constexpr TextStyle kAxis{&ui::fonts::kMono15ExtraBold, 0};      // X Y Z
 constexpr TextStyle kAxisValue{&ui::fonts::kMono15Bold, 0};      // +0.01; scan panel rows
 constexpr TextStyle kAddress{&ui::fonts::kMono15Medium, 0};      // a BLE device without a name
-constexpr TextStyle kCellValue{&ui::fonts::kMono17ExtraBold, 0};  // PMIC cells
 constexpr TextStyle kGrid{&ui::fonts::kMono13Medium, 0};         // "--"
 constexpr TextStyle kGridBold{&ui::fonts::kMono13ExtraBold, 0};  // column heads, hits
 
@@ -502,19 +501,13 @@ class SensorsScreen : public ui::Screen {
     if (d.status.vbus && d.vbusMv > 0) snprintf(vbus, sizeof vbus, "%.2f V", d.vbusMv / 1000.0);
     // The canvas's IBAT and DIE cells: the TG28 has no battery-current ADC, and its die
     // temperature isn't enabled, so USB voltage and the charger state take their places.
-    const std::pair<const char *, std::string> cells[4] = {
+    const ui::Stat cells[4] = {
         {"BAT", d.status.percent >= 0 ? std::to_string(d.status.percent) + " %" : "--"},
         {"VBAT", vbat},
         {"USB", vbus},
         {"STATE", chargeState(d)},
     };
-    const int cellW = r.w / 4;
-    for (int i = 0; i < 4; ++i) {
-      const int x = r.x + i * cellW;
-      drawText(c, x + kPadX, r.y + 8 + capHeight(style::kKey), cells[i].first, style::kKey);
-      drawText(c, {x + kPadX, r.y + 26, cellW - 2 * kPadX + 6, 24}, cells[i].second, kCellValue);
-      if (i < 3) dashedV(c, x + cellW - 1, r.y, r.h);
-    }
+    drawStatRow(c, r, cells);
   }
 
   // The bottom panel: the i2cdetect grid, the Wi-Fi scan or the BLE scan, whichever of the

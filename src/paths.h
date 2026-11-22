@@ -28,6 +28,14 @@ inline std::string stem(const std::string &path) {
   return dot == std::string::npos || dot == 0 ? name : name.substr(0, dot);
 }
 
+// path is dir or somewhere inside it. FAT ignores case, so this does too.
+inline bool isInside(const std::string &path, const std::string &dir) {
+  if (path.size() < dir.size() || strncasecmp(path.c_str(), dir.c_str(), dir.size()) != 0) {
+    return false;
+  }
+  return path.size() == dir.size() || path[dir.size()] == '/';
+}
+
 // s ends in suffix (".epub"), case aside, with something before it.
 inline bool hasSuffix(const std::string &s, const char *suffix) {
   const size_t n = strlen(suffix);

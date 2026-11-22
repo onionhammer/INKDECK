@@ -52,6 +52,10 @@ void drawSectionHeader(Canvas &c, const Rect &r, const std::string &label,
 // message (an error opening a file) in place of the header.
 void drawNotice(Canvas &c, const Rect &r, const std::string &text);
 
+// An empty list's body (Files, the Library): `title` in the title style, then `text` wrapped
+// under it (four lines at most).
+void drawEmpty(Canvas &c, const Rect &r, const char *title, const std::string &text);
+
 // --- Key-hint bar: up to 4 key caps with verbs, spread across the bottom band.
 struct Hint {
   const char *cap;   // "▲▼", "●", "HOLD ●", "BOOT"
@@ -147,6 +151,14 @@ int drawHoldPwr(Canvas &c, const Rect &line, const char *verb, uint16_t color = 
 // characters stay paper.
 void drawDotField(Canvas &c, int x0, int y0, int cols, int rows, int cell,
                   const std::function<char(int, int)> &at);
+
+// --- A row of four stat cells, key over value, dashed rules between (the PMIC on Sensors,
+// the Level's and the Recorder's footers).
+struct Stat {
+  const char *key;
+  std::string value;
+};
+void drawStatRow(Canvas &c, const Rect &r, const Stat (&cells)[4]);
 
 // --- Stat cell: small key over a bold value, dashed rule under (Home preview, Music footer).
 void drawStat(Canvas &c, const Rect &r, const std::string &key, const std::string &value);

@@ -9,6 +9,8 @@
 #include <mutex>
 
 #include "settings.h"
+#include "survey_users.h"
+#include "text.h"
 #include "wlan.h"
 
 namespace wifisurvey {
@@ -18,8 +20,7 @@ constexpr uint16_t kMaxRecords = 48;
 constexpr uint32_t kStaleMs = 5 * 60 * 1000;  // a list older than this is dropped at the next start
 
 std::mutex mutex;  // guards everything below
-int users = 0;
-uint32_t lastUserGoneMs = 0;
+survey::Users users;
 std::vector<Network> list;
 uint32_t scannedAt = 0;
 uint32_t gen = 0;
@@ -31,11 +32,8 @@ bool fullDue = false;
 uint8_t trackBssid[6] = {};
 uint8_t trackChannel = 0;
 int firstChannel = 1, lastChannel = 13;
-TaskHandle_t task = nullptr;
 
-void wake() {
-  if (task) xTaskNotifyGive(task);
-}
+void wake() { users.wake(); }
 
 Network fromRecord(const wifi_ap_record_t &r, const std::vector<std::string> &saved) {
   Network n;
@@ -174,8 +172,8 @@ void run(void *) {
     uint32_t gone;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      hold = users > 0;
-      gone = lastUserGoneMs;
+      hold = users.count > 0;
+      gone = users.lastGoneMs;
       trk = tracking;
       changed = trackChanged;
       trackChanged = false;
@@ -194,8 +192,8 @@ void run(void *) {
         // Nobody left: the task ends, so its stack doesn't sit in the internal heap between
         // uses. begin() starts another.
         std::lock_guard<std::mutex> lock(mutex);
-        if (users == 0) {
-          task = nullptr;
+        if (users.count == 0) {
+          users.task = nullptr;
           break;
         }
         continue;
@@ -236,16 +234,12 @@ void run(void *) {
 
 void begin() {
   std::lock_guard<std::mutex> lock(mutex);
-  ++users;
-  if (!task) xTaskCreate(run, "wifisurvey", 4096, nullptr, 1, &task);
-  wake();
+  users.add("wifisurvey", run);
 }
 
 void end() {
   std::lock_guard<std::mutex> lock(mutex);
-  if (users == 0) return;
-  if (--users == 0) lastUserGoneMs = millis();
-  wake();
+  users.remove();
 }
 
 std::vector<Network> networks() {
@@ -292,11 +286,7 @@ void channelRange(int &first, int &last) {
   last = lastChannel;
 }
 
-std::string bssidText(const uint8_t b[6]) {
-  char buf[18];
-  snprintf(buf, sizeof buf, "%02X:%02X:%02X:%02X:%02X:%02X", b[0], b[1], b[2], b[3], b[4], b[5]);
-  return buf;
-}
+std::string bssidText(const uint8_t b[6]) { return text::macText(b); }
 
 const char *securityShort(wifi_auth_mode_t auth) {
   switch (auth) {

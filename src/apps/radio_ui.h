@@ -5,6 +5,7 @@
 // "Sensors · Wi-Fi & Bluetooth LE scan" artboards.
 #pragma once
 #include <stdint.h>
+#include <stdio.h>
 
 #include <string>
 #include <vector>
@@ -13,6 +14,44 @@
 
 namespace apps {
 namespace radio {
+
+// A list's order, shared with its detail screen: ▲▼ there steps through it, and the list's
+// cursor follows back to where the detail ended. Key names an entry (its address).
+template <typename Key>
+struct Browse {
+  std::vector<Key> order;
+  int index = 0;
+
+  // "03/12": where the detail is in the list.
+  std::string position() const {
+    char buf[16];
+    snprintf(buf, sizeof buf, "%02d/%02d", index + 1, static_cast<int>(order.size()));
+    return buf;
+  }
+  // The entry `delta` from the detail's, or -1 past an end.
+  int step(int delta) const {
+    const int next = index + delta;
+    return next < 0 || next >= static_cast<int>(order.size()) ? -1 : next;
+  }
+  // The entry the detail ended on, for the list's cursor; false if there's none.
+  bool current(Key &out) const {
+    if (index < 0 || index >= static_cast<int>(order.size())) return false;
+    out = order[index];
+    return true;
+  }
+  // The order from the list's entries as they are now, and the cursor's place in it: on
+  // `selected`, if it's still there, else at the top.
+  template <typename Item, typename KeyOf>
+  int reorder(const std::vector<Item> &items, KeyOf keyOf, bool haveSelected, const Key &selected) {
+    order.clear();
+    int at = 0;
+    for (const Item &item : items) {
+      if (haveSelected && keyOf(item) == selected) at = static_cast<int>(order.size());
+      order.push_back(keyOf(item));
+    }
+    return at;
+  }
+};
 
 // Four bars, 3 px wide and 2 px apart, 4/7/10/14 px tall: filled up to the signal's level,
 // outlined above it.

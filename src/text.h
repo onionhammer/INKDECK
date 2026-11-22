@@ -54,6 +54,9 @@ std::string lower(std::string s);
 // s without the characters in `chars` at either end.
 std::string trim(const std::string &s, const char *chars = " \t");
 
+// A MAC or BSSID: "A4:2B:B0:1C:9E:42".
+std::string macText(const uint8_t mac[6]);
+
 // 32-bit FNV-1a of the bytes: short stable names for cache files and NVS keys.
 uint32_t fnv1a(const std::string &s);
 
