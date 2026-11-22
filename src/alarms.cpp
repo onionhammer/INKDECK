@@ -5,6 +5,7 @@
 
 #include <mutex>
 
+#include "power.h"
 #include "timeutil.h"
 
 namespace alarms {
@@ -190,6 +191,11 @@ std::string repeatLabel(uint8_t days) {
     out += kDayNames[i];
   }
   return out;
+}
+
+time_t nextAtWake(time_t now) {
+  const time_t armed = power::armedFor();
+  return next(armed ? armed - 1 : now - 60);
 }
 
 }  // namespace alarms

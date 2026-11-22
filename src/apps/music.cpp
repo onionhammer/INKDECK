@@ -8,7 +8,9 @@
 #include "apps/files.h"
 #include "apps/home.h"
 #include "audio.h"
+#include "paths.h"
 #include "pmic.h"
+#include "timeutil.h"
 #include "trackinfo.h"
 
 namespace apps {
@@ -43,23 +45,8 @@ constexpr ui::TextStyle kStatePill{&fonts::kMono13ExtraBold, 1};
 constexpr ui::TextStyle kChainKey{&fonts::kMono13Medium, 1};
 constexpr ui::TextStyle kChainValue{&fonts::kMono13Bold, 0};
 
-std::string clock(uint32_t ms) {
-  const uint32_t s = ms / 1000;
-  char buf[16];
-  if (s >= 3600) {
-    snprintf(buf, sizeof buf, "%lu:%02lu:%02lu", (unsigned long)(s / 3600),
-             (unsigned long)(s / 60 % 60), (unsigned long)(s % 60));
-  } else {
-    snprintf(buf, sizeof buf, "%02lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
-  }
-  return buf;
-}
+std::string clock(uint32_t ms) { return timeutil::clockText(ms / 1000, true); }
 
-std::string baseName(const std::string &path) {
-  std::string name = path.substr(path.rfind('/') + 1);
-  const size_t dot = name.rfind('.');
-  return dot == std::string::npos ? name : name.substr(0, dot);
-}
 
 class MusicScreen : public ui::Screen {
  public:
@@ -244,7 +231,7 @@ class MusicScreen : public ui::Screen {
         row.subtitle = info.meta.artist;
         if (info.meta.durationMs) row.trailing = clock(info.meta.durationMs);
       } else {
-        row.title = baseName(queue[i]);
+        row.title = paths::stem(queue[i]);
       }
       if (row.subtitle.empty()) row.subtitle = glyph::kEmDash;
       drawRow(c, r.takeTop(kRowTallH), row, i == 0);

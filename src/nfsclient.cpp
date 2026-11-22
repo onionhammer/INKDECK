@@ -579,6 +579,11 @@ int NfsClient::lookup(const Fh &dir, const std::string &name, Fh &out, Attr &att
 }
 
 int NfsClient::readdir(const Fh &dir, std::vector<Entry> &out, size_t maxEntries) {
+  const int rc = listPages(dir, true, out, maxEntries);
+  return rc == ENOTSUP ? readdirPlain(dir, out, maxEntries) : rc;
+}
+
+int NfsClient::listPages(const Fh &dir, bool plus, std::vector<Entry> &out, size_t maxEntries) {
   out.clear();
   uint64_t cookie = 0;
   uint8_t verf[8] = {};
@@ -587,15 +592,15 @@ int NfsClient::readdir(const Fh &dir, std::vector<Entry> &out, size_t maxEntries
     a.fh(dir);
     a.u64(cookie);
     a.fixed(verf, 8);
-    a.u32(kListBytes / 4);  // dircount: the names and cookies alone
-    a.u32(kListBytes);      // maxcount: the whole reply
+    if (plus) a.u32(kListBytes / 4);  // dircount: the names and cookies alone
+    a.u32(kListBytes);                // maxcount: the whole reply
     size_t at;
-    const int rc = nfsCall(kReaddirPlus, a.b, at);
-    if (rc == ENOTSUP && cookie == 0) return readdirPlain(dir, out, maxEntries);
+    const int rc = nfsCall(plus ? kReaddirPlus : kReaddir, a.b, at);
+    if (rc == ENOTSUP && plus && cookie == 0) return ENOTSUP;
     if (rc != 0) return rc;
     XdrIn x(reply_, at);
     const uint32_t status = x.u32();
-    if (status == kNotSupp && cookie == 0) return readdirPlain(dir, out, maxEntries);
+    if (status == kNotSupp && plus && cookie == 0) return ENOTSUP;
     if (status != 0) return nfsErrno(status);
     Attr dirAttr;
     readPostOpAttr(x, dirAttr);
@@ -608,8 +613,10 @@ int NfsClient::readdir(const Fh &dir, std::vector<Entry> &out, size_t maxEntries
       x.u64();  // fileid
       e.name = x.str(255);
       cookie = x.u64();
-      e.hasAttr = readPostOpAttr(x, e.attr);
-      if (x.flag()) e.hasFh = x.fh(e.fh);
+      if (plus) {
+        e.hasAttr = readPostOpAttr(x, e.attr);
+        if (x.flag()) e.hasFh = x.fh(e.fh);
+      }
       if (!x.ok) return EIO;
       ++onPage;
       if (e.name == "." || e.name == "..") continue;
@@ -625,41 +632,8 @@ int NfsClient::readdir(const Fh &dir, std::vector<Entry> &out, size_t maxEntries
 // Plain READDIR, for a server without READDIRPLUS: names only, then a LOOKUP each for what
 // they are.
 int NfsClient::readdirPlain(const Fh &dir, std::vector<Entry> &out, size_t maxEntries) {
-  out.clear();
-  uint64_t cookie = 0;
-  uint8_t verf[8] = {};
-  for (bool eof = false; !eof && out.size() < maxEntries;) {
-    XdrOut a;
-    a.fh(dir);
-    a.u64(cookie);
-    a.fixed(verf, 8);
-    a.u32(kListBytes);
-    size_t at;
-    const int rc = nfsCall(kReaddir, a.b, at);
-    if (rc != 0) return rc;
-    XdrIn x(reply_, at);
-    const uint32_t status = x.u32();
-    if (status != 0) return nfsErrno(status);
-    Attr dirAttr;
-    readPostOpAttr(x, dirAttr);
-    if (!x.need(8)) return EIO;
-    memcpy(verf, x.p, 8);
-    x.p += 8;
-    int onPage = 0;
-    while (x.flag()) {
-      Entry e;
-      x.u64();  // fileid
-      e.name = x.str(255);
-      cookie = x.u64();
-      if (!x.ok) return EIO;
-      ++onPage;
-      if (e.name == "." || e.name == "..") continue;
-      if (out.size() < maxEntries) out.push_back(std::move(e));
-    }
-    eof = x.flag();
-    if (!x.ok) return EIO;
-    if (!eof && onPage == 0) return EIO;
-  }
+  const int rc = listPages(dir, false, out, maxEntries);
+  if (rc != 0) return rc;
   for (Entry &e : out) {
     const int rc = lookup(dir, e.name, e.fh, e.attr);
     if (rc == ETIMEDOUT || rc == EIO) return rc;

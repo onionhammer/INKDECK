@@ -116,9 +116,20 @@ curl -sN localhost:7392/chat -H 'content-type: application/json' \
 | --- | --- |
 | `GET /health` | `{"ok": true, "model": …}`, and with the token (or none set) the tools and skills |
 | `POST /chat` | `{"text", "conversation"?, "stream"?}`. Without `conversation`, a new one starts and its id comes back; send it again to go on (the last 100 are kept, in memory). The answer is `{"reply", "conversation", "tools"}`; with `"stream": true`, server-sent events: `{"text"}` as it's written, `{"tool"}` as a call starts, then `{"done": true, "reply", "conversation"}` or `{"error"}` |
+| `GET /read?url=…` | The article in a web page as a board's News gets it (below): `{"title", "byline", "site", "published", "url", "markdown", "pictures"}`, or 422 `{"error"}`; `&images=420x600` fetches and dithers the pictures |
 | `/sessions` | The agent sessions, with an `[agent]` table ([Agent sessions](#agent-sessions)) |
 
 HTTP turns get the same model, tools, skills and instructions as the chat.
+
+**Reader view.** A board's News asks the daemon for a web page's article when a feed gives only
+a summary (BBC News), and for the pages a story links to (`read`,
+[docs/voice-protocol.md](../docs/voice-protocol.md#reading-a-page)). The daemon fetches the page
+and finds the article with [dom_smoothie](https://crates.io/crates/dom_smoothie), a port of
+Mozilla's Readability (Firefox's Reader View), then sends it as Markdown without page
+furniture, links kept, and its pictures (up to 12, with their captions) scaled to the board's
+column and dithered to 1 bit for e-paper. `inkharness read <url>` prints what a board would get
+(`--pictures DIR` saves the pictures as PNGs, `--html FILE` reads a saved copy). A board whose
+daemon can't be reached reads the page itself, less well and without pictures.
 
 ## Agent sessions
 
@@ -358,7 +369,7 @@ scripts can't call the skill tools.
 | Path | |
 | --- | --- |
 | `voice-proto/` | Framing and messages, shared by the daemon and the test client |
-| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `work.rs` the api backend's files, http_fetch and shell, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
+| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `work.rs` the api backend's files, http_fetch and shell, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `reader.rs` (a web page's article for News), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
 | `voice-client/` | Plays a board's part from a WAV file |
 | `skills/` | Agent Skills, found when inkharness starts in this folder; `goodnight` pauses every speaker that's playing in one `run_js` script |
 | `install.sh` | Installs inkharness from this checkout (`cargo install --path`) |

@@ -13,6 +13,7 @@
 #include "inkdeck_secrets.h"  // WIFI_*, TIMEZONE, LOCATION_CONFIGURED, LATITUDE, LONGITUDE
 #include "shares.h"
 #include "sdcard.h"
+#include "text.h"
 
 namespace settings {
 namespace {
@@ -35,13 +36,14 @@ struct Values {
   std::string tailscaleName;  // "": the default
   bool tailscaleExitNode = false;
   bool agentFaceDetails = false;
+  int newsFaceEvery = 5;  // minutes per story on News's off face
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
            wifiSsids == o.wifiSsids && shares == o.shares && lockMinutes == o.lockMinutes &&
            agentHost == o.agentHost && agentPort == o.agentPort && agentToken == o.agentToken &&
            tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode &&
-           agentFaceDetails == o.agentFaceDetails;
+           agentFaceDetails == o.agentFaceDetails && newsFaceEvery == o.newsFaceEvery;
   }
 };
 
@@ -156,6 +158,12 @@ constexpr const char *kTemplate =
     "; board's flash. On, it shows everything, for a board that stays on a desk at home.\n"
     "; agent_face_details = off\n"
     "\n"
+    "[news]\n"
+    "; PWR on a News screen leaves the board off behind the stories of the last 12 hours from the\n"
+    "; feeds in SD:/News/feeds.txt, one at a time, with the time and the weather. Minutes each\n"
+    "; story stays: 1, 5, 10 or 15.\n"
+    "; news_face_every = 5\n"
+    "\n"
     "[tailscale]\n"
     "; Puts the board on your tailnet when something needs a machine there: an agent_host, a share's\n"
     "; server or a feed's host given as a tailnet name or 100.x address. Wi-Fi Drive and Update\n"
@@ -245,6 +253,7 @@ void loadNvs() {
   card.tailscaleName = nvsString(prefs, "tsname");
   card.tailscaleExitNode = prefs.getBool("tsexit", false);
   card.agentFaceDetails = prefs.getBool("afacedet", false);
+  card.newsFaceEvery = prefs.getInt("nfevery", 5);
   tailscaleKeySet = prefs.isKey("tskey");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
@@ -267,6 +276,7 @@ void saveNvs() {
   prefs.putString("tsname", card.tailscaleName.c_str());
   prefs.putBool("tsexit", card.tailscaleExitNode);
   prefs.putBool("afacedet", card.agentFaceDetails);
+  prefs.putInt("nfevery", card.newsFaceEvery);
   prefs.end();
 }
 
@@ -341,11 +351,7 @@ bool tzRule(const char *&p) {  // Mm.w.d, Jn or n, then an optional /time
 
 // --- The file ------------------------------------------------------------------------------
 
-std::string trim(const std::string &s) {
-  const size_t b = s.find_first_not_of(" \t");
-  if (b == std::string::npos) return {};
-  return s.substr(b, s.find_last_not_of(" \t") - b + 1);
-}
+using text::trim;
 
 bool readFile(const char *path, std::string &out) {
   FILE *f = fopen(path, "rb");
@@ -378,7 +384,7 @@ bool splitLine(std::string line, std::string &key, std::string &value) {
   const size_t eq = line.find('=');
   if (eq == std::string::npos) return true;
   key = trim(line.substr(0, eq));
-  for (char &c : key) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  key = text::lower(std::move(key));
   value = trim(line.substr(eq + 1));
   if (!value.empty() && (value[0] == '"' || value[0] == '\'')) {
     const size_t close = value.find(value[0], 1);  // quoted: anything after it is a comment
@@ -463,13 +469,13 @@ bool validTailscaleKey(const std::string &s) {
 }
 
 bool isOff(std::string s) {
-  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  s = text::lower(std::move(s));
   return s == "off";
 }
 
 // on / off, or yes / no, true / false, 1 / 0. False if it's none of them.
 bool parseOnOff(std::string s, bool &out) {
-  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  s = text::lower(std::move(s));
   if (s == "on" || s == "yes" || s == "true" || s == "1") {
     out = true;
   } else if (s == "off" || s == "no" || s == "false" || s == "0") {
@@ -607,7 +613,7 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
       }
     } else if (key == "tailscale_name") {
       std::string name = value;
-      for (char &c : name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      name = text::lower(std::move(name));
       if (validTailscaleName(name)) {
         v.tailscaleName = name;
       } else {
@@ -616,6 +622,14 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
     } else if (key == "agent_face_details") {
       if (!parseOnOff(value, v.agentFaceDetails)) {
         log_w("settings: %s: agent_face_details must be on or off", kFile);
+      }
+    } else if (key == "news_face_every") {
+      int n = 0, used = 0;
+      if (siscanf(value.c_str(), "%d%n", &n, &used) == 1 &&
+          used == static_cast<int>(value.size()) && (n == 1 || n == 5 || n == 10 || n == 15)) {
+        v.newsFaceEvery = n;
+      } else {
+        log_w("settings: %s: news_face_every must be 1, 5, 10 or 15", kFile);
       }
     } else if (key == "tailscale_exit_node") {
       if (!parseOnOff(value, v.tailscaleExitNode)) {
@@ -857,13 +871,10 @@ void loadCard() {
   loadNvs();
   std::string text;
   if (!readFile(kFile, text)) {
-    if (FILE *f = fopen(kFile, "wb")) {
-      // From RAM: a write of a sector or more from flash reaches the card as zeros (AGENTS.md,
-      // Gotchas).
-      const std::string text(kTemplate);
-      fwrite(text.data(), 1, text.size(), f);
-      fclose(f);
+    if (writeFile(kFile, kTemplate)) {
       log_i("settings: wrote a commented %s", kFile);
+    } else {
+      log_w("settings: couldn't write %s", kFile);
     }
   }
   CardPin cardPin;
@@ -1031,6 +1042,11 @@ bool tailscaleExitNode() {
 bool agentFaceDetails() {
   loadNvs();
   return card.agentFaceDetails;
+}
+
+int newsFaceEvery() {
+  loadNvs();
+  return card.newsFaceEvery;
 }
 
 PinChange pendingPin() { return pending; }

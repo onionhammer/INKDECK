@@ -22,6 +22,7 @@ mod local;
 mod mcp;
 mod meter;
 mod place;
+mod reader;
 mod search;
 mod sentence;
 mod serve;
@@ -79,6 +80,18 @@ enum Command {
     /// daemon). Not for people.
     #[command(hide = true)]
     McpBridge,
+    /// Print the article in a web page, as a board's News gets it (reader view).
+    Read {
+        /// The page's address.
+        url: String,
+        /// Read this saved copy of the page instead of fetching it.
+        #[arg(long, value_name = "FILE")]
+        html: Option<PathBuf>,
+        /// Fetch its pictures too, dithered as for a board (420 x 600), and save them here as
+        /// PNGs.
+        #[arg(long, value_name = "DIR", conflicts_with = "html")]
+        pictures: Option<PathBuf>,
+    },
     /// Write a starter inkharness.toml to the global config folder.
     Init {
         /// Write it in this folder instead.
@@ -128,6 +141,52 @@ async fn run() -> Result<()> {
     }
     if let Some(Command::Init { here, force }) = cli.command {
         return init(here, force);
+    }
+    if let Some(Command::Read {
+        url,
+        html,
+        pictures,
+    }) = cli.command
+    {
+        let fit = pictures.as_ref().map(|_| reader::Fit {
+            width: 420,
+            height: 600,
+        });
+        let page = match html {
+            Some(file) => reader::extract(
+                &std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading {}", file.display()))?,
+                &url,
+            )?,
+            None => reader::read(&url, fit).await?,
+        };
+        if let Some(dir) = &pictures {
+            std::fs::create_dir_all(dir)?;
+            for p in &page.pictures {
+                let row = p.width.div_ceil(8) as usize;
+                let img = image::GrayImage::from_fn(p.width, p.height, |x, y| {
+                    let on = p.bits[y as usize * row + x as usize / 8] & (0x80 >> (x % 8)) != 0;
+                    image::Luma([if on { 0 } else { 255 }])
+                });
+                let file = dir.join(format!("inkimg-{}.png", p.index));
+                img.save(&file)
+                    .with_context(|| format!("writing {}", file.display()))?;
+                println!(
+                    "picture {}: {}x{} {}",
+                    p.index,
+                    p.width,
+                    p.height,
+                    file.display()
+                );
+            }
+        }
+        println!("title: {}", page.title);
+        println!("byline: {}", page.byline);
+        println!("site: {}", page.site);
+        println!("published: {}", page.published);
+        println!("url: {}\n", page.url);
+        println!("{}", page.markdown);
+        return Ok(());
     }
 
     let here = std::env::current_dir()?;

@@ -16,6 +16,7 @@
 #include <freertos/semphr.h>
 #include <lwip/netdb.h>
 #include <lwip/sockets.h>
+#include <mbedtls/base64.h>
 #include <string.h>
 #include <time.h>
 
@@ -27,6 +28,7 @@
 #include "agent_noise.h"
 #include "audio.h"
 #include "input.h"
+#include "json_fields.h"
 #include "pmic.h"
 #include "power.h"
 #include "settings.h"
@@ -53,7 +55,7 @@ constexpr uint32_t kAnswerTimeoutMs = 45000;  // of silence from the daemon in a
 constexpr uint32_t kLingerMs = 2500;
 
 enum class Event : uint8_t {
-  Open, Close, TalkStart, TalkStop, Hold, Release, Retry, Kick, CheckIn, Speak
+  Open, Close, TalkStart, TalkStop, Hold, Release, Retry, Kick, CheckIn, Speak, Read
 };
 
 // Check-ins: the poll ladder (minutes), and how long a poll may take.
@@ -65,7 +67,7 @@ constexpr uint32_t kIdleLiveMs = 120000;      // an Agent screen this long witho
 constexpr uint32_t kUsbCheckMs = 5000;
 constexpr uint32_t kSoonGapMs = 60000;        // checkSoon() at most this often
 constexpr uint32_t kFloorS = 60;              // check_at sooner than this is taken as this
-constexpr uint16_t kSummaryVersion = 1;
+constexpr uint16_t kSummaryVersion = 2;  // 2: SummaryRow without sparkLast
 constexpr char kNvs[] = "agent";
 
 QueueHandle_t events = nullptr;
@@ -113,6 +115,22 @@ std::atomic<uint32_t> checkedAtUnix{0};
 uint32_t checkedSavedUnix = 0;
 bool (*contentPolicy)() = nullptr;
 
+// readPage()'s request, waiting for its page (guarded by `lock`, except the atomics).
+struct ReadRequest {
+  uint32_t id = 0;
+  std::string url;
+  uint16_t pictureW = 0, pictureH = 0;
+  bool sent = false;
+  bool done = false;
+  bool reached = false;  // the daemon answered
+  Page page;
+  std::string error;
+};
+ReadRequest reading;
+uint32_t nextReadId = 1;
+std::atomic<bool> readActive{false};  // a readPage() is waiting: the connection stays up
+SemaphoreHandle_t readDone = nullptr;
+
 // The board's tools (setTools()), and the answers waiting to go out (toolResult()).
 const char *toolDefinitions = nullptr;
 ToolCall toolCall = nullptr;
@@ -135,6 +153,7 @@ struct Link {
   bool wifi = false;       // we hold a wlan::connect()
   bool tailnet = false;    // and a tailnet::hold(): agent_host is on the tailnet
   bool hello = false;      // the daemon answered ours
+  bool reader = false;     // and it reads pages (`read`)
   bool sealed = false;     // the handshake is done: every frame is sealed both ways
   std::unique_ptr<noise::Initiator> handshake;  // between message 1 and message 2
   std::string refusal;     // why the daemon turned the session down, before hanging up
@@ -184,6 +203,19 @@ void post(Event e) {
 void agentChanged() { agentShared.generation++; }
 
 // The connection has ended: what the agent knew of it goes with it, the last list stays.
+// readPage()'s answer: the page (error empty) or why not.
+void finishRead(bool reached, const std::string &error, Page page = {}) {
+  {
+    Locked l;
+    if (!readActive.load() || reading.done) return;
+    reading.done = true;
+    reading.reached = reached;
+    reading.error = error;
+    reading.page = std::move(page);
+  }
+  xSemaphoreGive(readDone);
+}
+
 void forgetAgentConnection() {
   s.agentSupported = s.agentPin = s.agentUnlocked = false;
   s.unlockSent = s.unlockByTicket = s.synced = false;
@@ -221,7 +253,8 @@ void forgetKeys() {
 void drop(const char *why) {
   if (s.fd >= 0) ::close(s.fd);
   s.fd = -1;
-  s.hello = s.turnOpen = false;
+  s.hello = s.reader = s.turnOpen = false;
+  finishRead(false, "CONNECTION LOST");
   s.staleEnds = 0;
   s.rxLen = 0;
   forgetKeys();
@@ -338,24 +371,24 @@ int connectTo(uint32_t ip, uint16_t port, uint32_t timeoutMs) {
 
 // --- Frames from the daemon ------------------------------------------------------------------
 
-std::string field(const cJSON *json, const char *name) {
-  const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, name);
-  return cJSON_IsString(item) && item->valuestring ? item->valuestring : "";
-}
-
+std::string field(const cJSON *json, const char *name) { return jsonf::str(json, name); }
 int intField(const cJSON *json, const char *name, int fallback = -1) {
-  const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, name);
-  return cJSON_IsNumber(item) ? static_cast<int>(item->valuedouble) : fallback;
+  return jsonf::integer(json, name, fallback);
 }
+uint32_t timeField(const cJSON *json, const char *name) { return jsonf::unixTime(json, name); }
+using jsonf::flag;
 
-uint32_t timeField(const cJSON *json, const char *name) {
-  const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, name);
-  return cJSON_IsNumber(item) && item->valuedouble > 0 ? static_cast<uint32_t>(item->valuedouble)
-                                                       : 0;
-}
-
-bool flag(const cJSON *json, const char *name) {
-  return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json, name));
+// What a list row and a whole session both carry: who and where, and the plan's progress.
+template <typename T>
+void readCommon(const cJSON *json, T &out) {
+  out.id = field(json, "id");
+  out.title = field(json, "title");
+  out.state = field(json, "state");
+  out.place = field(json, "place");
+  out.herdr = field(json, "via") == "herdr";
+  out.program = field(json, "program");
+  out.step = intField(json, "step");
+  out.steps = intField(json, "steps");
 }
 
 // --- The agent's messages (docs/voice-protocol.md, "Agent sessions") --------------------------
@@ -381,11 +414,6 @@ void onAgentHello(const cJSON *hello) {
     if (name == "pause") features |= kPause;
     else if (name == "run") features |= kRun;
     else if (name == "jobs") features |= kJobs;
-    else if (name == "schedule") features |= kSchedule;
-    else if (name == "watch") features |= kWatch;
-    else if (name == "deadline") features |= kDeadline;
-    else if (name == "panel") features |= kPanel;
-    else if (name == "speak") features |= kSpeak;
   }
   agentShared.features = features;
   agentChanged();
@@ -459,7 +487,6 @@ void rebuildSummary() {
         out.sparkN = static_cast<uint8_t>(n);
         out.sparkMin = lo;
         out.sparkMax = hi;
-        out.sparkLast = r.spark.back();
         for (size_t i = 0; i < n; ++i) {
           const float v = *(first + i);
           out.spark[i] = hi > lo ? static_cast<uint8_t>((v - lo) / (hi - lo) * 255 + 0.5f) : 128;
@@ -536,17 +563,9 @@ void onSessions(const cJSON *json) {
   const cJSON *item;
   cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(json, "sessions")) {
     Row r;
-    r.id = field(item, "id");
-    r.title = field(item, "title");
-    r.state = field(item, "state");
-    r.place = field(item, "place");
-    r.herdr = field(item, "via") == "herdr";
-    r.program = field(item, "program");
+    readCommon(item, r);
     r.sub = field(item, "sub");
-    r.step = intField(item, "step");
-    r.steps = intField(item, "steps");
     r.progress = intField(item, "progress");
-    r.updated = timeField(item, "updated");
     r.unread = flag(item, "unread");
     r.expectAt = timeField(item, "expect_at");
     r.nextAt = timeField(item, "next_at");
@@ -667,19 +686,10 @@ void readPanel(const cJSON *json, Panel &p) {
 
 void onSession(const cJSON *json) {
   Session a;
-  a.id = field(json, "id");
-  a.title = field(json, "title");
-  a.state = field(json, "state");
-  a.place = field(json, "place");
-  a.herdr = field(json, "via") == "herdr";
-  a.program = field(json, "program");
-  a.backend = field(json, "backend");
+  readCommon(json, a);
   a.prompt = field(json, "prompt");
   a.result = field(json, "result");
   a.started = timeField(json, "started");
-  a.updated = timeField(json, "updated");
-  a.step = intField(json, "step");
-  a.steps = intField(json, "steps");
   const cJSON *item;
   cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(json, "plan")) {
     const std::string state = field(item, "state");
@@ -795,6 +805,56 @@ void onControl(const uint8_t *payload, size_t len) {
   const std::string type = field(json, "type");
   if (type == "hello") {
     s.hello = true;
+    s.reader = flag(json, "reader");
+  } else if (type == "page_image") {
+    // One of the pictures, before its page: kept with the request until the page comes.
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(json, "id");
+    const int w = intField(json, "width"), h = intField(json, "height");
+    const std::string b64 = field(json, "bits");
+    PagePicture pic;
+    pic.index = static_cast<uint32_t>(std::max(0, intField(json, "index")));
+    const size_t want = w > 0 && h > 0 && w <= 2048 && h <= 2048
+                            ? static_cast<size_t>((w + 7) / 8) * h
+                            : 0;
+    size_t got = 0;
+    if (want) {
+      pic.width = static_cast<uint16_t>(w);
+      pic.height = static_cast<uint16_t>(h);
+      pic.bits.resize(want);
+      if (mbedtls_base64_decode(pic.bits.data(), want, &got,
+                                reinterpret_cast<const unsigned char *>(b64.data()),
+                                b64.size()) != 0) {
+        got = 0;
+      }
+    }
+    Locked l;
+    if (got == want && want && cJSON_IsNumber(id) && readActive.load() && !reading.done &&
+        static_cast<uint32_t>(id->valuedouble) == reading.id) {
+      reading.page.pictures.push_back(std::move(pic));
+    }
+  } else if (type == "page") {
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(json, "id");
+    bool mine = false;
+    {
+      Locked l;
+      mine = cJSON_IsNumber(id) && static_cast<uint32_t>(id->valuedouble) == reading.id;
+    }
+    if (mine) {
+      const std::string error = field(json, "error");
+      Page page;
+      {
+        Locked l;
+        page.pictures = std::move(reading.page.pictures);
+      }
+      if (error.empty()) {
+        page.title = field(json, "title");
+        page.byline = field(json, "byline");
+        page.site = field(json, "site");
+        page.published = timeField(json, "published");
+        page.markdown = field(json, "markdown");
+      }
+      finishRead(true, error, std::move(page));
+    }
   } else if (type == "sessions") {
     onSessions(json);
   } else if (type == "session") {
@@ -926,6 +986,7 @@ void onHandshake(const uint8_t *msg, size_t len) {
   const std::string type = field(json, "type");
   if (type == "hello") {
     s.hello = true;
+    s.reader = flag(json, "reader");
     s.refusal.clear();
     onAgentHello(json);
   } else if (type == "error") {
@@ -1077,7 +1138,34 @@ bool heldActive() {
 }
 
 // Whether the connection should be up: an Agent screen in use, the sheet, USB power, a poll.
-bool wantLink() { return heldActive() || s.wanted || usbLive || pollActive.load(); }
+bool wantLink() {
+  return heldActive() || s.wanted || usbLive || pollActive.load() || readActive.load();
+}
+
+// Sends readPage()'s request once the daemon has said hello, or ends it if it can't read.
+void readPump() {
+  if (s.fd < 0 || !s.hello || !readActive.load()) return;
+  std::string json;
+  {
+    Locked l;
+    if (reading.sent || reading.done) return;
+    if (s.reader) {
+      json = "{\"type\":\"read\",\"id\":" + std::to_string(reading.id) +
+             ",\"url\":" + quoted(reading.url);
+      if (reading.pictureW && reading.pictureH) {
+        json += ",\"image_width\":" + std::to_string(reading.pictureW) +
+                ",\"image_height\":" + std::to_string(reading.pictureH);
+      }
+      json += "}";
+      reading.sent = true;
+    }
+  }
+  if (json.empty()) {
+    finishRead(false, "INKHARNESS CAN'T READ PAGES");
+    return;
+  }
+  sendControl(json);
+}
 
 // Ends the connection once nobody holds it, after kLingerMs.
 void lingerOrClose() {
@@ -1237,7 +1325,8 @@ void connectSession() { connectLink(false, millis() + 45000); }
 void closeSession() {
   if (s.fd >= 0) ::close(s.fd);
   s.fd = -1;
-  s.hello = s.turnOpen = false;
+  s.hello = s.reader = s.turnOpen = false;
+  finishRead(false, "NO CONNECTION TO INKHARNESS");
   s.staleEnds = 0;
   s.lingerUntilMs = 0;
   forgetKeys();
@@ -1408,7 +1497,7 @@ void planPoll(bool ok) {
   const uint32_t now = static_cast<uint32_t>(time(nullptr));
   if (checkAt > now) gap = std::min<uint32_t>(gap, std::max(kFloorS, checkAt - now) * 1000u);
   const pmic::Status p = pmic::status();
-  if (p.ok && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent) {
+  if (power::lowBattery(p)) {
     nextPollMs = 0;  // only when asked (checkSoon)
     nextCheckUnix = 0;
     return;
@@ -1579,6 +1668,12 @@ void handle(Event e) {
     case Event::TalkStop: endTalk(); break;
     case Event::CheckIn: checkIn(); break;
     case Event::Speak: sayResult(); break;
+    case Event::Read:
+      if (s.fd < 0 && readActive.load() && !connectLink(true, millis() + kPollDeadlineMs)) {
+        finishRead(false, "CAN'T REACH INKHARNESS");
+        if (!wantLink()) closeSession();  // lets Wi-Fi go
+      }
+      break;
   }
 }
 
@@ -1601,6 +1696,8 @@ void task(void *) {
     pump(sent || s.capturing ? 0 : 20);
     if (s.fd < 0) continue;
     sendAnswers();
+    if (s.fd < 0) continue;
+    readPump();
     if (s.fd < 0) continue;
     agentPump();
     if (s.fd < 0) continue;
@@ -1645,6 +1742,7 @@ void start() {
   cJSON_InitHooks(&hooks);
   lock = xSemaphoreCreateMutex();
   checkInDone = xSemaphoreCreateBinary();
+  readDone = xSemaphoreCreateBinary();
   loadSummary();
   events = xQueueCreate(8, sizeof(Event));
   xTaskCreate(task, "agent", 10240, nullptr, 4, nullptr);
@@ -1827,7 +1925,6 @@ Glance glance() {
     g.latestAsk = m.latestAsk;
     g.latestDone = m.latestDone;
   }
-  g.checkedAt = checkedAtUnix.load();
   g.nextCheck = a.connected ? 0 : nextCheckUnix.load();
   g.live = a.connected;
   g.generation = a.generation;
@@ -1885,6 +1982,50 @@ bool polling() {
   if (pollActive.load()) return true;
   if (!pollIsDue() && !soon.load()) return false;
   post(Event::Kick);  // the task may be asleep in its wait: it polls now
+  return true;
+}
+
+bool readPage(const std::string &url, uint16_t pictureW, uint16_t pictureH, uint32_t timeoutMs,
+              Page &out, std::string &error, bool &reached, bool (*abandon)(void *),
+              void *context) {
+  reached = false;
+  if (!configured()) {
+    error = "NO INKHARNESS";
+    return false;
+  }
+  start();
+  {
+    Locked l;
+    reading = ReadRequest{};
+    reading.id = nextReadId++;
+    reading.url = url;
+    reading.pictureW = pictureW;
+    reading.pictureH = pictureH;
+  }
+  xSemaphoreTake(readDone, 0);  // a stale give from before
+  readActive = true;
+  post(Event::Read);
+  const uint32_t until = millis() + timeoutMs;
+  bool done = false;
+  while (static_cast<int32_t>(until - millis()) > 0) {
+    if (xSemaphoreTake(readDone, pdMS_TO_TICKS(100)) == pdTRUE) {
+      done = true;
+      break;
+    }
+    if (abandon && abandon(context)) break;
+  }
+  Locked l;
+  readActive = false;  // the connection lingers, then goes, unless something else holds it
+  if (!done) {
+    reading.done = true;
+    error = "INKHARNESS DIDN'T ANSWER";
+    reached = reading.sent;
+    return false;
+  }
+  reached = reading.reached;
+  error = reading.error;
+  if (!error.empty()) return false;
+  out = std::move(reading.page);
   return true;
 }
 

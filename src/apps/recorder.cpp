@@ -13,8 +13,10 @@
 
 #include "apps/home.h"
 #include "audio.h"
+#include "paths.h"
 #include "pmic.h"
 #include "sdcard.h"
+#include "timeutil.h"
 #include "ui/menu.h"
 
 namespace apps {
@@ -25,7 +27,6 @@ using ui::Rect;
 using ui::TextStyle;
 
 constexpr TextStyle kTimeOf{&ui::fonts::kMono18Medium, 0};      // "/ 03:51"
-constexpr TextStyle kCellValue{&ui::fonts::kMono17ExtraBold, 0};
 
 constexpr int kPanelH = 228;    // state, timer, waveform, meter (under the section header)
 constexpr int kCellsH = 50;
@@ -46,17 +47,7 @@ uint32_t memoMs(const Memo &m) {
   return m.size > 44 ? static_cast<uint32_t>((m.size - 44) * 1000 / kBytesPerSecond) : 0;
 }
 
-std::string clockText(uint32_t ms) {
-  const uint32_t s = ms / 1000;
-  char buf[16];
-  if (s >= 3600) {
-    snprintf(buf, sizeof buf, "%lu:%02lu:%02lu", (unsigned long)(s / 3600),
-             (unsigned long)(s / 60 % 60), (unsigned long)(s % 60));
-  } else {
-    snprintf(buf, sizeof buf, "%02lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
-  }
-  return buf;
-}
+std::string clockText(uint32_t ms) { return timeutil::clockText(ms / 1000, true); }
 
 std::string megabytes(int64_t bytes) {
   char buf[16];
@@ -101,9 +92,6 @@ std::string memoSubtitle(const Memo &m) {
   return day + megabytes(m.size);
 }
 
-bool isWav(const std::string &name) {
-  return name.size() > 4 && strcasecmp(name.c_str() + name.size() - 4, ".wav") == 0;
-}
 
 // The memos, newest first (the names sort by time).
 std::vector<Memo> scanMemos() {
@@ -111,7 +99,7 @@ std::vector<Memo> scanMemos() {
   DIR *d = opendir(kRecordingsDir);
   if (!d) return out;
   while (dirent *e = readdir(d)) {
-    if (e->d_type == DT_DIR || !isWav(e->d_name)) continue;
+    if (e->d_type == DT_DIR || !paths::hasSuffix(e->d_name, ".wav")) continue;
     Memo m;
     m.name = e->d_name;
     struct stat st;
@@ -311,20 +299,13 @@ class RecorderScreen : public ui::Screen {
       size = isPlaying ? megabytes(playingSize(play.path)) : megabytes(sel->size);
     }
     const pmic::Detail d = rail();
-    const std::pair<const char *, std::string> stats[4] = {
+    const ui::Stat stats[4] = {
         {"GAIN", std::to_string(rec.gainDb) + " dB"},
         {"SIZE", size},
         {"FREE", freeTime()},
         {"MIC", d.ok ? (d.aldo2.on ? "ALDO2" : "OFF") : "ALDO2"},
     };
-    const int cellW = cells.w / 4;
-    for (int i = 0; i < 4; ++i) {
-      const int x = cells.x + i * cellW;
-      drawText(c, x + kPadX, cells.y + 8 + capHeight(style::kKey), stats[i].first, style::kKey);
-      drawText(c, {x + kPadX, cells.y + 26, cellW - 2 * kPadX + 6, 24}, stats[i].second,
-               kCellValue);
-      if (i < 3) dashedV(c, x + cellW - 1, cells.y, cells.h);
-    }
+    drawStatRow(c, cells, stats);
 
     // Memos.
     hrule(c, r.x, r.y, r.w);

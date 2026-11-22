@@ -37,11 +37,11 @@ bool wakeAgentFace();
 // For Sleep, Standby and the closed book on their way off: when to wake for the agent (the
 // daemon's check_at, 5 minutes from now at the soonest; 0 for none), kept for the wake to find.
 time_t agentCheckWake();
-// The earlier of two wakes, 0 meaning none.
-time_t earliestWake(time_t a, time_t b);
+// The earlier of `wake` and that check-in (agentCheckWake()), 0 meaning none.
+time_t withAgentCheck(time_t wake);
 
-// From setup(), right after standbyWake(): an RTC wake from the Agent face, Sleep or a closed
-// book with a check-in due. Checks in and powers off again; false means boot normally.
+// From setup(), right after standbyWake(): an RTC wake from the Agent face, Sleep, a closed book
+// or the edition with a check-in due. Checks in and powers off again; false means boot normally.
 bool agentWake();
 // From standbyWake(), before it draws: a check-in riding the minute wake when one is due. True
 // if it showed a note (the board then powers off in Sleep).

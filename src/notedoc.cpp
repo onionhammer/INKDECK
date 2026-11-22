@@ -21,6 +21,10 @@ constexpr int kTitleMaxLines = 3;
 constexpr int kTitleRuleGap = 10;  // the title's last line to its rule
 constexpr int kTitleRuleH = 3;
 constexpr int kAfterTitle = 22;  // the rule to the first block
+constexpr int kBylineGap = 12;   // the rule to the byline
+constexpr int kBylineH = 17;
+constexpr int kAfterByline = 18;  // the byline to the first block
+constexpr ui::TextStyle kBylineStyle{&ui::fonts::kMono13Bold, 1};
 const GFXfont *const kHeadingFont = &ui::fonts::kMono15ExtraBold;
 constexpr int kHeadingTracking = 1;
 constexpr int kHeadingDashGap = 12;  // a heading to its dashed rule
@@ -207,24 +211,8 @@ void inlineFlow(std::string &out, const std::string &s, const GFXfont *font, uin
     if (c == '&') {  // &amp; &#8531; &#x2153;
       const size_t semi = s.find(';', i + 1);
       if (semi != std::string::npos && semi - i <= 10) {
-        const std::string name = s.substr(i + 1, semi - i - 1);
-        uint32_t cp = 0;
-        if (!strcasecmp(name.c_str(), "amp")) {
-          cp = '&';
-        } else if (!strcasecmp(name.c_str(), "lt")) {
-          cp = '<';
-        } else if (!strcasecmp(name.c_str(), "gt")) {
-          cp = '>';
-        } else if (!strcasecmp(name.c_str(), "quot")) {
-          cp = '"';
-        } else if (!strcasecmp(name.c_str(), "apos")) {
-          cp = '\'';
-        } else if (!strcasecmp(name.c_str(), "nbsp")) {
-          cp = ' ';
-        } else if (name.size() > 1 && name[0] == '#') {
-          const bool hex = name[1] == 'x' || name[1] == 'X';
-          cp = strtoul(name.c_str() + (hex ? 2 : 1), nullptr, hex ? 16 : 10);
-        }
+        uint32_t cp = text::entityCodepoint(text::lower(s.substr(i + 1, semi - i - 1)));
+        if (cp == 0xA0) cp = ' ';
         if (cp) {
           appendChar(out, cp, font);
           i = semi + 1;
@@ -253,11 +241,7 @@ int indentOf(const std::string &line, size_t &start) {
   return n;
 }
 
-std::string trim(const std::string &s) {
-  const size_t first = s.find_first_not_of(" \t");
-  if (first == std::string::npos) return {};
-  return s.substr(first, s.find_last_not_of(" \t") - first + 1);
-}
+std::string trim(const std::string &s) { return text::trim(s); }
 
 // Three or more of one of - * _ =, with spaces between or not, and nothing else.
 bool isRule(const std::string &s) {
@@ -379,7 +363,7 @@ bool NoteDoc::sameText(const std::string &a, const std::string &b) {
 void NoteDoc::addBlock(Kind kind, uint8_t level, bool checked, const std::string &marker,
                        const std::string &raw) {
   Block b{kind, level, checked, static_cast<uint32_t>(text_.size()), 0, marker};
-  if (kind == Kind::Rule) {
+  if (kind == Kind::Rule || kind == Kind::Picture) {
     b.end = b.start;
     blocks_.push_back(std::move(b));
     return;
@@ -454,6 +438,18 @@ void NoteDoc::parse(const std::string &title, const std::string &markdown) {
     if (body.empty()) {
       open = false;
       continue;
+    }
+    // A picture, on its line alone: ![alt](inkimg:N).
+    if (body.rfind("![", 0) == 0 && body.back() == ')') {
+      const size_t at = body.find("](inkimg:");
+      if (at != std::string::npos) {
+        const std::string n = body.substr(at + 9, body.size() - at - 10);
+        if (!n.empty() && n.find_first_not_of("0123456789") == std::string::npos) {
+          raws.push_back({Kind::Picture, 0, false, n, ""});
+          open = false;
+          continue;
+        }
+      }
     }
 
     size_t hashes = 0;
@@ -540,6 +536,11 @@ void NoteDoc::parse(const std::string &title, const std::string &markdown) {
   for (size_t i = first; i < raws.size(); ++i) {
     addBlock(raws[i].kind, raws[i].level, raws[i].checked, raws[i].marker, raws[i].text);
   }
+}
+
+void NoteDoc::setByline(const std::string &left, const std::string &right) {
+  bylineLeft_ = left;
+  bylineRight_ = right;
 }
 
 template <typename FaceFor>
@@ -659,6 +660,8 @@ void NoteDoc::layout(const FontFamily &body, int width, int height) {
     }
     place({0, 0, 0, 0, 0, 0, LineKind::TitleRule, false, false}, kTitleRuleGap, kTitleRuleH);
   }
+  const bool byline = !bylineLeft_.empty() || !bylineRight_.empty();
+  if (byline) place({0, 0, 0, 0, 0, 0, LineKind::Byline, false, false}, kBylineGap, kBylineH);
 
   const FontFamily *family = body_;
   auto bodyFace = [family](uint8_t s) { return family->face[s & 3]; };
@@ -667,7 +670,7 @@ void NoteDoc::layout(const FontFamily &body, int width, int height) {
     const Block &b = blocks_[i];
     int gap = lh / 2;
     if (i == 0) {
-      gap = title_.empty() ? 0 : kAfterTitle;
+      gap = byline ? kAfterByline : title_.empty() ? 0 : kAfterTitle;
     } else if (prev == Kind::Heading) {
       gap = lh / 4;
     } else if (b.kind == Kind::Heading) {
@@ -682,6 +685,14 @@ void NoteDoc::layout(const FontFamily &body, int width, int height) {
 
     if (b.kind == Kind::Rule) {
       place({b.start, b.start, 0, 0, index, 0, LineKind::Rule, true, false}, gap, lh / 2);
+      continue;
+    }
+    if (b.kind == Kind::Picture) {
+      int w = 0, h = 0;
+      if (!pictureFor(b, w, h)) continue;  // it didn't come: nothing
+      place({b.start, b.start, static_cast<int16_t>((width_ - w) / 2), 0, index, 0,
+             LineKind::Picture, true, false},
+            gap, h);
       continue;
     }
     if (b.kind == Kind::Heading) {
@@ -709,6 +720,20 @@ void NoteDoc::layout(const FontFamily &body, int width, int height) {
             k == 0 ? gap : 0, lh);
     }
   }
+}
+
+const article::Picture *NoteDoc::pictureFor(const Block &b, int &w, int &h) const {
+  const uint32_t index = static_cast<uint32_t>(atoi(b.marker.c_str()));
+  for (const article::Picture &p : pictures_) {
+    if (p.index != index || !p.width || !p.height) continue;
+    if (p.bits.size() < static_cast<size_t>((p.width + 7) / 8) * p.height) return nullptr;
+    const float scale = std::min({1.0f, static_cast<float>(width_) / p.width,
+                                  static_cast<float>(height_) / p.height});
+    w = std::max(1, static_cast<int>(p.width * scale));
+    h = std::max(1, static_cast<int>(p.height * scale));
+    return &p;
+  }
+  return nullptr;
 }
 
 void NoteDoc::drawMarker(GFXcanvas1 &canvas, const Block &b, int right, int baseline) const {
@@ -757,9 +782,40 @@ void NoteDoc::drawPage(GFXcanvas1 &canvas, int page, int x, int y) const {
       case LineKind::TitleRule:
         canvas.fillRect(x, top, width_, kTitleRuleH, gfx::kBlack);
         break;
+      case LineKind::Byline: {
+        const int base = ui::baselineCentered(kBylineStyle, top, kBylineH);
+        const int rightW = bylineRight_.empty() ? 0 : ui::textWidth(kBylineStyle, bylineRight_);
+        if (rightW) ui::drawText(canvas, x + width_ - rightW, base, bylineRight_, kBylineStyle);
+        const int leftW = width_ - (rightW ? rightW + 16 : 0);
+        if (!bylineLeft_.empty() && leftW > 0) {
+          ui::drawText(canvas, x, base, ui::ellipsize(kBylineStyle, bylineLeft_, leftW),
+                       kBylineStyle);
+        }
+        break;
+      }
       case LineKind::Rule:
         ui::dashedH(canvas, x, top + lh / 4, width_);
         break;
+      case LineKind::Picture: {
+        int w = 0, h = 0;
+        const article::Picture *p = pictureFor(blocks_[line.block], w, h);
+        if (!p) break;
+        const int left = x + line.x;
+        if (w == p->width && h == p->height) {
+          canvas.drawBitmap(left, top, p->bits.data(), p->width, p->height, gfx::kBlack);
+          break;
+        }
+        // Scaled down: the nearest pixel.
+        const int row = (p->width + 7) / 8;
+        for (int dy = 0; dy < h; ++dy) {
+          const uint8_t *src = p->bits.data() + static_cast<size_t>(dy * p->height / h) * row;
+          for (int dx = 0; dx < w; ++dx) {
+            const int sx = dx * p->width / w;
+            if (src[sx / 8] & (0x80 >> (sx % 8))) canvas.drawPixel(left + dx, top + dy, gfx::kBlack);
+          }
+        }
+        break;
+      }
       case LineKind::Heading: {
         const int end = drawFlow(canvas, x, top + headBase, text_, line.start, line.end, 0,
                                  kHeadingTracking, headFace);
@@ -790,7 +846,8 @@ void NoteDoc::drawPage(GFXcanvas1 &canvas, int page, int x, int y) const {
 uint32_t NoteDoc::pageOffset(int page) const {
   if (page <= 0 || page >= static_cast<int>(pages_.size())) return 0;
   for (size_t i = pages_[page]; i < lines_.size(); ++i) {
-    if (lines_[i].kind != LineKind::Title && lines_[i].kind != LineKind::TitleRule) {
+    if (lines_[i].kind != LineKind::Title && lines_[i].kind != LineKind::TitleRule &&
+        lines_[i].kind != LineKind::Byline) {
       return lines_[i].start;
     }
   }

@@ -165,21 +165,14 @@ class AskSheet : public ui::Screen {
     int y = r.y + 10;
     drawText(c, {r.x + kPadX, y, r.w - 2 * kPadX, 18}, upper(ask_.title), style::kLabel);
     y += 24;
-    for (const std::string &line : wrap(style::kReading, upper(text::toAscii(ask_.question)),
-                                        r.w - 2 * kPadX, 3)) {
-      drawText(c, r.x + kPadX, y + capHeight(style::kReading), line, style::kReading);
-      y += lineHeight(style::kReading);
-    }
+    y = drawQuestion(c, r, y, ask_.question, 3);
     r.takeTop(y + 8 - r.y);
     const Rect foot = r.takeBottom(kSectionH);
     hrule(c, r.x, r.y, r.w);
     r.takeTop(kRule);
     drawChoices(c, r, ask_.options, ask_.recommend, cursor_, false);
     if (sent_) {
-      fill(c, foot, kInk);
-      drawText(c, {foot.x + kPadX, foot.y, foot.w - 2 * kPadX, foot.h},
-               "SENT " + kDot + " " + upper(ask_.options[cursor_].title), style::kLabel,
-               Align::Left, kPaper);
+      drawSentBand(c, foot, ask_.options[cursor_].title);
       return;
     }
     dashedH(c, foot.x, foot.y, foot.w);

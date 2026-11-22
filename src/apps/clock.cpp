@@ -2,7 +2,6 @@
 #include "apps/clock.h"
 
 #include <Arduino.h>
-#include <Preferences.h>
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
@@ -13,10 +12,12 @@
 #include "alarms.h"
 #include "apps/home.h"
 #include "apps/lock.h"
+#include "apps/off_face.h"
 #include "apps/sleep.h"
 #include "apps/weather.h"
 #include "audio.h"
 #include "forecast.h"
+#include "kv_store.h"
 #include "netget.h"
 #include "pmic.h"
 #include "power.h"
@@ -85,25 +86,11 @@ constexpr int kStripH = 40;
 
 const char *const kWeekdayNames[] = {"SUNDAY",   "MONDAY", "TUESDAY", "WEDNESDAY",
                                      "THURSDAY", "FRIDAY", "SATURDAY"};
-const char *const kWeekdayShort[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-const char *const kMonthNames[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-                                   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+using timeutil::kMonthNames;
+using timeutil::kWeekdayShort;
 
-std::string hhmm(int hour, int minute) {
-  char buf[8];
-  snprintf(buf, sizeof buf, "%02d:%02d", hour, minute);
-  return buf;
-}
-
-std::string hhmm(time_t t) {
-  tm l;
-  localtime_r(&t, &l);
-  return hhmm(l.tm_hour, l.tm_min);
-}
-
-bool sameDay(const tm &a, const tm &b) {
-  return a.tm_year == b.tm_year && a.tm_yday == b.tm_yday;
-}
+using timeutil::hhmm;
+using timeutil::sameDay;
 
 // "07:00" today or within a day, else "TUE 07:00".
 std::string whenText(time_t t, time_t now) {
@@ -293,20 +280,12 @@ void saveFace(const Face &f) {
   r.hiC = f.hiC;
   r.loC = f.loC;
   r.inC = f.inC;
-  Preferences prefs;
-  if (!prefs.begin("clockface", false)) return;
-  prefs.putBytes("face", &r, sizeof r);
-  prefs.end();
+  kv::save("clockface", "face", r);
 }
 
 bool loadFace(Face &f) {
   FaceRecord r;
-  Preferences prefs;
-  if (!prefs.begin("clockface", false)) return false;
-  const bool ok = prefs.isKey("face") && prefs.getBytes("face", &r, sizeof r) == sizeof r &&
-                  r.version == kFaceVersion;
-  prefs.end();
-  if (!ok) return false;
+  if (!kv::load("clockface", "face", r) || r.version != kFaceVersion) return false;
   f.valid = r.valid;
   f.usb = r.usb;
   f.battery = r.battery;
@@ -932,38 +911,25 @@ class DeskScreen : public ui::Screen {
 
 // The Clock face as the last frame before a standby power-off: no cursor, and the hint bar
 // says how to wake it. Drawn on the next tick after it's on the panel, then off.
-class StandbyScreen : public ui::Screen {
+class StandbyScreen : public OffFaceScreen {
  public:
   explicit StandbyScreen(int cycles) : cycles_(cycles), face_(liveFace(-1)) { addStrip(face_); }
 
   std::string tag() const override { return moduleTag("CLOCK"); }
-  bool chrome() const override { return false; }  // drawStandbyFace() draws its own
   bool landscape() const override { return true; }
-  bool offFace() const override { return true; }
-  bool onKey(Key) override {  // a key in the second before power-off: stay on
-    ui::nav::pop();
-    return true;
-  }
-  bool onTick() override {
-    // The first tick can come straight after the refresh; wait for the next, so a key has a
-    // second to cancel.
-    if (!drawn_ || ++ticks_ < 2) return false;
+  void powerOff() override {
     saveFace(face_);
     agentCheckWake();  // a check-in inkharness asks for rides a minute wake
     power::off(power::Mode::Standby, face_.now + 60, cycles_);
-    ui::nav::pop();  // still here: the power-off failed
-    return true;
   }
   void draw(ui::Canvas &c, const Rect &) override {
     drawStandbyFace(c, face_);
-    drawn_ = true;
+    drawn();
   }
 
  private:
   int cycles_;
   Face face_;
-  bool drawn_ = false;
-  int ticks_ = 0;  // since drawn
 };
 
 // On top: a screen on its way to a power-off (Standby, Sleep, a closed book), or the desk face.
@@ -1045,8 +1011,7 @@ bool standbyWake() {
   if (cycles == 1 || !rtc::timeValid()) return false;  // dev tool's last cycle, or no time
   // An alarm due now: boot normally, and pollAlarms() rings it.
   const time_t now = time(nullptr);
-  const time_t armed = power::armedFor();
-  const time_t ring = alarms::next(armed ? armed - 1 : now - 60);
+  const time_t ring = alarms::nextAtWake(now);
   if (ring && ring <= now + 1) return false;
 
   // The panel still shows the last face. Redraw it as the "old" image, so this is a partial
@@ -1067,26 +1032,14 @@ bool standbyWake() {
   }
   Face face = liveFace(-1);
   addStandbyStrip(face, haveOld ? &old : nullptr);
-  screen::lock();
-  screen::setLandscape(true);
-  if (haveOld) {
-    screen::clear();
-    drawStandbyFace(c, old);
-    screen::assumeShown();
-  }
-  screen::clear();
-  drawStandbyFace(c, face);
+  tm t;
+  localtime_r(&face.now, &t);
   // The drawing is done at full speed (at 80 MHz it would take three times as long, for more
   // charge). What's left waits on SPI, the panel and NVS, which costs less at 80 MHz, and the
   // refresh itself in light sleep. Not on USB, where light sleep would drop the serial port.
   const uint32_t mhz = getCpuFrequencyMhz();
-  setCpuFrequencyMhz(80);
-  screen::sleepWhileBusy(!face.usb);
-  tm t;
-  localtime_r(&face.now, &t);
-  screen::present(!haveOld || t.tm_min % 30 == 0);
-  screen::sleepWhileBusy(false);
-  screen::unlock();
+  screen::presentOver(true, !haveOld || t.tm_min % 30 == 0, [&] { drawStandbyFace(c, old); },
+                      [&] { drawStandbyFace(c, face); }, face.usb, true);
   saveFace(face);
   power::off(power::Mode::Standby, face.now + 60, cycles > 0 ? cycles - 1 : 0);
   setCpuFrequencyMhz(mhz);  // the PMIC didn't power off: boot normally

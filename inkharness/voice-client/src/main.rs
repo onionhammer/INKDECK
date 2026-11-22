@@ -233,6 +233,7 @@ async fn main() -> Result<()> {
             session,
             proto,
             agent,
+            ..
         } => {
             println!(
                 "connected in {} ms, session {session}, protocol {proto}{}",

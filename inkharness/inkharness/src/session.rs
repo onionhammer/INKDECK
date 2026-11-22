@@ -38,6 +38,7 @@ use crate::agent::{self, Agent, Unlock};
 use crate::device::Device;
 use crate::llm::{self, Llm, Outcome, Piece, Recording, Role, Turn};
 use crate::meter;
+use crate::reader;
 use crate::sentence::Splitter;
 use crate::stt::{Stt, SttSession};
 use crate::tools::ToolSet;
@@ -250,6 +251,20 @@ pub async fn run(stream: TcpStream, app: Arc<App>, session: String) -> Result<()
                     };
                     match msg {
                         ClientMsg::Hello { .. } => tracing::debug!("ignoring a second hello"),
+                        ClientMsg::Read {
+                            id,
+                            url,
+                            image_width,
+                            image_height,
+                        } => {
+                            let tx = tx.clone();
+                            let fit =
+                                (image_width > 0 && image_height > 0).then_some(reader::Fit {
+                                    width: image_width.min(1200),
+                                    height: image_height.min(1600),
+                                });
+                            tokio::spawn(async move { read_page(&tx, id, &url, fit).await });
+                        }
                         ClientMsg::ListenStart {
                             mode,
                             session: target,
@@ -718,6 +733,7 @@ async fn open(
                     proto: PROTO_VERSION,
                     session: session.into(),
                     agent,
+                    reader: true,
                 },
                 Err(e) => ServerMsg::Error {
                     message: format!("{e:#}"),
@@ -753,6 +769,7 @@ async fn open(
                         proto: PROTO_PLAINTEXT,
                         session: session.into(),
                         agent: None,
+                        reader: true,
                     };
                     writer.write(&Frame::control(&answer)?).await?;
                     Ok(hello)
@@ -814,6 +831,59 @@ async fn write_loop(mut writer: FrameWriter<OwnedWriteHalf>, mut rx: mpsc::Recei
             break;
         }
     }
+}
+
+/// The answer to `read`: the article's pictures, then the article, or why there isn't one.
+async fn read_page(tx: &mpsc::Sender<Frame>, id: u32, url: &str, fit: Option<reader::Fit>) {
+    use base64::Engine;
+    let started = Instant::now();
+    let msg = match reader::read(url, fit).await {
+        Ok(page) => {
+            tracing::info!(
+                url,
+                ms = started.elapsed().as_millis() as u64,
+                bytes = page.markdown.len(),
+                pictures = page.pictures.len(),
+                "read a page"
+            );
+            for p in &page.pictures {
+                let bits = base64::engine::general_purpose::STANDARD.encode(&p.bits);
+                send(
+                    tx,
+                    ServerMsg::PageImage {
+                        id,
+                        index: p.index,
+                        width: p.width,
+                        height: p.height,
+                        bits,
+                    },
+                )
+                .await;
+            }
+            ServerMsg::Page {
+                id,
+                title: page.title,
+                byline: page.byline,
+                site: page.site,
+                published: page.published,
+                markdown: page.markdown,
+                error: String::new(),
+            }
+        }
+        Err(e) => {
+            tracing::info!(url, "couldn't read the page: {e:#}");
+            ServerMsg::Page {
+                id,
+                title: String::new(),
+                byline: String::new(),
+                site: String::new(),
+                published: 0,
+                markdown: String::new(),
+                error: format!("{e:#}"),
+            }
+        }
+    };
+    send(tx, msg).await;
 }
 
 async fn send(tx: &mpsc::Sender<Frame>, msg: ServerMsg) {
@@ -1494,6 +1564,165 @@ mod tests {
         }
     }
 
+    /// A web server with one article at /story; its address.
+    async fn news_site() -> std::net::SocketAddr {
+        let para = "The ship was bound for Kaliningrad when it was hit on Saturday morning, \
+                    before drifting into Finnish waters, the border guard said. ";
+        let html = format!(
+            "<html><head><title>Ship on fire - Test News</title>\
+             <meta property=\"og:site_name\" content=\"Test News\"></head><body>\
+             <nav><a href=\"/\">Home</a></nav><article><h1>Ship on fire</h1>\
+             <p>{para}{para}<a href=\"/earlier\">An earlier attack</a>.</p>\
+             <figure><img src=\"/ship.png\" alt=\"\"><figcaption>The ship, burning.</figcaption>\
+             </figure><p>{para}{para}</p><p>{para}</p></article></body></html>"
+        );
+        // An 800 x 400 gradient: scaled to the board's 420 wide.
+        let mut png = Vec::new();
+        image::GrayImage::from_fn(800, 400, |x, _| image::Luma([(x * 255 / 799) as u8]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let app = axum::Router::new()
+            .route(
+                "/story",
+                axum::routing::get(move || {
+                    let html = html.clone();
+                    async move { ([("content-type", "text/html; charset=utf-8")], html) }
+                }),
+            )
+            .route(
+                "/ship.png",
+                axum::routing::get(move || {
+                    let png = png.clone();
+                    async move { ([("content-type", "image/png")], png) }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        addr
+    }
+
+    /// The `page` that answers a board's `read`.
+    async fn read_over_the_wire(url: String) -> ServerMsg {
+        read_with_pictures(url, 0, 0).await.1
+    }
+
+    /// The `page_image`s and the `page` that answer a board's `read` asking for pictures this
+    /// big.
+    async fn read_with_pictures(
+        url: String,
+        width: u32,
+        height: u32,
+    ) -> (Vec<ServerMsg>, ServerMsg) {
+        let addr = daemon("t", false).await;
+        let (answer, board) = handshake(addr, "t", hello(PROTO_VERSION, "", vec![])).await;
+        assert!(matches!(answer, ServerMsg::Hello { reader: true, .. }));
+        let (mut reader, mut writer) = board.unwrap();
+        put(
+            &mut writer,
+            ClientMsg::Read {
+                id: 7,
+                url,
+                image_width: width,
+                image_height: height,
+            },
+        )
+        .await;
+        let mut pictures = Vec::new();
+        loop {
+            let Some(Frame::Control(json)) = reader.read().await.unwrap() else {
+                continue;
+            };
+            let msg = serde_json::from_str::<ServerMsg>(&json).unwrap();
+            match msg {
+                ServerMsg::Page { .. } => return (pictures, msg),
+                ServerMsg::PageImage { .. } => pictures.push(msg),
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_board_gets_the_pictures_before_the_page() {
+        let site = news_site().await;
+        let (pictures, page) = read_with_pictures(format!("http://{site}/story"), 420, 600).await;
+        let [
+            ServerMsg::PageImage {
+                id,
+                index,
+                width,
+                height,
+                bits,
+            },
+        ] = pictures.as_slice()
+        else {
+            panic!("one picture: {pictures:?}");
+        };
+        assert_eq!((*id, *index, *width, *height), (7, 0, 420, 210));
+        use base64::Engine;
+        let bits = base64::engine::general_purpose::STANDARD
+            .decode(bits)
+            .unwrap();
+        assert_eq!(bits.len(), 420usize.div_ceil(8) * 210);
+        // The gradient: inked on the left, paper on the right.
+        assert_eq!(bits[0], 0xFF);
+        assert_eq!(bits[52], 0x00);
+        let ServerMsg::Page { markdown, .. } = page else {
+            unreachable!()
+        };
+        assert!(
+            markdown.contains("![](inkimg:0)\n\n*The ship, burning.*"),
+            "{markdown}"
+        );
+        // Without pictures asked for: neither the picture nor its caption.
+        let ServerMsg::Page { markdown, .. } =
+            read_over_the_wire(format!("http://{site}/story")).await
+        else {
+            unreachable!()
+        };
+        assert!(
+            !markdown.contains("inkimg") && !markdown.contains("burning"),
+            "{markdown}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_board_reads_a_page() {
+        let site = news_site().await;
+        let ServerMsg::Page {
+            id,
+            site: name,
+            markdown,
+            error,
+            ..
+        } = read_over_the_wire(format!("http://{site}/story")).await
+        else {
+            unreachable!()
+        };
+        assert_eq!((id, error.as_str(), name.as_str()), (7, "", "Test News"));
+        assert!(markdown.contains("Kaliningrad"), "{markdown}");
+        assert!(
+            markdown.contains(&format!("[An earlier attack](http://{site}/earlier)")),
+            "{markdown}"
+        );
+        assert!(!markdown.contains("Home"), "{markdown}");
+    }
+
+    #[tokio::test]
+    async fn a_page_that_isnt_there_says_why() {
+        let site = news_site().await;
+        let ServerMsg::Page {
+            id,
+            markdown,
+            error,
+            ..
+        } = read_over_the_wire(format!("http://{site}/gone")).await
+        else {
+            unreachable!()
+        };
+        assert_eq!((id, markdown.as_str(), error.as_str()), (7, "", "HTTP 404"));
+    }
+
     #[tokio::test]
     async fn the_model_calls_the_boards_tools() {
         let addr = daemon("t", false).await;
@@ -1509,6 +1738,7 @@ mod tests {
                 proto: PROTO_VERSION,
                 session: "s1".into(),
                 agent: None,
+                reader: true,
             }
         );
         let (mut reader, mut writer) = board.unwrap();
@@ -1893,6 +2123,7 @@ mod tests {
                     unlocked: false,
                     features: agent::FEATURES.iter().map(|f| f.to_string()).collect(),
                 }),
+                reader: true,
             }
         );
         let (mut reader, mut writer) = board.unwrap();
@@ -2576,6 +2807,7 @@ mod tests {
                 proto: PROTO_PLAINTEXT,
                 session: "s1".into(),
                 agent: None,
+                reader: true,
             }
         );
         assert_eq!(

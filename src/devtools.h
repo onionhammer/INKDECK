@@ -19,9 +19,13 @@
 //            back), and that start opens the book again, under the Clock an RTC wake shows
 //   a        the Agent face's battery path: the face, off, and an RTC check-in a minute later,
 //            which redraws it; then the board stays on (so the USB console comes back)
+//   e        News's edition, its battery path wherever the board is: the front page, off, and
+//            an RTC wake a minute later that syncs and draws the next; then the board stays on
 // Line commands start with '!' and end with a newline:
 //   !feed URL   add a podcast feed to SD:/Podcasts/feeds.txt (the Podcasts screen reads it when
 //               it next opens)
+//   !newsfeed URL   add a news feed to SD:/News/feeds.txt
+//   !newssync   sync the news feeds now
 //   !wxforget   drop the saved weather forecast (the Weather screen shows the room instead until
 //               the next sync)
 //   !wxmodels A,B,...   log the sky now (weather code, cloud layers) from each Open-Meteo model

@@ -19,6 +19,7 @@
 #include "dirlist.h"
 #include "file_copy.h"
 #include "flashfs.h"
+#include "paths.h"
 #include "shares.h"
 #include "podcast_library.h"
 #include "sdcard.h"
@@ -53,10 +54,7 @@ std::string sizeText(int64_t bytes) {
   return buf;
 }
 
-std::string extensionOf(const std::string &name) {
-  const size_t dot = name.rfind('.');
-  return dot == std::string::npos || dot == 0 ? std::string() : name.substr(dot + 1);
-}
+using paths::extensionOf;
 
 std::string typeTag(const DirList::Entry &e) {
   if (e.isDir) return "DIR";
@@ -82,16 +80,10 @@ const char *verbFor(const DirList::Entry *e) {
   return nullptr;
 }
 
-// path is dir or somewhere inside it. FAT ignores case, so this does too.
-bool isInside(const std::string &path, const std::string &dir) {
-  if (path.size() < dir.size() || strncasecmp(path.c_str(), dir.c_str(), dir.size()) != 0) {
-    return false;
-  }
-  return path.size() == dir.size() || path[dir.size()] == '/';
-}
+using paths::isInside;
 
-std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
-std::string folderOf(const std::string &path) { return path.substr(0, path.rfind('/')); }
+using paths::nameOf;
+using paths::folderOf;
 
 // HOLD ● SAVE on a share: where a file can go on the card, by its type. Each is a top-level
 // folder of the card's, made if it's missing.
@@ -305,7 +297,7 @@ class FilesScreen : public ui::Screen {
     if (connecting()) {
       const shares::Share &share = shares::all()[shareIndex()];
       ui::drawSectionHeader(c, head, "CONNECTING" + std::string(ui::glyph::kEllipsis), "");
-      drawEmpty(c, r, ui::upper(share.name).c_str(),
+      ui::drawEmpty(c, r, ui::upper(share.name).c_str(),
                 "Joining the Wi-Fi network and connecting to " + share.url() +
                     ". This can take a few seconds.");
       return;
@@ -331,21 +323,21 @@ class FilesScreen : public ui::Screen {
       const std::string retry = std::string(" Press ") + ui::glyph::kPress + " to retry.";
       if (volume_ == Volume::Net && lease_->state() == shares::Lease::State::Failed) {
         const shares::Share &share = shares::all()[shareIndex()];
-        drawEmpty(c, r, "CAN'T CONNECT",
+        ui::drawEmpty(c, r, "CAN'T CONNECT",
                   ui::upper(lease_->error()) + ". " + share.url() + "." + retry);
       } else if (volume_ == Volume::Net) {
-        drawEmpty(c, r, "CAN'T READ", "This folder couldn't be read from the server." + retry);
+        ui::drawEmpty(c, r, "CAN'T READ", "This folder couldn't be read from the server." + retry);
       } else if (volume_ == Volume::Flash) {
-        drawEmpty(c, r, "CAN'T MOUNT", "The onboard FAT partition couldn't be mounted." + retry);
+        ui::drawEmpty(c, r, "CAN'T MOUNT", "The onboard FAT partition couldn't be mounted." + retry);
       } else if (sdcard::mounted()) {
-        drawEmpty(c, r, "CAN'T READ", "This folder couldn't be opened." + retry);
+        ui::drawEmpty(c, r, "CAN'T READ", "This folder couldn't be opened." + retry);
       } else {
-        drawEmpty(c, r, "NO SD CARD", "Insert a microSD card." + retry);
+        ui::drawEmpty(c, r, "NO SD CARD", "Insert a microSD card." + retry);
       }
       return;
     }
     if (rowCount() == 0) {
-      drawEmpty(c, r, "EMPTY",
+      ui::drawEmpty(c, r, "EMPTY",
                 volume_ == Volume::Flash && list_.atRoot()
                     ? "Nothing on the onboard flash yet. Copy files here with the !cp dev command."
                     : "Nothing in this folder.");
@@ -769,17 +761,6 @@ class FilesScreen : public ui::Screen {
     }));
   }
 
-  static void drawEmpty(ui::Canvas &c, const Rect &r, const char *title,
-                        const std::string &text) {
-    const Rect p = r.inset(20, 24);
-    int y = p.y + ui::capHeight(ui::style::kTitle);
-    ui::drawText(c, p.x, y, title, ui::style::kTitle);
-    y += 24;
-    for (const auto &line : ui::wrap(ui::style::kBody, text, p.w, 4)) {
-      y += 22;
-      ui::drawText(c, p.x, y, line, ui::style::kBody);
-    }
-  }
 
   Volume volume_;
   // A share's screen: its hold on the mount, and where to start once it's mounted.

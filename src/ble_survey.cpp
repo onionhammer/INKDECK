@@ -15,6 +15,9 @@
 #include <atomic>
 #include <mutex>
 
+#include "survey_users.h"
+#include "text.h"
+
 // Keep the BLE controller's memory: without this the core releases it at boot (initArduino()),
 // and the controller can't start until the next one.
 extern "C" bool bleInUse(void) { return true; }
@@ -29,19 +32,15 @@ constexpr uint32_t kSyncTimeoutMs = 3000;
 
 std::mutex mutex;  // guards the table and the users
 std::vector<Device> table;
-int users = 0;
-uint32_t lastUserGoneMs = 0;
+survey::Users users;
 std::string lastError;
-TaskHandle_t worker = nullptr;
 
 std::atomic<bool> synced{false};
 std::atomic<bool> up{false};
 std::atomic<bool> discovering{false};
 uint8_t ownAddrType = BLE_OWN_ADDR_PUBLIC;
 
-void wake() {
-  if (worker) xTaskNotifyGive(worker);
-}
+void wake() { users.wake(); }
 
 void onSync() { synced = true; }
 void onReset(int reason) {
@@ -183,8 +182,8 @@ void run(void *) {
     uint32_t gone;
     {
       std::lock_guard<std::mutex> lock(mutex);
-      wanted = users > 0;
-      gone = lastUserGoneMs;
+      wanted = users.count > 0;
+      gone = users.lastGoneMs;
     }
     if (wanted && !up && (failedAt == 0 || millis() - failedAt > 10000)) {
       std::string error;
@@ -203,8 +202,8 @@ void run(void *) {
       // Nobody left and the stack is down: the task ends, so its stack doesn't sit in the
       // internal heap between uses. begin() starts another.
       std::lock_guard<std::mutex> lock(mutex);
-      if (users == 0) {
-        worker = nullptr;
+      if (users.count == 0) {
+        users.task = nullptr;
         break;
       }
       continue;
@@ -218,16 +217,12 @@ void run(void *) {
 
 void begin() {
   std::lock_guard<std::mutex> lock(mutex);
-  ++users;
-  if (!worker) xTaskCreate(run, "blesurvey", 4096, nullptr, 1, &worker);
-  wake();
+  users.add("blesurvey", run);
 }
 
 void end() {
   std::lock_guard<std::mutex> lock(mutex);
-  if (users == 0) return;
-  if (--users == 0) lastUserGoneMs = millis();
-  wake();
+  users.remove();
 }
 
 std::vector<Device> devices() {
@@ -280,12 +275,7 @@ const char *addressKind(const Device &d) {
   }
 }
 
-std::string addressText(const Device &d) {
-  char buf[18];
-  snprintf(buf, sizeof buf, "%02X:%02X:%02X:%02X:%02X:%02X", d.addr[0], d.addr[1], d.addr[2],
-           d.addr[3], d.addr[4], d.addr[5]);
-  return buf;
-}
+std::string addressText(const Device &d) { return text::macText(d.addr); }
 
 bool sameDevice(const Device &d, const uint8_t addr[6], uint8_t addrType) {
   return d.addrType == addrType && memcmp(d.addr, addr, 6) == 0;

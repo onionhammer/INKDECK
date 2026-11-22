@@ -1,4 +1,5 @@
 #include "apps/agent_face.h"
+#include "apps/off_face.h"
 #include "apps/sleep.h"
 
 #include <Arduino.h>
@@ -15,6 +16,7 @@
 #include "power.h"
 #include "readstate.h"
 #include "rtc.h"
+#include "timeutil.h"
 
 namespace apps {
 namespace {
@@ -32,8 +34,6 @@ constexpr TextStyle kWakeTime{&ui::fonts::kMono80ExtraBold, -4};
 constexpr TextStyle kWakeDate{&ui::fonts::kMono15Bold, 1};
 constexpr TextStyle kKey{&ui::fonts::kMono14Medium, 1};
 constexpr TextStyle kValue{&ui::fonts::kMono14Bold, 0};
-constexpr TextStyle kBoot{&ui::fonts::kMono14Bold, 1};
-constexpr TextStyle kBootCap{&ui::fonts::kMono14ExtraBold, 0};
 constexpr TextStyle kCardLabel{&ui::fonts::kMono13Medium, 1};
 constexpr TextStyle kCardTitle{&ui::fonts::kMono15Bold, 0};
 constexpr TextStyle kCardPercent{&ui::fonts::kMono15ExtraBold, 0};
@@ -79,15 +79,10 @@ const char *const kPad[] = {
 const char *const kZBig[] = {"#####", "...#.", "..#..", ".#...", "#####"};
 const char *const kZSmall[] = {"####", "..#.", ".#..", "####"};
 
-const char *const kWeekdayShort[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-const char *const kMonthNames[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-                                   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+using timeutil::kMonthNames;
+using timeutil::kWeekdayShort;
 
-std::string hhmm(int hour, int minute) {
-  char buf[8];
-  snprintf(buf, sizeof buf, "%02d:%02d", hour, minute);
-  return buf;
-}
+using timeutil::hhmm;
 
 // The frog field: which character each cell holds (0 = empty).
 class Field {
@@ -118,24 +113,8 @@ class Field {
 const Field field;
 
 void drawField(ui::Canvas &c, const Rect &area) {
-  using namespace ui;
-  const int x0 = area.x + (area.w - kCols * kCell) / 2;
-  const int y0 = area.y + (area.h - kRows * kCell) / 2;
-  for (int y = 0; y < kRows; ++y) {
-    for (int x = 0; x < kCols; ++x) {
-      const Rect cell{x0 + x * kCell + 1, y0 + y * kCell + 1, kCell - 2, kCell - 2};
-      const char ch = field.at(x, y);
-      if (ch == '#') {
-        fill(c, cell, kInk);
-      } else if (ch == '+') {
-        dither50(c, cell);
-      } else if (!ch && field.at(x - 1, y - 1)) {
-        dither25(c, cell);  // the shadow, one cell down and right
-      } else if (!ch) {
-        fill(c, {x0 + x * kCell + 6, y0 + y * kCell + 6, 2, 2}, kInk);  // unlit dot
-      }
-    }
-  }
+  ui::drawDotField(c, area.x + (area.w - kCols * kCell) / 2, area.y + (area.h - kRows * kCell) / 2,
+                   kCols, kRows, kCell, [](int x, int y) { return field.at(x, y); });
 }
 
 // 2 px dashed rule, 3 on / 3 off, in `color`.
@@ -144,7 +123,7 @@ void dashed2(ui::Canvas &c, int x, int y, int w, uint16_t color) {
   ui::dashedH(c, x, y + 1, w, color);
 }
 
-class SleepScreen : public ui::Screen {
+class SleepScreen : public OffFaceScreen {
  public:
   SleepScreen() {
     now_ = time(nullptr);
@@ -167,26 +146,13 @@ class SleepScreen : public ui::Screen {
   }
 
   std::string tag() const override { return "SLEEP"; }
-  bool chrome() const override { return false; }
   bool landscape() const override { return true; }
-  bool offFace() const override { return true; }
-  bool onKey(Key) override {  // a key in the second before power-off: stay on
-    ui::nav::pop();
-    return true;
-  }
-  bool onTick() override {
-    // The first tick can come straight after the refresh; wait for the next, so a key has a
-    // second to cancel.
-    if (!drawn_ || ++ticks_ < 2) return false;
-    // Also when inkharness asks for a check-in (a schedule that wakes the board).
-    power::off(power::Mode::Sleep, earliestWake(wakeAt_, agentCheckWake()));
-    ui::nav::pop();  // still here: the power-off failed
-    return true;
-  }
+  // Also when inkharness asks for a check-in (a schedule that wakes the board).
+  void powerOff() override { power::off(power::Mode::Sleep, withAgentCheck(wakeAt_)); }
 
   void draw(ui::Canvas &c, const Rect &body) override {
     using namespace ui;
-    drawn_ = true;
+    drawn();
     const Rect left{body.x, body.y, body.w - kPanelW, body.h};
     const Rect panel{left.right(), body.y, kPanelW, body.h};
     drawLeft(c, left);
@@ -286,13 +252,7 @@ class SleepScreen : public ui::Screen {
     // HOLD [PWR] TO BOOT, at the bottom, and the book's card on top of it.
     const Rect line{p.x, p.bottom() - 24, p.w, 24};
     if (hasCover_) drawCard(c, {p.x, y, p.w, line.y - 14 - y});
-    const int base = baselineCentered(kBoot, line.y, line.h);
-    int x = drawText(c, p.x, base, "HOLD", kBoot, kPaper) + 8;
-    const int capW = textWidth(kBootCap, "PWR") + 14 + 4;
-    frame(c, {x, line.y, capW, line.h}, 2, kPaper);
-    drawText(c, x + 9, baselineCentered(kBootCap, line.y, line.h), "PWR", kBootCap, kPaper);
-    x += capW + 8;
-    drawText(c, x, base, "TO BOOT", kBoot, kPaper);
+    drawHoldPwr(c, line, "TO BOOT", kPaper);
   }
 
   // The book's card, at the bottom of `area` (ink).
@@ -346,8 +306,6 @@ class SleepScreen : public ui::Screen {
   int percent_ = 0;
   bool hasCover_ = false;
   picture::Bitmap cover_;
-  bool drawn_ = false;
-  int ticks_ = 0;  // since drawn
 };
 
 }  // namespace

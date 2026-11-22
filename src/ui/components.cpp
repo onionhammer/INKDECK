@@ -113,6 +113,17 @@ void drawSectionHeader(Canvas &c, const Rect &r, const std::string &label,
   if (!right.empty()) drawText(c, band, right, style::kSection, Align::Right, ink);
 }
 
+void drawEmpty(Canvas &c, const Rect &r, const char *title, const std::string &text) {
+  const Rect p = r.inset(20, 24);
+  int y = p.y + capHeight(style::kTitle);
+  drawText(c, p.x, y, title, style::kTitle);
+  y += 24;
+  for (const auto &line : wrap(style::kBody, text, p.w, 4)) {
+    y += 22;
+    drawText(c, p.x, y, line, style::kBody);
+  }
+}
+
 void drawNotice(Canvas &c, const Rect &r, const std::string &text) {
   fill(c, r, kInk);
   drawText(c, {r.x + kPadX, r.y, r.w - 2 * kPadX, r.h - kRule}, "! " + text, style::kSection,
@@ -337,6 +348,17 @@ Rect drawButton(Canvas &c, int right, int top, const std::string &glyph,
 
 // --- Stat cell ---------------------------------------------------------------------------
 
+void drawStatRow(Canvas &c, const Rect &r, const Stat (&cells)[4]) {
+  constexpr TextStyle kValue{&fonts::kMono17ExtraBold, 0};
+  const int cellW = r.w / 4;
+  for (int i = 0; i < 4; ++i) {
+    const int x = r.x + i * cellW;
+    drawText(c, x + kPadX, r.y + 8 + capHeight(style::kKey), cells[i].key, style::kKey);
+    drawText(c, {x + kPadX, r.y + 26, cellW - 2 * kPadX + 6, 24}, cells[i].value, kValue);
+    if (i < 3) dashedV(c, x + cellW - 1, r.y, r.h);
+  }
+}
+
 void drawStat(Canvas &c, const Rect &r, const std::string &key, const std::string &value) {
   dashedH(c, r.x, r.bottom() - 1, r.w);
   constexpr int kLineGap = 8;
@@ -350,21 +372,47 @@ void drawStat(Canvas &c, const Rect &r, const std::string &key, const std::strin
 
 // --- Resume band ---------------------------------------------------------------------------
 
+int drawHoldPwr(Canvas &c, const Rect &line, const char *verb, uint16_t color) {
+  constexpr TextStyle kWords{&fonts::kMono14Bold, 1};
+  constexpr TextStyle kCap{&fonts::kMono14ExtraBold, 0};
+  const int base = baselineCentered(kWords, line.y, line.h);
+  int x = drawText(c, line.x, base, "HOLD", kWords, color) + 8;
+  const int capW = textWidth(kCap, "PWR") + 14 + 4;
+  frame(c, {x, line.y, capW, line.h}, 2, color);
+  drawText(c, x + 9, baselineCentered(kCap, line.y, line.h), "PWR", kCap, color);
+  x += capW + 8;
+  return drawText(c, x, base, verb, kWords, color);
+}
+
+void drawDotField(Canvas &c, int x0, int y0, int cols, int rows, int cell,
+                  const std::function<char(int, int)> &at) {
+  const int dot = (cell - 2) / 2;
+  for (int y = 0; y < rows; ++y) {
+    for (int x = 0; x < cols; ++x) {
+      const int cx = x0 + x * cell, cy = y0 + y * cell;
+      const Rect box{cx + 1, cy + 1, cell - 2, cell - 2};
+      const char ch = at(x, y);
+      if (ch == '#') {
+        fill(c, box, kInk);
+      } else if (ch == '+') {
+        dither50(c, box);
+      } else if (!ch && at(x - 1, y - 1)) {
+        dither25(c, box);  // the shadow, one cell down and right
+      } else if (!ch) {
+        fill(c, {cx + dot, cy + dot, 2, 2}, kInk);  // unlit dot
+      }
+    }
+  }
+}
+
 void drawResumeBand(Canvas &c, const Rect &band, const std::string &right) {
   constexpr TextStyle kBand{&fonts::kMono14Bold, 1};
-  constexpr TextStyle kBandCap{&fonts::kMono14ExtraBold, 0};
   constexpr int kCapH = 24;
   // A paper rule first, so a dark picture above doesn't run into the band.
   const Rect ink{band.x, band.y + kRule, band.w, band.h - kRule};
   fill(c, ink, kInk);
   const Rect line{ink.x + kPadX, ink.y + (ink.h - kCapH) / 2, ink.w - 2 * kPadX, kCapH};
-  const int base = baselineCentered(kBand, line.y, line.h);
-  int x = drawText(c, line.x, base, "HOLD", kBand, kPaper) + 8;
-  const int capW = textWidth(kBandCap, "PWR") + 14 + 4;
-  frame(c, {x, line.y, capW, line.h}, 2, kPaper);
-  drawText(c, x + 9, baselineCentered(kBandCap, line.y, line.h), "PWR", kBandCap, kPaper);
-  x += capW + 8;
-  x = drawText(c, x, base, "TO RESUME", kBand, kPaper);
+  const int x = drawHoldPwr(c, line, "TO RESUME", kPaper);
   if (!right.empty()) {
     drawText(c, {x + 10, line.y, line.right() - x - 10, line.h}, right, kBand, Align::Right,
              kPaper);

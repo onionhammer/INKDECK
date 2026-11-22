@@ -1,5 +1,7 @@
 #include "timeutil.h"
 
+#include <stdio.h>
+
 namespace timeutil {
 
 long daysFromCivil(int year, int month, int day) {
@@ -32,6 +34,43 @@ time_t localAt(const tm &date, int hour, int minute, int second) {
   t.tm_sec = second;
   t.tm_isdst = -1;
   return mktime(&t);
+}
+
+const char *const kWeekdayShort[7] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
+const char *const kMonthNames[12] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+
+std::string hhmm(int hour, int minute) {
+  char buf[8];
+  snprintf(buf, sizeof buf, "%02d:%02d", hour, minute);
+  return buf;
+}
+
+std::string hhmm(time_t t) {
+  tm l;
+  localtime_r(&t, &l);
+  return hhmm(l.tm_hour, l.tm_min);
+}
+
+bool sameDay(const tm &a, const tm &b) { return a.tm_year == b.tm_year && a.tm_yday == b.tm_yday; }
+
+bool sameLocalDay(time_t a, time_t b) {
+  tm x, y;
+  localtime_r(&a, &x);
+  localtime_r(&b, &y);
+  return sameDay(x, y);
+}
+
+std::string clockText(uint32_t s, bool padMinutes) {
+  char buf[16];
+  if (s >= 3600) {
+    snprintf(buf, sizeof buf, "%lu:%02lu:%02lu", static_cast<unsigned long>(s / 3600),
+             static_cast<unsigned long>(s / 60 % 60), static_cast<unsigned long>(s % 60));
+  } else {
+    snprintf(buf, sizeof buf, padMinutes ? "%02lu:%02lu" : "%lu:%02lu",
+             static_cast<unsigned long>(s / 60), static_cast<unsigned long>(s % 60));
+  }
+  return buf;
 }
 
 }  // namespace timeutil

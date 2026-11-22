@@ -279,20 +279,7 @@ bool parseSmb(const std::string &specIn, Share &out, std::string &password, std:
     out.user = percentDecode(who.substr(0, colon));
     if (colon != std::string::npos) password = percentDecode(who.substr(colon + 1));
   }
-  const size_t colon = authority.find(':');
-  if (colon != std::string::npos) {
-    uint32_t port;
-    if (!parseNumber(authority.substr(colon + 1), 65535, port) || port == 0) {
-      error = "the port after the server isn't a number from 1 to 65535";
-      return false;
-    }
-    out.port = static_cast<uint16_t>(port);
-    authority.erase(colon);
-  }
-  if (authority.empty()) {
-    error = "no server";
-    return false;
-  }
+  if (!parseHostPort(authority, out, error)) return false;
   out.host = authority;
   out.path = path;
   return parseOptions(query, out, error, [&](const std::string &key, const std::string &) {

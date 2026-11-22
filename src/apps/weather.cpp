@@ -10,6 +10,7 @@
 #include "rtc.h"
 #include "sensor_hub.h"
 #include "suntimes.h"
+#include "timeutil.h"
 #include "ui/icons.h"
 #include "units.h"
 #include "forecast.h"
@@ -69,12 +70,6 @@ int localHour(time_t t) {
   return local.tm_hour;
 }
 
-bool sameDay(time_t a, time_t b) {
-  tm x, y;
-  localtime_r(&a, &x);
-  localtime_r(&b, &y);
-  return x.tm_yday == y.tm_yday && x.tm_year == y.tm_year;
-}
 
 std::string percentText(uint8_t p) {
   return p == weather::kUnknown ? glyph::kEmDash : std::to_string(p);
@@ -363,7 +358,7 @@ class WeatherScreen : public Screen {
     std::string left = indoor ? "// INSIDE (NO FORECAST)" : "// NOW";
     if (view_->has && h) {
       left += std::string(" ") + glyph::kDot + " UPDATED " +
-              format(sameDay(f.fetched, now) ? "%H:%M" : "%a %H:%M", f.fetched);
+              format(timeutil::sameLocalDay(f.fetched, now) ? "%H:%M" : "%a %H:%M", f.fetched);
     }
     std::string right;
     if (weather::syncing()) {

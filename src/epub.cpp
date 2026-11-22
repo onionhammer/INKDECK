@@ -51,7 +51,7 @@ bool parseTag(const std::string &s, size_t pos, Tag &t) {
   const size_t nameStart = i;
   while (i < n && !isspace(static_cast<unsigned char>(s[i])) && s[i] != '>' && s[i] != '/') ++i;
   t.name = localName(s.substr(nameStart, i - nameStart));
-  for (auto &c : t.name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  t.name = text::lower(std::move(t.name));
 
   t.attrStart = i;
   char quote = 0;
@@ -72,27 +72,6 @@ bool parseTag(const std::string &s, size_t pos, Tag &t) {
   return true;
 }
 
-uint32_t namedEntity(const std::string &name) {
-  static const struct {
-    const char *name;
-    uint32_t cp;
-  } kEntities[] = {
-      {"amp", '&'},       {"lt", '<'},         {"gt", '>'},         {"quot", '"'},
-      {"apos", '\''},     {"nbsp", 0xA0},      {"shy", 0xAD},       {"mdash", 0x2014},
-      {"ndash", 0x2013},  {"hellip", 0x2026},  {"lsquo", 0x2018},   {"rsquo", 0x2019},
-      {"ldquo", 0x201C},  {"rdquo", 0x201D},   {"laquo", 0xAB},     {"raquo", 0xBB},
-      {"copy", 0xA9},     {"reg", 0xAE},       {"trade", 0x2122},   {"bull", 0x2022},
-      {"middot", 0xB7},   {"deg", 0xB0},       {"times", 0xD7},     {"eacute", 0xE9},
-      {"egrave", 0xE8},   {"agrave", 0xE0},    {"ccedil", 0xE7},    {"uuml", 0xFC},
-      {"ouml", 0xF6},     {"auml", 0xE4},      {"szlig", 0xDF},     {"thinsp", 0x2009},
-      {"ensp", 0x2002},   {"emsp", 0x2003},    {"zwnj", 0x200C},    {"zwj", 0x200D},
-  };
-  for (const auto &e : kEntities) {
-    if (name == e.name) return e.cp;
-  }
-  return 0;
-}
-
 // s[i] must be '&'. Advances past the entity; a lone '&' decodes as itself.
 uint32_t decodeEntity(const std::string &s, size_t &i) {
   const size_t semi = s.find(';', i);
@@ -100,14 +79,7 @@ uint32_t decodeEntity(const std::string &s, size_t &i) {
     ++i;
     return '&';
   }
-  const std::string name = s.substr(i + 1, semi - i - 1);
-  uint32_t cp = 0;
-  if (name.size() > 1 && name[0] == '#') {
-    cp = (name[1] == 'x' || name[1] == 'X') ? strtoul(name.c_str() + 2, nullptr, 16)
-                                            : strtoul(name.c_str() + 1, nullptr, 10);
-  } else {
-    cp = namedEntity(name);
-  }
+  const uint32_t cp = text::entityCodepoint(s.substr(i + 1, semi - i - 1));
   if (cp == 0) {
     ++i;
     return '&';
@@ -125,22 +97,7 @@ std::string decodeEntitiesUtf8(const std::string &raw) {
       out += raw[i++];
       continue;
     }
-    const uint32_t cp = decodeEntity(raw, i);
-    if (cp < 0x80) {
-      out += static_cast<char>(cp);
-    } else if (cp < 0x800) {
-      out += static_cast<char>(0xC0 | (cp >> 6));
-      out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else if (cp < 0x10000) {
-      out += static_cast<char>(0xE0 | (cp >> 12));
-      out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-      out += static_cast<char>(0x80 | (cp & 0x3F));
-    } else {
-      out += static_cast<char>(0xF0 | (cp >> 18));
-      out += static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
-      out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
-      out += static_cast<char>(0x80 | (cp & 0x3F));
-    }
+    text::appendUtf8(out, decodeEntity(raw, i));
   }
   return out;
 }
@@ -218,24 +175,10 @@ std::string elementText(const std::string &s, const Tag &t) {
 // ---------------------------------------------------------------------------------------------
 // Paths inside the zip
 
-std::string urlDecode(const std::string &s) {
-  std::string out;
-  for (size_t i = 0; i < s.size(); ++i) {
-    if (s[i] == '%' && i + 2 < s.size() && isxdigit(static_cast<unsigned char>(s[i + 1])) &&
-        isxdigit(static_cast<unsigned char>(s[i + 2]))) {
-      out += static_cast<char>(strtoul(s.substr(i + 1, 2).c_str(), nullptr, 16));
-      i += 2;
-    } else {
-      out += s[i];
-    }
-  }
-  return out;
-}
-
 std::string resolvePath(const std::string &baseDir, std::string href) {
   const size_t hash = href.find('#');
   if (hash != std::string::npos) href.resize(hash);
-  href = urlDecode(href);
+  href = text::percentDecode(href);
   const std::string joined = (!href.empty() && href[0] == '/') ? href.substr(1) : baseDir + href;
 
   std::vector<std::string> parts;
@@ -690,7 +633,7 @@ bool opfPathOf(const ZipFile &zip, std::string &opfPath, std::string &err) {
 }
 
 std::string lowerAscii(std::string s) {
-  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  s = text::lower(std::move(s));
   return s;
 }
 
@@ -836,7 +779,7 @@ bool Epub::open(const std::string &path, std::string &err) {
     for (const auto &kv : manifest) {
       if (kv.second.mediaType.compare(0, 6, "image/") != 0) continue;
       std::string key = kv.first + " " + kv.second.href;
-      for (char &ch : key) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+      key = text::lower(std::move(key));
       if (key.find("cover") != std::string::npos) {
         coverHref = kv.second.href;
         break;

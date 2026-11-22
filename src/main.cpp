@@ -8,8 +8,8 @@
 //   PWR   the Sleep screen, then power-off (power.h)
 //
 // Screens live in apps/, one per module on Home (README.md lists them): Reader, Podcasts,
-// Music, Weather, Clock, Recorder, Sensors, Level, Files and System. With a PIN set in
-// SD:/inkdeck.ini, the lock (apps/lock.h) comes up over them at every start.
+// Agent, Weather, Clock, Recorder, Music, Sensors, Level, Files, System and News. With a PIN set
+// in SD:/inkdeck.ini, the lock (apps/lock.h) comes up over them at every start.
 #include <Arduino.h>
 #include <Wire.h>
 
@@ -19,6 +19,8 @@
 #include "apps/home.h"
 #include "apps/idle.h"
 #include "apps/lock.h"
+#include "apps/news.h"
+#include "apps/news_edition.h"
 #include "apps/reader.h"
 #include "apps/sleep.h"
 #include "apps/agent.h"
@@ -69,11 +71,16 @@ void setup() {
   apps::standbyWake();
   // So does an agent check-in from the Agent face, Sleep or a closed book (apps/agent_face.h).
   apps::agentWake();
+  // And News's off face, each minute (apps/news_edition.h); true if PWR was pressed.
+  const bool editionPwr = apps::editionWake();
   // Powered off behind a book's cover (apps/closed_book.h): this start opens the book again.
   const bool reopenBook = power::lastMode() == power::Mode::Book;
   // Behind the Agent face, HOLD PWR (not an alarm) opens the Agent.
   const bool reopenAgent =
       power::lastMode() == power::Mode::Agent && power::wake() != power::Wake::Alarm;
+  // Behind News's face, HOLD PWR opens News on the story it showed (so does PWR during a wake).
+  const bool reopenNews = power::lastMode() == power::Mode::Edition &&
+                          (power::wake() != power::Wake::Alarm || editionPwr);
   power::markOn();
   pmic::status();  // first read logs what the PMIC reports
   net::begin();  // TLS buffers in PSRAM
@@ -94,8 +101,9 @@ void setup() {
 #else
   (void)reopenAgent;
 #endif
+  if (reopenNews) apps::openNewsStory(apps::faceStory());
   // Woken for an alarm: show the Clock, and pollAlarms() rings over it.
-  if (power::wake() == power::Wake::Alarm) ui::nav::push(apps::makeClock());
+  if (power::wake() == power::Wake::Alarm && !editionPwr) ui::nav::push(apps::makeClock());
   apps::lockNow();  // with a PIN and power_on (pin_places.h), every start asks (alarms ring over it)
   ui::nav::flush();  // the first frame: Home, the Clock or the lock, whichever is on top
   devtools::begin();  // after the first frame, so a screenshot never catches a blank buffer
@@ -126,6 +134,7 @@ void loop() {
   const ui::Screen *top = ui::nav::top();
   if (!apps::isNapping() && !(top && top->offFace())) weather::poll();
   podcasts::poll();  // saves the playing episode's position
+  apps::pollNews();  // hourly syncs while News is open or on USB
   if (apps::napIfIdle()) return;  // reading on battery: light sleep until a key or the minute
   ui::nav::loop();
 }

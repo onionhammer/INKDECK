@@ -1,5 +1,6 @@
 #include "apps/agent_face.h"
 
+#include "apps/off_face.h"
 #include "features.h"
 
 #if !INKDECK_AGENT
@@ -9,7 +10,7 @@ bool agentFaceWanted() { return false; }
 void showAgentFace(bool, bool) {}
 bool wakeAgentFace() { return false; }
 time_t agentCheckWake() { return 0; }
-time_t earliestWake(time_t a, time_t b) { return !a ? b : !b ? a : (a < b ? a : b); }
+time_t withAgentCheck(time_t wake) { return wake; }
 bool agentWake() { return false; }
 bool agentStandbyCheck() { return false; }
 void requestAgentFace() {}
@@ -19,7 +20,6 @@ void pollAgentFace() {}
 #else
 
 #include <Arduino.h>
-#include <Preferences.h>
 #include <string.h>
 
 #include <algorithm>
@@ -33,9 +33,11 @@ void pollAgentFace() {}
 #include "apps/clock.h"
 #include "apps/home.h"
 #include "apps/lock.h"
+#include "apps/news_edition.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "fonts.h"
+#include "kv_store.h"
 #include "netget.h"
 #include "notedoc.h"
 #include "pmic.h"
@@ -74,45 +76,20 @@ struct FaceRecord {
 };
 constexpr uint8_t kLow = 1, kUsb = 2;
 
-bool batteryLow() {
-  const pmic::Status p = pmic::status();
-  return p.ok && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent;
-}
+using power::lowBattery;
+using power::pwrHeld;
 
 // The NVS record: the next check (the RTC wake the board armed for the agent), the ladder's
 // step, when the last full refresh was, and the face as drawn.
-uint32_t loadU32(const char *key) {
-  Preferences prefs;
-  if (!prefs.begin(kNvs, true)) return 0;
-  const uint32_t v = prefs.getUInt(key, 0);
-  prefs.end();
-  return v;
-}
-void saveU32(const char *key, uint32_t v) {
-  Preferences prefs;
-  if (!prefs.begin(kNvs, false)) return;
-  if (prefs.getUInt(key, ~v) != v) prefs.putUInt(key, v);
-  prefs.end();
-}
-bool loadRecord(FaceRecord &r) {
-  Preferences prefs;
-  if (!prefs.begin(kNvs, true)) return false;
-  const bool ok = prefs.getBytesLength("face") == sizeof r &&
-                  prefs.getBytes("face", &r, sizeof r) == sizeof r && r.version == kRecordVersion;
-  prefs.end();
-  return ok;
-}
-void saveRecord(const FaceRecord &r) {
-  Preferences prefs;
-  if (!prefs.begin(kNvs, false)) return;
-  prefs.putBytes("face", &r, sizeof r);
-  prefs.end();
-}
+uint32_t loadU32(const char *key) { return kv::loadU32(kNvs, key); }
+void saveU32(const char *key, uint32_t v) { kv::saveU32(kNvs, key, v); }
+bool loadRecord(FaceRecord &r) { return kv::load(kNvs, "face", r) && r.version == kRecordVersion; }
+void saveRecord(const FaceRecord &r) { kv::save(kNvs, "face", r); }
 
 // When the face checks in next, on the ladder (5, 15, 30 minutes) or sooner at check_at, and
 // kept for the wake. 0: no check-ins (no agent, a low battery).
 time_t nextCheck(time_t now) {
-  if (!agent::configured() || batteryLow()) {
+  if (!agent::configured() || lowBattery()) {
     saveU32("next", 0);
     return 0;
   }
@@ -137,14 +114,6 @@ std::string rightText(const FaceRecord &r) {
 
 // --- Drawing ----------------------------------------------------------------------------------
 
-void drawCount(ui::Canvas &c, const Rect &cell, const char *key, int value, bool inverted) {
-  using namespace ui;
-  const uint16_t ink = inverted ? kPaper : kInk;
-  if (inverted) fill(c, cell, kInk);
-  drawText(c, cell.x + kPadX, cell.y + 14 + capHeight(style::kKey), key, style::kKey, ink);
-  drawText(c, cell.x + kPadX, cell.bottom() - 14, std::to_string(value), style::kReadout, ink);
-}
-
 void drawFace(ui::Canvas &c, const FaceRecord &r) {
   using namespace ui;
   const agent::Summary &m = r.sum;
@@ -161,14 +130,9 @@ void drawFace(ui::Canvas &c, const FaceRecord &r) {
 
   if (!m.content) {
     // Counts and times only: nothing that says what the sessions are.
-    const Rect band = body.takeTop(132);
-    const int w = band.w / 3;
-    drawCount(c, {band.x, band.y, w, band.h}, "ASKS", m.asks, m.asks > 0);
-    vrule(c, band.x + w, band.y, band.h, kRule);
-    drawCount(c, {band.x + w, band.y, w, band.h}, "RUNNING", m.running, false);
-    vrule(c, band.x + 2 * w, band.y, band.h, kRule);
-    drawCount(c, {band.x + 2 * w, band.y, band.w - 2 * w, band.h}, "PLANNED", m.planned, false);
-    hrule(c, band.x, band.bottom() - kRule, band.w);
+    // The value 14 px over the band's bottom: 11 over the cells', which stop at its rule.
+    agentui::drawCounts(c, body.takeTop(132), m.asks, m.running, m.planned, true,
+                        style::kReadout, 14, 11);
     int y = body.y + 24;
     auto line = [&](const std::string &text, const TextStyle &s) {
       drawText(c, body.x + kPadX, y + capHeight(s), text, s);
@@ -276,7 +240,7 @@ void drawFace(ui::Canvas &c, const FaceRecord &r) {
 FaceRecord recordNow(bool usb, uint32_t next) {
   FaceRecord r = {};
   r.version = kRecordVersion;
-  r.flags = static_cast<uint8_t>((batteryLow() ? kLow : 0) | (usb ? kUsb : 0));
+  r.flags = static_cast<uint8_t>((lowBattery() ? kLow : 0) | (usb ? kUsb : 0));
   r.checked = agent::checkedAt();
   r.next = usb ? 0 : next;
   r.sum = agent::summary();
@@ -293,7 +257,7 @@ bool sameDrawing(const FaceRecord &a, const FaceRecord &b) {
 class AgentFaceScreen;
 AgentFaceScreen *face = nullptr;
 
-class AgentFaceScreen : public ui::Screen {
+class AgentFaceScreen : public OffFaceScreen {
  public:
   AgentFaceScreen(bool usb, bool devWake) : usb_(usb), devWake_(devWake) {
     face = this;
@@ -304,13 +268,7 @@ class AgentFaceScreen : public ui::Screen {
   }
 
   std::string tag() const override { return "AGENT FACE"; }
-  bool chrome() const override { return false; }
-  bool offFace() const override { return true; }
   bool chirps() const override { return true; }
-  bool onKey(Key) override {  // a key: awake again (before the power-off, or on USB)
-    ui::nav::pop();
-    return true;
-  }
 
   bool onTick() override {
     if (usb_) {
@@ -327,7 +285,10 @@ class AgentFaceScreen : public ui::Screen {
       return true;
     }
     // On battery: the second tick after it's drawn, off.
-    if (!drawnOnce_ || ++ticks_ < 2) return false;
+    return offTick();
+  }
+
+  void powerOff() override {
     saveRecord(drawn_);
     saveU32("full", static_cast<uint32_t>(time(nullptr)));
     const time_t now = time(nullptr);
@@ -338,37 +299,32 @@ class AgentFaceScreen : public ui::Screen {
       saveU32("next", static_cast<uint32_t>(wake));
       saveU32("dev", 1);
     }
-    power::off(power::Mode::Agent, earliestWake(alarm, wake));
-    ui::nav::pop();  // still here: the power-off failed
-    return true;
+    power::off(power::Mode::Agent, power::earliest(alarm, wake));
   }
 
   void draw(ui::Canvas &c, const Rect &) override {
     drawn_ = recordNow(usb_, static_cast<uint32_t>(wakeAt_));
     if (devWake_ && !usb_) drawn_.next = static_cast<uint32_t>(time(nullptr) + 60);
     drawFace(c, drawn_);
-    drawnOnce_ = true;
+    drawn();
     if (lastFull_ == 0) lastFull_ = time(nullptr);
   }
 
  private:
   void plan() {
     wakeAt_ = usb_ ? 0 : nextCheck(time(nullptr));
-    ticks_ = 0;
+    restartTicks();
   }
 
   bool usb_;
   bool devWake_;
   time_t wakeAt_ = 0;
   FaceRecord drawn_ = {};
-  bool drawnOnce_ = false;
-  int ticks_ = 0;
   time_t lastFull_ = 0;
 };
 
 // --- Check-ins from power-off ------------------------------------------------------------------
 
-bool pwrHeld() { return digitalRead(board::PWR_KEY_SENSE) == HIGH; }
 
 // The result a schedule asked to show, on the panel: a page of it as a note, under a band.
 void showNoteNow(const std::string &title, const std::string &markdown) {
@@ -433,15 +389,11 @@ bool wakeAgentFace() {
   return true;
 }
 
-time_t earliestWake(time_t a, time_t b) {
-  if (!a) return b;
-  if (!b) return a;
-  return std::min(a, b);
-}
+time_t withAgentCheck(time_t wake) { return power::earliest(wake, agentCheckWake()); }
 
 time_t agentCheckWake() {
   const time_t now = time(nullptr);
-  if (!agent::configured() || batteryLow() || !rtc::timeValid()) {
+  if (!agent::configured() || lowBattery() || !rtc::timeValid()) {
     saveU32("next", 0);
     return 0;
   }
@@ -456,20 +408,21 @@ time_t agentCheckWake() {
 bool agentWake() {
   if (power::wake() != power::Wake::Alarm || !rtc::timeValid()) return false;
   const power::Mode mode = power::lastMode();
-  if (mode != power::Mode::Agent && mode != power::Mode::Sleep && mode != power::Mode::Book) {
+  if (mode != power::Mode::Agent && mode != power::Mode::Sleep && mode != power::Mode::Book &&
+      mode != power::Mode::Edition) {
     return false;
   }
   const time_t now = time(nullptr);
-  const time_t armed = power::armedFor();
-  const time_t ring = alarms::next(armed ? armed - 1 : now - 60);
+  const time_t ring = alarms::nextAtWake(now);
   if (ring && ring <= now + 1) return false;  // an alarm: boot, and it rings
   const uint32_t due = loadU32("next");
   if (due == 0 || now + 30 < static_cast<time_t>(due)) {
-    // Woken for something else (an alarm snoozed or deleted since): Sleep and a book boot as
-    // they always have; the face goes back off.
+    // Woken for something else (an alarm snoozed or deleted since, the edition): Sleep and a
+    // book boot as they always have, the edition's wake draws it (apps/news_edition.h); the face
+    // goes back off.
     if (mode != power::Mode::Agent) return false;
   }
-  if (batteryLow()) {
+  if (lowBattery()) {
     if (mode == power::Mode::Agent) {
       FaceRecord r = {};
       loadRecord(r);
@@ -499,9 +452,11 @@ bool agentWake() {
     return false;
   }
   if (mode != power::Mode::Agent) {
-    // Sleep and a book: no chirp, no redraw (the result waits on Home).
+    // Sleep, a book and the edition: no chirp, no redraw (the result waits on Home). The
+    // edition keeps its own wake.
     agent::markSeen(std::max(seenAsk, g.latestAsk), std::max(seenDone, g.latestDone));
-    power::off(mode, earliestWake(ring, agentCheckWake()));
+    const time_t edition = mode == power::Mode::Edition ? editionWakeAt() : 0;
+    power::off(mode, power::earliest(withAgentCheck(ring), edition));
     return false;
   }
   // The face: a chirp for what's new, a redraw for what changed, the ladder for the next.
@@ -525,19 +480,8 @@ bool agentWake() {
   if (!haveOld || !sameDrawing(old, fresh)) {
     const bool full = !haveOld || now - static_cast<time_t>(loadU32("full")) > kFullEveryS;
     ui::Canvas &c = screen::canvas();
-    screen::lock();
-    screen::setLandscape(false);
-    if (haveOld && !full) {
-      screen::clear();
-      drawFace(c, old);
-      screen::assumeShown();
-    }
-    screen::clear();
-    drawFace(c, fresh);
-    screen::sleepWhileBusy(!(pmic::status().vbus));
-    screen::present(full);
-    screen::sleepWhileBusy(false);
-    screen::unlock();
+    screen::presentOver(false, full, [&] { drawFace(c, old); }, [&] { drawFace(c, fresh); },
+                        pmic::status().vbus);
     if (full) saveU32("full", static_cast<uint32_t>(now));
     saveRecord(fresh);
   }
@@ -547,14 +491,14 @@ bool agentWake() {
     log_i("agent face: dev wake done, staying on");
     return false;
   }
-  power::off(power::Mode::Agent, earliestWake(ring, next));
+  power::off(power::Mode::Agent, power::earliest(ring, next));
   return false;
 }
 
 bool agentStandbyCheck() {
   const uint32_t due = loadU32("next");
   const time_t now = time(nullptr);
-  if (due == 0 || now + 30 < static_cast<time_t>(due) || batteryLow()) return false;
+  if (due == 0 || now + 30 < static_cast<time_t>(due) || lowBattery()) return false;
   uint32_t seenAsk = 0, seenDone = 0;
   agent::seen(seenAsk, seenDone);
   const bool ok = checkIn();

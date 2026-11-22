@@ -8,6 +8,7 @@
 #include "apps/library.h"
 #include "fonts.h"
 #include "book_reader.h"
+#include "paths.h"
 #include "readstate.h"
 #include "screen.h"
 #include "ui/menu.h"
@@ -46,8 +47,8 @@ std::string roman(int n) {
   return out;
 }
 
-std::string folderOf(const std::string &path) { return path.substr(0, path.rfind('/')); }
-std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
+using paths::folderOf;
+using paths::nameOf;
 
 // One line per contents entry: the book's TOC, or one per spine item if it has none.
 struct ContentsEntry {

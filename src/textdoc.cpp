@@ -7,6 +7,7 @@
 
 #include <algorithm>
 
+#include "paths.h"
 #include "text.h"
 #include "typeset.h"
 
@@ -100,11 +101,7 @@ bool isUtf8(const std::string &s) {
   return bad == 0 || bad * 100 <= multi;
 }
 
-std::string extensionOf(const std::string &path) {
-  const std::string name = path.substr(path.rfind('/') + 1);
-  const size_t dot = name.rfind('.');
-  return dot == std::string::npos || dot == 0 ? std::string() : name.substr(dot + 1);
-}
+using paths::extensionOf;
 
 // [begin, end) of each line of s.
 template <typename Fn>

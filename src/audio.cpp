@@ -20,6 +20,7 @@
 #include "board_pins.h"
 #include "es8311.h"
 #include "mp3info.h"
+#include "paths.h"
 #include "pmic.h"
 #include "text.h"
 
@@ -270,11 +271,6 @@ void closeTrack() {
   p.wav = false;
 }
 
-bool hasExtension(const std::string &path, const char *ext) {
-  const size_t n = strlen(ext);
-  return path.size() > n && strcasecmp(path.c_str() + path.size() - n, ext) == 0;
-}
-
 uint32_t le32(const uint8_t *b) {
   return b[0] | b[1] << 8 | b[2] << 16 | static_cast<uint32_t>(b[3]) << 24;
 }
@@ -330,7 +326,7 @@ bool openTrack(int index) {
   }
   std::string title, artist;
   long start = 0, wavBytes = 0;
-  p.wav = hasExtension(path, ".wav");
+  p.wav = paths::hasSuffix(path, ".wav");
   if (p.wav) {
     if (!parseWav(p.file, p.wavRate, p.wavChannels, start, wavBytes)) {
       log_w("audio: %s isn't a 16-bit PCM WAV", path.c_str());

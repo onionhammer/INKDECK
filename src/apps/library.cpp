@@ -14,6 +14,7 @@
 #include "apps/home.h"
 #include "apps/reader.h"
 #include "book_library.h"
+#include "paths.h"
 #include "readstate.h"
 #include "sdcard.h"
 #include "ui/nav.h"
@@ -27,16 +28,10 @@ using ui::Rect;
 constexpr uint32_t kReadBudgetMs = 1500;  // metadata read per tick, between progress redraws
 constexpr ui::TextStyle kHeading{&ui::fonts::kMono15ExtraBold, 1};  // an author's name
 
-std::string folderOf(const std::string &path) { return path.substr(0, path.rfind('/')); }
-std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
+using paths::folderOf;
+using paths::nameOf;
 
-// path is dir or somewhere inside it. FAT ignores case, so this does too.
-bool isInside(const std::string &path, const std::string &dir) {
-  if (path.size() < dir.size() || strncasecmp(path.c_str(), dir.c_str(), dir.size()) != 0) {
-    return false;
-  }
-  return path.size() == dir.size() || path[dir.size()] == '/';
-}
+using paths::isInside;
 
 class LibraryScreen : public ui::Screen {
  public:
@@ -94,7 +89,7 @@ class LibraryScreen : public ui::Screen {
       const int read = shelf_.total() - shelf_.unread();
       ui::drawSectionHeader(c, head, std::string("READING BOOKS") + ui::glyph::kEllipsis,
                             std::to_string(read) + "/" + std::to_string(shelf_.total()), {true});
-      drawEmpty(c, r, "NEW BOOKS",
+      ui::drawEmpty(c, r, "NEW BOOKS",
                 "Reading the title and author of each new book, to list it under its author. "
                 "Each book is read once, then kept on the card.");
       progressShown_ = true;
@@ -109,14 +104,14 @@ class LibraryScreen : public ui::Screen {
     const std::string retry = std::string(" Press ") + ui::glyph::kPress + " to retry.";
     if (!readable_) {
       if (sdcard::mounted()) {
-        drawEmpty(c, r, "CAN'T READ", "The books folder couldn't be opened." + retry);
+        ui::drawEmpty(c, r, "CAN'T READ", "The books folder couldn't be opened." + retry);
       } else {
-        drawEmpty(c, r, "NO SD CARD", "Insert a microSD card." + retry);
+        ui::drawEmpty(c, r, "NO SD CARD", "Insert a microSD card." + retry);
       }
       return;
     }
     if (bookCount_ == 0) {
-      drawEmpty(c, r, "NO BOOKS",
+      ui::drawEmpty(c, r, "NO BOOKS",
                 "No EPUB files in " + displayPath(root_) +
                     ". Copy some there over the Wi-Fi drive (System) or from a share in Files." +
                     retry);
@@ -245,17 +240,6 @@ class LibraryScreen : public ui::Screen {
     if (dashTo > dashFrom) ui::dashedH(c, dashFrom, band.centerY(), dashTo - dashFrom);
   }
 
-  static void drawEmpty(ui::Canvas &c, const Rect &r, const char *title,
-                        const std::string &text) {
-    const Rect p = r.inset(20, 24);
-    int y = p.y + ui::capHeight(ui::style::kTitle);
-    ui::drawText(c, p.x, y, title, ui::style::kTitle);
-    y += 24;
-    for (const auto &line : ui::wrap(ui::style::kBody, text, p.w, 4)) {
-      y += 22;
-      ui::drawText(c, p.x, y, line, ui::style::kBody);
-    }
-  }
 
   std::string root_;    // the books folder
   std::string select_;  // the book the cursor starts on

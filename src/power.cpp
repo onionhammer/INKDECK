@@ -10,6 +10,8 @@
 #include "board_pins.h"
 #include "file_copy.h"
 #include "input.h"
+#include "news_library.h"
+#include "page_fetch.h"
 #include "ota.h"
 #include "pmic.h"
 #include "podcast_library.h"
@@ -44,6 +46,7 @@ const char *modeName(Mode m) {
     case Mode::Standby: return "standby";
     case Mode::Book: return "book";
     case Mode::Agent: return "agent";
+    case Mode::Edition: return "edition";
     case Mode::On: break;
   }
   return "-";
@@ -53,6 +56,7 @@ const char *modeName(Mode m) {
 // power-off would cut short.
 bool working() {
   if (weather::syncing() || podcasts::busy() || ota::active() || webdav::active()) return true;
+  if (news::busy() || pagefetch::busy()) return true;
   if (filecopy::busy()) return true;
 #if INKDECK_AGENT
   if (agent::busy()) return true;
@@ -88,7 +92,7 @@ void begin() {
     cyclesLeft = prefs.getInt("cycles", 0);
     prefs.end();
   }
-  if (mode > Mode::Agent) mode = Mode::On;
+  if (mode > Mode::Edition) mode = Mode::On;
   log_i("power: woke by %s (reset %d, PMIC 0x20 = %02X), last off: %s, armed %ld", wakeName(wakeReason),
         static_cast<int>(reset), bits, modeName(mode), static_cast<long>(armed));
 }
@@ -154,6 +158,14 @@ void off(Mode m, time_t wakeAt, int standbyCycles) {
   markOn();
 }
 
+bool lowBattery(const pmic::Status &p) {
+  return p.ok && !p.vbus && p.percent >= 0 && p.percent < kLowBatteryPercent;
+}
+
+bool lowBattery() { return lowBattery(pmic::status()); }
+
+bool pwrHeld() { return digitalRead(board::PWR_KEY_SENSE) == HIGH; }
+
 bool idle(bool reading) {
   if (input::idleMs() < kIdleMs) return false;
   const pmic::Status p = pmic::status();
@@ -161,8 +173,7 @@ bool idle(bool reading) {
   if (audio::ringing()) return false;
   const bool playing =
       audio::status().state == audio::State::Playing || audio::recording();  // a memo too
-  const bool low = p.percent >= 0 && p.percent < kLowBatteryPercent;
-  if ((reading || playing) && !low) return false;
+  if ((reading || playing) && !lowBattery(p)) return false;
   return !working();
 }
 

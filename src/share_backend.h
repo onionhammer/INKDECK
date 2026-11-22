@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "shares.h"
+#include "text.h"
 
 namespace shares {
 
@@ -58,7 +59,10 @@ bool parseSmb(const std::string &spec, Share &out, std::string &password, std::s
 
 // Shared by both parsers.
 bool parseNumber(const std::string &s, uint32_t max, uint32_t &out);
-std::string percentDecode(const std::string &s);
+using text::percentDecode;
+// A server's "host:port" (the port optional, from 1 to 65535): the port into out.port and the
+// host without it into host. False, with error set, if the port is wrong or there's no host.
+bool parseHostPort(std::string &host, Share &out, std::string &error);
 // The URL's options (after the ?) one at a time: name=value pairs joined by &, values decoded.
 // Takes `name` itself; calls option(key, value) for the rest, which returns false (with error
 // set) to reject the URL.

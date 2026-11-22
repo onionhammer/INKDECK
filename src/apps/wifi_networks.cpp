@@ -9,6 +9,7 @@
 
 #include "apps/home.h"
 #include "apps/radio_ui.h"
+#include "text.h"
 #include "wifi_survey.h"
 
 namespace apps {
@@ -34,12 +35,7 @@ Bssid keyOf(const Network &n) {
   return b;
 }
 
-// The list's order, shared with the detail: ▲▼ there steps through it, and the list's cursor
-// follows back to where the detail ended.
-struct Browse {
-  std::vector<Bssid> order;
-  int index = 0;
-};
+using Browse = radio::Browse<Bssid>;
 
 enum class Sort : uint8_t { Signal, Channel, Name };
 
@@ -52,11 +48,7 @@ const char *sortName(Sort s) {
   return "";
 }
 
-std::string lower(const std::string &s) {
-  std::string out = s;
-  for (char &ch : out) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
-  return out;
-}
+using text::lower;
 
 void sortNetworks(std::vector<Network> &v, Sort s) {
   switch (s) {
@@ -81,11 +73,6 @@ void sortNetworks(std::vector<Network> &v, Sort s) {
 
 std::string nameOf(const Network &n) { return n.ssid.empty() ? "(hidden)" : n.ssid; }
 
-std::string twoOf(int i, int n) {
-  char buf[16];
-  snprintf(buf, sizeof buf, "%02d/%02d", i, n);
-  return buf;
-}
 
 std::string subtitleOf(const Network &n) {
   const char *dot = " \xC2\xB7 ";
@@ -172,7 +159,7 @@ class WifiDetail : public ui::Screen {
   std::string tag() const override { return moduleTag("SENSORS"); }
   std::string context() const override {
     return "WI-FI \xC2\xB7 " +
-           twoOf(browse_->index + 1, static_cast<int>(browse_->order.size()));
+           browse_->position();
   }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kDial, "NETWORK"};
@@ -256,9 +243,8 @@ class WifiDetail : public ui::Screen {
   }
 
   bool step(int delta) {
-    const int count = static_cast<int>(browse_->order.size());
-    const int next = browse_->index + delta;
-    if (next < 0 || next >= count) return false;
+    const int next = browse_->step(delta);
+    if (next < 0) return false;
     for (const Network &n : wifisurvey::networks()) {
       if (keyOf(n) != browse_->order[next]) continue;
       browse_->index = next;
@@ -396,10 +382,7 @@ class WifiList : public ui::Screen {
 
   void onEnter() override {
     wifisurvey::begin();
-    if (!browse_->order.empty() && browse_->index < static_cast<int>(browse_->order.size())) {
-      selected_ = browse_->order[browse_->index];  // where the detail ended
-      haveSelected_ = true;
-    }
+    if (browse_->current(selected_)) haveSelected_ = true;  // where the detail ended
     reload();
   }
   void onLeave() override { wifisurvey::end(); }
@@ -475,15 +458,8 @@ class WifiList : public ui::Screen {
     error_ = wifisurvey::error();
     nets_ = wifisurvey::networks();
     sortNetworks(nets_, sort_);
-    int at = 0;
-    if (haveSelected_) {
-      for (size_t i = 0; i < nets_.size(); ++i) {
-        if (keyOf(nets_[i]) == selected_) at = static_cast<int>(i);
-      }
-    }
-    cursor_.reset(static_cast<int>(nets_.size()), at);
-    browse_->order.clear();
-    for (const Network &n : nets_) browse_->order.push_back(keyOf(n));
+    cursor_.reset(static_cast<int>(nets_.size()),
+                  browse_->reorder(nets_, keyOf, haveSelected_, selected_));
     remember();
   }
 

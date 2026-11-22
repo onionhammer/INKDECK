@@ -1,4 +1,4 @@
-// Home (the "Main" artboard): preview of the selected module above the 10-row module list.
+// Home (the "Main" artboard): preview of the selected module above the module list (12 rows).
 // The navigator's root screen.
 #pragma once
 #include <memory>
@@ -10,7 +10,7 @@ namespace apps {
 
 std::unique_ptr<ui::Screen> makeHome();
 
-// A module's status-bar tag with its place on Home: moduleTag("CLOCK") is "05 CLOCK". Screens
+// A module's status-bar tag with its place on Home: moduleTag("CLOCK") is "06 CLOCK". Screens
 // use it, so reordering Home renumbers them all.
 std::string moduleTag(const char *label);
 

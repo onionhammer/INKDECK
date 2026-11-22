@@ -10,6 +10,7 @@
 #include "alarms.h"
 #include "apps/home.h"
 #include "apps/lock.h"
+#include "apps/off_face.h"
 #include "covers.h"
 #include "picture.h"
 #include "power.h"
@@ -34,7 +35,7 @@ constexpr int kTitleLines = 9;
 class ClosedBookScreen;
 const ClosedBookScreen *showing = nullptr;  // while it's on the stack
 
-class ClosedBookScreen : public ui::Screen {
+class ClosedBookScreen : public OffFaceScreen {
  public:
   explicit ClosedBookScreen(bool devWake) {
     showing = this;
@@ -55,21 +56,8 @@ class ClosedBookScreen : public ui::Screen {
   }
 
   std::string tag() const override { return moduleTag("READER"); }
-  bool chrome() const override { return false; }
-  bool offFace() const override { return true; }
-  bool onKey(Key) override {  // a key in the second before power-off: back to the page
-    ui::nav::pop();
-    return true;
-  }
-  bool onTick() override {
-    // The first tick can come straight after the refresh; wait for the next, so a key has a
-    // second to cancel.
-    if (!drawn_ || ++ticks_ < 2) return false;
-    // Also when inkharness asks for a check-in (a schedule that wakes the board).
-    power::off(power::Mode::Book, earliestWake(wakeAt_, agentCheckWake()));
-    ui::nav::pop();  // still here: the power-off failed
-    return true;
-  }
+  // Also when inkharness asks for a check-in (a schedule that wakes the board).
+  void powerOff() override { power::off(power::Mode::Book, withAgentCheck(wakeAt_)); }
 
   void draw(ui::Canvas &c, const Rect &body) override {
     Rect r = body;
@@ -81,7 +69,7 @@ class ClosedBookScreen : public ui::Screen {
     } else {
       drawPlainCover(c, r);
     }
-    drawn_ = true;
+    drawn();
   }
 
  private:
@@ -117,8 +105,6 @@ class ClosedBookScreen : public ui::Screen {
   std::string title_;
   int percent_ = -1;
   picture::Bitmap cover_;
-  bool drawn_ = false;
-  int ticks_ = 0;  // since drawn
 };
 
 }  // namespace

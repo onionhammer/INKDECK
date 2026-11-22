@@ -146,6 +146,14 @@ pub struct DeviceTool {
     pub input_schema: serde_json::Value,
 }
 
+fn is_zero(n: &i64) -> bool {
+    *n == 0
+}
+
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
 fn no_input() -> serde_json::Value {
     serde_json::json!({"type": "object", "properties": {}})
 }
@@ -235,6 +243,18 @@ pub enum ClientMsg {
     /// Says a session's last result aloud (a schedule with `speak`): answered as a reply,
     /// `reply_start`, audio and `reply_end`, with no `stt`.
     Speak { session: String },
+    /// Fetches a web page and reads its article (News, for a feed that gives only a summary,
+    /// and the links in a story). Answered with `page`, the same id. Only to a daemon whose
+    /// hello says `reader`. With `image_width` and `image_height` (the largest picture the
+    /// device shows, in pixels), the article's pictures come first, each a `page_image`.
+    Read {
+        id: u32,
+        url: String,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        image_width: u32,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        image_height: u32,
+    },
 }
 
 /// What kind of turn an utterance is.
@@ -260,6 +280,9 @@ pub enum ServerMsg {
         /// Present when the daemon has agent sessions.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<AgentHello>,
+        /// It answers `read`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reader: bool,
     },
     /// What the daemon heard.
     Stt {
@@ -314,6 +337,36 @@ pub enum ServerMsg {
         /// When further tries are refused for this many seconds (too many wrong PINs).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_s: Option<u64>,
+    },
+    /// One of the article's pictures, before the `page` of the same id: 1 bit a pixel, rows of
+    /// (width + 7) / 8 bytes, the leftmost pixel in the top bit, 1 for ink, in base64. The
+    /// text shows it where `![](inkimg:index)` stands.
+    PageImage {
+        id: u32,
+        index: u32,
+        width: u32,
+        height: u32,
+        bits: String,
+    },
+    /// The answer to `read`: the page's article as Markdown (links as `[text](url)`), or
+    /// `error` when there is none.
+    Page {
+        id: u32,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        title: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        byline: String,
+        /// The site's name, else its host.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        site: String,
+        /// Unix seconds; 0 if the page doesn't say.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        published: i64,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        markdown: String,
+        /// Why there is no article ("HTTP 403", "no article on the page"); empty when there is.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        error: String,
     },
     /// A request that isn't a turn and can't be done.
     Refused {
@@ -1035,6 +1088,72 @@ mod tests {
     }
 
     #[test]
+    fn read_and_page() {
+        round_trip(
+            r#"{"type":"read","id":3,"url":"https://www.bbc.co.uk/news/articles/x"}"#,
+            ClientMsg::Read {
+                id: 3,
+                url: "https://www.bbc.co.uk/news/articles/x".into(),
+                image_width: 0,
+                image_height: 0,
+            },
+        );
+        round_trip(
+            r#"{"type":"read","id":5,"url":"https://a.b/c","image_width":420,"image_height":600}"#,
+            ClientMsg::Read {
+                id: 5,
+                url: "https://a.b/c".into(),
+                image_width: 420,
+                image_height: 600,
+            },
+        );
+        round_trip(
+            r#"{"type":"page_image","id":5,"index":0,"width":8,"height":2,"bits":"8A8="}"#,
+            ServerMsg::PageImage {
+                id: 5,
+                index: 0,
+                width: 8,
+                height: 2,
+                bits: "8A8=".into(),
+            },
+        );
+        round_trip(
+            r#"{"type":"page","id":3,"title":"A story","site":"BBC News","published":1795327274,
+                "markdown":"Text with [a link](https://a.b/c)."}"#,
+            ServerMsg::Page {
+                id: 3,
+                title: "A story".into(),
+                byline: String::new(),
+                site: "BBC News".into(),
+                published: 1795327274,
+                markdown: "Text with [a link](https://a.b/c).".into(),
+                error: String::new(),
+            },
+        );
+        round_trip(
+            r#"{"type":"page","id":4,"error":"HTTP 403"}"#,
+            ServerMsg::Page {
+                id: 4,
+                title: String::new(),
+                byline: String::new(),
+                site: String::new(),
+                published: 0,
+                markdown: String::new(),
+                error: "HTTP 403".into(),
+            },
+        );
+        round_trip(
+            r#"{"type":"hello","proto":2,"session":"s1","reader":true}"#,
+            ServerMsg::Hello {
+                proto: 2,
+                session: "s1".into(),
+                agent: None,
+                reader: true,
+            },
+        );
+    }
+
+    #[test]
     fn session_messages() {
         round_trip(
             r#"{"type":"hello","proto":2,"session":"s1",
@@ -1048,6 +1167,7 @@ mod tests {
                     unlocked: false,
                     features: Vec::new(),
                 }),
+                reader: false,
             },
         );
         round_trip(
@@ -1063,6 +1183,7 @@ mod tests {
                     unlocked: true,
                     features: vec!["pause".into(), "schedule".into()],
                 }),
+                reader: false,
             },
         );
         // No agent field: no sessions on this daemon.
@@ -1072,6 +1193,7 @@ mod tests {
                 proto: 2,
                 session: "s1".into(),
                 agent: None,
+                reader: false,
             },
         );
         round_trip(

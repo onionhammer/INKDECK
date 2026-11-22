@@ -6,6 +6,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <algorithm>
+
 #include "alarms.h"
 #include "apps/clock.h"
 #include "apps/files.h"
@@ -14,6 +16,7 @@
 #include "apps/lock.h"
 #include "apps/music.h"
 #include "apps/podcasts.h"
+#include "apps/news.h"
 #include "apps/recorder.h"
 #include "apps/reader.h"
 #include "apps/sensors.h"
@@ -29,6 +32,7 @@
 #include "fonts.h"
 #include "pmic.h"
 #include "podcast_library.h"
+#include "news_library.h"
 #include "readstate.h"
 #include "rtc.h"
 #include "flashfs.h"
@@ -38,6 +42,7 @@
 #include "suntimes.h"
 #include "sysinfo.h"
 #include "timesync.h"
+#include "timeutil.h"
 #include "units.h"
 #include "forecast.h"
 #include "wlan.h"
@@ -49,7 +54,7 @@ using ui::Key;
 using ui::Rect;
 
 enum class Kind : uint8_t {
-  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder,
+  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder, News,
 #if INKDECK_AGENT
   Agent,
 #endif
@@ -65,13 +70,14 @@ struct Module {
 
 // Copy from the design canvas, trimmed to what the firmware does today. The order is the
 // user's (2026-11-13; AGENT up to 03 and MUSIC down to 07 on 2026-11-20, issue #52): what's
-// used most first, related modules together. Screen tags follow it through moduleTag().
+// used most first, related modules together; NEWS up to 02 and PODCASTS down to 05 on
+// 2026-11-21. Screen tags follow it through moduleTag().
 // The \xC2\xB7 escapes in these strings are the middle dot (UTF-8 U+00B7).
 constexpr Module kModules[] = {
     {"READER", "SD", "EPUB books from microSD. Opens where you left off.",
      "microSD \xC2\xB7 SDMMC 4-bit", Kind::Reader},
-    {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
-     "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts},
+    {"NEWS", "NET", "RSS and Atom feeds over Wi-Fi, kept on the card to read offline.",
+     "Wi-Fi \xC2\xB7 microSD", Kind::News},
 #if INKDECK_AGENT
     {"AGENT", "NET",
      "Long jobs inkharness runs while the board sleeps. It asks here when you need to choose.",
@@ -79,6 +85,8 @@ constexpr Module kModules[] = {
 #endif
     {"WEATHER", "NET", "Now, hourly and 6-day forecast over Wi-Fi, every half hour on USB.",
      "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather},
+    {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
+     "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
      "PCF85063A @ 0x51", Kind::Clock},
     {"RECORDER", "MIC", "Voice memos from the onboard mic, written to SD as WAV.",
@@ -263,6 +271,35 @@ int statsFor(const Module &m, Stat out[4]) {
       out[3] = {"ON SD", buf};
       return 4;
     }
+    case Kind::News: {
+      static bool loaded = false;  // the library is read when the row is first shown
+      if (!loaded) loaded = news::load(false);
+      const int fresh = news::freshCount();
+      out[0] = {"NEW", fresh ? std::to_string(fresh) : ui::glyph::kEmDash};
+      const int feeds = news::feedCount();
+      out[1] = {"FEEDS", feeds ? std::to_string(feeds) : "NONE"};
+      const int saved = news::savedCount();
+      out[2] = {"SAVED", saved ? std::to_string(saved) : ui::glyph::kEmDash};
+      const news::Activity a = news::activity();
+      std::string synced = a.busy ? a.text : std::string();
+      if (!a.busy) {
+        const time_t t = news::lastSync();
+        if (!t) {
+          synced = "NEVER";
+        } else {
+          tm l, today;
+          localtime_r(&t, &l);
+          const time_t now = time(nullptr);
+          localtime_r(&now, &today);
+          char buf[16];
+          const bool sameDay = timeutil::sameDay(l, today);
+          strftime(buf, sizeof buf, sameDay ? "%H:%M" : "%d %b", &l);
+          synced = ui::upper(buf);
+        }
+      }
+      out[3] = {a.busy ? "NETWORK" : "SYNCED", synced};
+      return 4;
+    }
     case Kind::Weather: {
       weather::Forecast f;
       const time_t now = time(nullptr);
@@ -426,6 +463,10 @@ class HomeScreen : public ui::Screen {
     const weather::Phase w = weather::status().phase;
     changed |= w != drawnWeather_ && kind == Kind::Weather;
     drawnWeather_ = w;
+    // A news sync starting or finishing.
+    const bool n = news::busy();
+    changed |= n != drawnNews_ && kind == Kind::News;
+    drawnNews_ = n;
 #if INKDECK_AGENT
     // The Agent's row tag and preview follow the list.
     const agent::Glance a = agent::glance();
@@ -478,6 +519,7 @@ class HomeScreen : public ui::Screen {
       case Kind::Weather: ui::nav::push(makeWeather()); break;
       case Kind::Level: ui::nav::push(makeLevel()); break;
       case Kind::Recorder: ui::nav::push(makeRecorder()); break;
+      case Kind::News: ui::nav::push(makeNews()); break;
 #if INKDECK_AGENT
       case Kind::Agent: openGuarded(Guarded::Agent, makeAgent); break;
 #endif
@@ -489,7 +531,8 @@ class HomeScreen : public ui::Screen {
     using namespace ui;
     const Module &m = kModules[i];
     // 10 px above and 8 below: with 11 modules in the list the preview is 34 px shorter than
-    // the canvas drew it, and the stats would otherwise meet the OPEN button.
+    // the canvas drew it, and the stats would otherwise meet the OPEN button. With 12 it's 68 px
+    // shorter, and the button goes.
     const Rect p{area.x + 20, area.y + 10, area.w - 40, area.h - 10 - 8};
 
     const std::string num = twoDigits(i + 1);
@@ -510,12 +553,18 @@ class HomeScreen : public ui::Screen {
     hrule(c, p.x, y, p.w);
     y += kRule + 10;
 
-    // READER: the last book's cover, framed, with a dithered shadow like the button's; the
-    // stats move right of it.
+    // With twelve modules the list leaves no room under the stats for the HW line and the OPEN
+    // button (the hint bar says OPEN too).
+    const bool buttonRow = p.bottom() - 44 >= y + 2 * 48;
+
+    // READER: the last book's cover, framed, with a dithered shadow like the button's, as tall as
+    // the space down to the button row (the bottom without one); the stats move right of it.
     Rect statsArea{p.x, y, p.w, 96};
+    bool fitColumn = false;  // the right column only as wide as its stats need
     if (m.kind == Kind::Reader) {
-      constexpr int kFrame = 2, kShadow = 4, kMaxW = 84, kGap = 16;
-      const int maxH = (p.bottom() - 44 - 10) - y - kShadow - 2 * kFrame;
+      constexpr int kFrame = 2, kShadow = 4, kMaxW = 132, kGap = 16;
+      const int bottom = buttonRow ? p.bottom() - 44 - 10 : p.bottom();
+      const int maxH = bottom - y - kShadow - 2 * kFrame;
       std::string path, title;
       readstate::Position pos;
       picture::Bitmap cover;
@@ -529,24 +578,40 @@ class HomeScreen : public ui::Screen {
         statsArea.x += shift;
         statsArea.w -= shift;
       }
+      fitColumn = true;  // PLACE and SD CARD are short; the title gets the room
     }
 
     Stat stats[4];
     const int n = statsFor(m, stats);
-    const int colW = (statsArea.w - 20) / 2;
+    constexpr int kColGap = 20;
+    int rightW = (statsArea.w - kColGap) / 2;
+    if (fitColumn) {
+      int need = 0;
+      for (int k = 1; k < n; k += 2) {
+        need = std::max({need, textWidth(style::kKey, stats[k].key),
+                         textWidth(style::kValue, stats[k].value)});
+      }
+      if (need > 0) rightW = std::min(rightW, need + 4);
+    }
+    const int leftW = statsArea.w - kColGap - rightW;
     for (int k = 0; k < n; ++k) {
-      drawStat(c, {statsArea.x + (k % 2) * (colW + 20), y + (k / 2) * 48, colW, 48},
+      const bool right = k % 2 == 1;
+      drawStat(c, {statsArea.x + (right ? leftW + kColGap : 0), y + (k / 2) * 48,
+                   right ? rightW : leftW, 48},
                stats[k].key, stats[k].value);
     }
 
-    const Rect button = drawButton(c, p.right() - 6, p.bottom() - 44, glyph::kPress, "OPEN");
-    drawText(c, {p.x, button.y, button.x - p.x - 14, button.h},
-             std::string("HW ") + glyph::kPointer + " " + m.hw, style::kLabel);
+    if (buttonRow) {
+      const Rect button = drawButton(c, p.right() - 6, p.bottom() - 44, glyph::kPress, "OPEN");
+      drawText(c, {p.x, button.y, button.x - p.x - 14, button.h},
+               std::string("HW ") + glyph::kPointer + " " + m.hw, style::kLabel);
+    }
   }
 
   ui::ListCursor cursor_;
   uint32_t drawnGeneration_ = 0;
   weather::Phase drawnWeather_ = weather::Phase::Idle;
+  bool drawnNews_ = false;
 #if INKDECK_AGENT
   uint32_t drawnAgent_ = 0;
 #endif

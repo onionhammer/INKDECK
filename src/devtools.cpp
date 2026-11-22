@@ -11,6 +11,7 @@
 #include <string>
 
 #include "apps/agent_face.h"
+#include "apps/news_edition.h"
 #include "apps/idle.h"
 #include "audio.h"
 #include "board_pins.h"
@@ -19,6 +20,7 @@
 #include "flashfs.h"
 #include "forecast.h"
 #include "input.h"
+#include "news_library.h"
 #include "pmic.h"
 #include "podcast_library.h"
 #include "qmi8658.h"
@@ -391,6 +393,25 @@ void lineCommand(const String &line) {
     Serial.println(remove(path.c_str()) == 0 ? "devtools: removed" : "devtools: can't remove");
     return;
   }
+  if (line.startsWith("newsfeed ")) {
+    const String url = line.substring(9);
+    mkdir(news::kRoot, 0777);
+    FILE *f = fopen(news::kFeedsFile, "ab");
+    if (!f) {
+      Serial.println("devtools: can't open the news feeds file");
+      return;
+    }
+    fprintf(f, "%s\n", url.c_str());
+    fclose(f);
+    news::load(false);
+    Serial.printf("devtools: added a news feed (%u characters)\n", url.length());
+    return;
+  }
+  if (line == "newssync") {
+    news::sync();
+    Serial.println("devtools: syncing the news feeds");
+    return;
+  }
   if (line.startsWith("feed ")) {
     const String url = line.substring(5);
     mkdir(podcasts::kRoot, 0777);
@@ -433,6 +454,7 @@ void task(void *) {
         case 'z': apps::requestStandby(2); break;
         case 'k': apps::requestCloseBook(); break;
         case 'a': apps::requestAgentFace(); break;
+        case 'e': apps::requestEdition(); break;
         case 'h':
           Serial.printf("heap: internal %u free (largest %u, lowest %u), DMA %u free (largest %u), "
                         "PSRAM %u free\n",

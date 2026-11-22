@@ -11,8 +11,10 @@
 #include <map>
 #include <utility>
 
+#include "cache_file.h"
 #include "dirlist.h"
 #include "epub.h"
+#include "paths.h"
 #include "sdcard.h"
 #include "text.h"
 
@@ -44,46 +46,16 @@ void collect(const std::string &dir, int depth, std::vector<std::string> &out, i
 }
 
 // The file name without its extension: the title of a book that gives none.
-std::string fileTitle(const std::string &path) {
-  std::string name = path.substr(path.rfind('/') + 1);
-  const size_t dot = name.rfind('.');
-  return dot == std::string::npos || dot == 0 ? name : name.substr(0, dot);
-}
 
-// Tabs and line breaks would split the cache's fields; metadata attributes can hold them.
-std::string field(const std::string &s) {
-  std::string out = s;
-  for (char &c : out) {
-    if (c == '\t' || c == '\n' || c == '\r') c = ' ';
-  }
-  return out;
-}
-
-std::vector<std::string> split(const std::string &line, char sep) {
-  std::vector<std::string> out;
-  size_t at = 0;
-  for (;;) {
-    const size_t next = line.find(sep, at);
-    out.push_back(line.substr(at, next == std::string::npos ? std::string::npos : next - at));
-    if (next == std::string::npos) return out;
-    at = next + 1;
-  }
-}
+// Metadata attributes can hold tabs and line breaks, which would split the cache's fields.
+using cachefile::field;
+using cachefile::split;
 
 // The cache: path -> book with its metadata.
 std::map<std::string, Book> loadCache() {
   std::map<std::string, Book> out;
-  FILE *f = fopen(cachePath().c_str(), "rb");
-  if (!f) return out;
   std::string data;
-  fseek(f, 0, SEEK_END);
-  const long size = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  if (size > 0 && size < 1024 * 1024) {
-    data.resize(static_cast<size_t>(size));
-    if (fread(&data[0], 1, data.size(), f) != data.size()) data.clear();
-  }
-  fclose(f);
+  if (!cachefile::read(cachePath(), data, 1024 * 1024)) return out;
   const std::vector<std::string> lines = split(data, '\n');
   if (lines.empty() || lines[0] != kCacheHeader) return out;
   for (size_t i = 1; i < lines.size(); ++i) {
@@ -233,7 +205,7 @@ bool Shelf::step(uint32_t budgetMs) {
       // Listed under its file name, and not tried again until it changes.
       log_w("books: %s: %s", e.book.path.c_str(), err.c_str());
     }
-    e.book.title = meta.title.empty() ? fileTitle(e.book.path) : meta.title;
+    e.book.title = meta.title.empty() ? paths::stem(e.book.path) : meta.title;
     e.book.titleSort = meta.titleSort;
     e.book.author = meta.author;
     e.book.authorSort = meta.authorSort;
@@ -254,26 +226,7 @@ void Shelf::save() {
     out += field(b.path) + "\t" + std::to_string(b.size) + "\t" + field(b.title) + "\t" +
            field(b.titleSort) + "\t" + field(b.author) + "\t" + field(b.authorSort) + "\n";
   }
-  mkdir(cacheDir().c_str(), 0777);
-  const std::string path = cachePath();
-  const std::string part = path + ".part";
-  FILE *f = fopen(part.c_str(), "wb");
-  if (!f) {
-    log_w("books: can't write %s", part.c_str());
-    return;
-  }
-  const bool ok = fwrite(out.data(), 1, out.size(), f) == out.size();
-  if (fclose(f) != 0 || !ok) {
-    log_w("books: writing %s failed", part.c_str());
-    remove(part.c_str());
-    return;
-  }
-  remove(path.c_str());  // FAT's rename won't replace a file
-  if (rename(part.c_str(), path.c_str()) != 0) {
-    log_w("books: can't rename %s", part.c_str());
-    return;
-  }
-  dirty_ = false;
+  if (cachefile::writeWhole(cachePath(), out)) dirty_ = false;
 }
 
 std::vector<Author> Shelf::byAuthor() const {

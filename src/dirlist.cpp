@@ -9,25 +9,22 @@
 
 #include <algorithm>
 
+#include "paths.h"
+
 namespace {
 
 constexpr size_t kMaxEntries = 1000;
 
-bool endsWithNoCase(const std::string &s, const char *suffix) {
-  const size_t n = strlen(suffix);
-  return s.size() >= n && strcasecmp(s.c_str() + s.size() - n, suffix) == 0;
-}
-
 }  // namespace
 
-bool DirList::isEpub(const std::string &name) { return endsWithNoCase(name, ".epub"); }
-bool DirList::isMp3(const std::string &name) { return endsWithNoCase(name, ".mp3"); }
+bool DirList::isEpub(const std::string &name) { return paths::hasSuffix(name, ".epub"); }
+bool DirList::isMp3(const std::string &name) { return paths::hasSuffix(name, ".mp3"); }
 bool DirList::isAudio(const std::string &name) {
-  return isMp3(name) || endsWithNoCase(name, ".wav");
+  return isMp3(name) || paths::hasSuffix(name, ".wav");
 }
 bool DirList::isPicture(const std::string &name) {
-  return endsWithNoCase(name, ".jpg") || endsWithNoCase(name, ".jpeg") ||
-         endsWithNoCase(name, ".png");
+  return paths::hasSuffix(name, ".jpg") || paths::hasSuffix(name, ".jpeg") ||
+         paths::hasSuffix(name, ".png");
 }
 
 bool DirList::open(const std::string &dir) {

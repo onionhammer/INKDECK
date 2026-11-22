@@ -49,16 +49,13 @@ void end();
 std::vector<Network> networks();
 uint32_t lastScanMs();  // millis() of the last full scan, 0 if none yet
 uint32_t generation();  // changes with each full scan and each tracked sample
-bool scanning();        // a user is in and the radio is held
 std::string error();    // why the last scan failed ("RADIO BUSY"); "" after one that worked
 
 // Follow one network: its channel only, every kTrackMs, in place of the full scans.
-// untrack() goes back to them (the next comes at once).
+// untrack() goes back to them (the next comes at once). The tracked network's signal and time
+// are in its networks() entry.
 void track(const uint8_t bssid[6], uint8_t channel);
 void untrack();
-// How many times the tracked network has been heard since track() (a scan that misses it adds
-// nothing); its signal and time are in its networks() entry.
-uint32_t trackSamples();
 
 // The channels this board may scan (the driver's country setting), as seen by the last scan.
 void channelRange(int &first, int &last);

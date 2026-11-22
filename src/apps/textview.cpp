@@ -7,6 +7,7 @@
 #include "apps/home.h"
 #include "flashfs.h"
 #include "fonts.h"
+#include "paths.h"
 #include "readstate.h"
 #include "screen.h"
 #include "sdcard.h"
@@ -55,8 +56,8 @@ void saveStep(Step step) {
   prefs.end();
 }
 
-std::string folderOf(const std::string &path) { return path.substr(0, path.rfind('/')); }
-std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
+using paths::folderOf;
+using paths::nameOf;
 
 // The menu's FOLDER value, named as Files names it.
 std::string folderLabel(const std::string &path) {

@@ -91,6 +91,35 @@ void setTools(const char *definitions, ToolCall call);
 // What a call gave, or why it failed (error). Dropped if the session has ended since.
 void toolResult(uint32_t id, const std::string &text, bool error = false);
 
+// --- Reading pages -----------------------------------------------------------------------------
+
+// One of its pictures: 1 bit a pixel, rows of (width + 7) / 8 bytes, the leftmost pixel in the
+// top bit, 1 for ink. The text shows it where ![](inkimg:index) stands.
+struct PagePicture {
+  uint32_t index = 0;
+  uint16_t width = 0, height = 0;
+  std::vector<uint8_t> bits;
+};
+
+// A web page's article, as inkharness reads it (docs/voice-protocol.md, "Reading a page").
+struct Page {
+  std::string title, byline, site;
+  uint32_t published = 0;  // Unix seconds; 0 if the page doesn't say
+  std::string markdown;    // NoteDoc's Markdown, links as [text](url)
+  std::vector<PagePicture> pictures;
+};
+
+// Asks inkharness for the article in the page at url (News, page_fetch.h): joins Wi-Fi and
+// connects if need be (quietly, as a poll does), then waits up to timeoutMs in all for the
+// answer, or until abandon() says so. From a background task. False if there's no article:
+// error says why, and reached says whether inkharness had a go (a site's "HTTP 403", "no
+// article on the page") or wasn't there to ask (no daemon, no connection, one from before
+// `read`), when the caller can fetch the page itself. pictureW x pictureH: the largest picture
+// to show (0: none wanted); the daemon scales and dithers them to fit.
+bool readPage(const std::string &url, uint16_t pictureW, uint16_t pictureH, uint32_t timeoutMs,
+              Page &out, std::string &error, bool &reached, bool (*abandon)(void *) = nullptr,
+              void *context = nullptr);
+
 // --- The agent ---------------------------------------------------------------------------------
 
 // Where an utterance goes: asked by the agent task as each one starts.
@@ -111,7 +140,6 @@ struct Row {
   std::string sub;    // the question, the step or tool call under way, the result's first line
   int step = -1, steps = -1;  // the plan's progress: step `step` (from 1) of `steps`
   int progress = -1;          // 0-100
-  uint32_t updated = 0;       // Unix seconds
   bool unread = false;        // finished or asking, and not opened since
   uint32_t expectAt = 0;      // a working session's expected end
   uint32_t nextAt = 0;        // a schedule's next run, a watch's next look
@@ -191,10 +219,9 @@ struct Session {
   std::string id, title, state, place, prompt;
   bool herdr = false;
   std::string program;
-  std::string backend;              // api, claude or herdr
   std::vector<std::string> screen;  // herdr: the last lines of its terminal
   std::string result;  // Markdown, once it has finished
-  uint32_t started = 0, updated = 0;
+  uint32_t started = 0;
   int step = -1, steps = -1;
   std::vector<PlanStep> plan;
   std::vector<LogLine> log;  // newest first
@@ -214,11 +241,6 @@ enum Feature : uint32_t {
   kPause = 1 << 0,
   kRun = 1 << 1,
   kJobs = 1 << 2,
-  kSchedule = 1 << 3,
-  kWatch = 1 << 4,
-  kDeadline = 1 << 5,
-  kPanel = 1 << 6,
-  kSpeak = 1 << 7,
 };
 
 // Words for a herdr agent's terminal, held by inkharness until the board says to type them
@@ -270,7 +292,6 @@ struct Glance {
   std::string sayId, noteId;      // what to do with the newest result (unlocked lists only)
   std::string askSession, askId;  // the newest question (unlocked lists only)
   uint32_t askAt = 0;
-  uint32_t checkedAt = 0;  // when a list last came (Unix seconds)
   uint32_t nextCheck = 0;  // when the board looks again (Unix seconds; 0: when asked)
   bool live = false;       // the connection is up
   uint32_t generation = 0;
@@ -287,7 +308,7 @@ struct SummaryRow {
   uint32_t at;        // a working session's expected end, a watch's next look
   uint8_t sparkN;     // a watch's readings, scaled to 0-255 between sparkMin and sparkMax
   uint8_t spark[16];
-  float sparkMin, sparkMax, sparkLast;
+  float sparkMin, sparkMax;
 };
 struct Summary {
   uint16_t version;

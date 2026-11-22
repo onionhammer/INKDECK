@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "apps/home.h"
+#include "paths.h"
 #include "picture.h"
 #include "sensor_hub.h"
 
@@ -18,7 +19,6 @@ using ui::Rect;
 constexpr int kMaxGrow = 2;  // small pictures stay small rather than turning to blocks
 constexpr int kSettleTicks = 2;  // a new pose seen on this many ticks in a row (1 s apart) counts
 
-std::string baseName(const std::string &path) { return path.substr(path.rfind('/') + 1); }
 
 // How the board is held.
 enum class Pose : uint8_t {
@@ -67,7 +67,7 @@ class ViewerScreen : public ui::Screen {
 
   std::string tag() const override { return moduleTag("FILES"); }
   std::string context() const override {
-    const std::string name = baseName(paths_[index_]);
+    const std::string name = paths::nameOf(paths_[index_]);
     if (paths_.size() < 2) return name;
     char count[32];  // room for any two ints, so the compiler can see nothing is cut off
     snprintf(count, sizeof count, "%02d/%02d ", index_ + 1, static_cast<int>(paths_.size()));
@@ -170,7 +170,7 @@ class ViewerScreen : public ui::Screen {
     int y = p.y + ui::capHeight(ui::style::kTitle);
     ui::drawText(c, p.x, y, "CAN'T SHOW", ui::style::kTitle);
     y += 24;
-    const std::string text = baseName(paths_[index_]) +
+    const std::string text = paths::nameOf(paths_[index_]) +
                              " couldn't be decoded. JPEG and PNG work; a PNG up to 2400 px wide "
                              "and 4 megapixels.";
     for (const auto &line : ui::wrap(ui::style::kBody, text, p.w, 4)) {

@@ -7,6 +7,8 @@
 #include <mbedtls/platform.h>
 #include <strings.h>
 
+#include <memory>
+
 #include "tailnet.h"
 
 namespace net {
@@ -77,7 +79,7 @@ bool Get::open(const std::string &url, std::string &error, int64_t from,
   cfg.timeout_ms = kTimeoutMs;
   cfg.buffer_size = 4096;
   cfg.buffer_size_tx = 2048;  // tracking redirects make long request lines
-  cfg.user_agent = "ESP32 podcast client/1.0";
+  cfg.user_agent = userAgent_ ? userAgent_ : "ESP32 podcast client/1.0";
   cfg.keep_alive_enable = true;
   esp_http_client_handle_t c = esp_http_client_init(&cfg);
   if (!c) {
@@ -124,6 +126,13 @@ bool Get::open(const std::string &url, std::string &error, int64_t from,
   return false;
 }
 
+std::string Get::url() const {
+  if (!client_) return {};
+  char buf[512];
+  if (esp_http_client_get_url(handle(client_), buf, sizeof buf) != ESP_OK) return {};
+  return buf;
+}
+
 int Get::read(char *buf, int len) {
   if (!client_) return -1;
   const int n = esp_http_client_read(handle(client_), buf, len);
@@ -143,6 +152,35 @@ void Get::close() {
     tailnet_ = false;
     tailnet::release();
   }
+}
+
+bool getFeed(const std::string &url, std::string &body, std::string &error, size_t maxBytes,
+             int maxItems) {
+  Get get;
+  if (!get.open(url, error)) return false;
+  body.clear();
+  body.reserve(128 * 1024);
+  std::unique_ptr<char[]> buf(new char[8192]);
+  int items = 0;
+  while (body.size() < maxBytes) {
+    const int n = get.read(buf.get(), 8192);
+    if (n < 0) {
+      if (items > 0) break;  // keep what arrived
+      error = "CONNECTION LOST";
+      return false;
+    }
+    if (n == 0) break;
+    const size_t from = body.size() > 8 ? body.size() - 8 : 0;
+    body.append(buf.get(), n);
+    for (const char *close : {"</item>", "</entry>"}) {
+      for (size_t at = body.find(close, from); at != std::string::npos;
+           at = body.find(close, at + 6)) {
+        ++items;
+      }
+    }
+    if (items >= maxItems) break;
+  }
+  return true;
 }
 
 }  // namespace net

@@ -84,6 +84,12 @@ nfs = nfs://nas.local/volume1/books
 ; board's flash. On, it shows everything, for a board that stays on a desk at home.
 ; agent_face_details = off
 
+[news]
+; PWR on a News screen leaves the board off behind the stories of the last 12 hours from the
+; feeds in SD:/News/feeds.txt, one at a time, with the time and the weather. Minutes each
+; story stays: 1, 5, 10 or 15.
+; news_face_every = 5
+
 [tailscale]
 ; Puts the board on your tailnet when something needs a machine there: an agent_host, a share's
 ; server or a feed's host given as a tailnet name or 100.x address. Wi-Fi Drive and Update
