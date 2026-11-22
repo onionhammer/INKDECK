@@ -77,7 +77,7 @@ bool Get::open(const std::string &url, std::string &error, int64_t from,
   cfg.timeout_ms = kTimeoutMs;
   cfg.buffer_size = 4096;
   cfg.buffer_size_tx = 2048;  // tracking redirects make long request lines
-  cfg.user_agent = "ESP32 podcast client/1.0";
+  cfg.user_agent = userAgent_ ? userAgent_ : "ESP32 podcast client/1.0";
   cfg.keep_alive_enable = true;
   esp_http_client_handle_t c = esp_http_client_init(&cfg);
   if (!c) {
@@ -122,6 +122,13 @@ bool Get::open(const std::string &url, std::string &error, int64_t from,
   error = "SERVER SAID " + std::to_string(status_);
   close();
   return false;
+}
+
+std::string Get::url() const {
+  if (!client_) return {};
+  char buf[512];
+  if (esp_http_client_get_url(handle(client_), buf, sizeof buf) != ESP_OK) return {};
+  return buf;
 }
 
 int Get::read(char *buf, int len) {

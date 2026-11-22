@@ -71,7 +71,14 @@ time_t parseIsoDate(const std::string &text);
 
 // HTML to the Markdown NoteDoc reads: paragraphs and line breaks kept, headings as "## ",
 // list items as "- " or "1. ", quotes as "> ", rules as "---"; scripts, styles and images go;
-// entities decoded, whitespace collapsed. Cut at a paragraph once past maxBytes.
-std::string markdownFromHtml(const std::string &html, size_t maxBytes);
+// entities decoded, whitespace collapsed. Cut at a paragraph once past maxBytes. With a
+// linkBase (the page's URL), links stay as [text](url), resolved against it; without, only
+// their text.
+std::string markdownFromHtml(const std::string &html, size_t maxBytes,
+                             const std::string &linkBase = std::string());
+
+// href (an attribute's value, entities decoded) as an absolute http(s) URL, resolved against
+// base; "" for a fragment, another scheme (javascript:, mailto:) or nothing.
+std::string resolveUrl(const std::string &base, const std::string &href);
 
 }  // namespace rss

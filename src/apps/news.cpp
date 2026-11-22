@@ -15,6 +15,7 @@
 #include "input.h"
 #include "news_library.h"
 #include "notedoc.h"
+#include "page_fetch.h"
 #include "pmic.h"
 #include "screen.h"
 #include "sdcard.h"
@@ -297,6 +298,160 @@ constexpr TextStyle kHeadStyle{&jb::kMono13Bold, 2};
 constexpr int kBodyH = screen::kHeight - ui::kStatusBarH - ui::kHintBarH;
 constexpr int kTextW = screen::kWidth - 2 * kTextPadX;
 constexpr int kTextH = kBodyH - kStripH - kPadTop - kHeadLineH - kHeadGap - kPadBottom;
+constexpr uint32_t kSlowMs = 600;  // a page that takes longer to come shows its progress
+
+// "§ CITY DESK - - - - TODAY 14:05", like the Reader's chapter line.
+void drawHeadLine(Canvas &c, const Rect &line, const std::string &place, time_t when) {
+  using namespace ui;
+  const std::string right = whenText(when);
+  const int rightW = right.empty() ? 0 : textWidth(kHeadStyle, right);
+  const int base = baselineCentered(kHeadStyle, line.y, line.h);
+  const std::string left =
+      ellipsize(kHeadStyle, std::string(glyph::kSection) + " " + upper(place), line.w - rightW - 40);
+  const int dashFrom = drawText(c, line.x, base, left, kHeadStyle) + 12;
+  const int dashTo = right.empty() ? line.right() : line.right() - rightW - 12;
+  if (!right.empty()) drawText(c, line.right() - rightW, base, right, kHeadStyle);
+  if (dashTo > dashFrom) dashedH(c, dashFrom, line.centerY(), dashTo - dashFrom);
+}
+
+// The strip at the foot: `left` [=====:::::] `right`, as the Reader's.
+void drawMeterStrip(Canvas &c, const Rect &strip, const std::string &left,
+                    const std::string &right, float fraction) {
+  using namespace ui;
+  hrule(c, strip.x, strip.y, strip.w);
+  const Rect band{strip.x + kPadX, strip.y + kRule, strip.w - 2 * kPadX, strip.h - kRule};
+  const int leftW = textWidth(kCardLine, left);
+  const int rightW = textWidth(kCardLine, right);
+  const int base = baselineCentered(kCardLine, band.y, band.h);
+  drawText(c, band.x, base, left, kCardLine);
+  drawText(c, band.right() - rightW, base, right, kCardLine);
+  ui::drawProgress(c, {band.x + leftW + 10, band.centerY() - 7, band.w - leftW - rightW - 20, 14},
+                   fraction);
+}
+
+// "P. 2/5 [=====:::::] 40%".
+void drawPageStrip(Canvas &c, const Rect &strip, int page, int count) {
+  const float f = static_cast<float>(page + 1) / count;
+  drawMeterStrip(c, strip, "P. " + std::to_string(page + 1) + "/" + std::to_string(count),
+                 std::to_string(static_cast<int>(f * 100)) + "%", f);
+}
+
+// "LOADING 312 KB [=====:::::] 45%" while a page comes.
+void drawFetchStrip(Canvas &c, const Rect &strip, const pagefetch::Status &st) {
+  std::string left;
+  switch (st.phase) {
+    case pagefetch::Phase::Loading:
+      left = "LOADING " + std::to_string((st.bytes + 512) / 1024) + " KB";
+      break;
+    case pagefetch::Phase::Reading: left = "READING THE PAGE"; break;
+    default: left = "JOINING WI-FI\xE2\x80\xA6"; break;
+  }
+  const float f = st.progress();
+  drawMeterStrip(c, strip, left, std::to_string(static_cast<int>(f * 100)) + "%", f);
+}
+
+// Words in Markdown, a link's (url) left out.
+uint32_t countWords(const std::string &md) {
+  uint32_t n = 0;
+  bool in = false;
+  for (size_t i = 0; i < md.size(); ++i) {
+    if (md[i] == ']' && i + 1 < md.size() && md[i + 1] == '(') {
+      const size_t close = md.find(')', i);
+      if (close != std::string::npos) i = close;
+      continue;
+    }
+    const char c = md[i];
+    const bool space = c == ' ' || c == '\n' || c == '\t';
+    if (!space && !in) ++n;
+    in = !space;
+  }
+  return n;
+}
+
+struct Link {
+  std::string text;  // plain
+  std::string url;
+};
+
+// The [text](url) links in Markdown, each URL once, in order.
+std::vector<Link> linksIn(const std::string &md) {
+  std::vector<Link> out;
+  for (size_t at = md.find("](http"); at != std::string::npos; at = md.find("](http", at + 2)) {
+    const size_t close = md.find(')', at + 2);
+    const size_t open = md.rfind('[', at);
+    if (close == std::string::npos || open == std::string::npos) continue;
+    const std::string url = md.substr(at + 2, close - at - 2);
+    std::string text;
+    for (size_t i = open + 1; i < at; ++i) {
+      const char c = md[i];
+      if (c == '*' || c == '_' || c == '\n') {
+        if (c == '\n') text += ' ';
+        continue;
+      }
+      text += c;
+    }
+    if (std::any_of(out.begin(), out.end(), [&](const Link &l) { return l.url == url; })) continue;
+    out.push_back({text.empty() ? linkText(url) : text, url});
+  }
+  return out;
+}
+
+// A page's article as a story's text: without the heading it starts with, the page's own
+// headline (often worded apart from the feed's: "England won't get carried away by All Blacks
+// win" under "England will not get carried away by beating All Blacks").
+std::string articleText(const article::Article &a) {
+  const std::string &md = a.markdown;
+  if (md.rfind("## ", 0) != 0) return md;
+  const size_t end = md.find("\n\n");
+  if (end == std::string::npos || end > 300) return md;
+  return md.substr(end + 2);
+}
+
+// A web page on its way (page_fetch.h), for a screen to follow from onTick().
+class PageLoad {
+ public:
+  enum class Tick : uint8_t { Nothing, Progress, Done, Failed };
+
+  void start(const std::string &url) {
+    url_ = url;
+    active_ = true;
+    shownStep_ = -1;
+    pagefetch::fetch(url);
+  }
+  bool active() const { return active_; }
+  const std::string &url() const { return url_; }
+  pagefetch::Status status() const { return pagefetch::status(url_); }
+  // Slow enough to show its progress.
+  bool showing() const { return active_ && millis() - status().startedMs >= kSlowMs; }
+
+  // Once a second: Done (out filled), Failed (error says why), Progress (redraw the strip).
+  Tick tick(article::Article &out, std::string &error) {
+    if (!active_) return Tick::Nothing;
+    const pagefetch::Status st = status();
+    if (st.phase == pagefetch::Phase::Done && pagefetch::result(url_, out)) {
+      active_ = false;
+      return Tick::Done;
+    }
+    if (st.phase == pagefetch::Phase::Failed || st.phase == pagefetch::Phase::Idle) {
+      active_ = false;
+      error = st.error.empty() ? "STOPPED" : st.error;
+      return Tick::Failed;
+    }
+    if (millis() - st.startedMs < kSlowMs) return Tick::Nothing;
+    // Redraw for a new phase or 5 % more.
+    const int step = static_cast<int>(st.phase) * 100 + static_cast<int>(st.progress() * 20);
+    if (step == shownStep_) return Tick::Nothing;
+    shownStep_ = step;
+    return Tick::Progress;
+  }
+
+ private:
+  std::string url_;
+  bool active_ = false;
+  int shownStep_ = -1;
+};
+
+std::unique_ptr<ui::Screen> makeLinks(std::vector<Link> links, std::string from);
 
 class StoryScreen : public ui::Screen {
  public:
@@ -322,6 +477,21 @@ class StoryScreen : public ui::Screen {
   }
   bool reading() const override { return true; }  // light sleep between pages
 
+  bool onTick() override {
+    article::Article a;
+    std::string error;
+    switch (load_.tick(a, error)) {
+      case PageLoad::Tick::Done: showPage(a); return true;
+      case PageLoad::Tick::Failed:
+        error_ = error;
+        showSummary();
+        return true;
+      case PageLoad::Tick::Progress: return true;
+      case PageLoad::Tick::Nothing: break;
+    }
+    return false;
+  }
+
   bool onKey(Key key) override {
     switch (key) {
       case Key::Up: return turn(-1);
@@ -339,8 +509,13 @@ class StoryScreen : public ui::Screen {
   void draw(Canvas &c, const Rect &body) override {
     using namespace ui;
     Rect r = body;
-    drawProgress(c, r.takeBottom(kStripH));
-    drawHeadLine(c, {r.x + kTextPadX, r.y + kPadTop, r.w - 2 * kTextPadX, kHeadLineH});
+    if (load_.showing()) {
+      drawFetchStrip(c, r.takeBottom(kStripH), load_.status());
+    } else {
+      drawPageStrip(c, r.takeBottom(kStripH), page_, doc_.pageCount());
+    }
+    drawHeadLine(c, {r.x + kTextPadX, r.y + kPadTop, r.w - 2 * kTextPadX, kHeadLineH},
+                 info_.feedTitle, info_.published);
     const int textY = r.y + kPadTop + kHeadLineH + kHeadGap;
     if (doc_.empty()) {
       drawText(c, {r.x + kTextPadX, textY, kTextW, 40}, "NO TEXT", style::kLabel, Align::Center);
@@ -353,23 +528,61 @@ class StoryScreen : public ui::Screen {
   bool hasNext() const { return index_ + 1 < static_cast<int>(order_.size()); }
   bool lastPage() const { return page_ + 1 >= doc_.pageCount(); }
 
+  // A feed that gives only a summary and a link: the page it links to, read into an article
+  // (kept on the card once fetched), else the summary while it comes, with its progress in
+  // the strip.
   void open() {
     const Uid uid = order_[index_];
     info_ = StoryInfo{};
     news::story(uid, info_);
-    std::string md;
-    if (!news::body(uid, md)) md = info_.summary;
+    if (!news::body(uid, feedText_)) feedText_ = info_.summary;
+    error_.clear();
+    fromPage_ = false;
+    article::Article a;
+    if (wantsPage() && pagefetch::cached(info_.link, a)) {
+      showPage(a);
+    } else {
+      showSummary();
+      if (wantsPage()) fetchPage();
+    }
+    news::setRead(uid, true);
+    lastOpened = uid;
+  }
+
+  bool wantsPage() const { return !info_.full && !info_.link.empty(); }
+
+  void fetchPage() {
+    error_.clear();
+    load_.start(info_.link);
+  }
+
+  void showSummary() {
+    std::string md = feedText_;
     if (!info_.full) {
       // The feed gives only this much: say so, and where the rest is.
       md = "## Summary only\n\n" + md;
-      if (!info_.link.empty()) md += "\n\n---\n\nThe whole story: " + linkText(info_.link);
+      if (!info_.link.empty()) {
+        md += "\n\n---\n\n";
+        if (!error_.empty()) md += "*The whole story didn't come: " + error_ + ".*\n\n";
+        md += "The whole story: " + linkText(info_.link);
+      }
     }
+    pageText_ = md;
     doc_.parse(info_.title, md);
     doc_.setByline(info_.author.empty() ? std::string() : "BY " + ui::upper(info_.author),
                    minutesText(info_.words) + dot() + wordsText(info_.words));
     layout(0);
-    news::setRead(uid, true);
-    lastOpened = uid;
+  }
+
+  void showPage(const article::Article &a) {
+    fromPage_ = true;
+    pageText_ = articleText(a);
+    const uint32_t words = countWords(pageText_);
+    const std::string by = !a.byline.empty() ? a.byline : info_.author;
+    doc_.parse(info_.title, pageText_);
+    doc_.setByline(by.empty() ? ui::upper(a.site) : "BY " + ui::upper(by),
+                   minutesText(words) + dot() + wordsText(words));
+    layout(0);
   }
 
   void layout(uint32_t at) {
@@ -382,40 +595,6 @@ class StoryScreen : public ui::Screen {
     if (page == page_) return false;
     page_ = page;
     return true;
-  }
-
-  float progress() const { return static_cast<float>(page_ + 1) / doc_.pageCount(); }
-
-  // "§ CITY DESK - - - - TODAY 14:05", like the Reader's chapter line.
-  void drawHeadLine(Canvas &c, const Rect &line) const {
-    using namespace ui;
-    const std::string right = whenText(info_.published);
-    const int rightW = right.empty() ? 0 : textWidth(kHeadStyle, right);
-    const int base = baselineCentered(kHeadStyle, line.y, line.h);
-    const std::string left = ellipsize(kHeadStyle,
-                                       std::string(glyph::kSection) + " " + upper(info_.feedTitle),
-                                       line.w - rightW - 40);
-    const int dashFrom = drawText(c, line.x, base, left, kHeadStyle) + 12;
-    const int dashTo = right.empty() ? line.right() : line.right() - rightW - 12;
-    if (!right.empty()) drawText(c, line.right() - rightW, base, right, kHeadStyle);
-    if (dashTo > dashFrom) dashedH(c, dashFrom, line.centerY(), dashTo - dashFrom);
-  }
-
-  // "P. 2/5 [=====:::::] 40%", as the Reader's.
-  void drawProgress(Canvas &c, const Rect &strip) const {
-    using namespace ui;
-    hrule(c, strip.x, strip.y, strip.w);
-    const Rect band{strip.x + kPadX, strip.y + kRule, strip.w - 2 * kPadX, strip.h - kRule};
-    const std::string left =
-        "P. " + std::to_string(page_ + 1) + "/" + std::to_string(doc_.pageCount());
-    const std::string right = std::to_string(static_cast<int>(progress() * 100)) + "%";
-    const int leftW = textWidth(kCardLine, left);
-    const int rightW = textWidth(kCardLine, right);
-    const int base = baselineCentered(kCardLine, band.y, band.h);
-    drawText(c, band.x, base, left, kCardLine);
-    drawText(c, band.right() - rightW, base, right, kCardLine);
-    ui::drawProgress(c, {band.x + leftW + 10, band.centerY() - 7, band.w - leftW - rightW - 20, 14},
-                     progress());
   }
 
   void openMenu() {
@@ -431,6 +610,35 @@ class StoryScreen : public ui::Screen {
                        StoryInfo i;
                        if (news::story(uid, i)) news::setSaved(uid, !i.saved);
                      }});
+    if (wantsPage()) {
+      items.push_back({"WHOLE STORY",
+                       [s] {
+                         return s->fromPage_       ? std::string("SHOWN")
+                                : s->load_.active() ? std::string("COMING")
+                                                    : std::string("FETCH AGAIN");
+                       },
+                       [s] {
+                         if (s->fromPage_ || s->load_.active()) return;
+                         s->fetchPage();
+                         s->showSummary();
+                         ui::nav::pop();
+                       }});
+    }
+    // The feed's links (a Hacker News story's comments) and the page's.
+    std::vector<Link> links = linksIn(feedText_);
+    if (fromPage_) {
+      for (Link &l : linksIn(pageText_)) {
+        if (std::none_of(links.begin(), links.end(), [&](const Link &k) { return k.url == l.url; })) {
+          links.push_back(std::move(l));
+        }
+      }
+    }
+    if (!links.empty()) {
+      const std::string from = info_.feedTitle;
+      const std::string count = std::to_string(links.size());
+      items.push_back({"LINKS", [count] { return count; },
+                       [links, from] { ui::nav::replace(makeLinks(links, from)); }});
+    }
     items.push_back({"TEXT SIZE", [s] { return ui::upper(::fonts::kReader[s->size_].name); },
                      [s] {
                        const uint32_t at = s->doc_.pageOffset(s->page_);
@@ -458,9 +666,205 @@ class StoryScreen : public ui::Screen {
   int index_;
   uint8_t size_;
   StoryInfo info_;
+  std::string feedText_;  // the story's text as the feed gives it
+  std::string pageText_;  // what the page shows: that, or the page's article
+  bool fromPage_ = false;
+  std::string error_;     // why the page didn't come
+  PageLoad load_;
   NoteDoc doc_;
   int page_ = 0;
 };
+
+// --- A link's page ----------------------------------------------------------------------------
+
+// A page a story links to, read into an article as the story's own page is: one level, so its
+// links don't open.
+class LinkScreen : public ui::Screen {
+ public:
+  LinkScreen(Link link, std::string from)
+      : link_(std::move(link)), from_(std::move(from)), size_(loadSize()) {
+    ++liveScreens;
+    article::Article a;
+    if (pagefetch::cached(link_.url, a)) {
+      show(a);
+    } else {
+      showWaiting();
+      load_.start(link_.url);
+    }
+  }
+  ~LinkScreen() override { --liveScreens; }
+
+  std::string tag() const override { return moduleTag("NEWS"); }
+  std::string context() const override { return "LINK" + dot() + ui::upper(from_); }
+  int hints(Hint *out) const override {
+    out[0] = {glyph::kUp, "PREV"};
+    out[1] = {glyph::kDown, "NEXT"};
+    out[2] = {glyph::kPress, "MENU"};
+    out[3] = {"BOOT", "BACK"};
+    return 4;
+  }
+  bool reading() const override { return true; }
+
+  bool onTick() override {
+    article::Article a;
+    std::string error;
+    switch (load_.tick(a, error)) {
+      case PageLoad::Tick::Done: show(a); return true;
+      case PageLoad::Tick::Failed:
+        error_ = error;
+        showWaiting();
+        return true;
+      case PageLoad::Tick::Progress: return true;
+      case PageLoad::Tick::Nothing: break;
+    }
+    return false;
+  }
+
+  bool onKey(Key key) override {
+    switch (key) {
+      case Key::Up:
+      case Key::Down: {
+        const int page = std::max(0, std::min(page_ + (key == Key::Up ? -1 : 1),
+                                              doc_.pageCount() - 1));
+        if (page == page_) return false;
+        page_ = page;
+        return true;
+      }
+      case Key::Select: openMenu(); return true;
+      default: return false;
+    }
+  }
+
+  void draw(Canvas &c, const Rect &body) override {
+    using namespace ui;
+    Rect r = body;
+    if (load_.showing()) {
+      drawFetchStrip(c, r.takeBottom(kStripH), load_.status());
+    } else {
+      drawPageStrip(c, r.takeBottom(kStripH), page_, doc_.pageCount());
+    }
+    drawHeadLine(c, {r.x + kTextPadX, r.y + kPadTop, r.w - 2 * kTextPadX, kHeadLineH},
+                 site_.empty() ? article::host(link_.url) : site_, published_);
+    doc_.drawPage(c, page_, r.x + kTextPadX, r.y + kPadTop + kHeadLineH + kHeadGap);
+  }
+
+ private:
+  // While it comes, or if it didn't: the link's text and where it goes.
+  void showWaiting() {
+    std::string md = linkText(link_.url);
+    if (!error_.empty()) md = "*The page didn't come: " + error_ + ".*\n\n" + md;
+    doc_.parse(link_.text, md);
+    doc_.setByline(ui::upper(article::host(link_.url)), "");
+    layout(0);
+  }
+
+  void show(const article::Article &a) {
+    site_ = a.site;
+    published_ = a.published;
+    const std::string title = a.title.empty() ? link_.text : a.title;
+    const std::string md = articleText(a);
+    const uint32_t words = countWords(md);
+    doc_.parse(title, md);
+    doc_.setByline(a.byline.empty() ? ui::upper(a.site) : "BY " + ui::upper(a.byline),
+                   minutesText(words) + dot() + wordsText(words));
+    layout(0);
+  }
+
+  void layout(uint32_t at) {
+    doc_.layout(::fonts::kReader[size_], kTextW, kTextH);
+    page_ = doc_.pageAt(at);
+  }
+
+  void openMenu() {
+    LinkScreen *s = this;  // below the menu, so it outlives it
+    std::vector<ui::MenuItem> items;
+    if (!error_.empty() && !load_.active()) {
+      items.push_back({"TRY AGAIN", nullptr, [s] {
+                         s->error_.clear();
+                         s->showWaiting();
+                         s->load_.start(s->link_.url);
+                         ui::nav::pop();
+                       }});
+    }
+    items.push_back({"TEXT SIZE", [s] { return ui::upper(::fonts::kReader[s->size_].name); },
+                     [s] {
+                       const uint32_t at = s->doc_.pageOffset(s->page_);
+                       s->size_ = (s->size_ + 1) % ::fonts::kReaderSizeCount;
+                       saveSize(s->size_);
+                       s->layout(at);
+                     }});
+    items.push_back({"TO START", nullptr, [s] {
+                       s->page_ = 0;
+                       ui::nav::pop();
+                     }});
+    ui::nav::push(std::make_unique<ui::MenuScreen>("PAGE", std::move(items)));
+  }
+
+  Link link_;
+  std::string from_;  // the story's feed
+  uint8_t size_;
+  std::string site_;
+  time_t published_ = 0;
+  std::string error_;
+  PageLoad load_;
+  NoteDoc doc_;
+  int page_ = 0;
+};
+
+// The links in a story, to open one.
+class LinksScreen : public ui::Screen {
+ public:
+  LinksScreen(std::vector<Link> links, std::string from)
+      : links_(std::move(links)), from_(std::move(from)) {
+    ++liveScreens;
+    cursor_.reset(static_cast<int>(links_.size()));
+  }
+  ~LinksScreen() override { --liveScreens; }
+
+  std::string tag() const override { return moduleTag("NEWS"); }
+  std::string context() const override {
+    return std::to_string(links_.size()) + (links_.size() == 1 ? " LINK" : " LINKS") + dot() +
+           ui::upper(from_);
+  }
+  int hints(Hint *out) const override {
+    out[0] = {glyph::kDial, "MOVE"};
+    out[1] = {glyph::kPress, "OPEN"};
+    out[2] = {"BOOT", "BACK"};
+    return 3;
+  }
+
+  bool onKey(Key key) override {
+    switch (key) {
+      case Key::Up:
+      case Key::Down: return cursor_.move(key == Key::Up ? -1 : 1);
+      case Key::Select:
+        ui::nav::push(std::make_unique<LinkScreen>(links_[cursor_.cursor()], from_));
+        return true;
+      default: return false;
+    }
+  }
+
+  void draw(Canvas &c, const Rect &body) override {
+    ui::drawList(c, body, ui::kRowTallH, cursor_, [this](int i) {
+      ui::Row row;
+      char index[8];
+      snprintf(index, sizeof index, "%02d", i + 1);
+      row.index = index;
+      row.title = links_[i].text;
+      row.subtitle = ui::upper(linkText(links_[i].url));
+      return row;
+    });
+  }
+
+ private:
+  std::vector<Link> links_;
+  std::string from_;
+  ui::ListCursor cursor_;
+};
+
+std::unique_ptr<ui::Screen> makeLinks(std::vector<Link> links, std::string from) {
+  return std::make_unique<LinksScreen>(std::move(links), std::move(from));
+}
 
 // --- The stories ----------------------------------------------------------------------------
 

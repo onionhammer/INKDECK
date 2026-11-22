@@ -31,6 +31,12 @@ class Get {
   bool open(const std::string &url, std::string &error, int64_t from = 0,
             const std::string &ifRange = "");
 
+  // Before open(): the User-Agent to send, else one that names a podcast client. Kept, not
+  // copied.
+  void setUserAgent(const char *ua) { userAgent_ = ua; }
+  // After open(): where the request ended up, past redirects.
+  std::string url() const;
+
   int status() const { return status_; }
   int64_t length() const { return length_; }  // of this response's body; -1 if not given
   // What identifies this version of the file: its ETag, else its Last-Modified; "" if neither.
@@ -46,6 +52,7 @@ class Get {
 
   void *client_ = nullptr;  // esp_http_client_handle_t
   bool tailnet_ = false;    // this request holds the tailnet
+  const char *userAgent_ = nullptr;
   int status_ = 0;
   int64_t length_ = -1;
   std::string etag_;

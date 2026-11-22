@@ -19,6 +19,7 @@
 #include "file_copy.h"
 #include "input.h"
 #include "news_library.h"
+#include "page_fetch.h"
 #include "ota.h"
 #include "pmic.h"
 #include "podcast_library.h"
@@ -66,7 +67,7 @@ bool mayNap() {
   // A paused player doesn't count: pause switches the audio output off (audio.h).
   if (!readingNow() || audio::busy() || wlan::radioOn()) return false;
   if (weather::syncing() || podcasts::busy() || ota::active() || filecopy::busy()) return false;
-  if (news::busy()) return false;
+  if (news::busy() || pagefetch::busy()) return false;
   const timesync::Phase t = timesync::status().phase;
   if (t == timesync::Phase::Connecting || t == timesync::Phase::Asking) return false;
   if (millis() - keyWakeMs < kKeyWakeGuardMs) return false;

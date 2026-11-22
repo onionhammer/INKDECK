@@ -8,9 +8,17 @@
 //             The menu (// NEWS): SAVE STORY, SHOW (ALL / NEW / SAVED), SYNC NOW, FEEDS,
 //             MARK ALL READ.
 //   Story:    the Note screen's body (notedoc.h): the headline in 28 px capitals, a byline, then
-//             the text in Literata a page at a time. Opening it marks it read.
+//             the text in Literata a page at a time. Opening it marks it read. A feed that
+//             gives only a summary and a link: the linked page, read into an article
+//             (page_fetch.h, article.h), the summary while it comes, the fetch's progress in
+//             the strip.
 //             ▲ previous page   ▼ next page, past the last the next story   ● menu   BOOT back
-//             The menu (// STORY): SAVE, TEXT SIZE, MARK UNREAD, MORE FROM the feed, TO START.
+//             The menu (// STORY): SAVE, WHOLE STORY, LINKS, TEXT SIZE, MARK UNREAD, MORE FROM
+//             the feed, TO START.
+//   Links:    the links in a story's text (the feed's, then its page's).
+//             ▲▼ move   ● open   BOOT back
+//   Link:     a linked page, read as the story's is. One level: its links don't open.
+//             ▲ previous page   ▼ next page   ● menu (TRY AGAIN, TEXT SIZE, TO START)   BOOT back
 //   Feeds:    ALL FEEDS, then each feed with its new stories, ! for one whose last sync failed;
 //             a card for the selection.
 //             ▲▼ move   ● its stories   HOLD ● sync it (ALL FEEDS: every feed)   BOOT back

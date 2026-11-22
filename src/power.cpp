@@ -11,6 +11,7 @@
 #include "file_copy.h"
 #include "input.h"
 #include "news_library.h"
+#include "page_fetch.h"
 #include "ota.h"
 #include "pmic.h"
 #include "podcast_library.h"
@@ -55,7 +56,7 @@ const char *modeName(Mode m) {
 // power-off would cut short.
 bool working() {
   if (weather::syncing() || podcasts::busy() || ota::active() || webdav::active()) return true;
-  if (news::busy()) return true;
+  if (news::busy() || pagefetch::busy()) return true;
   if (filecopy::busy()) return true;
 #if INKDECK_AGENT
   if (agent::busy()) return true;

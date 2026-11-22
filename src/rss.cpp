@@ -418,6 +418,7 @@ class Markdown {
 
   // A paragraph boundary: the next text starts a new block, with prefix ("## ", "- ").
   void block(const std::string &prefix = "") {
+    endLink();  // a link ends at a block's edge
     if (cut_) return;
     if (started_ && out_.size() >= max_) {
       cut_ = true;
@@ -427,6 +428,7 @@ class Markdown {
     prefix_ = prefix;
   }
   void lineBreak() {
+    endLink();
     if (started_ && !needBlock_) needBreak_ = true;
   }
   void rule() {
@@ -448,6 +450,33 @@ class Markdown {
     block();
   }
 
+  // A link around the text that comes before endLink(): [text](url), once text comes; "" for
+  // none.
+  void startLink(const std::string &url) {
+    endLink();
+    linkUrl_.clear();
+    for (const char c : url) {  // what would end the (url) early
+      if (c == ' ') {
+        linkUrl_ += "%20";
+      } else if (c == ')') {
+        linkUrl_ += "%29";
+      } else if (c == '(') {
+        linkUrl_ += "%28";
+      } else {
+        linkUrl_ += c;
+      }
+    }
+    linkPending_ = !linkUrl_.empty();
+  }
+  void endLink() {
+    if (linkOpen_ && !cut_ && linkAt_ < out_.size()) {
+      out_ += "](";
+      out_ += linkUrl_;
+      out_ += ')';
+    }
+    linkOpen_ = linkPending_ = false;
+  }
+
   // Text, entities already decoded. Runs of whitespace become one space.
   void put(const char *p, size_t n, bool pre = false) {
     for (size_t i = 0; i < n && !cut_; ++i) {
@@ -461,13 +490,14 @@ class Markdown {
         continue;
       }
       open();
-      out_ += c;
+      out_ += linkOpen_ && c == '[' ? '(' : linkOpen_ && c == ']' ? ')' : c;
       if (out_.size() > max_ + kOverrun) cutAtSpace();
     }
   }
   void put(const std::string &s) { put(s.data(), s.size()); }
 
   std::string finish() {
+    endLink();
     while (!out_.empty() && (out_.back() == ' ' || out_.back() == '\n')) out_.pop_back();
     if (cut_ && !out_.empty()) {
       out_ += "\n\n";
@@ -492,6 +522,12 @@ class Markdown {
       out_ += ' ';
     }
     needBlock_ = needBreak_ = needSpace_ = false;
+    if (linkPending_) {
+      linkAt_ = out_.size();
+      out_ += '[';
+      linkOpen_ = true;
+      linkPending_ = false;
+    }
   }
 
   // One paragraph that never ends: cut at its last space, and stop.
@@ -505,6 +541,8 @@ class Markdown {
 
   std::string out_;
   std::string prefix_;
+  std::string linkUrl_;
+  size_t linkAt_ = 0;  // where the open link's [ is
   size_t max_;
   int quote_ = 0;
   bool started_ = false;
@@ -512,6 +550,8 @@ class Markdown {
   bool needBreak_ = false;
   bool needSpace_ = false;
   bool cut_ = false;
+  bool linkPending_ = false;  // a [ goes before the next visible character
+  bool linkOpen_ = false;
 };
 
 // "x@y.z (Ann Lee)" -> "Ann Lee"; a bare e-mail address isn't a byline.
@@ -591,10 +631,10 @@ void readStory(const char *ib, const char *ie, bool atom, size_t maxBody, Story 
                                        : firstText(ib, ie, {"description", "itunes:summary"});
   s.full = !collapse(content).empty();
   s.summary = plainText(!description.empty() ? description : content, kSummaryMax);
-  s.body = markdownFromHtml(s.full ? content : description, maxBody);
+  s.body = markdownFromHtml(s.full ? content : description, maxBody, s.link);
   if (s.full && s.body.empty()) {  // content that was all pictures: the description, then
     s.full = false;
-    s.body = markdownFromHtml(description, maxBody);
+    s.body = markdownFromHtml(description, maxBody, s.link);
   }
 }
 
@@ -636,7 +676,60 @@ time_t parseIsoDate(const std::string &text) {
   return static_cast<time_t>(days) * 86400 + hour * 3600 + minute * 60 + second - zone * 60;
 }
 
-std::string markdownFromHtml(const std::string &html, size_t maxBytes) {
+std::string resolveUrl(const std::string &base, const std::string &href) {
+  const std::string h = collapse(href);
+  if (h.empty() || h[0] == '#') return {};
+  size_t colon = h.find(':');
+  const size_t slash = h.find('/');
+  if (colon != std::string::npos && (slash == std::string::npos || colon < slash)) {
+    const std::string scheme = h.substr(0, colon);
+    return strcasecmp(scheme.c_str(), "http") == 0 || strcasecmp(scheme.c_str(), "https") == 0
+               ? h
+               : std::string();  // javascript:, mailto:, tel:, data:
+  }
+  colon = base.find("://");
+  if (colon == std::string::npos) return {};
+  if (h.rfind("//", 0) == 0) return base.substr(0, colon + 1) + h;
+  const size_t pathAt = base.find('/', colon + 3);
+  const std::string origin = base.substr(0, pathAt);
+  std::string path;
+  if (h[0] == '/') {
+    path = h;
+  } else {
+    std::string dir = pathAt == std::string::npos ? "/" : base.substr(pathAt);
+    dir = dir.substr(0, dir.find_first_of("?#"));
+    if (h[0] == '?') return origin + dir + h;
+    dir.resize(dir.rfind('/') + 1);
+    path = dir + h;
+  }
+  // "./" and "../" out of the path (not the query).
+  const size_t q = path.find_first_of("?#");
+  const std::string tail = q == std::string::npos ? std::string() : path.substr(q);
+  std::vector<std::string> parts;
+  size_t at = 1;
+  const std::string bare = path.substr(0, q);
+  while (at <= bare.size()) {
+    size_t next = bare.find('/', at);
+    if (next == std::string::npos) next = bare.size();
+    const std::string part = bare.substr(at, next - at);
+    if (part == "..") {
+      if (!parts.empty()) parts.pop_back();
+      if (next == bare.size()) parts.push_back("");
+    } else if (part == ".") {
+      if (next == bare.size()) parts.push_back("");
+    } else {
+      parts.push_back(part);
+    }
+    at = next + 1;
+  }
+  std::string out = origin;
+  for (const std::string &part : parts) out += "/" + part;
+  if (parts.empty()) out += "/";
+  return out + tail;
+}
+
+std::string markdownFromHtml(const std::string &html, size_t maxBytes,
+                             const std::string &linkBase) {
   Markdown md(maxBytes);
   struct List {
     bool ordered;
@@ -666,10 +759,11 @@ std::string markdownFromHtml(const std::string &html, size_t maxBytes) {
       const bool closing = p[1] == '/';
       const bool selfClosing = gt[-1] == '/';
       std::string name;
-      for (const char *q = p + (closing ? 2 : 1);
-           q < gt && isalnum(static_cast<unsigned char>(*q)); ++q) {
+      const char *q = p + (closing ? 2 : 1);
+      for (; q < gt && isalnum(static_cast<unsigned char>(*q)); ++q) {
         name += static_cast<char>(tolower(static_cast<unsigned char>(*q)));
       }
+      const Span tag{q, gt};  // the attributes
       p = gt + 1;
       if (skipDepth) {
         if (name == skipping && !selfClosing) skipDepth += closing ? -1 : 1;
@@ -680,6 +774,12 @@ std::string markdownFromHtml(const std::string &html, size_t maxBytes) {
         if (!closing && !selfClosing) {
           skipping = name;
           skipDepth = 1;
+        }
+      } else if (name == "a") {
+        if (closing) {
+          md.endLink();
+        } else if (!linkBase.empty() && !selfClosing) {
+          md.startLink(resolveUrl(linkBase, attribute(tag, "href")));
         }
       } else if (name == "br") {
         md.lineBreak();
