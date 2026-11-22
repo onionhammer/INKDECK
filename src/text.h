@@ -54,6 +54,14 @@ std::string lower(std::string s);
 // s without the characters in `chars` at either end.
 std::string trim(const std::string &s, const char *chars = " \t");
 
+// The code point an HTML/XML entity's name stands for: "amp", "mdash", "#8531", "#x2153"
+// (without the & and ;); 0 if it isn't one this knows. "nbsp" is U+00A0: callers that want a
+// plain space map it.
+uint32_t entityCodepoint(const std::string &name);
+
+// %XX escapes (a URL's) decoded; a % without two hex digits after it stays as it is.
+std::string percentDecode(const std::string &s);
+
 // A MAC or BSSID: "A4:2B:B0:1C:9E:42".
 std::string macText(const uint8_t mac[6]);
 

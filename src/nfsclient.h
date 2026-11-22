@@ -83,6 +83,10 @@ class NfsClient {
   int connectTo(uint16_t port, bool reserved, uint32_t timeoutMs);
   bool resolve(std::string &error);
   int getPort(int fd, uint32_t prog, uint32_t vers, uint16_t &port);
+  // The directory a page at a time, without . and .., up to maxEntries: READDIRPLUS (plus:
+  // attributes and handles too) or READDIR (names only). ENOTSUP from a server without
+  // READDIRPLUS.
+  int listPages(const Fh &dir, bool plus, std::vector<Entry> &out, size_t maxEntries);
   int readdirPlain(const Fh &dir, std::vector<Entry> &out, size_t maxEntries);
   void closeNfs();
 

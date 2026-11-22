@@ -211,24 +211,8 @@ void inlineFlow(std::string &out, const std::string &s, const GFXfont *font, uin
     if (c == '&') {  // &amp; &#8531; &#x2153;
       const size_t semi = s.find(';', i + 1);
       if (semi != std::string::npos && semi - i <= 10) {
-        const std::string name = s.substr(i + 1, semi - i - 1);
-        uint32_t cp = 0;
-        if (!strcasecmp(name.c_str(), "amp")) {
-          cp = '&';
-        } else if (!strcasecmp(name.c_str(), "lt")) {
-          cp = '<';
-        } else if (!strcasecmp(name.c_str(), "gt")) {
-          cp = '>';
-        } else if (!strcasecmp(name.c_str(), "quot")) {
-          cp = '"';
-        } else if (!strcasecmp(name.c_str(), "apos")) {
-          cp = '\'';
-        } else if (!strcasecmp(name.c_str(), "nbsp")) {
-          cp = ' ';
-        } else if (name.size() > 1 && name[0] == '#') {
-          const bool hex = name[1] == 'x' || name[1] == 'X';
-          cp = strtoul(name.c_str() + (hex ? 2 : 1), nullptr, hex ? 16 : 10);
-        }
+        uint32_t cp = text::entityCodepoint(text::lower(s.substr(i + 1, semi - i - 1)));
+        if (cp == 0xA0) cp = ' ';
         if (cp) {
           appendChar(out, cp, font);
           i = semi + 1;

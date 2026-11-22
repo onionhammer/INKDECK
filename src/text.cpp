@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "ui/fonts/glyphs.h"
 
@@ -233,6 +234,46 @@ std::string macText(const uint8_t mac[6]) {
   snprintf(buf, sizeof buf, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3],
            mac[4], mac[5]);
   return buf;
+}
+
+uint32_t entityCodepoint(const std::string &name) {
+  if (name.size() > 1 && name[0] == '#') {
+    const bool hex = name[1] == 'x' || name[1] == 'X';
+    return static_cast<uint32_t>(strtoul(name.c_str() + (hex ? 2 : 1), nullptr, hex ? 16 : 10));
+  }
+  static const struct {
+    const char *name;
+    uint32_t cp;
+  } kNamed[] = {
+      {"amp", '&'},       {"lt", '<'},         {"gt", '>'},         {"quot", '"'},
+      {"apos", '\''},     {"nbsp", 0xA0},      {"shy", 0xAD},       {"mdash", 0x2014},
+      {"ndash", 0x2013},  {"hellip", 0x2026},  {"lsquo", 0x2018},   {"rsquo", 0x2019},
+      {"ldquo", 0x201C},  {"rdquo", 0x201D},   {"laquo", 0xAB},     {"raquo", 0xBB},
+      {"copy", 0xA9},     {"reg", 0xAE},       {"trade", 0x2122},   {"bull", 0x2022},
+      {"middot", 0xB7},   {"deg", 0xB0},       {"times", 0xD7},     {"eacute", 0xE9},
+      {"egrave", 0xE8},   {"agrave", 0xE0},    {"ccedil", 0xE7},    {"uuml", 0xFC},
+      {"ouml", 0xF6},     {"auml", 0xE4},      {"szlig", 0xDF},     {"thinsp", 0x2009},
+      {"ensp", 0x2002},   {"emsp", 0x2003},    {"zwnj", 0x200C},    {"zwj", 0x200D},
+      {"euro", 0x20AC},   {"pound", 0xA3},
+  };
+  for (const auto &e : kNamed) {
+    if (name == e.name) return e.cp;
+  }
+  return 0;
+}
+
+std::string percentDecode(const std::string &s) {
+  std::string out;
+  for (size_t i = 0; i < s.size(); ++i) {
+    if (s[i] == '%' && i + 2 < s.size() && isxdigit(static_cast<unsigned char>(s[i + 1])) &&
+        isxdigit(static_cast<unsigned char>(s[i + 2]))) {
+      out += static_cast<char>(strtoul(s.substr(i + 1, 2).c_str(), nullptr, 16));
+      i += 2;
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
 }
 
 }  // namespace text

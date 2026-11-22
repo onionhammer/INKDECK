@@ -203,20 +203,7 @@ bool parseNfs(const std::string &specIn, Share &out, std::string &error) {
     host = spec.substr(0, colon);
     path = spec.substr(colon + 1);
   }
-  const size_t colon = host.find(':');
-  if (colon != std::string::npos) {
-    uint32_t port;
-    if (!parseNumber(host.substr(colon + 1), 65535, port) || port == 0) {
-      error = "the port after the server isn't a number from 1 to 65535";
-      return false;
-    }
-    out.port = static_cast<uint16_t>(port);
-    host.erase(colon);
-  }
-  if (host.empty()) {
-    error = "no server";
-    return false;
-  }
+  if (!parseHostPort(host, out, error)) return false;
   path = percentDecode(path);
   while (path.size() > 1 && path.back() == '/') path.pop_back();
   out.host = host;

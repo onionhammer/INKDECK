@@ -109,37 +109,12 @@ bool element(const char *p, const char *e, const char *name, Element &out) {
   return false;  // cut off
 }
 
-struct Named {
-  const char *name;
-  uint32_t cp;
-};
-constexpr Named kEntities[] = {
-    {"amp", '&'},      {"lt", '<'},        {"gt", '>'},        {"quot", '"'},
-    {"apos", '\''},    {"nbsp", ' '},      {"rsquo", 0x2019},  {"lsquo", 0x2018},
-    {"rdquo", 0x201D}, {"ldquo", 0x201C},  {"mdash", 0x2014},  {"ndash", 0x2013},
-    {"hellip", 0x2026}, {"copy", 0xA9},    {"eacute", 0xE9},   {"uuml", 0xFC},
-    {"zwnj", 0x200C},  {"zwj", 0x200D},    {"shy", 0xAD},      {"thinsp", 0x2009},
-    {"ensp", 0x2002},  {"emsp", 0x2003},   {"bull", 0x2022},   {"middot", 0xB7},
-    {"trade", 0x2122}, {"reg", 0xAE},      {"deg", 0xB0},      {"times", 0xD7},
-    {"euro", 0x20AC},  {"pound", 0xA3},    {"laquo", 0xAB},    {"raquo", 0xBB},
-};
-
 // Decodes the entity at p (p[0] == '&') into out and returns the position after it, or copies
 // the '&' and returns p + 1 when it isn't one.
 const char *entity(const char *p, const char *e, std::string &out) {
   const char *semi = static_cast<const char *>(memchr(p, ';', std::min<ptrdiff_t>(e - p, 12)));
   if (semi && semi - p > 1) {
-    const std::string name(p + 1, semi);
-    uint32_t cp = 0;
-    if (name[0] == '#') {
-      cp = name.size() > 1 && (name[1] == 'x' || name[1] == 'X')
-               ? strtoul(name.c_str() + 2, nullptr, 16)
-               : strtoul(name.c_str() + 1, nullptr, 10);
-    } else {
-      for (const Named &n : kEntities) {
-        if (name == n.name) cp = n.cp;
-      }
-    }
+    const uint32_t cp = text::entityCodepoint(std::string(p + 1, semi));
     if (cp) {
       text::appendUtf8(out, cp == 0xA0 ? ' ' : cp);
       return semi + 1;

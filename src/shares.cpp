@@ -486,18 +486,22 @@ bool parseNumber(const std::string &s, uint32_t max, uint32_t &out) {
   return true;
 }
 
-std::string percentDecode(const std::string &s) {
-  std::string out;
-  for (size_t i = 0; i < s.size(); ++i) {
-    if (s[i] == '%' && i + 2 < s.size() && isxdigit(static_cast<unsigned char>(s[i + 1])) &&
-        isxdigit(static_cast<unsigned char>(s[i + 2]))) {
-      out += static_cast<char>(strtol(s.substr(i + 1, 2).c_str(), nullptr, 16));
-      i += 2;
-    } else {
-      out += s[i];
+bool parseHostPort(std::string &host, Share &out, std::string &error) {
+  const size_t colon = host.find(':');
+  if (colon != std::string::npos) {
+    uint32_t port;
+    if (!parseNumber(host.substr(colon + 1), 65535, port) || port == 0) {
+      error = "the port after the server isn't a number from 1 to 65535";
+      return false;
     }
+    out.port = static_cast<uint16_t>(port);
+    host.erase(colon);
   }
-  return out;
+  if (host.empty()) {
+    error = "no server";
+    return false;
+  }
+  return true;
 }
 
 // --- Public ----------------------------------------------------------------------------------
