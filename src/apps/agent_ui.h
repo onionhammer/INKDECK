@@ -28,6 +28,22 @@ std::string whenText(uint32_t unix);
 // "$0.04", "~$0.04" when notional; "" for none.
 std::string costText(float usd, bool notional);
 
+// What the Agent says when inkdeck.ini names no inkharness.
+constexpr const char *kSetUpHelp =
+    "Name the machine that runs inkharness in SD:/inkdeck.ini: agent_host, and agent_token if it "
+    "asks for one. Then restart the board.";
+
+// ASKS, RUNNING and PLANNED in three cells across `band`, ruled between and under, ASKS
+// inverted while a question waits; "-" while the counts aren't known. The key keyTop px under
+// the cell's top, the value (in valueStyle) valueBottom px over its bottom.
+void drawCounts(ui::Canvas &c, const ui::Rect &band, int asks, int running, int planned,
+                bool known, const ui::TextStyle &valueStyle, int keyTop, int valueBottom);
+// A question in reading capitals, wrapped to maxLines from y; returns the y under it.
+int drawQuestion(ui::Canvas &c, const ui::Rect &r, int y, const std::string &question,
+                 int maxLines);
+// The foot once an answer has gone: "SENT · THE CHOICE", in paper on ink.
+void drawSentBand(ui::Canvas &c, const ui::Rect &foot, const std::string &choice);
+
 // Word-wrapped text from `top`; returns the y under it.
 int paragraph(ui::Canvas &c, const ui::Rect &area, int top, const std::string &text,
               const ui::TextStyle &style, int maxLines);

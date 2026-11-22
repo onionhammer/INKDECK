@@ -114,14 +114,6 @@ std::string rightText(const FaceRecord &r) {
 
 // --- Drawing ----------------------------------------------------------------------------------
 
-void drawCount(ui::Canvas &c, const Rect &cell, const char *key, int value, bool inverted) {
-  using namespace ui;
-  const uint16_t ink = inverted ? kPaper : kInk;
-  if (inverted) fill(c, cell, kInk);
-  drawText(c, cell.x + kPadX, cell.y + 14 + capHeight(style::kKey), key, style::kKey, ink);
-  drawText(c, cell.x + kPadX, cell.bottom() - 14, std::to_string(value), style::kReadout, ink);
-}
-
 void drawFace(ui::Canvas &c, const FaceRecord &r) {
   using namespace ui;
   const agent::Summary &m = r.sum;
@@ -138,14 +130,9 @@ void drawFace(ui::Canvas &c, const FaceRecord &r) {
 
   if (!m.content) {
     // Counts and times only: nothing that says what the sessions are.
-    const Rect band = body.takeTop(132);
-    const int w = band.w / 3;
-    drawCount(c, {band.x, band.y, w, band.h}, "ASKS", m.asks, m.asks > 0);
-    vrule(c, band.x + w, band.y, band.h, kRule);
-    drawCount(c, {band.x + w, band.y, w, band.h}, "RUNNING", m.running, false);
-    vrule(c, band.x + 2 * w, band.y, band.h, kRule);
-    drawCount(c, {band.x + 2 * w, band.y, band.w - 2 * w, band.h}, "PLANNED", m.planned, false);
-    hrule(c, band.x, band.bottom() - kRule, band.w);
+    // The value 14 px over the band's bottom: 11 over the cells', which stop at its rule.
+    agentui::drawCounts(c, body.takeTop(132), m.asks, m.running, m.planned, true,
+                        style::kReadout, 14, 11);
     int y = body.y + 24;
     auto line = [&](const std::string &text, const TextStyle &s) {
       drawText(c, body.x + kPadX, y + capHeight(s), text, s);

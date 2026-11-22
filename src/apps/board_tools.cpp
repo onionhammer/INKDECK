@@ -33,6 +33,7 @@
 #include "flashfs.h"
 #include "forecast.h"
 #include "input.h"
+#include "json_fields.h"
 #include "paths.h"
 #include "pmic.h"
 #include "readstate.h"
@@ -96,10 +97,7 @@ void onCall(uint32_t id, const std::string &name, cJSON *input, uint32_t turn) {
 
 Result fail(const std::string &why) { return {why, true}; }
 
-std::string text(const cJSON *in, const char *name) {
-  const cJSON *item = cJSON_GetObjectItemCaseSensitive(in, name);
-  return cJSON_IsString(item) && item->valuestring ? item->valuestring : "";
-}
+std::string text(const cJSON *in, const char *name) { return jsonf::str(in, name); }
 
 using text::lower;
 

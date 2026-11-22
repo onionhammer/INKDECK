@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <string>
 
+#include "apps/agent_ui.h"
 #include "audio.h"
 #include "input.h"
 #include "settings.h"
@@ -49,9 +50,6 @@ const char *notSetUp() {
   return settings::hasAgent() ? "NO WI-FI NETWORK SET" : "NO AGENT HOST SET";
 }
 
-constexpr const char *kSetUpHelp =
-    "Name the machine that runs inkharness in SD:/inkdeck.ini: agent_host, and agent_token if it "
-    "asks for one. Then restart the board.";
 
 int meterFill(const agent::Status &s) {
   return s.mic ? std::clamp(static_cast<int>((s.levelDb + 60) / 3), 0, kMeterSegments) : 0;
@@ -59,12 +57,7 @@ int meterFill(const agent::Status &s) {
 
 // Word-wrapped body text from the top of `area`.
 void paragraph(ui::Canvas &c, const Rect &area, const std::string &text, int maxLines) {
-  using namespace ui;
-  int baseline = area.y + 12 + capHeight(style::kBody);
-  for (const std::string &line : wrap(style::kBody, text, area.w - 2 * kPadX, maxLines)) {
-    drawText(c, area.x + kPadX, baseline, line, style::kBody);
-    baseline += lineHeight(style::kBody);
-  }
+  agentui::paragraph(c, area, area.y + 12, text, ui::style::kBody, maxLines);
 }
 
 // The agent sheet (HOLD BOOT): an overlay over the lower half of whatever is on screen. The hold
@@ -199,7 +192,7 @@ class AgentSheet : public ui::Screen {
     const Rect head = r.takeTop(kSectionH);
     if (!agent::configured()) {
       drawNotice(c, head, notSetUp());
-      paragraph(c, r, kSetUpHelp, std::max(1, (r.h - 20) / lineHeight(style::kBody)));
+      paragraph(c, r, agentui::kSetUpHelp, std::max(1, (r.h - 20) / lineHeight(style::kBody)));
       return;
     }
     if (!s.error.empty()) {

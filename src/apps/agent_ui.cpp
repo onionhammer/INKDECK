@@ -9,6 +9,7 @@
 
 #include <algorithm>
 
+#include "text.h"
 #include "ui/type.h"
 
 namespace apps {
@@ -91,6 +92,48 @@ std::string tagFor(const agent::Row &r) {
     return ui::upper(buf);
   }
   return ui::upper(r.state);
+}
+
+void drawCounts(ui::Canvas &c, const ui::Rect &band, int asks, int running, int planned,
+                bool known, const ui::TextStyle &valueStyle, int keyTop, int valueBottom) {
+  using namespace ui;
+  const struct {
+    const char *key;
+    int value;
+    bool inverted;
+  } cells[3] = {{"ASKS", asks, asks > 0}, {"RUNNING", running, false}, {"PLANNED", planned, false}};
+  const int w = band.w / 3;
+  const Rect inner{band.x, band.y, band.w, band.h - kRule};
+  for (int i = 0; i < 3; ++i) {
+    const Rect cell{band.x + i * w, inner.y, i == 2 ? band.w - 2 * w : w, inner.h};
+    const uint16_t ink = cells[i].inverted ? kPaper : kInk;
+    if (cells[i].inverted) fill(c, cell, kInk);
+    if (i > 0) vrule(c, cell.x, cell.y, cell.h, kRule);
+    drawText(c, cell.x + kPadX, cell.y + keyTop + capHeight(style::kKey), cells[i].key,
+             style::kKey, ink);
+    drawText(c, cell.x + kPadX, cell.bottom() - valueBottom,
+             known ? std::to_string(cells[i].value) : "-", valueStyle, ink);
+  }
+  hrule(c, band.x, band.bottom() - kRule, band.w);
+}
+
+int drawQuestion(ui::Canvas &c, const ui::Rect &r, int y, const std::string &question,
+                 int maxLines) {
+  using namespace ui;
+  for (const std::string &line :
+       wrap(style::kReading, upper(text::toAscii(question)), r.w - 2 * kPadX, maxLines)) {
+    drawText(c, r.x + kPadX, y + capHeight(style::kReading), line, style::kReading);
+    y += lineHeight(style::kReading);
+  }
+  return y;
+}
+
+void drawSentBand(ui::Canvas &c, const ui::Rect &foot, const std::string &choice) {
+  using namespace ui;
+  fill(c, foot, kInk);
+  drawText(c, {foot.x + kPadX, foot.y, foot.w - 2 * kPadX, foot.h},
+           std::string("SENT ") + glyph::kDot + " " + upper(choice), style::kLabel, Align::Left,
+           kPaper);
 }
 
 int paragraph(ui::Canvas &c, const ui::Rect &area, int top, const std::string &text,

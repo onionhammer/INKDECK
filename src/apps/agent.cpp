@@ -37,9 +37,6 @@ constexpr int kScreenLineH = 18;  // a line of a herdr agent's screen
 constexpr int kMaxScreenAsk = 8;  // its lines under a question
 constexpr int kRunRowH = 26;      // a schedule's last runs
 
-constexpr const char *kSetUpHelp =
-    "Name the machine that runs inkharness in SD:/inkdeck.ini: agent_host, and agent_token if it "
-    "asks for one. Then restart the board.";
 constexpr const char *kNoAgentHelp =
     "This inkharness keeps no sessions. Give it an [agent] table in inkharness.toml (issue #52) "
     "and restart it. HOLD BOOT still talks, on any screen.";
@@ -342,11 +339,7 @@ class SessionScreen : public ui::Screen {
     int y = r.y + 4;
     // With its screen to show (a herdr agent), the question gets two lines and no detail.
     const int questionLines = screen.empty() ? 3 : 2;
-    for (const std::string &line : wrap(style::kReading, upper(text::toAscii(ask.question)),
-                                        r.w - 2 * kPadX, questionLines)) {
-      drawText(c, r.x + kPadX, y + capHeight(style::kReading), line, style::kReading);
-      y += lineHeight(style::kReading);
-    }
+    y = drawQuestion(c, r, y, ask.question, questionLines);
     if (!ask.detail.empty() && screen.empty()) {
       y = paragraph(c, r, y + 6, ask.detail, style::kBody, 3);
     }
@@ -372,9 +365,7 @@ class SessionScreen : public ui::Screen {
       drawText(c, {due.x + kPadX, due.y, due.w - 2 * kPadX, due.h}, deadline, style::kLabel);
     }
     if (sent_ == ask.id) {
-      fill(c, foot, kInk);
-      drawText(c, {foot.x + kPadX, foot.y, foot.w - 2 * kPadX, foot.h},
-               "SENT " + kDot + " " + upper(sentTitle_), style::kLabel, Align::Left, kPaper);
+      drawSentBand(c, foot, sentTitle_);
     } else {
       dashedH(c, foot.x, foot.y, foot.w);
       const std::string text = cursor_ < choices - 1
@@ -842,26 +833,8 @@ class AgentList : public ui::Screen {
 
   void drawCounts(ui::Canvas &c, const Rect &band, const agent::Sessions &a) {
     using namespace ui;
-    const bool known = a.synced || !a.rows.empty();
-    struct Cell {
-      const char *key;
-      int value;
-      bool inverted;
-    } cells[3] = {{"ASKS", a.asks, a.asks > 0}, {"RUNNING", a.running, false},
-                  {"PLANNED", a.planned, false}};
-    const int w = band.w / 3;
-    const Rect inner{band.x, band.y, band.w, band.h - kRule};
-    for (int i = 0; i < 3; ++i) {
-      const Rect cell{band.x + i * w, inner.y, i == 2 ? band.w - 2 * w : w, inner.h};
-      const uint16_t ink = cells[i].inverted ? kPaper : kInk;
-      if (cells[i].inverted) fill(c, cell, kInk);
-      if (i > 0) vrule(c, cell.x, cell.y, cell.h, kRule);
-      drawText(c, cell.x + kPadX, cell.y + 10 + capHeight(style::kKey), cells[i].key, style::kKey,
-               ink);
-      drawText(c, cell.x + kPadX, cell.bottom() - 10,
-               known ? std::to_string(cells[i].value) : "-", style::kReading, ink);
-    }
-    hrule(c, band.x, band.bottom() - kRule, band.w);
+    agentui::drawCounts(c, band, a.asks, a.running, a.planned, a.synced || !a.rows.empty(),
+                        style::kReading, 10, 10);
   }
 
   std::string selected_;      // the session under the cursor, by id: it follows a reorder

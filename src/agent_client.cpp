@@ -28,6 +28,7 @@
 #include "agent_noise.h"
 #include "audio.h"
 #include "input.h"
+#include "json_fields.h"
 #include "pmic.h"
 #include "power.h"
 #include "settings.h"
@@ -370,24 +371,24 @@ int connectTo(uint32_t ip, uint16_t port, uint32_t timeoutMs) {
 
 // --- Frames from the daemon ------------------------------------------------------------------
 
-std::string field(const cJSON *json, const char *name) {
-  const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, name);
-  return cJSON_IsString(item) && item->valuestring ? item->valuestring : "";
-}
-
+std::string field(const cJSON *json, const char *name) { return jsonf::str(json, name); }
 int intField(const cJSON *json, const char *name, int fallback = -1) {
-  const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, name);
-  return cJSON_IsNumber(item) ? static_cast<int>(item->valuedouble) : fallback;
+  return jsonf::integer(json, name, fallback);
 }
+uint32_t timeField(const cJSON *json, const char *name) { return jsonf::unixTime(json, name); }
+using jsonf::flag;
 
-uint32_t timeField(const cJSON *json, const char *name) {
-  const cJSON *item = cJSON_GetObjectItemCaseSensitive(json, name);
-  return cJSON_IsNumber(item) && item->valuedouble > 0 ? static_cast<uint32_t>(item->valuedouble)
-                                                       : 0;
-}
-
-bool flag(const cJSON *json, const char *name) {
-  return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(json, name));
+// What a list row and a whole session both carry: who and where, and the plan's progress.
+template <typename T>
+void readCommon(const cJSON *json, T &out) {
+  out.id = field(json, "id");
+  out.title = field(json, "title");
+  out.state = field(json, "state");
+  out.place = field(json, "place");
+  out.herdr = field(json, "via") == "herdr";
+  out.program = field(json, "program");
+  out.step = intField(json, "step");
+  out.steps = intField(json, "steps");
 }
 
 // --- The agent's messages (docs/voice-protocol.md, "Agent sessions") --------------------------
@@ -562,15 +563,8 @@ void onSessions(const cJSON *json) {
   const cJSON *item;
   cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(json, "sessions")) {
     Row r;
-    r.id = field(item, "id");
-    r.title = field(item, "title");
-    r.state = field(item, "state");
-    r.place = field(item, "place");
-    r.herdr = field(item, "via") == "herdr";
-    r.program = field(item, "program");
+    readCommon(item, r);
     r.sub = field(item, "sub");
-    r.step = intField(item, "step");
-    r.steps = intField(item, "steps");
     r.progress = intField(item, "progress");
     r.unread = flag(item, "unread");
     r.expectAt = timeField(item, "expect_at");
@@ -692,17 +686,10 @@ void readPanel(const cJSON *json, Panel &p) {
 
 void onSession(const cJSON *json) {
   Session a;
-  a.id = field(json, "id");
-  a.title = field(json, "title");
-  a.state = field(json, "state");
-  a.place = field(json, "place");
-  a.herdr = field(json, "via") == "herdr";
-  a.program = field(json, "program");
+  readCommon(json, a);
   a.prompt = field(json, "prompt");
   a.result = field(json, "result");
   a.started = timeField(json, "started");
-  a.step = intField(json, "step");
-  a.steps = intField(json, "steps");
   const cJSON *item;
   cJSON_ArrayForEach(item, cJSON_GetObjectItemCaseSensitive(json, "plan")) {
     const std::string state = field(item, "state");
