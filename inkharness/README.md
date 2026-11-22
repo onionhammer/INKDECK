@@ -121,6 +121,22 @@ curl -sN localhost:7392/chat -H 'content-type: application/json' \
 
 HTTP turns get the same model, tools, skills and instructions as the chat.
 
+**At boot (Linux).** From the folder it should serve from:
+
+```sh
+cd ~/ink && inkharness service install
+```
+
+That writes a systemd user service (`~/.config/systemd/user/inkharness.service`) that runs
+`inkharness serve` in that folder, enables it, starts it, and turns on lingering so it starts at
+boot without a login (if `loginctl` refuses, `sudo loginctl enable-linger $USER` does it). It
+restarts 5 s after it stops. The config has to load first, and `-c FILE` and `-C DIR` work as for
+`serve`. The service gets the `PATH` of the shell that installed it (for MCP servers, `npx`,
+`claude`) and `$INKHARNESS_HOME`, nothing else, so keys go in a `.env`. Running `install` again
+replaces the unit and restarts the service, which is also how you move it to another folder.
+`inkharness service status`, `logs` (follows the journal), `restart` (after an update) and
+`uninstall` do the rest.
+
 **Reader view.** A board's News asks the daemon for a web page's article when a feed gives only
 a summary (BBC News), and for the pages a story links to (`read`,
 [docs/voice-protocol.md](../docs/voice-protocol.md#reading-a-page)). The daemon fetches the page
@@ -369,7 +385,7 @@ scripts can't call the skill tools.
 | Path | |
 | --- | --- |
 | `voice-proto/` | Framing and messages, shared by the daemon and the test client |
-| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `work.rs` the api backend's files, http_fetch and shell, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `reader.rs` (a web page's article for News), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
+| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `service.rs` (`serve` as a systemd user service), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `work.rs` the api backend's files, http_fetch and shell, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `reader.rs` (a web page's article for News), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
 | `voice-client/` | Plays a board's part from a WAV file |
 | `skills/` | Agent Skills, found when inkharness starts in this folder; `goodnight` pauses every speaker that's playing in one `run_js` script |
 | `install.sh` | Installs inkharness from this checkout (`cargo install --path`) |

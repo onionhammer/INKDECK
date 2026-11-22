@@ -4,6 +4,7 @@
 //! - `inkharness serve`: the daemon. INKDECK boards talk to it over TCP
 //!   (docs/voice-protocol.md); programs send text over HTTP (http.rs).
 //! - `inkharness init`: a starter config in the global config folder.
+//! - `inkharness service install`: `serve` from this folder at every boot (service.rs).
 //!
 //! What it uses comes from the folder it starts in and the global config folder (place.rs):
 //! `inkharness.toml`, `AGENTS.md`, skills folders, `.mcp.json`, `.env`.
@@ -26,6 +27,7 @@ mod reader;
 mod search;
 mod sentence;
 mod serve;
+mod service;
 mod session;
 mod skills;
 mod stt;
@@ -101,6 +103,11 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Run `serve` from this folder as a systemd user service: at boot, and again if it stops.
+    Service {
+        #[command(subcommand)]
+        action: service::Action,
+    },
 }
 
 #[tokio::main]
@@ -141,6 +148,9 @@ async fn run() -> Result<()> {
     }
     if let Some(Command::Init { here, force }) = cli.command {
         return init(here, force);
+    }
+    if let Some(Command::Service { action }) = cli.command {
+        return service::run(action, cli.config.as_deref());
     }
     if let Some(Command::Read {
         url,
