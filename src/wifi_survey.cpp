@@ -30,7 +30,6 @@ bool trackChanged = false;
 bool fullDue = false;
 uint8_t trackBssid[6] = {};
 uint8_t trackChannel = 0;
-uint32_t samples = 0;
 int firstChannel = 1, lastChannel = 13;
 TaskHandle_t task = nullptr;
 
@@ -155,7 +154,6 @@ void trackScan(const uint8_t bssid[6], uint8_t channel) {
   if (!ok || !tracking || !sameBssid(trackBssid, target)) return;
   for (const wifi_ap_record_t &r : records) {
     if (!sameBssid(r.bssid, target)) continue;
-    ++samples;
     ++gen;
     for (Network &n : list) {
       if (!sameBssid(n.bssid, target)) continue;
@@ -265,11 +263,6 @@ uint32_t generation() {
   return gen;
 }
 
-bool scanning() {
-  std::lock_guard<std::mutex> lock(mutex);
-  return users > 0 && holding;
-}
-
 std::string error() {
   std::lock_guard<std::mutex> lock(mutex);
   return lastError;
@@ -282,7 +275,6 @@ void track(const uint8_t bssid[6], uint8_t channel) {
   trackChanged = true;
   memcpy(trackBssid, bssid, 6);
   trackChannel = channel;
-  samples = 0;
   wake();
 }
 
@@ -292,11 +284,6 @@ void untrack() {
   tracking = false;
   fullDue = true;
   wake();
-}
-
-uint32_t trackSamples() {
-  std::lock_guard<std::mutex> lock(mutex);
-  return samples;
 }
 
 void channelRange(int &first, int &last) {

@@ -59,20 +59,6 @@ std::string ellipsize(const GFXfont *font, const std::string &s, int maxWidth) {
   return out + "...";
 }
 
-std::string ellipsizeFront(const GFXfont *font, const std::string &s, int maxWidth) {
-  if (textWidth(font, s) <= maxWidth) return s;
-  const int dots = textWidth(font, "...");
-  size_t start = s.size();
-  int w = 0;
-  while (start > 0) {
-    const int a = advance(font, s[start - 1]);
-    if (w + a + dots > maxWidth) break;
-    w += a;
-    --start;
-  }
-  return "..." + s.substr(start);
-}
-
 }  // namespace gfx
 
 namespace {

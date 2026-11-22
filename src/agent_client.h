@@ -140,7 +140,6 @@ struct Row {
   std::string sub;    // the question, the step or tool call under way, the result's first line
   int step = -1, steps = -1;  // the plan's progress: step `step` (from 1) of `steps`
   int progress = -1;          // 0-100
-  uint32_t updated = 0;       // Unix seconds
   bool unread = false;        // finished or asking, and not opened since
   uint32_t expectAt = 0;      // a working session's expected end
   uint32_t nextAt = 0;        // a schedule's next run, a watch's next look
@@ -220,10 +219,9 @@ struct Session {
   std::string id, title, state, place, prompt;
   bool herdr = false;
   std::string program;
-  std::string backend;              // api, claude or herdr
   std::vector<std::string> screen;  // herdr: the last lines of its terminal
   std::string result;  // Markdown, once it has finished
-  uint32_t started = 0, updated = 0;
+  uint32_t started = 0;
   int step = -1, steps = -1;
   std::vector<PlanStep> plan;
   std::vector<LogLine> log;  // newest first
@@ -243,11 +241,6 @@ enum Feature : uint32_t {
   kPause = 1 << 0,
   kRun = 1 << 1,
   kJobs = 1 << 2,
-  kSchedule = 1 << 3,
-  kWatch = 1 << 4,
-  kDeadline = 1 << 5,
-  kPanel = 1 << 6,
-  kSpeak = 1 << 7,
 };
 
 // Words for a herdr agent's terminal, held by inkharness until the board says to type them
@@ -299,7 +292,6 @@ struct Glance {
   std::string sayId, noteId;      // what to do with the newest result (unlocked lists only)
   std::string askSession, askId;  // the newest question (unlocked lists only)
   uint32_t askAt = 0;
-  uint32_t checkedAt = 0;  // when a list last came (Unix seconds)
   uint32_t nextCheck = 0;  // when the board looks again (Unix seconds; 0: when asked)
   bool live = false;       // the connection is up
   uint32_t generation = 0;
@@ -316,7 +308,7 @@ struct SummaryRow {
   uint32_t at;        // a working session's expected end, a watch's next look
   uint8_t sparkN;     // a watch's readings, scaled to 0-255 between sparkMin and sparkMax
   uint8_t spark[16];
-  float sparkMin, sparkMax, sparkLast;
+  float sparkMin, sparkMax;
 };
 struct Summary {
   uint16_t version;

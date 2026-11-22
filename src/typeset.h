@@ -25,9 +25,8 @@ int drawChar(GFXcanvas1 &canvas, int x, int baseline, char c, const GFXfont *fon
 int drawText(GFXcanvas1 &canvas, int x, int baseline, const std::string &s, const GFXfont *font,
              uint16_t color = kBlack);
 
-// Shortens s to fit maxWidth, replacing the tail (or head) with "...".
+// Shortens s to fit maxWidth, replacing the tail with "...".
 std::string ellipsize(const GFXfont *font, const std::string &s, int maxWidth);
-std::string ellipsizeFront(const GFXfont *font, const std::string &s, int maxWidth);
 
 }  // namespace gfx
 
@@ -80,8 +79,6 @@ class Typesetter {
   // Offset of the first letter of the first paragraph that suits a drop cap: left-aligned, at
   // least minLength bytes, starting with an ASCII letter. DropCap::kNone if there's none.
   static uint32_t findDropCap(const std::string &flow, size_t minLength = 200);
-
-  int lineHeight() const { return lineHeight_; }
 
  private:
   struct Word {

@@ -66,7 +66,7 @@ constexpr uint32_t kIdleLiveMs = 120000;      // an Agent screen this long witho
 constexpr uint32_t kUsbCheckMs = 5000;
 constexpr uint32_t kSoonGapMs = 60000;        // checkSoon() at most this often
 constexpr uint32_t kFloorS = 60;              // check_at sooner than this is taken as this
-constexpr uint16_t kSummaryVersion = 1;
+constexpr uint16_t kSummaryVersion = 2;  // 2: SummaryRow without sparkLast
 constexpr char kNvs[] = "agent";
 
 QueueHandle_t events = nullptr;
@@ -413,11 +413,6 @@ void onAgentHello(const cJSON *hello) {
     if (name == "pause") features |= kPause;
     else if (name == "run") features |= kRun;
     else if (name == "jobs") features |= kJobs;
-    else if (name == "schedule") features |= kSchedule;
-    else if (name == "watch") features |= kWatch;
-    else if (name == "deadline") features |= kDeadline;
-    else if (name == "panel") features |= kPanel;
-    else if (name == "speak") features |= kSpeak;
   }
   agentShared.features = features;
   agentChanged();
@@ -491,7 +486,6 @@ void rebuildSummary() {
         out.sparkN = static_cast<uint8_t>(n);
         out.sparkMin = lo;
         out.sparkMax = hi;
-        out.sparkLast = r.spark.back();
         for (size_t i = 0; i < n; ++i) {
           const float v = *(first + i);
           out.spark[i] = hi > lo ? static_cast<uint8_t>((v - lo) / (hi - lo) * 255 + 0.5f) : 128;
@@ -578,7 +572,6 @@ void onSessions(const cJSON *json) {
     r.step = intField(item, "step");
     r.steps = intField(item, "steps");
     r.progress = intField(item, "progress");
-    r.updated = timeField(item, "updated");
     r.unread = flag(item, "unread");
     r.expectAt = timeField(item, "expect_at");
     r.nextAt = timeField(item, "next_at");
@@ -705,11 +698,9 @@ void onSession(const cJSON *json) {
   a.place = field(json, "place");
   a.herdr = field(json, "via") == "herdr";
   a.program = field(json, "program");
-  a.backend = field(json, "backend");
   a.prompt = field(json, "prompt");
   a.result = field(json, "result");
   a.started = timeField(json, "started");
-  a.updated = timeField(json, "updated");
   a.step = intField(json, "step");
   a.steps = intField(json, "steps");
   const cJSON *item;
@@ -1947,7 +1938,6 @@ Glance glance() {
     g.latestAsk = m.latestAsk;
     g.latestDone = m.latestDone;
   }
-  g.checkedAt = checkedAtUnix.load();
   g.nextCheck = a.connected ? 0 : nextCheckUnix.load();
   g.live = a.connected;
   g.generation = a.generation;
