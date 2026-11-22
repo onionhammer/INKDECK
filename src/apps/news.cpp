@@ -19,6 +19,7 @@
 #include "pmic.h"
 #include "screen.h"
 #include "sdcard.h"
+#include "text.h"
 #include "ui/menu.h"
 #include "wlan.h"
 
@@ -351,24 +352,6 @@ void drawFetchStrip(Canvas &c, const Rect &strip, const pagefetch::Status &st) {
   drawMeterStrip(c, strip, left, std::to_string(static_cast<int>(f * 100)) + "%", f);
 }
 
-// Words in Markdown, a link's (url) left out.
-uint32_t countWords(const std::string &md) {
-  uint32_t n = 0;
-  bool in = false;
-  for (size_t i = 0; i < md.size(); ++i) {
-    if (md[i] == ']' && i + 1 < md.size() && md[i + 1] == '(') {
-      const size_t close = md.find(')', i);
-      if (close != std::string::npos) i = close;
-      continue;
-    }
-    const char c = md[i];
-    const bool space = c == ' ' || c == '\n' || c == '\t';
-    if (!space && !in) ++n;
-    in = !space;
-  }
-  return n;
-}
-
 struct Link {
   std::string text;  // plain
   std::string url;
@@ -587,7 +570,7 @@ class StoryScreen : public ui::Screen {
   void showPage(const article::Article &a) {
     fromPage_ = true;
     pageText_ = articleText(a);
-    const uint32_t words = countWords(pageText_);
+    const uint32_t words = text::countWords(pageText_);
     const std::string by = !a.byline.empty() ? a.byline : info_.author;
     doc_.setPictures(a.pictures);
     doc_.parse(info_.title, pageText_);
@@ -775,7 +758,7 @@ class LinkScreen : public ui::Screen {
     published_ = a.published;
     const std::string title = a.title.empty() ? link_.text : a.title;
     const std::string md = articleText(a);
-    const uint32_t words = countWords(md);
+    const uint32_t words = text::countWords(md);
     doc_.setPictures(a.pictures);
     doc_.parse(title, md);
     doc_.setByline(a.byline.empty() ? ui::upper(a.site) : "BY " + ui::upper(a.byline),

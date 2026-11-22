@@ -48,4 +48,7 @@ void appendSlots(std::string &out, uint32_t cp);
 // UTF-8 string -> ASCII approximation.
 std::string toAscii(const std::string &utf8);
 
+// Words in Markdown (News's stories), a link's (url) left out: "[the report](https://…)" is two.
+uint32_t countWords(const std::string &markdown);
+
 }  // namespace text

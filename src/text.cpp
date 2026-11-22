@@ -191,4 +191,21 @@ std::string toAscii(const std::string &utf8) {
   return out;
 }
 
+uint32_t countWords(const std::string &markdown) {
+  uint32_t n = 0;
+  bool in = false;
+  for (size_t i = 0; i < markdown.size(); ++i) {
+    if (markdown[i] == ']' && i + 1 < markdown.size() && markdown[i + 1] == '(') {
+      const size_t close = markdown.find(')', i);
+      if (close != std::string::npos) i = close;
+      continue;
+    }
+    const char c = markdown[i];
+    const bool space = c == ' ' || c == '\n' || c == '\t';
+    if (!space && !in) ++n;
+    in = !space;
+  }
+  return n;
+}
+
 }  // namespace text

@@ -18,6 +18,7 @@
 #include "rss.h"
 #include "rtc.h"
 #include "sdcard.h"
+#include "text.h"
 #include "wlan.h"
 
 namespace news {
@@ -188,17 +189,6 @@ std::string hostOf(const std::string &url) {
   std::string host = url.substr(from, url.find('/', from) - from);
   if (host.rfind("www.", 0) == 0) host.erase(0, 4);
   return host;
-}
-
-uint32_t countWords(const std::string &s) {
-  uint32_t n = 0;
-  bool in = false;
-  for (const char c : s) {
-    const bool space = c == ' ' || c == '\n' || c == '\t';
-    if (!space && !in) ++n;
-    in = !space;
-  }
-  return n;
 }
 
 std::string newStamp() {
@@ -376,7 +366,7 @@ Feed merge(const Feed &old, rss::NewsFeed &fetched, time_t now, uint32_t bytes, 
     it.summary = s.summary;
     it.link = s.link;
     it.full = s.full;
-    it.words = countWords(s.body);
+    it.words = text::countWords(s.body);
     // Undated: when it was first seen, so it keeps its place.
     it.published = s.published ? s.published : was != before.end() ? was->second->published : now;
     kept.push_back({std::move(it), &s.body});

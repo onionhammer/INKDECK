@@ -19,6 +19,7 @@
 #include "apps/clock.h"
 #include "apps/lock.h"
 #include "apps/news.h"
+#include "apps/weather.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "forecast.h"
@@ -348,11 +349,6 @@ Clock clockFor(const Card &card, Mode mode, time_t now, time_t synced, time_t la
 
 std::string hhmm(time_t t) { return rtc::timeValid() ? fmt(t, "%H:%M") : "--:--"; }
 
-std::string tempText(float celsius) {
-  char buf[16];
-  snprintf(buf, sizeof buf, "%d\xC2\xB0", static_cast<int>(lroundf(units::temperature(celsius))));
-  return buf;
-}
 
 // Paper pixel art on ink: '#' paper, '+' a 50 % tone.
 void drawIcon(Canvas &c, const char *const *rows, int x0, int y0) {
@@ -437,7 +433,7 @@ void drawDark(Canvas &c, const Clock &k) {
   rows.push_back({weather::condition(h->code), &kWxBold});
   const weather::Day *days[1] = {};
   if (weather::daysFrom(*f, k.now, days, 1) > 0) {
-    rows.push_back({"HI " + tempText(days[0]->hiC) + dot() + "LO " + tempText(days[0]->loC), &kWx});
+    rows.push_back({"HI " + temperatureText(days[0]->hiC) + dot() + "LO " + temperatureText(days[0]->loC), &kWx});
   }
   if (!wet(sky)) {
     const weather::Hour *next[12] = {};
@@ -451,7 +447,7 @@ void drawDark(Canvas &c, const Clock &k) {
       break;
     }
   }
-  const std::string temp = tempText(h->tempC);
+  const std::string temp = temperatureText(h->tempC);
   constexpr int kIconW = kIconCols * kIconCell, kIconH = kIconRows * kIconCell;
   int colW = kIconW + 12 + textWidth(kTemp, temp);
   for (const auto &r : rows) colW = std::max(colW, textWidth(*r.second, r.first));
