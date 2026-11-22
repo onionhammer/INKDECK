@@ -110,6 +110,24 @@ void setFullRefreshScreens(int screens) {
 
 void assumeShown() { epd.assumeShown(fb->getBuffer()); }
 
+void presentOver(bool landscape, bool full, const std::function<void()> &drawOld,
+                 const std::function<void()> &drawNew, bool onUsb, bool slowWait) {
+  lock();
+  setLandscape(landscape);
+  if (!full) {
+    clear();
+    drawOld();
+    assumeShown();
+  }
+  clear();
+  drawNew();
+  if (slowWait) setCpuFrequencyMhz(80);
+  sleepWhileBusy(!onUsb);
+  present(full);
+  sleepWhileBusy(false);
+  unlock();
+}
+
 void powerOff() {
   lock();  // not in the middle of a frame
   epd.powerOff();

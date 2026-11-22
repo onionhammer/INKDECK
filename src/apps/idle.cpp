@@ -143,7 +143,7 @@ void pollPower() {
   if (!power::idle(readingNow())) return;
   stopNapping();
   const pmic::Status p = pmic::status();
-  const bool low = p.percent >= 0 && p.percent < power::kLowBatteryPercent;
+  const bool low = power::lowBattery(p);
   // From News, its edition; from the Agent (or with a session asking or working), its face.
   const bool edition = !low && editionWanted();
   const bool agentFace = !low && !edition && agentFaceWanted();

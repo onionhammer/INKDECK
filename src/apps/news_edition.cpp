@@ -1,7 +1,6 @@
 #include "apps/news_edition.h"
 
 #include <Arduino.h>
-#include <Preferences.h>
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
@@ -19,10 +18,12 @@
 #include "apps/clock.h"
 #include "apps/lock.h"
 #include "apps/news.h"
+#include "apps/off_face.h"
 #include "apps/weather.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "forecast.h"
+#include "kv_store.h"
 #include "netget.h"
 #include "news_library.h"
 #include "pmic.h"
@@ -82,8 +83,6 @@ constexpr int kHeadBigLines = 6;
 constexpr TextStyle kSummary{&jb::kMono15Bold, 0};
 constexpr int kSummaryLineH = 23;
 constexpr int kSummaryLines = 9;
-constexpr TextStyle kHold{&jb::kMono14Bold, 1};
-constexpr TextStyle kHoldCap{&jb::kMono14ExtraBold, 0};
 constexpr int kMaxCells = 16;  // more stories than this: a bar instead of a cell each
 
 // --- The pixel art ---------------------------------------------------------------------------
@@ -191,45 +190,21 @@ struct Clock {
 
 std::atomic<bool> requested{false};
 
-uint32_t loadU32(const char *key) {
-  Preferences prefs;
-  if (!prefs.begin(kNvs, true)) return 0;  // read-only fails until the namespace exists
-  const uint32_t v = prefs.getUInt(key, 0);
-  prefs.end();
-  return v;
-}
-
-void saveU32(const char *key, uint32_t v) {
-  Preferences prefs;
-  if (!prefs.begin(kNvs, false)) return;
-  if (prefs.getUInt(key, ~v) != v) prefs.putUInt(key, v);
-  prefs.end();
-}
+uint32_t loadU32(const char *key) { return kv::loadU32(kNvs, key); }
+void saveU32(const char *key, uint32_t v) { kv::saveU32(kNvs, key, v); }
 
 template <typename T>
 bool loadBlob(const char *key, T &out) {
-  Preferences prefs;
-  if (!prefs.begin(kNvs, true)) return false;
-  const bool ok = prefs.getBytesLength(key) == sizeof(T) &&
-                  prefs.getBytes(key, &out, sizeof(T)) == sizeof(T);
-  prefs.end();
-  return ok && out.magic == kMagic;
+  return kv::load(kNvs, key, out) && out.magic == kMagic;
 }
 
 template <typename T>
 void saveBlob(const char *key, const T &v) {
-  Preferences prefs;
-  if (!prefs.begin(kNvs, false)) return;
-  prefs.putBytes(key, &v, sizeof(T));
-  prefs.end();
+  kv::save(kNvs, key, v);
 }
 
-bool batteryLow() {
-  const pmic::Status p = pmic::status();
-  return p.ok && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent;
-}
-
-bool pwrHeld() { return digitalRead(board::PWR_KEY_SENSE) == HIGH; }
+using power::lowBattery;
+using power::pwrHeld;
 
 time_t every() { return std::max(1, settings::newsFaceEvery()) * 60; }
 
@@ -374,23 +349,7 @@ char frogAt(int x, int y) {
 }
 
 void drawField(Canvas &c, int x0, int y0) {
-  using namespace ui;
-  for (int y = 0; y < kFieldRows; ++y) {
-    for (int x = 0; x < kFieldCols; ++x) {
-      const int cx = x0 + x * kFieldCell, cy = y0 + y * kFieldCell;
-      const Rect cell{cx + 1, cy + 1, kFieldCell - 2, kFieldCell - 2};
-      const char ch = frogAt(x, y);
-      if (ch == '#') {
-        fill(c, cell, kInk);
-      } else if (ch == '+') {
-        dither50(c, cell);
-      } else if (!ch && frogAt(x - 1, y - 1)) {
-        dither25(c, cell);  // the shadow, one cell down and right
-      } else if (!ch) {
-        fill(c, {cx + 3, cy + 3, 2, 2}, kInk);  // unlit dot
-      }
-    }
-  }
+  ui::drawDotField(c, x0, y0, kFieldCols, kFieldRows, kFieldCell, frogAt);
 }
 
 void drawStrip(Canvas &c, const Clock &k) {
@@ -586,14 +545,7 @@ void drawFoot(Canvas &c, const Card &card, const Clock &k) {
   if (!band.empty()) drawTag(c, x, y + 9, 19, band, kTag, TagKind::Inverted, 6);
 
   // HOLD [PWR] TO READ, at the bottom.
-  const Rect line{x, inY + inH - 24, w, 24};
-  const int base = baselineCentered(kHold, line.y, line.h);
-  int hx = drawText(c, line.x, base, "HOLD", kHold) + 8;
-  const int capW = textWidth(kHoldCap, "PWR") + 14 + 4;
-  frame(c, {hx, line.y, capW, line.h}, 2);
-  drawText(c, hx + 9, baselineCentered(kHoldCap, line.y, line.h), "PWR", kHoldCap);
-  hx += capW + 8;
-  drawText(c, hx, base, "TO READ", kHold);
+  drawHoldPwr(c, {x, inY + inH - 24, w, 24}, "TO READ");
 }
 
 void drawFace(Canvas &c, const Clock &k, const Card &card) {
@@ -610,7 +562,7 @@ bool sameStory(const Card &a, const Card &b) { return a.kind == b.kind && a.uid 
 class FaceScreen;
 FaceScreen *face = nullptr;
 
-class FaceScreen : public ui::Screen {
+class FaceScreen : public OffFaceScreen {
  public:
   FaceScreen(bool usb, bool devWake) : usb_(usb), devWake_(devWake) {
     face = this;
@@ -624,12 +576,6 @@ class FaceScreen : public ui::Screen {
   }
 
   std::string tag() const override { return "NEWS"; }
-  bool chrome() const override { return false; }
-  bool offFace() const override { return true; }
-  bool onKey(Key) override {  // a key: awake again (before the power-off, or on USB)
-    ui::nav::pop();
-    return true;
-  }
 
   bool onTick() override {
     const time_t now = time(nullptr);
@@ -637,7 +583,7 @@ class FaceScreen : public ui::Screen {
       const pmic::Status p = pmic::status();
       if (p.ok && !p.vbus) {  // unplugged: off behind it, as on battery
         usb_ = false;
-        ticks_ = 0;
+        restartTicks();
         clock_ = clockFor(card_, mode(), now, news::lastSync(), now);
         ui::nav::invalidate(ui::Refresh::Full);
         return true;
@@ -666,7 +612,11 @@ class FaceScreen : public ui::Screen {
       return true;
     }
     // On battery: the second tick after it's drawn, off, with a wake the next minute.
-    if (!drawn_ || ++ticks_ < 2) return false;
+    return offTick();
+  }
+
+  void powerOff() override {
+    const time_t now = time(nullptr);
     const time_t alarm = rtc::timeValid() ? alarms::next(now) : 0;
     const time_t wakeAt =
         clock_.mode == Mode::Stopped || !rtc::timeValid() ? 0 : minuteStart(now) + 60;
@@ -674,28 +624,24 @@ class FaceScreen : public ui::Screen {
     saveBlob("clock", clock_);
     saveU32("next", static_cast<uint32_t>(wakeAt));
     if (devWake_) saveU32("dev", 3);  // the dev tool's: three wakes, then into News
-    power::off(power::Mode::Edition, earliestWake(earliestWake(alarm, wakeAt), agentCheckWake()));
-    ui::nav::pop();  // still here: the power-off failed
-    return true;
+    power::off(power::Mode::Edition, withAgentCheck(power::earliest(alarm, wakeAt)));
   }
 
   void draw(Canvas &c, const Rect &) override {
     drawFace(c, clock_, card_);
-    drawn_ = true;
+    drawn();
   }
 
   uint32_t story() const { return card_.kind == Kind::Story ? card_.uid : 0; }
 
  private:
-  Mode mode() const { return usb_ ? Mode::Usb : batteryLow() ? Mode::Stopped : Mode::Live; }
+  Mode mode() const { return usb_ ? Mode::Usb : lowBattery() ? Mode::Stopped : Mode::Live; }
 
   bool usb_;
   bool devWake_;
   Card card_ = {};
   Clock clock_ = {};
   uint32_t gen_ = 0;
-  bool drawn_ = false;
-  int ticks_ = 0;
 };
 
 // A fetch from behind the face: the feeds, then the forecast. True if PWR was pressed (boot
@@ -758,13 +704,12 @@ bool editionWake() {
   if (power::wake() != power::Wake::Alarm || !rtc::timeValid()) return false;
   if (power::lastMode() != power::Mode::Edition) return false;
   const time_t now = time(nullptr);
-  const time_t armed = power::armedFor();
-  const time_t ring = alarms::next(armed ? armed - 1 : now - 60);
+  const time_t ring = alarms::nextAtWake(now);
   if (ring && ring <= now + 1) return false;  // an alarm: boot, and it rings
   const time_t due = static_cast<time_t>(loadU32("next"));
   if (due == 0 || now + 30 < due) {
     // Woken for something else (an alarm snoozed or deleted since): back off until it's time.
-    power::off(power::Mode::Edition, earliestWake(earliestWake(ring, due), agentCheckWake()));
+    power::off(power::Mode::Edition, withAgentCheck(power::earliest(ring, due)));
     return false;
   }
   pinMode(board::PWR_KEY_SENSE, INPUT);
@@ -775,7 +720,7 @@ bool editionWake() {
   const bool haveCard = loadBlob("card", oldCard);
   const bool haveOld = haveCard && loadBlob("clock", old);
   Card card = oldCard;
-  const bool low = batteryLow();
+  const bool low = lowBattery();
   time_t synced = haveOld ? old.synced : 0;
 
   // The next story when it's time, or with nothing to show an hourly fetch. Only then the card:
@@ -808,20 +753,8 @@ bool editionWake() {
 
   // The panel still shows the last face: draw it as the base, so this is a partial refresh.
   Canvas &c = screen::canvas();
-  const pmic::Status p = pmic::status();
-  screen::lock();
-  screen::setLandscape(false);
-  if (!full) {
-    screen::clear();
-    drawFace(c, old, oldCard);
-    screen::assumeShown();
-  }
-  screen::clear();
-  drawFace(c, k, card);
-  screen::sleepWhileBusy(!p.vbus);
-  screen::present(full);
-  screen::sleepWhileBusy(false);
-  screen::unlock();
+  screen::presentOver(false, full, [&] { drawFace(c, old, oldCard); },
+                      [&] { drawFace(c, k, card); }, pmic::status().vbus);
   if (changed) saveBlob("card", card);
   saveBlob("clock", k);
 
@@ -835,7 +768,7 @@ bool editionWake() {
   if (dev > 1) saveU32("dev", dev - 1);
   const time_t next = low ? 0 : minuteStart(t) + 60;
   saveU32("next", static_cast<uint32_t>(next));
-  power::off(power::Mode::Edition, earliestWake(earliestWake(ring, next), agentCheckWake()));
+  power::off(power::Mode::Edition, withAgentCheck(power::earliest(ring, next)));
   return false;
 }
 

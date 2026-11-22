@@ -307,7 +307,7 @@ class SystemScreen : public ui::Screen {
         // An interrupted update is harmless (the running firmware stays), but a flat battery
         // halfway through wastes the try.
         const pmic::Status p = pmic::status();
-        if (p.ok && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent) {
+        if (power::lowBattery(p)) {
           say("CHARGE FIRST: BATTERY BELOW " + std::to_string(power::kLowBatteryPercent) + " %");
           break;
         }

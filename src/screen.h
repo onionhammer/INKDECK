@@ -3,6 +3,7 @@
 // flipped a few screens' worth of pixels (or after 15 of them per screen), against ghosting.
 // How many screens is a setting (System), 2 by default.
 #pragma once
+#include <functional>
 #include <Adafruit_GFX.h>
 #include <Print.h>
 
@@ -37,6 +38,13 @@ void powerOff();
 // Light sleep instead of polling while the panel refreshes (Epd::setSleepWhileBusy). For the
 // standby wake on battery; it drops a USB serial connection.
 void sleepWhileBusy(bool on);
+
+// An off face's redraw at an RTC wake: the panel still shows the last frame, so unless `full`,
+// drawOld() draws it as the base and the refresh is a partial one. drawNew() draws the face as
+// it is now. The CPU drops to 80 MHz for the wait when slowWait (the caller sets it back), and
+// light sleep waits on the panel unless on USB (it would drop the serial port).
+void presentOver(bool landscape, bool full, const std::function<void()> &drawOld,
+                 const std::function<void()> &drawNew, bool onUsb, bool slowWait = false);
 
 // Portrait (480x800, the default) or landscape (800x480: the panel's native orientation turned
 // 180 degrees, so the wheel is on top). Only changes how drawing maps onto the framebuffer;

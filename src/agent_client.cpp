@@ -1510,7 +1510,7 @@ void planPoll(bool ok) {
   const uint32_t now = static_cast<uint32_t>(time(nullptr));
   if (checkAt > now) gap = std::min<uint32_t>(gap, std::max(kFloorS, checkAt - now) * 1000u);
   const pmic::Status p = pmic::status();
-  if (p.ok && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent) {
+  if (power::lowBattery(p)) {
     nextPollMs = 0;  // only when asked (checkSoon)
     nextCheckUnix = 0;
     return;

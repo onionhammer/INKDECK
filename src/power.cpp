@@ -158,6 +158,14 @@ void off(Mode m, time_t wakeAt, int standbyCycles) {
   markOn();
 }
 
+bool lowBattery(const pmic::Status &p) {
+  return p.ok && !p.vbus && p.percent >= 0 && p.percent < kLowBatteryPercent;
+}
+
+bool lowBattery() { return lowBattery(pmic::status()); }
+
+bool pwrHeld() { return digitalRead(board::PWR_KEY_SENSE) == HIGH; }
+
 bool idle(bool reading) {
   if (input::idleMs() < kIdleMs) return false;
   const pmic::Status p = pmic::status();
@@ -165,8 +173,7 @@ bool idle(bool reading) {
   if (audio::ringing()) return false;
   const bool playing =
       audio::status().state == audio::State::Playing || audio::recording();  // a memo too
-  const bool low = p.percent >= 0 && p.percent < kLowBatteryPercent;
-  if ((reading || playing) && !low) return false;
+  if ((reading || playing) && !lowBattery(p)) return false;
   return !working();
 }
 

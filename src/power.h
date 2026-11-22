@@ -18,6 +18,10 @@
 #include <stdint.h>
 #include <time.h>
 
+namespace pmic {
+struct Status;
+}
+
 namespace power {
 
 enum class Wake : uint8_t { Reset, PowerKey, Alarm, Usb, Other };
@@ -43,7 +47,17 @@ void markOn();
 // standbyCycles: dev tool, see standbyLeft().
 void off(Mode mode, time_t wakeAt, int standbyCycles = 0);
 
+// The earlier of two wakes, 0 meaning none.
+inline time_t earliest(time_t a, time_t b) { return !a ? b : !b ? a : (a < b ? a : b); }
+
 constexpr int kLowBatteryPercent = 15;
+
+// On battery, and below kLowBatteryPercent: no wakes but alarms, no check-ins, no fetches.
+bool lowBattery(const pmic::Status &p);
+bool lowBattery();  // from pmic::status()
+
+// PWR is down now (PWR_KEY_SENSE, set as an input): a wake that should boot instead.
+bool pwrHeld();
 
 // True when the board should power itself off: on battery, no key for 10 minutes, no alarm
 // ringing, no time, weather or news sync, podcast download or Wi-Fi drive (webdav.h). While reading

@@ -517,7 +517,7 @@ bool syncInStandby(int hours) {
   }
   if (now < due) return false;
   const pmic::Status p = pmic::status();
-  if (p.ok && p.battery && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent) {
+  if (p.battery && power::lowBattery(p)) {
     return false;
   }
   log_i("weather: standby sync (every %d h)", hours);
@@ -541,7 +541,7 @@ void poll() {
   const time_t now = time(nullptr);
   if (!due || now < due) return;
   const pmic::Status p = pmic::status();
-  if (p.ok && p.battery && !p.vbus && p.percent >= 0 && p.percent < power::kLowBatteryPercent) {
+  if (p.battery && power::lowBattery(p)) {
     // Count it as a failed attempt, so poll() looks again in kRetryAfter, not every second.
     lastAttempt = now;
     finish(Phase::Failed, "BATTERY LOW: NO AUTOMATIC SYNC");

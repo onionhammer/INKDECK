@@ -4,6 +4,7 @@
 //
 // Components draw into a Rect they're given and never decide layout beyond it.
 #pragma once
+#include <functional>
 #include <string>
 
 #include "ui/draw.h"
@@ -135,6 +136,17 @@ Rect drawButton(Canvas &c, int right, int top, const std::string &glyph,
 // --- An off face's foot band (the closed book's cover, the Agent face): a paper rule, then ink
 // with "HOLD [PWR] TO RESUME" on the left and `right` on the right, in paper.
 void drawResumeBand(Canvas &c, const Rect &band, const std::string &right);
+
+// "HOLD [PWR] TO BOOT", the off faces' way back: "HOLD", the PWR key outlined, then `verb`,
+// along `line` (24 px tall), in `color`. Returns the x it ends at.
+int drawHoldPwr(Canvas &c, const Rect &line, const char *verb, uint16_t color = kInk);
+
+// A dot-matrix field (the frogs on Sleep and the News face): cols x rows cells of `cell` px
+// from (x0, y0). at(x, y) is each cell's character ('\0' outside): '#' ink, '+' a 50 % dither;
+// an empty cell is an unlit dot, or the 25 % shadow of a lit cell up and left of it. Other
+// characters stay paper.
+void drawDotField(Canvas &c, int x0, int y0, int cols, int rows, int cell,
+                  const std::function<char(int, int)> &at);
 
 // --- Stat cell: small key over a bold value, dashed rule under (Home preview, Music footer).
 void drawStat(Canvas &c, const Rect &r, const std::string &key, const std::string &value);

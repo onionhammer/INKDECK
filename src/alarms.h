@@ -37,6 +37,10 @@ time_t ringAfter(const Alarm &alarm, time_t after);
 // `slot` gets which one.
 time_t next(time_t after, int *slot = nullptr);
 
+// At an RTC wake at `now`: the next alarm from the one the wake was armed for
+// (power::armedFor()), else from a minute ago; 0 for none. It's ringing if it's by now + 1.
+time_t nextAtWake(time_t now);
+
 // The alarm that rings in (since, now], or -1. Call it with consecutive windows so each ring
 // is reported once. A one-off alarm that's due turns itself off, and a due snooze is used up.
 int due(time_t since, time_t now);
