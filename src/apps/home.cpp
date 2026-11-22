@@ -25,6 +25,9 @@
 #include "apps/agent.h"
 #include "agent_client.h"
 #endif
+#if INKDECK_COMMS
+#include "apps/comms_ui.h"
+#endif
 #include "apps/weather.h"
 #include "audio.h"
 #include "covers.h"
@@ -57,6 +60,9 @@ enum class Kind : uint8_t {
 #if INKDECK_AGENT
   Agent,
 #endif
+#if INKDECK_COMMS
+  Comms,
+#endif
 };
 
 struct Module {
@@ -70,7 +76,8 @@ struct Module {
 // Copy from the design canvas, trimmed to what the firmware does today. The order is the
 // user's (2026-11-13; AGENT up to 03 and MUSIC down to 07 on 2026-11-20, issue #52): what's
 // used most first, related modules together; NEWS up to 02 and PODCASTS down to 05 on
-// 2026-11-21. Screen tags follow it through moduleTag().
+// 2026-11-21; COMMS at 05 above PODCASTS and LEVEL off Home (into Sensors' menu) on 2026-11-22,
+// issue #66. Screen tags follow it through moduleTag().
 // The \xC2\xB7 escapes in these strings are the middle dot (UTF-8 U+00B7).
 constexpr Module kModules[] = {
     {"READER", "SD", "EPUB books from microSD. Opens where you left off.",
@@ -84,6 +91,11 @@ constexpr Module kModules[] = {
 #endif
     {"WEATHER", "NET", "Now, hourly and 6-day forecast over Wi-Fi, every half hour on USB.",
      "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather},
+#if INKDECK_COMMS
+    {"COMMS", "RF",
+     "Push-to-talk with the other boards in your groups: board to board, no router.",
+     "ESP-NOW \xC2\xB7 ES8311", Kind::Comms},
+#endif
     {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
      "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
@@ -373,6 +385,47 @@ int statsFor(const Module &m, Stat out[4]) {
       return 4;
     }
 #endif
+#if INKDECK_COMMS
+    case Kind::Comms: {
+      if (!comms::configured()) {
+        out[0] = {"GROUP", "NOT SET"};
+        out[1] = {"SET UP", "mesh_group"};  // a line in inkdeck.ini (the screen says how)
+        return 2;
+      }
+      const std::vector<comms::Group> groups = comms::groups();
+      const int a = comms::activeGroup();
+      if (a < 0 || a >= static_cast<int>(groups.size())) return 0;
+      const comms::Group &g = groups[a];
+      const std::string dot = " \xC2\xB7 ";
+      out[0] = {"GROUP", groups.size() > 1 ? g.name + dot + std::to_string(a + 1) + " of " +
+                                                 std::to_string(groups.size())
+                                           : g.name};
+      std::string reached;
+      if (g.via != comms::Via::Net) reached = std::to_string(g.onAir) + " air";
+      if (g.via != comms::Via::Air) {
+        reached += (reached.empty() ? "" : dot) + std::to_string(g.onNet) + " net";
+      }
+      out[1] = {"REACHED", reached};
+      const std::vector<comms::Call> last = comms::calls(-1, 1);
+      if (last.empty()) {
+        out[2] = {"LAST", ui::glyph::kEmDash};
+      } else {
+        const comms::Call &c = last[0];
+        out[2] = {"LAST", (c.outgoing ? std::string("YOU")
+                                      : commsui::boardName(c.fromName, c.from)) +
+                              dot + commsui::whenText(c.at, c.agoS)};
+      }
+      const comms::Status st = comms::status();
+      std::string state = commsui::stateWord(st.state);
+      if (st.state == comms::State::Hearing) {
+        state += " " + commsui::boardName(st.peerName, st.peer);
+      } else if (st.state == comms::State::Off && !pmic::status().vbus) {
+        state += dot + "ON BATTERY";  // it listens only while a Comms screen is up
+      }
+      out[3] = {"STATE", state};
+      return 4;
+    }
+#endif
   }
   return 0;
 }
@@ -454,6 +507,12 @@ class HomeScreen : public ui::Screen {
     changed |= sig != drawnAgent_;
     drawnAgent_ = sig;
 #endif
+#if INKDECK_COMMS
+    // The COMMS preview: calls, the state, who is reached.
+    const uint32_t cg = comms::generation();
+    changed |= cg != drawnComms_ && kind == Kind::Comms;
+    drawnComms_ = cg;
+#endif
     return changed;
   }
 
@@ -498,6 +557,9 @@ class HomeScreen : public ui::Screen {
       case Kind::Weather: ui::nav::push(makeWeather()); break;
       case Kind::Recorder: ui::nav::push(makeRecorder()); break;
       case Kind::News: ui::nav::push(makeNews()); break;
+#if INKDECK_COMMS
+      case Kind::Comms: ui::nav::push(makeComms()); break;
+#endif
 #if INKDECK_AGENT
       case Kind::Agent: openGuarded(Guarded::Agent, makeAgent); break;
 #endif
@@ -509,8 +571,8 @@ class HomeScreen : public ui::Screen {
     using namespace ui;
     const Module &m = kModules[i];
     // 10 px above and 8 below: with 11 modules in the list the preview is 34 px shorter than
-    // the canvas drew it, and the stats would otherwise meet the OPEN button. With 12 it's 68 px
-    // shorter, and the button goes.
+    // the canvas drew it, and the stats would otherwise meet the OPEN button. With 12 (as now,
+    // with COMMS and the agent) it's 68 px shorter, and the button goes.
     const Rect p{area.x + 20, area.y + 10, area.w - 40, area.h - 10 - 8};
 
     const std::string num = twoDigits(i + 1);
@@ -592,6 +654,9 @@ class HomeScreen : public ui::Screen {
   bool drawnNews_ = false;
 #if INKDECK_AGENT
   uint32_t drawnAgent_ = 0;
+#endif
+#if INKDECK_COMMS
+  uint32_t drawnComms_ = 0;
 #endif
 };
 

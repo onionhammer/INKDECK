@@ -89,6 +89,7 @@ struct Row {
   std::string tag;       // optional boxed tag, right-aligned ("SD", "DIR")
   bool tagInverted = false;  // the tag filled instead of outlined: it needs you ("1 ASK")
   std::string trailing;  // optional plain text, right-aligned ("3:05")
+  const char *mark = nullptr;  // optional glyph in the marker column when not selected (✓)
 };
 void drawRow(Canvas &c, const Rect &r, const Row &row, bool selected);
 

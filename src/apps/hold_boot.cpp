@@ -11,38 +11,72 @@
 #include "apps/agent_sheet.h"
 #include "apps/board_tools.h"
 #include "audio.h"
-#include "input.h"
 #include "agent_client.h"
+#endif
+#if INKDECK_COMMS
+#include "apps/comms_ui.h"
+#endif
+#if INKDECK_AGENT || INKDECK_COMMS
+#include "input.h"
 #endif
 
 namespace apps {
 namespace {
 
-#if INKDECK_AGENT
-// What the last hold's edge chose: talk, or (music or a podcast playing, or talking not allowed)
-// not. key() follows it, so the two can't disagree if playback ends in between.
-std::atomic<bool> holdTalks{false};
+#if INKDECK_AGENT || INKDECK_COMMS
+// What the last hold's edge chose: the agent, the boards (the Comms screens and the call sheet
+// say so in their talkTo()), or neither (music or a podcast playing, or talking not allowed).
+// key() follows it, so the two can't disagree if playback ends in between.
+enum class Hold : uint8_t { None, Agent, Comms };
+std::atomic<Hold> holdTalks{Hold::None};
 
-// HOLD BOOT's two ends, from the input timer: straight to the agent task, so the mic opens on
-// time even while the panel is refreshing. Playback comes first: while it plays, HOLD BOOT is the
-// player's. The release always goes (a stray one does nothing).
+// HOLD BOOT's two ends, from the input timer: straight to the agent's task or comms', so the mic
+// opens on time even while the panel is refreshing. Over the Comms screens the boards come
+// first; elsewhere playback does: while it plays, HOLD BOOT is the player's. The release always
+// goes (a stray one does nothing).
 void edge(bool down) {
   if (!down) {
+#if INKDECK_AGENT
     agent::talkStop();
+#endif
+#if INKDECK_COMMS
+    commsTalkStop();
+#endif
     return;
   }
-  const bool talks = ui::nav::talkAllowed() && !audio::playing();
-  holdTalks = talks;
-  if (talks) agent::talkStart();  // with no session, opens one
+  const bool allowed = ui::nav::talkAllowed();
+  const ui::TalkTo to = allowed ? ui::nav::talkTarget() : ui::TalkTo{};
+  Hold hold = Hold::None;
+#if INKDECK_COMMS
+  if (allowed && to.comms) hold = Hold::Comms;
+#endif
+#if INKDECK_AGENT
+  if (allowed && !to.comms && !audio::playing()) hold = Hold::Agent;
+#endif
+  holdTalks = hold;
+#if INKDECK_COMMS
+  if (hold == Hold::Comms) commsTalk(to.group, to.board);
+#endif
+#if INKDECK_AGENT
+  if (hold == Hold::Agent) agent::talkStart();  // with no session, opens one
+#endif
 }
 #endif
 
-// HOLD BOOT in the UI task, after edge(): the agent sheet if the hold talks (unless it is on
-// top already), otherwise the player sheet.
+// HOLD BOOT in the UI task, after edge(): the agent sheet if the hold talks to the agent (unless
+// it is on top already); nothing more for the boards (the screen on top shows the call);
+// otherwise the player sheet.
 void key(bool held) {
-  if (!held) return;  // the release went to the agent task already; the navigator redraws
+  if (!held) return;  // the release went to the agent or comms already; the navigator redraws
+#if INKDECK_COMMS
+  if (holdTalks == Hold::Comms) {
+    // The stack changed between the hold and now (the lock came up): undo what the hold began.
+    if (!ui::nav::talkAllowed()) commsTalkStop();
+    return;
+  }
+#endif
 #if INKDECK_AGENT
-  if (holdTalks) {
+  if (holdTalks == Hold::Agent) {
     if (agentSheetOnTop()) return;
     if (!ui::nav::talkAllowed()) {
       // The stack changed between the hold and now (the lock came up): undo what the hold began.
@@ -63,6 +97,8 @@ void beginHoldBoot() {
   beginBoardTools();
   agent::begin();
   beginAgent();  // what a hold talks to: the agent on its screens, else a talk turn
+#endif
+#if INKDECK_AGENT || INKDECK_COMMS
   input::onBackHold(edge);
 #endif
   ui::nav::onTalkKey(key);

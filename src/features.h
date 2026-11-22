@@ -2,8 +2,8 @@
 //   -DINKDECK_AGENT=1   the agent (agent_client.h, apps/agent.h, apps/agent_sheet.h; the daemon is
 //                       inkharness/): Home's AGENT, HOLD BOOT to talk from any screen, the agent
 //                       sheet. 0 or unset: none of it is built, and HOLD BOOT only raises the
-//                       player sheet while something plays (apps/hold_boot.h). The old name,
-//                       -DINKDECK_VOICE, still works.
+//                       player sheet while something plays, or talks to the boards on the Comms
+//                       screens (apps/hold_boot.h). The old name, -DINKDECK_VOICE, still works.
 //   -DINKDECK_BLE=1     Bluetooth LE scans in Sensors (ble_survey.h, apps/ble_devices.h): the scan
 //                       panel's BLE stop and the menu's BLUETOOTH LE. It keeps the BLE controller's
 //                       memory from boot (about 26 KB of internal RAM, measured 2026-11-19) and adds
@@ -17,9 +17,10 @@
 //                       none of it is built, and System's TAILNET row says so.
 //   -DINKDECK_COMMS=1   COMMS (comms.h, issue #66): boards talking to each other over ESP-NOW,
 //                       push-to-talk in groups from the card's mesh_group lines, relaying for
-//                       each other as a mesh. It listens on USB power or while a Comms screen
-//                       holds it. 0 or unset: none of it is built, and the dev commands !comms...
-//                       are left out.
+//                       each other as a mesh. Home's COMMS, its screens and the call sheet
+//                       (apps/comms_ui.h), where HOLD BOOT talks to the boards. It listens on USB
+//                       power or while a Comms screen holds it. 0 or unset: none of it is built,
+//                       and the dev commands !comms... are left out.
 #pragma once
 
 #if !defined(INKDECK_AGENT) && defined(INKDECK_VOICE)

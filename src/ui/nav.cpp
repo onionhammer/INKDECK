@@ -52,9 +52,10 @@ void stackChanged() {
   TalkTo to;
   for (size_t i = stack.size(); i-- > 0;) {
     TalkTo said = stack[i]->talkTo();
-    // A sheet speaks only when it sends words to the agent (the ask sheet): the agent sheet
-    // over it must not mask it, nor the player sheet the screen under.
-    if (!stack[i]->overlay() || said.agent) {
+    // A sheet speaks only when it sends words to the agent (the ask sheet) or to boards (the
+    // call sheet): the agent sheet over it must not mask it, nor the player sheet or a menu the
+    // screen under.
+    if (!stack[i]->overlay() || said.agent || said.comms) {
       to = std::move(said);
       break;
     }
@@ -285,6 +286,8 @@ TalkTo talkTarget() {
   std::lock_guard<std::mutex> l(talkToLock);
   return talkTo;
 }
+
+void talkChanged() { stackChanged(); }
 
 void onPowerKey(void (*handler)()) { powerKeyHandler = handler; }
 

@@ -16,7 +16,9 @@
 //            half a second, the agent sheet rises over the lower half; let go to send. Not while
 //            the lock is on the stack, under an off face, or over a screen that has the mic or
 //            the speaker (allowsTalk()). While music or a podcast plays, it raises the player
-//            sheet instead (apps/music.h). Screens never see it.
+//            sheet instead (apps/music.h). On the Comms screens and the call sheet it talks to
+//            other boards instead (talkTo(), apps/comms_ui.h; in a build with INKDECK_COMMS).
+//            Screens never see it.
 //
 // Screens draw only their body. For portrait screens with chrome() the navigator draws the
 // status bar (tag(), context(), battery, clock) and the key-hint bar (hints()) around it.
@@ -38,9 +40,13 @@ enum class Refresh : uint8_t { None, Partial, Full };
 
 // Where HOLD BOOT's words go (issue #52, "Security: talk and agent"). Talk is the default: the
 // limited assistant, which sees no sessions. The agent is only reached from the Agent's screens.
+// The Comms screens and the call sheet send them to other boards instead (issue #66).
 struct TalkTo {
   bool agent = false;
   std::string session;  // with agent: the session to talk into; empty starts a new one
+  bool comms = false;   // to boards over the radio (apps/comms_ui.h), not the agent
+  int group = 0;        // with comms: the group (an index into comms::groups())
+  uint32_t board = 0;   // with comms: the board talked to; 0 for all of the group
 };
 
 class Screen {
@@ -100,8 +106,10 @@ class Screen {
   // itself, and HOLD BOOT doesn't talk while it's on the stack.
   virtual bool locks() const { return false; }
   // Where HOLD BOOT's words go while this is the top screen that isn't a sheet (nav::base()):
-  // a talk turn, by default, or the agent (the Agent's screens, apps/agent.h). A sheet over it
-  // that says the agent (the ask sheet: words answer its question) speaks for both.
+  // a talk turn, by default, or the agent (the Agent's screens, apps/agent.h), or other boards
+  // (the Comms screen). A sheet over it that says the agent (the ask sheet: words answer its
+  // question) or comms (the call sheet: a reply) speaks for both. Asked when the stack changes,
+  // and when a screen calls nav::talkChanged().
   virtual TalkTo talkTo() const { return {}; }
 
   // Called when the screen becomes the top of the stack (pushed, or uncovered by a pop) and
@@ -149,8 +157,11 @@ bool locked();   // a screen that locks() is on the stack
 // handlers do, in the timer task); it changes only with the stack.
 bool talkAllowed();
 // What nav::base() says HOLD BOOT talks to (Screen::talkTo()). Any task may ask; it changes
-// only with the stack.
+// with the stack, and when a screen says its talkTo() changed.
 TalkTo talkTarget();
+// A screen's talkTo() changed without the stack changing (the Comms screen's cursor moved to
+// another board): works talkTarget() out again. From the UI task.
+void talkChanged();
 
 // What a PWR press does (input::Key::Power; screens never see it).
 void onPowerKey(void (*handler)());

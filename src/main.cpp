@@ -4,12 +4,13 @@
 // Keys, the same on every screen (details in ui/nav.h):
 //   ▲ / ▼ dial: move, page, adjust      ●  primary action      HOLD ●  secondary action
 //   BOOT  back (on Home: full refresh)  HOLD BOOT  the player sheet while music plays, else
-//                                       talk to the assistant (apps/hold_boot.h)
+//                                       talk to the assistant; on the Comms screens, to the
+//                                       other boards (apps/hold_boot.h)
 //   PWR   the Sleep screen, then power-off (power.h)
 //
-// Screens live in apps/, one per module on Home (README.md lists them): Reader, Podcasts,
-// Agent, Weather, Clock, Recorder, Music, Sensors (its menu opens the Level), Files, System and
-// News. With a PIN set in SD:/inkdeck.ini, the lock (apps/lock.h) comes up over them at every
+// Screens live in apps/, one per module on Home (README.md lists them): Reader, News, Agent,
+// Weather, Comms, Podcasts, Clock, Recorder, Music, Sensors (its menu opens the Level), Files and
+// System. With a PIN set in SD:/inkdeck.ini, the lock (apps/lock.h) comes up over them at every
 // start.
 #include <Arduino.h>
 #include <Wire.h>
@@ -27,6 +28,7 @@
 #include "apps/agent.h"
 #include "apps/agent_face.h"
 #include "apps/board_tools.h"
+#include "apps/comms_ui.h"
 #include "audio.h"
 #include "board_pins.h"
 #include "comms.h"
@@ -131,6 +133,9 @@ void loop() {
   apps::pollBoardTools();  // the assistant's calls to the board, and the screens they open
 #if INKDECK_AGENT
   apps::pollAgent();  // chirps, the ask sheet; on a nap's minute wake too, before it naps again
+#endif
+#if INKDECK_COMMS
+  apps::pollComms();  // the call sheet over the screen in use when a call starts playing
 #endif
   // The hourly forecast sync, in the background. Not while the Reader naps on battery: that
   // would wake the radio every hour (every 15 minutes out of range) with nobody reading. It

@@ -219,7 +219,11 @@ void drawRow(Canvas &c, const Rect &r, const Row &row, bool selected) {
   constexpr int kGap = 10;
 
   int x = r.x + kPadX;
-  if (selected) drawText(c, {x, band.y, 14, band.h}, glyph::kPlay, kMarker, Align::Left, ink);
+  if (selected) {
+    drawText(c, {x, band.y, 14, band.h}, glyph::kPlay, kMarker, Align::Left, ink);
+  } else if (row.mark) {
+    drawText(c, {x, band.y, 14, band.h}, row.mark, style::kCap, Align::Left, ink);
+  }
   x += 14 + kGap;
   if (!row.index.empty()) {
     drawText(c, x, baselineCentered(style::kRowIndex, band.y, band.h), row.index,

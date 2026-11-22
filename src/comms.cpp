@@ -294,6 +294,9 @@ struct Core {
   uint16_t finishedCall = 0;
   Music music;
   bool streamOurs = false;
+  // PLAY LAST is queued to the speaker far faster than it plays: once it's all queued, it still
+  // counts as hearing until the stream has played out (status() and the screens).
+  bool replayTail = false;
   float level = -96;
   float peaks[10] = {};  // the last 200 ms of played frames, for the meter
   int peakAt = 0;
@@ -895,6 +898,7 @@ void beginHearing(int gi, const Header &hd, uint32_t target, uint16_t call, int 
   h.hops = hd.hops;
   h.relay = relay;
   h.rssi = hd.hops == 0 ? rssi : 0;
+  core->replayTail = false;
   core->recAudio.clear();
   resetLevel();
   const bool can = canPlay();
@@ -1113,6 +1117,7 @@ void stopReplay(bool abort) {
     audio::streamEnd();
   }
   p.on = false;
+  core->replayTail = !abort;
   if (p.held) {
     std::lock_guard<std::mutex> l(core->mu);
     for (auto it = core->log.rbegin(); it != core->log.rend(); ++it) {
@@ -1229,6 +1234,7 @@ void startTalk(int gi, uint32_t target) {
   if (!isListening && !radioStart()) return fail("THE RADIO WON'T START");
   if (core->hear.active) endHearing(true);
   if (core->replay.on) stopReplay(true);
+  core->replayTail = false;
   rememberMusic();
   if (!audio::captureStart(true)) return fail("THE MIC WON'T START");
   renew(t);
@@ -1546,10 +1552,12 @@ void publish() {
   Status s;
   const Hearing &h = core->hear;
   const Talk &t = core->talk;
+  const bool replay =
+      core->replay.on || (core->replayTail && core->streamOurs && audio::streaming());
   s.state = !isListening ? State::Off
             : t.on       ? State::Talking
-            : (h.active && h.playing) || core->replay.on ? State::Hearing
-                                                          : State::Quiet;
+            : (h.active && h.playing) || replay ? State::Hearing
+                                                 : State::Quiet;
   s.channel = radioChannel();
   s.onNetwork = WiFi.isConnected();
   s.netUp = false;
@@ -1572,7 +1580,7 @@ void publish() {
     s.hops = h.hops;
     s.relayName = nameOf(h.relay);
     s.rssi = h.rssi;
-  } else if (core->replay.on) {
+  } else if (replay) {
     s.replay = true;
     s.group = core->last.group;
     s.peer = core->last.from;
@@ -1679,6 +1687,12 @@ void handleCommand(const Command &c) {
     case Cmd::PlayLast: startReplay(); break;
     case Cmd::StopPlay:
       if (core->replay.on) stopReplay(true);
+      if (core->replayTail && core->streamOurs && !core->hear.active) {  // still playing out
+        audio::streamAbort();
+        core->streamOurs = false;
+        core->replayTail = false;
+        bump();
+      }
       if (core->hear.active && core->hear.playing) {
         audio::streamAbort();
         core->hear.playing = false;
@@ -1769,6 +1783,10 @@ void task(void *) {
     if (!core->hear.active && !core->replay.on && !core->talk.on &&
         core->streamOurs && !audio::streaming()) {
       core->streamOurs = false;
+      if (core->replayTail) {  // PLAY LAST has played out
+        core->replayTail = false;
+        bump();
+      }
     }
     resumeMusicWhenFree();
     presence(now);
