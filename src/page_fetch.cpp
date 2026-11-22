@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <dirent.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 
 #include <algorithm>
@@ -34,9 +35,11 @@ constexpr const char *kUserAgent =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 "
     "Safari/537.36";
 constexpr const char *kMagic = "INKPAGE 1";
+constexpr const char *kPicturesMagic = "INKPICS1";
 
 std::mutex mu;
 std::string wanted;   // the next page to fetch ("" for none)
+uint16_t wantW = 0, wantH = 0;  // its pictures' largest size
 std::string current;  // the page being or last fetched
 Status state;
 article::Article done;  // current's, when state is Done
@@ -53,10 +56,56 @@ uint32_t fnv1a(const std::string &s) {
   return h;
 }
 
-std::string pathFor(const std::string &url) {
+std::string pathFor(const std::string &url, const char *ext = ".md") {
   char name[16];
-  snprintf(name, sizeof name, "/%08lx.md", static_cast<unsigned long>(fnv1a(url)));
-  return kDir + std::string(name);
+  snprintf(name, sizeof name, "/%08lx", static_cast<unsigned long>(fnv1a(url)));
+  return kDir + std::string(name) + ext;
+}
+
+// The pictures' file: kPicturesMagic, a count, then each picture's index (4 bytes), width and
+// height (2 each, little-endian) and bits.
+void putLe(std::string &s, uint32_t v, int bytes) {
+  for (int i = 0; i < bytes; ++i) s += static_cast<char>((v >> (8 * i)) & 0xFF);
+}
+
+uint32_t get(const std::string &s, size_t &at, int bytes) {
+  uint32_t v = 0;
+  for (int i = 0; i < bytes && at < s.size(); ++i, ++at) {
+    v |= static_cast<uint32_t>(static_cast<uint8_t>(s[at])) << (8 * i);
+  }
+  return v;
+}
+
+std::string packPictures(const std::vector<article::Picture> &pictures) {
+  std::string all = kPicturesMagic;
+  putLe(all, pictures.size(), 2);
+  for (const article::Picture &p : pictures) {
+    putLe(all, p.index, 4);
+    putLe(all, p.width, 2);
+    putLe(all, p.height, 2);
+    all.append(reinterpret_cast<const char *>(p.bits.data()), p.bits.size());
+  }
+  return all;
+}
+
+std::vector<article::Picture> unpackPictures(const std::string &all) {
+  std::vector<article::Picture> out;
+  const size_t magic = strlen(kPicturesMagic);
+  if (all.compare(0, magic, kPicturesMagic) != 0) return out;
+  size_t at = magic;
+  const uint32_t n = get(all, at, 2);
+  for (uint32_t i = 0; i < n && at < all.size(); ++i) {
+    article::Picture p;
+    p.index = get(all, at, 4);
+    p.width = static_cast<uint16_t>(get(all, at, 2));
+    p.height = static_cast<uint16_t>(get(all, at, 2));
+    const size_t len = static_cast<size_t>((p.width + 7) / 8) * p.height;
+    if (at + len > all.size()) break;
+    p.bits.assign(all.begin() + at, all.begin() + at + len);
+    at += len;
+    out.push_back(std::move(p));
+  }
+  return out;
 }
 
 std::string oneLine(std::string s) {
@@ -71,13 +120,14 @@ bool readLine(FILE *f, std::string &out) {
   return c != EOF || !out.empty();
 }
 
-// Keeps the newest kKeepFiles pages.
+// Keeps the newest kKeepFiles pages (by their .md), with their pictures.
 void prune() {
   DIR *d = opendir(kDir);
   if (!d) return;
   std::vector<std::pair<time_t, std::string>> files;
   while (dirent *e = readdir(d)) {
-    if (e->d_name[0] == '.') continue;
+    const size_t len = strlen(e->d_name);
+    if (e->d_name[0] == '.' || len < 3 || strcmp(e->d_name + len - 3, ".md") != 0) continue;
     const std::string path = std::string(kDir) + "/" + e->d_name;
     struct stat st;
     if (stat(path.c_str(), &st) == 0) files.push_back({st.st_mtime, path});
@@ -85,7 +135,11 @@ void prune() {
   closedir(d);
   if (static_cast<int>(files.size()) <= kKeepFiles) return;
   std::sort(files.begin(), files.end());
-  for (size_t i = 0; i + kKeepFiles < files.size(); ++i) remove(files[i].second.c_str());
+  for (size_t i = 0; i + kKeepFiles < files.size(); ++i) {
+    const std::string &md = files[i].second;
+    remove(md.c_str());
+    remove((md.substr(0, md.size() - 3) + ".pic").c_str());
+  }
 }
 
 void save(const std::string &url, const article::Article &a) {
@@ -107,6 +161,17 @@ void save(const std::string &url, const article::Article &a) {
   if (!ok || rename(tmp.c_str(), path.c_str()) != 0) {
     remove(tmp.c_str());
     return;
+  }
+  const std::string pics = pathFor(url, ".pic");
+  remove(pics.c_str());
+  if (!a.pictures.empty()) {
+    // In PSRAM, then out (gotcha 7 is about flash, but a big write wants a RAM source anyway).
+    const std::string packed = packPictures(a.pictures);
+    if (FILE *pf = fopen(pics.c_str(), "wb")) {
+      const bool wrote = fwrite(packed.data(), 1, packed.size(), pf) == packed.size();
+      fclose(pf);
+      if (!wrote) remove(pics.c_str());
+    }
   }
   prune();
 }
@@ -149,7 +214,13 @@ void fetchOne(const std::string &url, bool &connected) {
     std::string error;
     bool reached = false;
     const uint32_t t0 = millis();
-    const bool ok = agent::readPage(url, kAskTimeoutMs, page, error, reached, abandonedFor,
+    uint16_t w, h;
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      w = wantW;
+      h = wantH;
+    }
+    const bool ok = agent::readPage(url, w, h, kAskTimeoutMs, page, error, reached, abandonedFor,
                                     const_cast<std::string *>(&url));
     log_i("page: inkharness %s in %u ms: %s", ok ? "read it" : "didn't",
           static_cast<unsigned>(millis() - t0), ok ? url.c_str() : error.c_str());
@@ -161,6 +232,14 @@ void fetchOne(const std::string &url, bool &connected) {
       a.site = page.site;
       a.published = page.published;
       a.markdown = std::move(page.markdown);
+      for (agent::PagePicture &p : page.pictures) {
+        article::Picture pic;
+        pic.index = p.index;
+        pic.width = p.width;
+        pic.height = p.height;
+        pic.bits = std::move(p.bits);
+        a.pictures.push_back(std::move(pic));
+      }
       finish(url, std::move(a));
       return;
     }
@@ -306,15 +385,26 @@ bool cached(const std::string &url, article::Article &out) {
     char buf[1024];
     size_t n;
     while ((n = fread(buf, 1, sizeof buf, f)) > 0) a.markdown.append(buf, n);
-    out = std::move(a);
   }
   fclose(f);
-  return ok;
+  if (!ok) return false;
+  if (FILE *pf = fopen(pathFor(url, ".pic").c_str(), "rb")) {
+    std::string packed;
+    char buf[2048];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, pf)) > 0) packed.append(buf, n);
+    fclose(pf);
+    a.pictures = unpackPictures(packed);
+  }
+  out = std::move(a);
+  return true;
 }
 
-void fetch(const std::string &url) {
+void fetch(const std::string &url, uint16_t pictureW, uint16_t pictureH) {
   if (url.empty()) return;
   std::lock_guard<std::mutex> lock(mu);
+  wantW = pictureW;
+  wantH = pictureH;
   if (url == current && (state.phase == Phase::Done || wanted == url)) return;
   // The worker starts it afresh (and drops the page under way, if any).
   wanted = current = url;

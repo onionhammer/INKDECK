@@ -150,6 +150,10 @@ fn is_zero(n: &i64) -> bool {
     *n == 0
 }
 
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
+}
+
 fn no_input() -> serde_json::Value {
     serde_json::json!({"type": "object", "properties": {}})
 }
@@ -241,8 +245,16 @@ pub enum ClientMsg {
     Speak { session: String },
     /// Fetches a web page and reads its article (News, for a feed that gives only a summary,
     /// and the links in a story). Answered with `page`, the same id. Only to a daemon whose
-    /// hello says `reader`.
-    Read { id: u32, url: String },
+    /// hello says `reader`. With `image_width` and `image_height` (the largest picture the
+    /// device shows, in pixels), the article's pictures come first, each a `page_image`.
+    Read {
+        id: u32,
+        url: String,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        image_width: u32,
+        #[serde(default, skip_serializing_if = "is_zero_u32")]
+        image_height: u32,
+    },
 }
 
 /// What kind of turn an utterance is.
@@ -325,6 +337,16 @@ pub enum ServerMsg {
         /// When further tries are refused for this many seconds (too many wrong PINs).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wait_s: Option<u64>,
+    },
+    /// One of the article's pictures, before the `page` of the same id: 1 bit a pixel, rows of
+    /// (width + 7) / 8 bytes, the leftmost pixel in the top bit, 1 for ink, in base64. The
+    /// text shows it where `![](inkimg:index)` stands.
+    PageImage {
+        id: u32,
+        index: u32,
+        width: u32,
+        height: u32,
+        bits: String,
     },
     /// The answer to `read`: the page's article as Markdown (links as `[text](url)`), or
     /// `error` when there is none.
@@ -1072,6 +1094,27 @@ mod tests {
             ClientMsg::Read {
                 id: 3,
                 url: "https://www.bbc.co.uk/news/articles/x".into(),
+                image_width: 0,
+                image_height: 0,
+            },
+        );
+        round_trip(
+            r#"{"type":"read","id":5,"url":"https://a.b/c","image_width":420,"image_height":600}"#,
+            ClientMsg::Read {
+                id: 5,
+                url: "https://a.b/c".into(),
+                image_width: 420,
+                image_height: 600,
+            },
+        );
+        round_trip(
+            r#"{"type":"page_image","id":5,"index":0,"width":8,"height":2,"bits":"8A8="}"#,
+            ServerMsg::PageImage {
+                id: 5,
+                index: 0,
+                width: 8,
+                height: 2,
+                bits: "8A8=".into(),
             },
         );
         round_trip(

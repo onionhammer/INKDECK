@@ -17,6 +17,8 @@ clap = { version = "4.6.7", features = ["derive"] }
 dom_query = "0.30.0"
 dom_smoothie = "0.20.0"
 eventsource-stream = "0.2.3"
+# The pictures in a page a board reads (reader.rs), dithered for e-paper.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
 futures-util = "0.3.34"
 # Unlock tickets and session ids (already in the tree through snow and reqwest).
 getrandom = "0.4.3"

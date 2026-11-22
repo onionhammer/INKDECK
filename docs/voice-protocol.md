@@ -77,7 +77,7 @@ Device → daemon:
 | `listen_stop` | | The utterance is complete; the daemon answers |
 | `abort` | | Drop the utterance or the reply in progress |
 | `tool_result` | `id`, `text`, `error` (optional, default false) | The answer to a `tool_call` with that `id`: what the tool did or found, or with `error` why it couldn't |
-| `read` | `id` (a number), `url` | Fetch a web page and read its article ([Reading a page](#reading-a-page)). Only to a daemon whose hello has `reader` |
+| `read` | `id` (a number), `url`, `image_width` and `image_height` (optional: the largest picture to show, in pixels) | Fetch a web page and read its article ([Reading a page](#reading-a-page)). Only to a daemon whose hello has `reader` |
 
 Daemon → device:
 
@@ -90,6 +90,7 @@ Daemon → device:
 | `reply_end` | | The turn is over |
 | `error` | `message` | Something failed; a `reply_end` follows unless the connection closes |
 | `tool_call` | `id` (a number), `name`, `input` (an object) | The model calls one of the device's tools; answer with `tool_result` |
+| `page_image` | `id`, `index`, `width`, `height`, `bits` (base64) | One of the article's pictures, before its `page` |
 | `page` | `id`, then `title`, `byline`, `site`, `published` (Unix seconds), `markdown`, or `error` | The answer to `read` with that `id` |
 
 ## A turn
@@ -158,11 +159,23 @@ a link (BBC News), and for the pages a story links to. The daemon fetches the pa
 most, as a browser would ask) and finds the article with dom_smoothie, a port of Mozilla's
 Readability (Firefox's Reader View; `inkharness/src/reader.rs`). It sends the article as
 Markdown for the board's NoteDoc: paragraphs, headings, lists and quotes, links as
-`[text](url)` with absolute addresses, and no pictures, captions, players or page furniture,
-cut at a paragraph past 40 KB so the message fits one frame.
+`[text](url)` with absolute addresses, and no players or page furniture, cut at a paragraph
+past 40 KB so the message fits one frame.
+
+With `image_width` and `image_height`, the article's pictures come too: each figure, or picture
+on its own, stands in the text as `![](inkimg:N)` on a line of its own, its caption after it in
+italics, and the daemon sends picture N first as a `page_image`. Up to 12, each scaled to fit
+the size asked (never up), its levels stretched and dithered to 1 bit (Atkinson's), in rows of
+(width + 7) / 8 bytes, the leftmost pixel in the top bit, 1 for ink. One that doesn't come, or
+is too small to be a picture (an icon, a logo), goes from the text with its caption. A page
+whose text shows no picture near the top gets its lead picture (`og:image`) there; a picture on
+its own near the end (a credit's logo) goes. Without them, the text has no pictures or captions.
 
 ```
-  read {id: 7, url: "https://www.bbc.co.uk/news/articles/cj752ddve27ko"}  →
+  read {id: 7, url: "https://www.bbc.co.uk/news/articles/cj752ddve27ko",
+        image_width: 420, image_height: 643}  →
+                                 ←       page_image {id: 7, index: 0, width: 420, height: 236,
+                                                     bits: "…"}
                                  ←       page {id: 7, title: "Russia-bound ship still on fire…",
                                                byline: "Hafsa Khalil", site: "BBC News",
                                                published: 1795285329, markdown: "…"}
@@ -178,7 +191,8 @@ cut at a paragraph past 40 KB so the message fits one frame.
   `reader`.
 - It doesn't need the agent's PIN: the page is on the open web, and the board already proved
   the token.
-- `GET /read?url=` on the HTTP API answers the same, and `inkharness read <url>` prints it.
+- `GET /read?url=` on the HTTP API answers the same (`&images=420x600` for the pictures, in
+  `pictures`), and `inkharness read <url>` prints it (`--pictures DIR` saves them as PNGs).
 
 ## Rules
 

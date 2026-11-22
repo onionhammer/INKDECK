@@ -8,6 +8,7 @@
 //   - [ ] item  - [x] item    a checklist
 //   > quote                   indented behind a bar
 //   ---  ***  ___             a rule
+//   ![](inkimg:N)             picture N of setPictures(), on a line of its own (News)
 //   **bold**, __bold__, *italic*, _italic_ anywhere in a line
 // A blank line ends a paragraph or an item; a single line break inside one is kept, as a chat
 // would show it. Everything else comes out as plain text, whatever arrives: `code` and ```
@@ -20,7 +21,8 @@
 // the blocks in the body family (Literata), ragged right, half a line between paragraphs and a
 // quarter between list items. Headings are 15 px ExtraBold capitals followed by a dashed rule.
 // List items hang from a marker column. A line never splits across pages, and a heading never
-// ends one.
+// ends one. A picture is centred, scaled down to fit the column and a page if it must, and
+// starts a page of its own when it doesn't fit under what's there.
 #pragma once
 #include <Adafruit_GFX.h>
 #include <stdint.h>
@@ -28,12 +30,17 @@
 #include <string>
 #include <vector>
 
+#include "article.h"
 #include "fonts.h"
 
 class NoteDoc {
  public:
   // title: UTF-8, plain (may be empty: then a first heading becomes it). markdown: the rest.
   void parse(const std::string &title, const std::string &markdown);
+
+  // The pictures ![](inkimg:N) shows (by their index). Call before layout(); a parse() keeps
+  // them.
+  void setPictures(std::vector<article::Picture> pictures) { pictures_ = std::move(pictures); }
 
   // A line under the title's rule in the UI's small capitals, `left` on the left and `right` on
   // the right (News: the byline, and how long the story is). Call before layout().
@@ -57,7 +64,9 @@ class NoteDoc {
   static bool sameText(const std::string &a, const std::string &b);
 
  private:
-  enum class Kind : uint8_t { Paragraph, Bullet, Number, Check, Quote, Heading, Rule, Row, Code };
+  enum class Kind : uint8_t {
+    Paragraph, Bullet, Number, Check, Quote, Heading, Rule, Row, Code, Picture
+  };
   struct Block {
     Kind kind;
     uint8_t level;        // list nesting: 0, or 1 one level in
@@ -65,7 +74,7 @@ class NoteDoc {
     uint32_t start, end;  // its text in text_: flow (text.h) with '\n' for a line break
     std::string marker;   // Number: "12."
   };
-  enum class LineKind : uint8_t { Title, TitleRule, Byline, Text, Heading, Rule };
+  enum class LineKind : uint8_t { Title, TitleRule, Byline, Text, Heading, Rule, Picture };
   struct Line {
     uint32_t start, end;  // its text: in title_ for a title line, else in text_
     int16_t x, y;         // the text's left edge in the column, and the line's top in the page
@@ -89,6 +98,9 @@ class NoteDoc {
   static void wrap(const std::string &src, uint32_t from, uint32_t to, int width, int tracking,
                    FaceFor faceFor, std::vector<Span> &out);
   void drawMarker(GFXcanvas1 &canvas, const Block &b, int right, int baseline) const;
+  // Block b's picture (its marker holds the index), and the size it's shown at; nullptr if
+  // there's none.
+  const article::Picture *pictureFor(const Block &b, int &w, int &h) const;
 
   std::string title_;  // flow in the title font's slots, capitals
   std::string bylineLeft_;   // UTF-8
@@ -97,6 +109,7 @@ class NoteDoc {
   std::vector<Block> blocks_;
   std::vector<Line> lines_;
   std::vector<uint32_t> pages_;  // index in lines_ of each page's first line
+  std::vector<article::Picture> pictures_;
   const FontFamily *body_ = nullptr;
   int width_ = 0;
   int height_ = 0;

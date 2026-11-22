@@ -397,15 +397,23 @@ std::vector<Link> linksIn(const std::string &md) {
   return out;
 }
 
-// A page's article as a story's text: without the heading it starts with, the page's own
-// headline (often worded apart from the feed's: "England won't get carried away by All Blacks
-// win" under "England will not get carried away by beating All Blacks").
+// A page's article as a story's text: without the heading it starts with (after a lead
+// picture), the page's own headline (often worded apart from the feed's: "England won't get
+// carried away by All Blacks win" under "England will not get carried away by beating All
+// Blacks").
 std::string articleText(const article::Article &a) {
   const std::string &md = a.markdown;
-  if (md.rfind("## ", 0) != 0) return md;
-  const size_t end = md.find("\n\n");
-  if (end == std::string::npos || end > 300) return md;
-  return md.substr(end + 2);
+  // Past a lead picture.
+  size_t at = 0;
+  while (md.compare(at, 2, "![") == 0) {
+    const size_t next = md.find("\n\n", at);
+    if (next == std::string::npos) return md;
+    at = next + 2;
+  }
+  if (md.compare(at, 1, "#") != 0) return md;
+  const size_t end = md.find("\n\n", at);
+  if (end == std::string::npos || end - at > 300) return md;
+  return md.substr(0, at) + md.substr(end + 2);
 }
 
 // A web page on its way (page_fetch.h), for a screen to follow from onTick().
@@ -417,7 +425,7 @@ class PageLoad {
     url_ = url;
     active_ = true;
     shownStep_ = -1;
-    pagefetch::fetch(url);
+    pagefetch::fetch(url, kTextW, kTextH);  // its pictures as big as a page
   }
   bool active() const { return active_; }
   const std::string &url() const { return url_; }
@@ -569,6 +577,7 @@ class StoryScreen : public ui::Screen {
       }
     }
     pageText_ = md;
+    doc_.setPictures({});
     doc_.parse(info_.title, md);
     doc_.setByline(info_.author.empty() ? std::string() : "BY " + ui::upper(info_.author),
                    minutesText(info_.words) + dot() + wordsText(info_.words));
@@ -580,6 +589,7 @@ class StoryScreen : public ui::Screen {
     pageText_ = articleText(a);
     const uint32_t words = countWords(pageText_);
     const std::string by = !a.byline.empty() ? a.byline : info_.author;
+    doc_.setPictures(a.pictures);
     doc_.parse(info_.title, pageText_);
     doc_.setByline(by.empty() ? ui::upper(a.site) : "BY " + ui::upper(by),
                    minutesText(words) + dot() + wordsText(words));
@@ -754,6 +764,7 @@ class LinkScreen : public ui::Screen {
   void showWaiting() {
     std::string md = linkText(link_.url);
     if (!error_.empty()) md = "*The page didn't come: " + error_ + ".*\n\n" + md;
+    doc_.setPictures({});
     doc_.parse(link_.text, md);
     doc_.setByline(ui::upper(article::host(link_.url)), "");
     layout(0);
@@ -765,6 +776,7 @@ class LinkScreen : public ui::Screen {
     const std::string title = a.title.empty() ? link_.text : a.title;
     const std::string md = articleText(a);
     const uint32_t words = countWords(md);
+    doc_.setPictures(a.pictures);
     doc_.parse(title, md);
     doc_.setByline(a.byline.empty() ? ui::upper(a.site) : "BY " + ui::upper(a.byline),
                    minutesText(words) + dot() + wordsText(words));

@@ -116,7 +116,7 @@ curl -sN localhost:7392/chat -H 'content-type: application/json' \
 | --- | --- |
 | `GET /health` | `{"ok": true, "model": …}`, and with the token (or none set) the tools and skills |
 | `POST /chat` | `{"text", "conversation"?, "stream"?}`. Without `conversation`, a new one starts and its id comes back; send it again to go on (the last 100 are kept, in memory). The answer is `{"reply", "conversation", "tools"}`; with `"stream": true`, server-sent events: `{"text"}` as it's written, `{"tool"}` as a call starts, then `{"done": true, "reply", "conversation"}` or `{"error"}` |
-| `GET /read?url=…` | The article in a web page as a board's News gets it (below): `{"title", "byline", "site", "published", "url", "markdown"}`, or 422 `{"error"}` |
+| `GET /read?url=…` | The article in a web page as a board's News gets it (below): `{"title", "byline", "site", "published", "url", "markdown", "pictures"}`, or 422 `{"error"}`; `&images=420x600` fetches and dithers the pictures |
 | `/sessions` | The agent sessions, with an `[agent]` table ([Agent sessions](#agent-sessions)) |
 
 HTTP turns get the same model, tools, skills and instructions as the chat.
@@ -125,10 +125,11 @@ HTTP turns get the same model, tools, skills and instructions as the chat.
 a summary (BBC News), and for the pages a story links to (`read`,
 [docs/voice-protocol.md](../docs/voice-protocol.md#reading-a-page)). The daemon fetches the page
 and finds the article with [dom_smoothie](https://crates.io/crates/dom_smoothie), a port of
-Mozilla's Readability (Firefox's Reader View), then sends it as Markdown without pictures,
-captions or page furniture, links kept. `inkharness read <url>` prints what a board would get
-(`--html FILE` reads a saved copy). A board whose daemon can't be reached reads the page itself,
-less well.
+Mozilla's Readability (Firefox's Reader View), then sends it as Markdown without page
+furniture, links kept, and its pictures (up to 12, with their captions) scaled to the board's
+column and dithered to 1 bit for e-paper. `inkharness read <url>` prints what a board would get
+(`--pictures DIR` saves the pictures as PNGs, `--html FILE` reads a saved copy). A board whose
+daemon can't be reached reads the page itself, less well and without pictures.
 
 ## Agent sessions
 

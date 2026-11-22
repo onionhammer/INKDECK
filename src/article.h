@@ -23,8 +23,18 @@
 #include <time.h>
 
 #include <string>
+#include <vector>
 
 namespace article {
+
+// A picture in an article (inkharness sends them: page_fetch.h), 1 bit a pixel: rows of
+// (width + 7) / 8 bytes, the leftmost pixel in the top bit, 1 for ink. The text shows it where
+// ![](inkimg:index) stands.
+struct Picture {
+  uint32_t index = 0;
+  uint16_t width = 0, height = 0;
+  std::vector<uint8_t> bits;
+};
 
 struct Article {
   std::string title;     // plain text
@@ -32,6 +42,7 @@ struct Article {
   std::string site;      // og:site_name, else the host ("bbc.co.uk")
   time_t published = 0;  // UTC; 0 if the page doesn't say
   std::string markdown;  // the text, links as [text](url)
+  std::vector<Picture> pictures;  // inkharness's only: the board's own reading has none
 };
 
 // The article in html (len bytes; the whole page). url: where it came from, for links and the

@@ -93,11 +93,20 @@ void toolResult(uint32_t id, const std::string &text, bool error = false);
 
 // --- Reading pages -----------------------------------------------------------------------------
 
+// One of its pictures: 1 bit a pixel, rows of (width + 7) / 8 bytes, the leftmost pixel in the
+// top bit, 1 for ink. The text shows it where ![](inkimg:index) stands.
+struct PagePicture {
+  uint32_t index = 0;
+  uint16_t width = 0, height = 0;
+  std::vector<uint8_t> bits;
+};
+
 // A web page's article, as inkharness reads it (docs/voice-protocol.md, "Reading a page").
 struct Page {
   std::string title, byline, site;
   uint32_t published = 0;  // Unix seconds; 0 if the page doesn't say
   std::string markdown;    // NoteDoc's Markdown, links as [text](url)
+  std::vector<PagePicture> pictures;
 };
 
 // Asks inkharness for the article in the page at url (News, page_fetch.h): joins Wi-Fi and
@@ -105,9 +114,11 @@ struct Page {
 // answer, or until abandon() says so. From a background task. False if there's no article:
 // error says why, and reached says whether inkharness had a go (a site's "HTTP 403", "no
 // article on the page") or wasn't there to ask (no daemon, no connection, one from before
-// `read`), when the caller can fetch the page itself.
-bool readPage(const std::string &url, uint32_t timeoutMs, Page &out, std::string &error,
-              bool &reached, bool (*abandon)(void *) = nullptr, void *context = nullptr);
+// `read`), when the caller can fetch the page itself. pictureW x pictureH: the largest picture
+// to show (0: none wanted); the daemon scales and dithers them to fit.
+bool readPage(const std::string &url, uint16_t pictureW, uint16_t pictureH, uint32_t timeoutMs,
+              Page &out, std::string &error, bool &reached, bool (*abandon)(void *) = nullptr,
+              void *context = nullptr);
 
 // --- The agent ---------------------------------------------------------------------------------
 

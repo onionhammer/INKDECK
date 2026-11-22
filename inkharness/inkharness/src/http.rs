@@ -4,7 +4,9 @@
 //! ```text
 //! GET  /health  {"ok": true, "model": "…"}, and with the token the tools and skills
 //! GET  /read?url=…  the article in a web page, as a board's News gets it (reader.rs):
-//!               {"title", "byline", "site", "published", "url", "markdown"}, or 422 {"error"}
+//!               {"title", "byline", "site", "published", "url", "markdown"}, or 422 {"error"};
+//!               with &images=420x600 its pictures too, dithered as for a board: "pictures":
+//!               [{"index", "width", "height", "bits" (base64)}]
 //! POST /chat    {"text": "…", "conversation": "c1"?, "stream": false?}
 //!               → {"reply": "…", "conversation": "c1", "tools": ["run_js"]}
 //! ```
@@ -144,6 +146,8 @@ impl Api {
 #[derive(Deserialize)]
 struct ReadQuery {
     url: String,
+    /// "420x600": the pictures too, at most this big.
+    images: Option<String>,
 }
 
 async fn read_page(
@@ -158,7 +162,15 @@ async fn read_page(
         )
             .into_response();
     }
-    match crate::reader::read(&q.url).await {
+    use base64::Engine;
+    let fit = q.images.as_deref().and_then(|s| {
+        let (w, h) = s.split_once('x')?;
+        Some(crate::reader::Fit {
+            width: w.parse::<u32>().ok()?.clamp(16, 1200),
+            height: h.parse::<u32>().ok()?.clamp(16, 1600),
+        })
+    });
+    match crate::reader::read(&q.url, fit).await {
         Ok(p) => Json(json!({
             "title": p.title,
             "byline": p.byline,
@@ -166,6 +178,12 @@ async fn read_page(
             "published": p.published,
             "url": p.url,
             "markdown": p.markdown,
+            "pictures": p.pictures.iter().map(|pic| json!({
+                "index": pic.index,
+                "width": pic.width,
+                "height": pic.height,
+                "bits": base64::engine::general_purpose::STANDARD.encode(&pic.bits),
+            })).collect::<Vec<_>>(),
         }))
         .into_response(),
         Err(e) => (

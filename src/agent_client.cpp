@@ -16,6 +16,7 @@
 #include <freertos/semphr.h>
 #include <lwip/netdb.h>
 #include <lwip/sockets.h>
+#include <mbedtls/base64.h>
 #include <string.h>
 #include <time.h>
 
@@ -117,6 +118,7 @@ bool (*contentPolicy)() = nullptr;
 struct ReadRequest {
   uint32_t id = 0;
   std::string url;
+  uint16_t pictureW = 0, pictureH = 0;
   bool sent = false;
   bool done = false;
   bool reached = false;  // the daemon answered
@@ -826,6 +828,32 @@ void onControl(const uint8_t *payload, size_t len) {
   if (type == "hello") {
     s.hello = true;
     s.reader = flag(json, "reader");
+  } else if (type == "page_image") {
+    // One of the pictures, before its page: kept with the request until the page comes.
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(json, "id");
+    const int w = intField(json, "width"), h = intField(json, "height");
+    const std::string b64 = field(json, "bits");
+    PagePicture pic;
+    pic.index = static_cast<uint32_t>(std::max(0, intField(json, "index")));
+    const size_t want = w > 0 && h > 0 && w <= 2048 && h <= 2048
+                            ? static_cast<size_t>((w + 7) / 8) * h
+                            : 0;
+    size_t got = 0;
+    if (want) {
+      pic.width = static_cast<uint16_t>(w);
+      pic.height = static_cast<uint16_t>(h);
+      pic.bits.resize(want);
+      if (mbedtls_base64_decode(pic.bits.data(), want, &got,
+                                reinterpret_cast<const unsigned char *>(b64.data()),
+                                b64.size()) != 0) {
+        got = 0;
+      }
+    }
+    Locked l;
+    if (got == want && want && cJSON_IsNumber(id) && readActive.load() && !reading.done &&
+        static_cast<uint32_t>(id->valuedouble) == reading.id) {
+      reading.page.pictures.push_back(std::move(pic));
+    }
   } else if (type == "page") {
     const cJSON *id = cJSON_GetObjectItemCaseSensitive(json, "id");
     bool mine = false;
@@ -836,6 +864,10 @@ void onControl(const uint8_t *payload, size_t len) {
     if (mine) {
       const std::string error = field(json, "error");
       Page page;
+      {
+        Locked l;
+        page.pictures = std::move(reading.page.pictures);
+      }
       if (error.empty()) {
         page.title = field(json, "title");
         page.byline = field(json, "byline");
@@ -1141,7 +1173,12 @@ void readPump() {
     if (reading.sent || reading.done) return;
     if (s.reader) {
       json = "{\"type\":\"read\",\"id\":" + std::to_string(reading.id) +
-             ",\"url\":" + quoted(reading.url) + "}";
+             ",\"url\":" + quoted(reading.url);
+      if (reading.pictureW && reading.pictureH) {
+        json += ",\"image_width\":" + std::to_string(reading.pictureW) +
+                ",\"image_height\":" + std::to_string(reading.pictureH);
+      }
+      json += "}";
       reading.sent = true;
     }
   }
@@ -1971,8 +2008,9 @@ bool polling() {
   return true;
 }
 
-bool readPage(const std::string &url, uint32_t timeoutMs, Page &out, std::string &error,
-              bool &reached, bool (*abandon)(void *), void *context) {
+bool readPage(const std::string &url, uint16_t pictureW, uint16_t pictureH, uint32_t timeoutMs,
+              Page &out, std::string &error, bool &reached, bool (*abandon)(void *),
+              void *context) {
   reached = false;
   if (!configured()) {
     error = "NO INKHARNESS";
@@ -1984,6 +2022,8 @@ bool readPage(const std::string &url, uint32_t timeoutMs, Page &out, std::string
     reading = ReadRequest{};
     reading.id = nextReadId++;
     reading.url = url;
+    reading.pictureW = pictureW;
+    reading.pictureH = pictureH;
   }
   xSemaphoreTake(readDone, 0);  // a stale give from before
   readActive = true;

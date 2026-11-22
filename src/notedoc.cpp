@@ -383,7 +383,7 @@ bool NoteDoc::sameText(const std::string &a, const std::string &b) {
 void NoteDoc::addBlock(Kind kind, uint8_t level, bool checked, const std::string &marker,
                        const std::string &raw) {
   Block b{kind, level, checked, static_cast<uint32_t>(text_.size()), 0, marker};
-  if (kind == Kind::Rule) {
+  if (kind == Kind::Rule || kind == Kind::Picture) {
     b.end = b.start;
     blocks_.push_back(std::move(b));
     return;
@@ -458,6 +458,18 @@ void NoteDoc::parse(const std::string &title, const std::string &markdown) {
     if (body.empty()) {
       open = false;
       continue;
+    }
+    // A picture, on its line alone: ![alt](inkimg:N).
+    if (body.rfind("![", 0) == 0 && body.back() == ')') {
+      const size_t at = body.find("](inkimg:");
+      if (at != std::string::npos) {
+        const std::string n = body.substr(at + 9, body.size() - at - 10);
+        if (!n.empty() && n.find_first_not_of("0123456789") == std::string::npos) {
+          raws.push_back({Kind::Picture, 0, false, n, ""});
+          open = false;
+          continue;
+        }
+      }
     }
 
     size_t hashes = 0;
@@ -695,6 +707,14 @@ void NoteDoc::layout(const FontFamily &body, int width, int height) {
       place({b.start, b.start, 0, 0, index, 0, LineKind::Rule, true, false}, gap, lh / 2);
       continue;
     }
+    if (b.kind == Kind::Picture) {
+      int w = 0, h = 0;
+      if (!pictureFor(b, w, h)) continue;  // it didn't come: nothing
+      place({b.start, b.start, static_cast<int16_t>((width_ - w) / 2), 0, index, 0,
+             LineKind::Picture, true, false},
+            gap, h);
+      continue;
+    }
     if (b.kind == Kind::Heading) {
       wrap(text_, b.start, b.end, width_, kHeadingTracking, [](uint8_t) { return kHeadingFont; },
            spans);
@@ -720,6 +740,20 @@ void NoteDoc::layout(const FontFamily &body, int width, int height) {
             k == 0 ? gap : 0, lh);
     }
   }
+}
+
+const article::Picture *NoteDoc::pictureFor(const Block &b, int &w, int &h) const {
+  const uint32_t index = static_cast<uint32_t>(atoi(b.marker.c_str()));
+  for (const article::Picture &p : pictures_) {
+    if (p.index != index || !p.width || !p.height) continue;
+    if (p.bits.size() < static_cast<size_t>((p.width + 7) / 8) * p.height) return nullptr;
+    const float scale = std::min({1.0f, static_cast<float>(width_) / p.width,
+                                  static_cast<float>(height_) / p.height});
+    w = std::max(1, static_cast<int>(p.width * scale));
+    h = std::max(1, static_cast<int>(p.height * scale));
+    return &p;
+  }
+  return nullptr;
 }
 
 void NoteDoc::drawMarker(GFXcanvas1 &canvas, const Block &b, int right, int baseline) const {
@@ -782,6 +816,26 @@ void NoteDoc::drawPage(GFXcanvas1 &canvas, int page, int x, int y) const {
       case LineKind::Rule:
         ui::dashedH(canvas, x, top + lh / 4, width_);
         break;
+      case LineKind::Picture: {
+        int w = 0, h = 0;
+        const article::Picture *p = pictureFor(blocks_[line.block], w, h);
+        if (!p) break;
+        const int left = x + line.x;
+        if (w == p->width && h == p->height) {
+          canvas.drawBitmap(left, top, p->bits.data(), p->width, p->height, gfx::kBlack);
+          break;
+        }
+        // Scaled down: the nearest pixel.
+        const int row = (p->width + 7) / 8;
+        for (int dy = 0; dy < h; ++dy) {
+          const uint8_t *src = p->bits.data() + static_cast<size_t>(dy * p->height / h) * row;
+          for (int dx = 0; dx < w; ++dx) {
+            const int sx = dx * p->width / w;
+            if (src[sx / 8] & (0x80 >> (sx % 8))) canvas.drawPixel(left + dx, top + dy, gfx::kBlack);
+          }
+        }
+        break;
+      }
       case LineKind::Heading: {
         const int end = drawFlow(canvas, x, top + headBase, text_, line.start, line.end, 0,
                                  kHeadingTracking, headFace);
