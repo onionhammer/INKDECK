@@ -1,5 +1,7 @@
 #include "text.h"
 
+#include <ctype.h>
+
 #include "ui/fonts/glyphs.h"
 
 namespace text {
@@ -206,6 +208,23 @@ uint32_t countWords(const std::string &markdown) {
     in = !space;
   }
   return n;
+}
+
+std::string lower(std::string s) {
+  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  return s;
+}
+
+std::string trim(const std::string &s, const char *chars) {
+  const size_t first = s.find_first_not_of(chars);
+  if (first == std::string::npos) return {};
+  return s.substr(first, s.find_last_not_of(chars) - first + 1);
+}
+
+uint32_t fnv1a(const std::string &s) {
+  uint32_t h = 2166136261u;
+  for (const char c : s) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
+  return h;
 }
 
 }  // namespace text

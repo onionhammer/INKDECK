@@ -19,6 +19,7 @@
 #include "settings.h"
 #include "share_backend.h"
 #include "tailnet.h"
+#include "text.h"
 #include "wlan.h"
 
 namespace shares {
@@ -512,7 +513,7 @@ std::string Share::url() const {
 
 std::string Share::credentialId() const {
   std::string id = domain + ";" + user + "@" + host + "/" + path.substr(0, path.find('/'));
-  for (char &c : id) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  id = text::lower(std::move(id));
   return id;
 }
 

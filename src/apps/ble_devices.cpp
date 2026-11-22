@@ -14,6 +14,7 @@
 #include "apps/radio_ui.h"
 #include "ble_adv.h"
 #include "ble_survey.h"
+#include "text.h"
 
 namespace apps {
 namespace {
@@ -68,11 +69,7 @@ std::string twoOf(int i, int n) {
   return buf;
 }
 
-std::string lower(const std::string &s) {
-  std::string out = s;
-  for (char &ch : out) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
-  return out;
-}
+using text::lower;
 
 bleadv::Info infoOf(const Device &d) { return bleadv::decode(d.adv, d.advLen, d.rsp, d.rspLen); }
 

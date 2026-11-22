@@ -257,11 +257,7 @@ int indentOf(const std::string &line, size_t &start) {
   return n;
 }
 
-std::string trim(const std::string &s) {
-  const size_t first = s.find_first_not_of(" \t");
-  if (first == std::string::npos) return {};
-  return s.substr(first, s.find_last_not_of(" \t") - first + 1);
-}
+std::string trim(const std::string &s) { return text::trim(s); }
 
 // Three or more of one of - * _ =, with spaces between or not, and nothing else.
 bool isRule(const std::string &s) {

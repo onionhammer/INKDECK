@@ -13,6 +13,7 @@
 
 #include "apps/home.h"
 #include "audio.h"
+#include "paths.h"
 #include "pmic.h"
 #include "sdcard.h"
 #include "ui/menu.h"
@@ -101,9 +102,6 @@ std::string memoSubtitle(const Memo &m) {
   return day + megabytes(m.size);
 }
 
-bool isWav(const std::string &name) {
-  return name.size() > 4 && strcasecmp(name.c_str() + name.size() - 4, ".wav") == 0;
-}
 
 // The memos, newest first (the names sort by time).
 std::vector<Memo> scanMemos() {
@@ -111,7 +109,7 @@ std::vector<Memo> scanMemos() {
   DIR *d = opendir(kRecordingsDir);
   if (!d) return out;
   while (dirent *e = readdir(d)) {
-    if (e->d_type == DT_DIR || !isWav(e->d_name)) continue;
+    if (e->d_type == DT_DIR || !paths::hasSuffix(e->d_name, ".wav")) continue;
     Memo m;
     m.name = e->d_name;
     struct stat st;

@@ -9,6 +9,7 @@
 
 #include "apps/home.h"
 #include "apps/radio_ui.h"
+#include "text.h"
 #include "wifi_survey.h"
 
 namespace apps {
@@ -52,11 +53,7 @@ const char *sortName(Sort s) {
   return "";
 }
 
-std::string lower(const std::string &s) {
-  std::string out = s;
-  for (char &ch : out) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
-  return out;
-}
+using text::lower;
 
 void sortNetworks(std::vector<Network> &v, Sort s) {
   switch (s) {

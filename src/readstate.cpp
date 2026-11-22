@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "dirlist.h"
+#include "text.h"
 
 namespace readstate {
 namespace {
@@ -24,10 +25,8 @@ struct Record {  // stored as a blob; bump kVersion when the layout changes
 
 // NVS keys are at most 15 characters: "p" + 32-bit FNV-1a of the path in hex.
 std::string keyFor(const std::string &path) {
-  uint32_t h = 2166136261u;
-  for (const char c : path) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
   char key[12];
-  snprintf(key, sizeof key, "p%08lx", static_cast<unsigned long>(h));
+  snprintf(key, sizeof key, "p%08lx", static_cast<unsigned long>(text::fnv1a(path)));
   return key;
 }
 

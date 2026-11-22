@@ -51,7 +51,7 @@ bool parseTag(const std::string &s, size_t pos, Tag &t) {
   const size_t nameStart = i;
   while (i < n && !isspace(static_cast<unsigned char>(s[i])) && s[i] != '>' && s[i] != '/') ++i;
   t.name = localName(s.substr(nameStart, i - nameStart));
-  for (auto &c : t.name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  t.name = text::lower(std::move(t.name));
 
   t.attrStart = i;
   char quote = 0;
@@ -690,7 +690,7 @@ bool opfPathOf(const ZipFile &zip, std::string &opfPath, std::string &err) {
 }
 
 std::string lowerAscii(std::string s) {
-  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  s = text::lower(std::move(s));
   return s;
 }
 
@@ -836,7 +836,7 @@ bool Epub::open(const std::string &path, std::string &err) {
     for (const auto &kv : manifest) {
       if (kv.second.mediaType.compare(0, 6, "image/") != 0) continue;
       std::string key = kv.first + " " + kv.second.href;
-      for (char &ch : key) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+      key = text::lower(std::move(key));
       if (key.find("cover") != std::string::npos) {
         coverHref = kv.second.href;
         break;

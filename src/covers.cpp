@@ -9,6 +9,7 @@
 
 #include "epub.h"
 #include "sdcard.h"
+#include "text.h"
 
 namespace covers {
 namespace {
@@ -29,10 +30,8 @@ picture::Bitmap last;
 std::string cacheKey(const std::string &bookPath, int maxW, int maxH) {
   struct stat st = {};
   stat(bookPath.c_str(), &st);
-  uint32_t h = 2166136261u;  // FNV-1a
-  for (const char c : bookPath) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
   char key[64];
-  snprintf(key, sizeof key, "%08lx-%lx-%dx%d", static_cast<unsigned long>(h),
+  snprintf(key, sizeof key, "%08lx-%lx-%dx%d", static_cast<unsigned long>(text::fnv1a(bookPath)),
            static_cast<unsigned long>(st.st_size), maxW, maxH);
   return key;
 }

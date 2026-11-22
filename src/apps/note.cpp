@@ -14,6 +14,7 @@
 #include "flashfs.h"
 #include "fonts.h"
 #include "notedoc.h"
+#include "paths.h"
 #include "readstate.h"
 #include "screen.h"
 #include "sdcard.h"
@@ -80,18 +81,11 @@ void saveLast(const std::string &path) {
 
 // --- Files ----------------------------------------------------------------------------------
 
-std::string folderOf(const std::string &path) { return path.substr(0, path.rfind('/')); }
-std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
+using paths::folderOf;
+using paths::nameOf;
 
-bool isMarkdown(const std::string &name) {
-  return name.size() > 3 && strcasecmp(name.c_str() + name.size() - 3, ".md") == 0;
-}
 
-std::string trim(const std::string &s) {
-  const size_t first = s.find_first_not_of(" \t\r\n");
-  if (first == std::string::npos) return {};
-  return s.substr(first, s.find_last_not_of(" \t\r\n") - first + 1);
-}
+std::string trim(const std::string &s) { return text::trim(s, " \t\r\n"); }
 
 // One line, at most kMaxTitleBytes (not inside a character).
 std::string cleanTitle(std::string title) {
@@ -389,7 +383,7 @@ bool readNote(const std::string &path, Note &out, std::string &err) {
   takeTitleHeading(data, out.title, true);
   if (out.title.empty()) {
     const std::string name = nameOf(path);
-    out.title = isMarkdown(name) ? name.substr(0, name.size() - 3) : name;
+    out.title = paths::hasSuffix(name, ".md") ? name.substr(0, name.size() - 3) : name;
   }
   out.title = cleanTitle(out.title);
   out.text = std::move(data);
@@ -411,7 +405,7 @@ const Note *noteOnScreen() {
 
 bool isNotePath(const std::string &path) {
   const std::string folder = nameOf(folderOf(path));
-  return isMarkdown(path) && strcasecmp(folder.c_str(), "notes") == 0;
+  return paths::hasSuffix(path, ".md") && strcasecmp(folder.c_str(), "notes") == 0;
 }
 
 std::unique_ptr<ui::Screen> makeNote(Note note, bool fromFiles, bool atStart) {

@@ -26,6 +26,7 @@
 #include "microlink.h"
 #include "ml_inkdeck.h"  // lib/microlink/port: wake a peer, ask whether its session is up
 #include "pmic.h"
+#include "text.h"
 #include "wlan.h"
 
 namespace tailnet {
@@ -82,10 +83,7 @@ bool lanLoaded = false;
 std::mutex lanDnsMutex;
 std::atomic<TaskHandle_t> lanLookupTask{nullptr};
 
-std::string lower(std::string s) {
-  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-  return s;
-}
+using text::lower;
 
 bool endsWith(const std::string &s, const char *tail) {
   const size_t n = strlen(tail);
@@ -201,10 +199,8 @@ void rememberLan(microlink_t *m, const std::string &host, uint32_t vpnIp) {
 
 // Which auth key the board's identity came from, without keeping the key itself twice: FNV-1a.
 std::string keyId(const std::string &key) {
-  uint32_t h = 2166136261u;
-  for (const char c : key) h = (h ^ static_cast<uint8_t>(c)) * 16777619u;
   char buf[9];
-  snprintf(buf, sizeof buf, "%08x", static_cast<unsigned>(h));
+  snprintf(buf, sizeof buf, "%08x", static_cast<unsigned>(text::fnv1a(key)));
   return buf;
 }
 

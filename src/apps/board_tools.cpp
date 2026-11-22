@@ -33,10 +33,12 @@
 #include "flashfs.h"
 #include "forecast.h"
 #include "input.h"
+#include "paths.h"
 #include "pmic.h"
 #include "readstate.h"
 #include "sdcard.h"
 #include "sensor_hub.h"
+#include "text.h"
 #include "ui/nav.h"
 #include "units.h"
 #include "agent_client.h"
@@ -99,16 +101,8 @@ std::string text(const cJSON *in, const char *name) {
   return cJSON_IsString(item) && item->valuestring ? item->valuestring : "";
 }
 
-std::string lower(std::string s) {
-  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
-  return s;
-}
+using text::lower;
 
-std::string nameOf(const std::string &path) {
-  std::string name = path.substr(path.rfind('/') + 1);
-  const size_t dot = name.rfind('.');
-  return dot == std::string::npos ? name : name.substr(0, dot);
-}
 
 std::string twoDigits(int n) {
   char buf[4];
@@ -219,7 +213,7 @@ Result openBook(const cJSON *in, uint32_t turn) {
     if (!reader) log_w("agent: couldn't open %s: %s", path.c_str(), err.c_str());
     push(std::move(reader));
   });
-  return {"\"" + nameOf(path) + "\" opens when your reply has finished playing."};
+  return {"\"" + paths::stem(path) + "\" opens when your reply has finished playing."};
 }
 
 // --- board_status ----------------------------------------------------------------------------

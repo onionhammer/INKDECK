@@ -13,6 +13,7 @@
 #include "inkdeck_secrets.h"  // WIFI_*, TIMEZONE, LOCATION_CONFIGURED, LATITUDE, LONGITUDE
 #include "shares.h"
 #include "sdcard.h"
+#include "text.h"
 
 namespace settings {
 namespace {
@@ -350,11 +351,7 @@ bool tzRule(const char *&p) {  // Mm.w.d, Jn or n, then an optional /time
 
 // --- The file ------------------------------------------------------------------------------
 
-std::string trim(const std::string &s) {
-  const size_t b = s.find_first_not_of(" \t");
-  if (b == std::string::npos) return {};
-  return s.substr(b, s.find_last_not_of(" \t") - b + 1);
-}
+using text::trim;
 
 bool readFile(const char *path, std::string &out) {
   FILE *f = fopen(path, "rb");
@@ -387,7 +384,7 @@ bool splitLine(std::string line, std::string &key, std::string &value) {
   const size_t eq = line.find('=');
   if (eq == std::string::npos) return true;
   key = trim(line.substr(0, eq));
-  for (char &c : key) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  key = text::lower(std::move(key));
   value = trim(line.substr(eq + 1));
   if (!value.empty() && (value[0] == '"' || value[0] == '\'')) {
     const size_t close = value.find(value[0], 1);  // quoted: anything after it is a comment
@@ -472,13 +469,13 @@ bool validTailscaleKey(const std::string &s) {
 }
 
 bool isOff(std::string s) {
-  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  s = text::lower(std::move(s));
   return s == "off";
 }
 
 // on / off, or yes / no, true / false, 1 / 0. False if it's none of them.
 bool parseOnOff(std::string s, bool &out) {
-  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  s = text::lower(std::move(s));
   if (s == "on" || s == "yes" || s == "true" || s == "1") {
     out = true;
   } else if (s == "off" || s == "no" || s == "false" || s == "0") {
@@ -616,7 +613,7 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
       }
     } else if (key == "tailscale_name") {
       std::string name = value;
-      for (char &c : name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      name = text::lower(std::move(name));
       if (validTailscaleName(name)) {
         v.tailscaleName = name;
       } else {
@@ -874,13 +871,10 @@ void loadCard() {
   loadNvs();
   std::string text;
   if (!readFile(kFile, text)) {
-    if (FILE *f = fopen(kFile, "wb")) {
-      // From RAM: a write of a sector or more from flash reaches the card as zeros (AGENTS.md,
-      // Gotchas).
-      const std::string text(kTemplate);
-      fwrite(text.data(), 1, text.size(), f);
-      fclose(f);
+    if (writeFile(kFile, kTemplate)) {
       log_i("settings: wrote a commented %s", kFile);
+    } else {
+      log_w("settings: couldn't write %s", kFile);
     }
   }
   CardPin cardPin;

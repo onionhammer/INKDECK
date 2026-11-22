@@ -17,6 +17,7 @@
 #include "agent_client.h"
 #endif
 #include "sdcard.h"
+#include "text.h"
 #include "wlan.h"
 
 namespace pagefetch {
@@ -47,18 +48,9 @@ bool working = false;
 
 // --- The card -----------------------------------------------------------------------------------
 
-uint32_t fnv1a(const std::string &s) {
-  uint32_t h = 2166136261u;
-  for (const char c : s) {
-    h ^= static_cast<uint8_t>(c);
-    h *= 16777619u;
-  }
-  return h;
-}
-
 std::string pathFor(const std::string &url, const char *ext = ".md") {
   char name[16];
-  snprintf(name, sizeof name, "/%08lx", static_cast<unsigned long>(fnv1a(url)));
+  snprintf(name, sizeof name, "/%08lx", static_cast<unsigned long>(text::fnv1a(url)));
   return kDir + std::string(name) + ext;
 }
 

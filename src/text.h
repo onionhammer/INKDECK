@@ -48,6 +48,15 @@ void appendSlots(std::string &out, uint32_t cp);
 // UTF-8 string -> ASCII approximation.
 std::string toAscii(const std::string &utf8);
 
+// ASCII letters to lower case; other bytes (UTF-8 included) as they are.
+std::string lower(std::string s);
+
+// s without the characters in `chars` at either end.
+std::string trim(const std::string &s, const char *chars = " \t");
+
+// 32-bit FNV-1a of the bytes: short stable names for cache files and NVS keys.
+uint32_t fnv1a(const std::string &s);
+
 // Words in Markdown (News's stories), a link's (url) left out: "[the report](https://…)" is two.
 uint32_t countWords(const std::string &markdown);
 

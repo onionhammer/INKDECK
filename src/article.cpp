@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "rss.h"
+#include "text.h"
 
 namespace article {
 namespace {
@@ -292,7 +293,7 @@ std::string trimTitle(std::string t) {
 }
 
 std::string lower(std::string s) {
-  for (char &c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  s = text::lower(std::move(s));
   while (!s.empty() && (s.back() == ':' || s.back() == ' ')) s.pop_back();
   return s;
 }
@@ -501,7 +502,7 @@ void Page::meta(const char *p, const char *e) {
   forEachAttr(p, e, [&](const Attr &a) {
     if (a.is("property") || a.is("name") || a.is("itemprop")) {
       key.assign(a.value, a.valueLen);
-      for (char &c : key) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+      key = text::lower(std::move(key));
     } else if (a.is("content")) {
       content = collapse(a.text());
     }
@@ -646,7 +647,7 @@ void Page::scan() {
         firstTime_ = rss::parseIsoDate(std::string(a.value, a.valueLen));
       }
     });
-    for (char &c : names) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    names = text::lower(std::move(names));
     const bool structural = tag == kBody || tag == kArticle || tag == kMain || tag == kA;
     if (strict_ && !structural && unlikely(names) &&
         !(spare_ && std::binary_search(spare_->begin(), spare_->end(), start))) {

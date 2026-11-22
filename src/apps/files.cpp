@@ -19,6 +19,7 @@
 #include "dirlist.h"
 #include "file_copy.h"
 #include "flashfs.h"
+#include "paths.h"
 #include "shares.h"
 #include "podcast_library.h"
 #include "sdcard.h"
@@ -53,10 +54,7 @@ std::string sizeText(int64_t bytes) {
   return buf;
 }
 
-std::string extensionOf(const std::string &name) {
-  const size_t dot = name.rfind('.');
-  return dot == std::string::npos || dot == 0 ? std::string() : name.substr(dot + 1);
-}
+using paths::extensionOf;
 
 std::string typeTag(const DirList::Entry &e) {
   if (e.isDir) return "DIR";
@@ -90,8 +88,8 @@ bool isInside(const std::string &path, const std::string &dir) {
   return path.size() == dir.size() || path[dir.size()] == '/';
 }
 
-std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
-std::string folderOf(const std::string &path) { return path.substr(0, path.rfind('/')); }
+using paths::nameOf;
+using paths::folderOf;
 
 // HOLD ● SAVE on a share: where a file can go on the card, by its type. Each is a top-level
 // folder of the card's, made if it's missing.

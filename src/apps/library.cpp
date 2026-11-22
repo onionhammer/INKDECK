@@ -14,6 +14,7 @@
 #include "apps/home.h"
 #include "apps/reader.h"
 #include "book_library.h"
+#include "paths.h"
 #include "readstate.h"
 #include "sdcard.h"
 #include "ui/nav.h"
@@ -27,8 +28,8 @@ using ui::Rect;
 constexpr uint32_t kReadBudgetMs = 1500;  // metadata read per tick, between progress redraws
 constexpr ui::TextStyle kHeading{&ui::fonts::kMono15ExtraBold, 1};  // an author's name
 
-std::string folderOf(const std::string &path) { return path.substr(0, path.rfind('/')); }
-std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
+using paths::folderOf;
+using paths::nameOf;
 
 // path is dir or somewhere inside it. FAT ignores case, so this does too.
 bool isInside(const std::string &path, const std::string &dir) {

@@ -22,8 +22,10 @@
 #include "ff.h"
 #include "input.h"
 #include "ota.h"  // kHostname: the board is inkdeck.local for both
+#include "paths.h"
 #include "sdcard.h"
 #include "tailnet.h"
+#include "text.h"
 #include "wlan.h"
 
 namespace webdav {
@@ -179,7 +181,7 @@ std::string parentOf(const std::string &path) {
   const size_t slash = path.rfind('/');
   return slash == 0 ? "/" : path.substr(0, slash);
 }
-std::string nameOf(const std::string &path) { return path.substr(path.rfind('/') + 1); }
+using paths::nameOf;
 std::string childOf(const std::string &dir, const char *name) {
   return (dir == "/" ? "" : dir) + "/" + name;
 }
@@ -618,7 +620,7 @@ bool Connection::readHead(Request &r) {
     const size_t colon = h.find(':');
     if (colon == std::string::npos) continue;
     std::string name = h.substr(0, colon);
-    for (char &c : name) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    name = text::lower(std::move(name));
     const size_t v0 = h.find_first_not_of(" \t", colon + 1);
     const size_t v1 = h.find_last_not_of(" \t");
     r.headers.emplace_back(name, v0 == std::string::npos ? "" : h.substr(v0, v1 - v0 + 1));
@@ -861,7 +863,7 @@ std::map<std::string, std::string> digestFields(const std::string &h) {
     if (eq == std::string::npos) break;
     std::string key = h.substr(i, eq - i);
     while (!key.empty() && key.back() == ' ') key.pop_back();
-    for (char &c : key) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    key = text::lower(std::move(key));
     i = eq + 1;
     while (i < h.size() && h[i] == ' ') ++i;
     std::string value;
@@ -899,7 +901,7 @@ Auth checkAuth(const Request &r) {
                   : md5hex(ha1 + ":" + nonce + ":" + f["nc"] + ":" + f["cnonce"] + ":" + qop + ":" +
                            ha2);
   std::string response = f["response"];
-  for (char &c : response) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+  response = text::lower(std::move(response));
   return response == expected ? Auth::Ok : Auth::Bad;
 }
 

@@ -13,6 +13,7 @@
 
 #include "dirlist.h"
 #include "epub.h"
+#include "paths.h"
 #include "sdcard.h"
 #include "text.h"
 
@@ -44,11 +45,6 @@ void collect(const std::string &dir, int depth, std::vector<std::string> &out, i
 }
 
 // The file name without its extension: the title of a book that gives none.
-std::string fileTitle(const std::string &path) {
-  std::string name = path.substr(path.rfind('/') + 1);
-  const size_t dot = name.rfind('.');
-  return dot == std::string::npos || dot == 0 ? name : name.substr(0, dot);
-}
 
 // Tabs and line breaks would split the cache's fields; metadata attributes can hold them.
 std::string field(const std::string &s) {
@@ -233,7 +229,7 @@ bool Shelf::step(uint32_t budgetMs) {
       // Listed under its file name, and not tried again until it changes.
       log_w("books: %s: %s", e.book.path.c_str(), err.c_str());
     }
-    e.book.title = meta.title.empty() ? fileTitle(e.book.path) : meta.title;
+    e.book.title = meta.title.empty() ? paths::stem(e.book.path) : meta.title;
     e.book.titleSort = meta.titleSort;
     e.book.author = meta.author;
     e.book.authorSort = meta.authorSort;
