@@ -5,6 +5,7 @@ an e-reader, audio player and desk companion on an 800×480 1-bit e-paper panel.
 3-way dial, the BOOT key and the PWR key. PlatformIO, Arduino core 3.3 on ESP-IDF 5.5.
 
 <img src="docs/screenshots/home.png" width="240" alt="Home"> <img src="docs/screenshots/reader.png" width="240" alt="Reader"> <img src="docs/screenshots/level.png" width="400" alt="Level">
+<img alt="368781D4-93A9-43E5-A802-835D6F896E2A_1_105_c" src="https://github.com/user-attachments/assets/9cf2d82b-b768-4e54-b666-16e1b94db101" width="486" alt="Enclosure" />
 
 Screens as the panel draws them, saved over USB with `tools/screenshot.py`.
 
