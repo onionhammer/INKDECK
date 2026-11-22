@@ -42,6 +42,7 @@
 #include "suntimes.h"
 #include "sysinfo.h"
 #include "timesync.h"
+#include "timeutil.h"
 #include "units.h"
 #include "forecast.h"
 #include "wlan.h"
@@ -291,7 +292,7 @@ int statsFor(const Module &m, Stat out[4]) {
           const time_t now = time(nullptr);
           localtime_r(&now, &today);
           char buf[16];
-          const bool sameDay = l.tm_yday == today.tm_yday && l.tm_year == today.tm_year;
+          const bool sameDay = timeutil::sameDay(l, today);
           strftime(buf, sizeof buf, sameDay ? "%H:%M" : "%d %b", &l);
           synced = ui::upper(buf);
         }

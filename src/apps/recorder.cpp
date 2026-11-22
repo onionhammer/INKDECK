@@ -16,6 +16,7 @@
 #include "paths.h"
 #include "pmic.h"
 #include "sdcard.h"
+#include "timeutil.h"
 #include "ui/menu.h"
 
 namespace apps {
@@ -47,17 +48,7 @@ uint32_t memoMs(const Memo &m) {
   return m.size > 44 ? static_cast<uint32_t>((m.size - 44) * 1000 / kBytesPerSecond) : 0;
 }
 
-std::string clockText(uint32_t ms) {
-  const uint32_t s = ms / 1000;
-  char buf[16];
-  if (s >= 3600) {
-    snprintf(buf, sizeof buf, "%lu:%02lu:%02lu", (unsigned long)(s / 3600),
-             (unsigned long)(s / 60 % 60), (unsigned long)(s % 60));
-  } else {
-    snprintf(buf, sizeof buf, "%02lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
-  }
-  return buf;
-}
+std::string clockText(uint32_t ms) { return timeutil::clockText(ms / 1000, true); }
 
 std::string megabytes(int64_t bytes) {
   char buf[16];

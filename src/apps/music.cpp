@@ -10,6 +10,7 @@
 #include "audio.h"
 #include "paths.h"
 #include "pmic.h"
+#include "timeutil.h"
 #include "trackinfo.h"
 
 namespace apps {
@@ -44,17 +45,7 @@ constexpr ui::TextStyle kStatePill{&fonts::kMono13ExtraBold, 1};
 constexpr ui::TextStyle kChainKey{&fonts::kMono13Medium, 1};
 constexpr ui::TextStyle kChainValue{&fonts::kMono13Bold, 0};
 
-std::string clock(uint32_t ms) {
-  const uint32_t s = ms / 1000;
-  char buf[16];
-  if (s >= 3600) {
-    snprintf(buf, sizeof buf, "%lu:%02lu:%02lu", (unsigned long)(s / 3600),
-             (unsigned long)(s / 60 % 60), (unsigned long)(s % 60));
-  } else {
-    snprintf(buf, sizeof buf, "%02lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
-  }
-  return buf;
-}
+std::string clock(uint32_t ms) { return timeutil::clockText(ms / 1000, true); }
 
 
 class MusicScreen : public ui::Screen {

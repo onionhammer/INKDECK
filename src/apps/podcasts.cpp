@@ -8,6 +8,7 @@
 #include "apps/home.h"
 #include "apps/music.h"
 #include "podcast_library.h"
+#include "timeutil.h"
 #include "trackinfo.h"
 #include "wlan.h"
 
@@ -42,17 +43,7 @@ constexpr int kCardMargin = 14;
 constexpr uint32_t kProgressEveryMs = 5000;  // download progress redraws at most this often
 constexpr time_t kRefreshAfter = 3 * 3600;   // feeds older than this refresh when the screen opens
 
-std::string clockText(uint32_t s) {
-  char buf[16];
-  if (s >= 3600) {
-    snprintf(buf, sizeof buf, "%lu:%02lu:%02lu", static_cast<unsigned long>(s / 3600),
-             static_cast<unsigned long>(s / 60 % 60), static_cast<unsigned long>(s % 60));
-  } else {
-    snprintf(buf, sizeof buf, "%lu:%02lu", static_cast<unsigned long>(s / 60),
-             static_cast<unsigned long>(s % 60));
-  }
-  return buf;
-}
+using timeutil::clockText;
 
 std::string sizeText(int64_t bytes) {
   if (bytes < 0) return glyph::kEllipsis;

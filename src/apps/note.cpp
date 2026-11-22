@@ -19,6 +19,7 @@
 #include "screen.h"
 #include "sdcard.h"
 #include "text.h"
+#include "timeutil.h"
 #include "ui/menu.h"
 
 namespace apps {
@@ -258,7 +259,7 @@ class NoteScreen : public ui::Screen {
     localtime_r(&now, &today);
     if (made.tm_year + 1900 < 2024) return {};
     char buf[24];
-    const bool sameDay = made.tm_year == today.tm_year && made.tm_yday == today.tm_yday;
+    const bool sameDay = timeutil::sameDay(made, today);
     strftime(buf, sizeof buf, sameDay ? "TODAY %H:%M" : "%d %b %H:%M", &made);
     return ui::upper(buf);
   }

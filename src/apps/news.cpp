@@ -20,6 +20,7 @@
 #include "screen.h"
 #include "sdcard.h"
 #include "text.h"
+#include "timeutil.h"
 #include "ui/menu.h"
 #include "wlan.h"
 
@@ -69,15 +70,8 @@ int lastMenuItem = 0;
 
 std::string dot() { return std::string(" ") + glyph::kDot + " "; }
 
-bool sameDay(const tm &a, const tm &b) { return a.tm_year == b.tm_year && a.tm_yday == b.tm_yday; }
-
-std::string hhmm(time_t t) {
-  tm l;
-  localtime_r(&t, &l);
-  char buf[8];
-  strftime(buf, sizeof buf, "%H:%M", &l);
-  return buf;
-}
+using timeutil::hhmm;
+using timeutil::sameDay;
 
 // TODAY, YESTERDAY, "WED 18 NOV" within the week, else "18 NOV" (and the year if not this one).
 std::string dayLabel(time_t t) {

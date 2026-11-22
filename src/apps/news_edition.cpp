@@ -31,6 +31,7 @@
 #include "screen.h"
 #include "sdcard.h"
 #include "settings.h"
+#include "timeutil.h"
 #include "ui/nav.h"
 #include "units.h"
 #include "wlan.h"
@@ -249,10 +250,10 @@ std::string shortWhen(time_t t, time_t now) {
   tm a, b, c;
   localtime_r(&t, &a);
   localtime_r(&now, &b);
-  if (a.tm_year == b.tm_year && a.tm_yday == b.tm_yday) return fmt(t, "%H:%M");
+  if (timeutil::sameDay(a, b)) return fmt(t, "%H:%M");
   const time_t y = now - 86400;
   localtime_r(&y, &c);
-  if (a.tm_year == c.tm_year && a.tm_yday == c.tm_yday) return fmt(t, "YDA %H:%M");
+  if (timeutil::sameDay(a, c)) return fmt(t, "YDA %H:%M");
   return fmt(t, "%d %b");
 }
 

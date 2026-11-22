@@ -85,25 +85,11 @@ constexpr int kStripH = 40;
 
 const char *const kWeekdayNames[] = {"SUNDAY",   "MONDAY", "TUESDAY", "WEDNESDAY",
                                      "THURSDAY", "FRIDAY", "SATURDAY"};
-const char *const kWeekdayShort[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-const char *const kMonthNames[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-                                   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+using timeutil::kMonthNames;
+using timeutil::kWeekdayShort;
 
-std::string hhmm(int hour, int minute) {
-  char buf[8];
-  snprintf(buf, sizeof buf, "%02d:%02d", hour, minute);
-  return buf;
-}
-
-std::string hhmm(time_t t) {
-  tm l;
-  localtime_r(&t, &l);
-  return hhmm(l.tm_hour, l.tm_min);
-}
-
-bool sameDay(const tm &a, const tm &b) {
-  return a.tm_year == b.tm_year && a.tm_yday == b.tm_yday;
-}
+using timeutil::hhmm;
+using timeutil::sameDay;
 
 // "07:00" today or within a day, else "TUE 07:00".
 std::string whenText(time_t t, time_t now) {

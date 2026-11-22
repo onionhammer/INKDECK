@@ -15,6 +15,7 @@
 #include "power.h"
 #include "readstate.h"
 #include "rtc.h"
+#include "timeutil.h"
 
 namespace apps {
 namespace {
@@ -79,15 +80,10 @@ const char *const kPad[] = {
 const char *const kZBig[] = {"#####", "...#.", "..#..", ".#...", "#####"};
 const char *const kZSmall[] = {"####", "..#.", ".#..", "####"};
 
-const char *const kWeekdayShort[] = {"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"};
-const char *const kMonthNames[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
-                                   "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+using timeutil::kMonthNames;
+using timeutil::kWeekdayShort;
 
-std::string hhmm(int hour, int minute) {
-  char buf[8];
-  snprintf(buf, sizeof buf, "%02d:%02d", hour, minute);
-  return buf;
-}
+using timeutil::hhmm;
 
 // The frog field: which character each cell holds (0 = empty).
 class Field {
