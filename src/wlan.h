@@ -38,8 +38,12 @@ void disconnect();  // this user is done; the radio goes off after the last one
 void forceOff();
 
 bool radioOn();  // connecting, connected or held (the status bar shows WIFI)
+// connect() is trying networks: the radio moves between channels, so a holder that sets the
+// channel itself (comms.h) waits until it's done. Safe from any task.
+bool joining();
 
-// The radio on in station mode without joining anything, for scanning (wifi_survey.h): it
+// The radio on in station mode without joining anything, for scanning (wifi_survey.h) and the
+// comms radio (comms.h, ESP-NOW, which needs Wi-Fi started but no network): it
 // stays on until the matching releaseRadio(), whatever connect() and disconnect() users do
 // meanwhile, and goes off at the release if nobody is connected. May wait for a connect in
 // progress, so call from a background task.

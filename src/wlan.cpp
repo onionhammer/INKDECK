@@ -249,6 +249,8 @@ bool connect(uint32_t timeoutMs, std::string &error) {
 
 bool radioOn() { return state.load() != State::Off || held.load(); }
 
+bool joining() { return state.load() == State::Connecting; }
+
 void disconnect() {
   std::lock_guard<std::mutex> lock(usersMutex);
   if (users > 0) --users;

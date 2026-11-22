@@ -107,3 +107,25 @@ nfs = nfs://nas.local/volume1/books
 ; while the board is on the tailnet, all the time on USB power. Software encryption over
 ; 2.4 GHz Wi-Fi: much slower than a computer would be.
 ; tailscale_exit_node = on
+
+[comms]
+; Talk to other boards over the radio, board to board with no router (COMMS on Home). A group
+; is a secret its boards share: boards with the same mesh_group line hear each other. Up to 4
+; lines, one a group. The whole line is the invite: copy it to every board of the group. Make
+; the secret long and random (openssl rand -hex 16), without a ?. It keys the group's
+; encryption and stays on the card. Options go after a ?, joined by &:
+;   name  what the screens call the group (GROUP 1, GROUP 2... without one)
+;   via   how it travels: air (the radio only), net (through inkharness only; not there
+;         yet, so nothing is sent) or both (the default). COMMS > GROUPS changes it too.
+;   hub   where inkharness daemons of different households meet (kept for later)
+; Without a mesh_group line, a board with an agent_token is in one group, HOME, with the
+; other boards of that token.
+; mesh_group = 3f9c0e1b7a2d4c65e8f1a0b9c7d2e4f6?name=Family
+; mesh_group = another-long-secret?name=Workshop&via=air
+; This board's name on the other boards, up to 16 letters (its tailscale_name without one,
+; else INKDECK and 4 digits of its id).
+; mesh_name = KITCHEN
+; The Wi-Fi channel the radio uses while the board isn't on a Wi-Fi network: 1 to 13, the
+; same on every board. On a network it uses the network's channel, so set this to your
+; Wi-Fi's channel and boards on and off the Wi-Fi still hear each other.
+; mesh_channel = 6

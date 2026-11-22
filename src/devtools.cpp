@@ -15,6 +15,7 @@
 #include "apps/idle.h"
 #include "audio.h"
 #include "board_pins.h"
+#include "comms.h"
 #include "epub.h"
 #include "features.h"
 #include "flashfs.h"
@@ -205,6 +206,122 @@ void lineCommand(const String &line) {
     const uint32_t t1 = millis();
     while (audio::streaming() && millis() - t1 < 6000) delay(20);
     Serial.printf("agentloop: done in %lu ms\n", static_cast<unsigned long>(millis() - t1));
+    return;
+  }
+#endif
+#if INKDECK_COMMS
+  if (line == "comms") {
+    comms::dump(Serial);
+    return;
+  }
+  if (line == "commstest") {
+    comms::selfTest(Serial);
+    return;
+  }
+  if (line.startsWith("commsgroup")) {
+    // A test group without the card (the card's mesh_group lines are the real way): kept in
+    // NVS, on top of the card's groups. "!commsgroup -" removes it.
+    String rest = line.substring(10);
+    rest.trim();
+    if (rest.isEmpty()) {
+      Serial.println("commsgroup: !commsgroup <secret> [name] sets a test group (dev only: the card's "
+                     "mesh_group lines are the real way); !commsgroup - removes it");
+      return;
+    }
+    if (rest == "-") {
+      comms::setTestGroup("", "");
+      Serial.println("commsgroup: test group removed");
+      return;
+    }
+    const int space = rest.indexOf(' ');
+    const String secret = space < 0 ? rest : rest.substring(0, space);
+    const String name = space < 0 ? String("TEST") : rest.substring(space + 1);
+    if (secret.length() < 8) {
+      Serial.println("commsgroup: the secret must be 8 characters or more");
+      return;
+    }
+    comms::setTestGroup(secret.c_str(), name.c_str());
+    Serial.printf("commsgroup: test group %s set\n", name.c_str());
+    return;
+  }
+  if (line.startsWith("commschannel")) {
+    // Pins the channel used off Wi-Fi, in place of mesh_channel (0: mesh_channel again).
+    const int ch = line.substring(12).toInt();
+    if (ch < 0 || ch > 13) {
+      Serial.println("commschannel: 1 to 13, or 0 for mesh_channel");
+      return;
+    }
+    comms::setTestChannel(ch);
+    Serial.printf("commschannel: %s\n", ch ? ("channel " + String(ch)).c_str() : "mesh_channel");
+    return;
+  }
+  if (line == "commsrelay on" || line == "commsrelay off") {
+    comms::setRelayForOthers(line.endsWith("on"));
+    Serial.printf("commsrelay: relay for others %s\n", comms::relayForOthers() ? "on" : "off");
+    return;
+  }
+  if (line == "commsplay") {
+    // PLAY LAST: the last call heard, again.
+    if (!comms::playLast()) {
+      Serial.printf("commsplay: %s\n", comms::status().error.c_str());
+    } else {
+      const comms::LastCall c = comms::lastCall();
+      Serial.printf("commsplay: playing %s's call again, %lu ms\n", c.fromName.c_str(),
+                    static_cast<unsigned long>(c.ms));
+    }
+    return;
+  }
+  if (line == "commsresend" || line == "commsresend old") {
+    comms::resend(line.endsWith("old"));
+    Serial.println("commsresend: sent; look at the other board's dropped counters (!comms)");
+    return;
+  }
+  if (line == "commsping" || line.startsWith("commstalk")) {
+    if (!comms::configured()) {
+      Serial.println("comms: no group (a mesh_group line, an agent_token or !commsgroup)");
+      return;
+    }
+    comms::hold();  // on battery the radio is off until something holds it
+    for (int i = 0; i < 60 && !comms::listening(); ++i) delay(50);
+    const int group = comms::activeGroup();
+    if (line == "commsping") {
+      const uint32_t id = comms::ping(group);
+      if (!id) {
+        Serial.println("commsping: not listening, or the group doesn't go over the air");
+      } else {
+        Serial.printf("commsping: ping %08lX to group %d; answers for 2 s\n",
+                      static_cast<unsigned long>(id), group);
+        delay(2000);
+        const std::vector<comms::Pong> answers = comms::pongs();
+        for (const comms::Pong &p : answers) {
+          Serial.printf("commsping: %08lX %s: %lu ms round trip (%lu held there, so %ld ms on "
+                        "the way), heard there %d dBm (%d hops), here %d dBm (%d hops)\n",
+                        static_cast<unsigned long>(p.id), p.name.empty() ? "?" : p.name.c_str(),
+                        static_cast<unsigned long>(p.rttMs), static_cast<unsigned long>(p.heldMs),
+                        static_cast<long>(p.rttMs) - static_cast<long>(p.heldMs), p.rssiThere,
+                        p.hopsThere, p.rssiHere, p.hopsBack);
+        }
+        Serial.printf("commsping: %u answers\n", static_cast<unsigned>(answers.size()));
+      }
+    } else {
+      const int seconds = std::max(1, std::min(60, static_cast<int>(line.substring(9).toInt())));
+      if (!comms::talkStart(group, 0)) {
+        Serial.printf("commstalk: %s\n", comms::status().error.c_str());
+      } else {
+        Serial.printf("commstalk: talking to group %d for %d s\n", group, seconds);
+        delay(seconds * 1000);
+        comms::talkStop();
+        delay(300);
+        const std::vector<comms::Call> c = comms::calls(group, 1);
+        if (!c.empty() && c[0].outgoing) {
+          Serial.printf("commstalk: sent %lu ms; %d boards said they heard it (so far)\n",
+                        static_cast<unsigned long>(c[0].ms), c[0].heardBy);
+        } else {
+          Serial.printf("commstalk: %s\n", comms::status().error.c_str());
+        }
+      }
+    }
+    comms::release();
     return;
   }
 #endif

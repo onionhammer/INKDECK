@@ -164,10 +164,36 @@ over 2.4 GHz Wi-Fi, so it's much slower than a computer would be. System's TAILN
 (tested 2026-11-21: on USB it joined and turned it on, with the same 93 KB of internal RAM
 free); traffic through it isn't tested yet.
 
+**Comms** (issue #66; the engine, `src/comms.h`, without its screens yet): boards talk to each
+other directly, board to board over the radio with no router (ESP-NOW). Push-to-talk voice in
+**groups**: each `mesh_group` line in `inkdeck.ini` (up to 4) is a secret its boards share, which
+keys the group's encryption (AES-GCM) and gives its id, whose first 4 hex digits (`7F3A`) the
+screens will show so boards can be checked against each other. The whole line is the invite:
+paste it on every board of the group. Without a line, a board with an `agent_token` is in one
+group, HOME, with the other boards of that token. Voice goes as IMA ADPCM, 16 kHz (64 kbps), 20 ms
+a packet; a call doesn't play over the Recorder, an alarm, the agent or another call, and stops
+music, which plays on afterwards. The last call heard is kept to play again, with a log of calls.
+Boards pass each other's packets on (a **mesh**: flooding, up to three relays), also for groups
+they aren't in, unread, and each board knows how the others are reached: over the air with their
+signal, through which relay, or away. A board listens on USB power, or while a Comms screen holds
+it; on battery otherwise the radio stays off. It uses the Wi-Fi network's channel while joined,
+else `mesh_channel` (6): set that to your Wi-Fi's channel so boards on and off it hear each other.
+`via` per group (`air`, `net` or `both`) is there for the link through inkharness, which isn't
+built: `net` sends nothing yet. Packet format and keys:
+[`docs/comms-protocol.md`](docs/comms-protocol.md). On USB with the tailnet up, listening costs
+about 8.5 KB of internal RAM (80 KB free instead of 89 KB) and a call playing about 19 KB more;
+the image grows by about 49 KB (`INKDECK_COMMS=0` leaves it out). Tested 2026-11-22 with two boards
+in one room (−76 dBm): ping (about 14 ms there and back over the air), calls both ways with the
+heard receipt, about 4% of frames lost on the air (each covered by the one before), PLAY LAST, and
+the duplicate and replay drops. Not tested: relaying through a third board, a board off Wi-Fi,
+range and current. Dev commands over USB: `!comms`, `!commstest`, `!commsping`, `!commstalk N`,
+`!commsplay`, `!commsgroup` (a test group without the card), `!commschannel`, `!commsrelay`,
+`!commsresend`.
+
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
 Wi-Fi network, time zone and location without a rebuild, sets the lock, lists network shares,
-sets how long News's off face shows each story and puts the board on your tailnet (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
+sets how long News's off face shows each story, puts the board on your tailnet and sets its comms groups (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
 the card has none, it writes one with every line commented out. It can list up to 8 Wi-Fi
 networks, each `ssid` line with its `password` under it: the board tries the one it last joined
 first, then the others in the file's order, moving on as soon as one is out of range (about
@@ -179,7 +205,8 @@ cable can read them, as they can the `.env` values built into the firmware.
 `INKDECK_FAHRENHEIT` in `platformio.ini` switches between
 US and metric units, and `INKDECK_AGENT` builds the agent in (`1`, as set) or leaves
 it out (`0`): no AGENT on Home, and HOLD BOOT only raises the player sheet. `INKDECK_TAILNET`
-does the same for the tailnet: `0` saves about 123 KB of flash and 7 KB of internal RAM.
+does the same for the tailnet: `0` saves about 123 KB of flash and 7 KB of internal RAM, and
+`INKDECK_COMMS` for comms (about 49 KB of flash).
 
 ```ini
 [wifi]
@@ -207,6 +234,10 @@ news_face_every = 5                   ; minutes per story on News's off face (1,
 tailscale_key = tskey-auth-...        ; the board keeps it and replaces the line with a note
 tailscale_name = inkdeck              ; its name on the tailnet
 tailscale_exit_node = on              ; offer the board as an exit node (IPv4)
+[comms]
+mesh_group = 3f9c0e1b7a2d4c65?name=Family  ; a group: the secret, then options (name, via, hub)
+mesh_name = KITCHEN                   ; this board's name on the others
+mesh_channel = 6                      ; the radio's channel off Wi-Fi
 ```
 
 Each `smb =` or `nfs =` line is a share Files lists:

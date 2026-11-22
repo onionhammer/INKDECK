@@ -28,6 +28,7 @@
 #include "apps/board_tools.h"
 #include "audio.h"
 #include "board_pins.h"
+#include "comms.h"
 #include "devtools.h"
 #include "features.h"
 #include "input.h"
@@ -114,6 +115,9 @@ void setup() {
     timesync::start();
   }
   tailnet::begin();  // on USB, the board stays on the tailnet (tailnet.h)
+#if INKDECK_COMMS
+  comms::begin();  // with a group, listens for the other boards on USB (comms.h)
+#endif
   // Made it through setup() with a frame on the panel: if this is the first boot after an
   // update over Wi-Fi, keep the new image (until now a reset would have rolled it back).
   ota::confirmBoot();

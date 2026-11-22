@@ -26,6 +26,10 @@
 //   tailscale_key = tskey-auth-...       ; the board keeps it and replaces the line with a note (tailnet.h)
 //   tailscale_name = inkdeck             ; the board's name on the tailnet
 //   tailscale_exit_node = on             ; offer the board as an exit node, IPv4 (tailnet.h)
+//   [comms]
+//   mesh_group = <secret>?name=Family&via=air   ; up to 4; stays on the card: it keys the group (comms.h)
+//   mesh_name = KITCHEN                  ; this board's name on the others
+//   mesh_channel = 6                     ; the radio's Wi-Fi channel off Wi-Fi
 //
 // and lists the network shares Files browses (shares.h has the syntax), one line each:
 //
@@ -65,6 +69,8 @@
 // (unlocked()), and its line stays on the card until then, so a power-off before that doesn't
 // lose it.
 #pragma once
+#include <stdint.h>
+
 #include <string>
 #include <vector>
 
@@ -130,6 +136,24 @@ bool hasTailscale();
 std::string tailscaleKey();   // from NVS; "" if none
 std::string tailscaleName();  // tailscale_name, else "inkdeck"
 bool tailscaleExitNode();     // tailscale_exit_node = on: the board offers itself as an exit node
+
+// [comms] (comms.h, docs/comms-protocol.md). Each mesh_group line is a group: a secret every
+// board in it shares (8 to 128 printable bytes, no ?), then options after a ?, joined by &:
+// name (what the screens call it, up to 16 bytes), via (air, net or both: how it travels; both
+// by default) and hub (where daemons meet; kept, not used yet). Values are %XX-decoded. Like
+// agent_token, the secret stays on the card and in NVS: it is the invite.
+constexpr int kMaxMeshGroups = 4;
+enum class MeshVia : unsigned char { Both, Air, Net };
+struct MeshGroup {
+  std::string secret;
+  std::string name;  // "" if the line names none
+  MeshVia via = MeshVia::Both;
+  std::string hub;     // "" if none
+  uint32_t line = 0;   // FNV-1a of the whole line: another value once the line changes
+};
+std::vector<MeshGroup> meshGroups();  // in the file's order
+std::string meshName();  // mesh_name, "" if the card sets none
+int meshChannel();       // mesh_channel: 1 to 13, 6 without a line
 
 // The lock. hasPin(): the board locks at boot, on waking the desk face and after lockMinutes()
 // without a key (0: never for that).

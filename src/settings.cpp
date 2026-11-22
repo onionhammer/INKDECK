@@ -37,13 +37,17 @@ struct Values {
   bool tailscaleExitNode = false;
   bool agentFaceDetails = false;
   int newsFaceEvery = 5;  // minutes per story on News's off face
+  std::vector<std::string> meshGroups;  // the mesh_group lines' values, checked, in order
+  std::string meshName;
+  int meshChannel = 6;
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
            wifiSsids == o.wifiSsids && shares == o.shares && lockMinutes == o.lockMinutes &&
            agentHost == o.agentHost && agentPort == o.agentPort && agentToken == o.agentToken &&
            tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode &&
-           agentFaceDetails == o.agentFaceDetails && newsFaceEvery == o.newsFaceEvery;
+           agentFaceDetails == o.agentFaceDetails && newsFaceEvery == o.newsFaceEvery &&
+           meshGroups == o.meshGroups && meshName == o.meshName && meshChannel == o.meshChannel;
   }
 };
 
@@ -180,7 +184,29 @@ constexpr const char *kTemplate =
     "; settings); access rules other than the default must allow autogroup:internet. It's there\n"
     "; while the board is on the tailnet, all the time on USB power. Software encryption over\n"
     "; 2.4 GHz Wi-Fi: much slower than a computer would be.\n"
-    "; tailscale_exit_node = on\n";
+    "; tailscale_exit_node = on\n"
+    "\n"
+    "[comms]\n"
+    "; Talk to other boards over the radio, board to board with no router (COMMS on Home). A group\n"
+    "; is a secret its boards share: boards with the same mesh_group line hear each other. Up to 4\n"
+    "; lines, one a group. The whole line is the invite: copy it to every board of the group. Make\n"
+    "; the secret long and random (openssl rand -hex 16), without a ?. It keys the group's\n"
+    "; encryption and stays on the card. Options go after a ?, joined by &:\n"
+    ";   name  what the screens call the group (GROUP 1, GROUP 2... without one)\n"
+    ";   via   how it travels: air (the radio only), net (through inkharness only; not there\n"
+    ";         yet, so nothing is sent) or both (the default). COMMS > GROUPS changes it too.\n"
+    ";   hub   where inkharness daemons of different households meet (kept for later)\n"
+    "; Without a mesh_group line, a board with an agent_token is in one group, HOME, with the\n"
+    "; other boards of that token.\n"
+    "; mesh_group = 3f9c0e1b7a2d4c65e8f1a0b9c7d2e4f6?name=Family\n"
+    "; mesh_group = another-long-secret?name=Workshop&via=air\n"
+    "; This board's name on the other boards, up to 16 letters (its tailscale_name without one,\n"
+    "; else INKDECK and 4 digits of its id).\n"
+    "; mesh_name = KITCHEN\n"
+    "; The Wi-Fi channel the radio uses while the board isn't on a Wi-Fi network: 1 to 13, the\n"
+    "; same on every board. On a network it uses the network's channel, so set this to your\n"
+    "; Wi-Fi's channel and boards on and off the Wi-Fi still hear each other.\n"
+    "; mesh_channel = 6\n";
 
 // The share lines and SMB passwords go in NVS as one string each, a line apiece.
 std::vector<std::string> splitLines(const std::string &text) {
@@ -254,6 +280,9 @@ void loadNvs() {
   card.tailscaleExitNode = prefs.getBool("tsexit", false);
   card.agentFaceDetails = prefs.getBool("afacedet", false);
   card.newsFaceEvery = prefs.getInt("nfevery", 5);
+  card.meshGroups = splitLines(nvsString(prefs, "mgroups"));
+  card.meshName = nvsString(prefs, "mname");
+  card.meshChannel = prefs.getInt("mchan", 6);
   tailscaleKeySet = prefs.isKey("tskey");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
@@ -277,6 +306,9 @@ void saveNvs() {
   prefs.putBool("tsexit", card.tailscaleExitNode);
   prefs.putBool("afacedet", card.agentFaceDetails);
   prefs.putInt("nfevery", card.newsFaceEvery);
+  prefs.putString("mgroups", joinLines(card.meshGroups).c_str());
+  prefs.putString("mname", card.meshName.c_str());
+  prefs.putInt("mchan", card.meshChannel);
   prefs.end();
 }
 
@@ -494,6 +526,62 @@ bool parseDegrees(const std::string &text, double limit, double &out) {
   return true;
 }
 
+bool printable(const std::string &s) {
+  return std::none_of(s.begin(), s.end(), [](char c) {
+    return static_cast<unsigned char>(c) < 0x20 || c == 0x7F;
+  });
+}
+
+// A mesh_group line's value: <secret>?name=...&via=...&hub=... (settings.h). False, with the
+// reason in error, if it isn't one.
+bool parseMeshGroup(const std::string &value, MeshGroup &out, std::string &error) {
+  out = MeshGroup();
+  const size_t q = value.find('?');
+  out.secret = trim(value.substr(0, q));
+  if (out.secret.size() < 8 || out.secret.size() > 128 || !printable(out.secret)) {
+    error = "the secret must be 8 to 128 characters (make it long and random)";
+    return false;
+  }
+  const std::string query = q == std::string::npos ? "" : value.substr(q + 1);
+  for (size_t pos = 0; pos < query.size();) {
+    size_t amp = query.find('&', pos);
+    if (amp == std::string::npos) amp = query.size();
+    const std::string item = query.substr(pos, amp - pos);
+    pos = amp + 1;
+    if (item.empty()) continue;
+    const size_t eq = item.find('=');
+    const std::string key = text::lower(item.substr(0, eq));
+    const std::string v =
+        eq == std::string::npos ? "" : trim(text::percentDecode(item.substr(eq + 1)));
+    if (key == "name") {
+      if (v.empty() || v.size() > 16 || !printable(v)) {
+        error = "name must be 1 to 16 characters";
+        return false;
+      }
+      out.name = v;
+    } else if (key == "via") {
+      const std::string via = text::lower(v);
+      if (via == "both" || via == "air+net") {
+        out.via = MeshVia::Both;
+      } else if (via == "air") {
+        out.via = MeshVia::Air;
+      } else if (via == "net") {
+        out.via = MeshVia::Net;
+      } else {
+        error = "via must be air, net or both";
+        return false;
+      }
+    } else if (key == "hub") {
+      out.hub = v;
+    } else {
+      error = "unknown option \"" + key + "\" (name, via, hub)";
+      return false;
+    }
+  }
+  out.line = text::fnv1a(value);
+  return true;
+}
+
 Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKey,
              CardSecrets &secrets) {
   Values v;
@@ -634,6 +722,31 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
     } else if (key == "tailscale_exit_node") {
       if (!parseOnOff(value, v.tailscaleExitNode)) {
         log_w("settings: %s: tailscale_exit_node must be on or off", kFile);
+      }
+    } else if (key == "mesh_group") {
+      MeshGroup group;
+      std::string error;
+      if (!parseMeshGroup(value, group, error)) {
+        log_w("settings: %s: line %d: mesh_group: %s", kFile, lineNo, error.c_str());
+      } else if (static_cast<int>(v.meshGroups.size()) >= kMaxMeshGroups) {
+        log_w("settings: %s: only %d mesh_group lines; line %d left out", kFile, kMaxMeshGroups,
+              lineNo);
+      } else {
+        v.meshGroups.push_back(value);
+      }
+    } else if (key == "mesh_name") {
+      if (value.empty() || value.size() > 16 || !printable(value)) {
+        log_w("settings: %s: mesh_name must be 1 to 16 characters", kFile);
+      } else {
+        v.meshName = value;
+      }
+    } else if (key == "mesh_channel") {
+      int n = 0, used = 0;
+      if (siscanf(value.c_str(), "%d%n", &n, &used) == 1 &&
+          used == static_cast<int>(value.size()) && n >= 1 && n <= 13) {
+        v.meshChannel = n;
+      } else {
+        log_w("settings: %s: mesh_channel must be 1 to 13", kFile);
       }
     } else {
       log_w("settings: %s: unknown setting \"%s\"", kFile, key.c_str());
@@ -1047,6 +1160,27 @@ bool agentFaceDetails() {
 int newsFaceEvery() {
   loadNvs();
   return card.newsFaceEvery;
+}
+
+std::vector<MeshGroup> meshGroups() {
+  loadNvs();
+  std::vector<MeshGroup> out;
+  for (const std::string &line : card.meshGroups) {
+    MeshGroup g;
+    std::string error;
+    if (parseMeshGroup(line, g, error)) out.push_back(std::move(g));
+  }
+  return out;
+}
+
+std::string meshName() {
+  loadNvs();
+  return card.meshName;
+}
+
+int meshChannel() {
+  loadNvs();
+  return card.meshChannel >= 1 && card.meshChannel <= 13 ? card.meshChannel : 6;
 }
 
 PinChange pendingPin() { return pending; }

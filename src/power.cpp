@@ -8,6 +8,7 @@
 
 #include "audio.h"
 #include "board_pins.h"
+#include "comms.h"
 #include "file_copy.h"
 #include "input.h"
 #include "news_library.h"
@@ -133,6 +134,9 @@ void off(Mode m, time_t wakeAt, int standbyCycles) {
     delay(recording ? 400 : 150);
   }
   if (sensors::logging()) sensors::setLogging(false);  // close the CSV before the power goes
+#if INKDECK_COMMS
+  comms::forceOff();  // ESP-NOW down before Wi-Fi goes
+#endif
   wlan::forceOff();
 
   if (wakeAt) {

@@ -15,6 +15,11 @@
 //                       about 7 KB of internal RAM from boot (its static tables; measured
 //                       2026-11-21), and 42 KB more while the board is on the tailnet. 0 or unset:
 //                       none of it is built, and System's TAILNET row says so.
+//   -DINKDECK_COMMS=1   COMMS (comms.h, issue #66): boards talking to each other over ESP-NOW,
+//                       push-to-talk in groups from the card's mesh_group lines, relaying for
+//                       each other as a mesh. It listens on USB power or while a Comms screen
+//                       holds it. 0 or unset: none of it is built, and the dev commands !comms...
+//                       are left out.
 #pragma once
 
 #if !defined(INKDECK_AGENT) && defined(INKDECK_VOICE)
@@ -30,4 +35,8 @@
 
 #ifndef INKDECK_TAILNET
 #define INKDECK_TAILNET 0
+#endif
+
+#ifndef INKDECK_COMMS
+#define INKDECK_COMMS 0
 #endif
