@@ -8,8 +8,9 @@
 //   PWR   the Sleep screen, then power-off (power.h)
 //
 // Screens live in apps/, one per module on Home (README.md lists them): Reader, Podcasts,
-// Agent, Weather, Clock, Recorder, Music, Sensors, Level, Files, System and News. With a PIN set
-// in SD:/inkdeck.ini, the lock (apps/lock.h) comes up over them at every start.
+// Agent, Weather, Clock, Recorder, Music, Sensors (its menu opens the Level), Files, System and
+// News. With a PIN set in SD:/inkdeck.ini, the lock (apps/lock.h) comes up over them at every
+// start.
 #include <Arduino.h>
 #include <Wire.h>
 

@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "apps/home.h"
+#include "apps/level.h"
 #include "apps/radio_ui.h"
 #include "apps/wifi_networks.h"
 #include "board_pins.h"
@@ -217,7 +218,7 @@ class SensorsScreen : public ui::Screen {
   void toggleLog() { logFailed_ = !sensors::setLogging(!sensors::logging()); }
 
   // ● : the // SENSORS menu sheet. It opens on the focused radio's row, else on the item last run.
-  enum class MenuRow : uint8_t { Wifi, Ble, Hold, Log };
+  enum class MenuRow : uint8_t { Wifi, Ble, Level, Hold, Log };
   void openMenu() {
     std::vector<ui::MenuItem> items;
     std::vector<MenuRow> rows;
@@ -240,6 +241,21 @@ class SensorsScreen : public ui::Screen {
                      }});
     rows.push_back(MenuRow::Ble);
 #endif
+    items.push_back({"SPIRIT LEVEL",
+                     [] {
+                       // Read directly: the screen below refreshes its own tilt only while it has the focus.
+                       const qmi8658::Reading m = sensors::motion();
+                       if (!m.ok) return std::string(ui::glyph::kEmDash);
+                       float pitch = 0, roll = 0;
+                       sensors::tilt(m, pitch, roll);
+                       return "P " + ui::signedNumber(pitch, 1) + "\xC2\xB0 \xC2\xB7 R " +
+                              ui::signedNumber(roll, 1) + "\xC2\xB0";
+                     },
+                     [this] {
+                       menuLast_ = MenuRow::Level;
+                       ui::nav::replace(makeLevel());
+                     }});
+    rows.push_back(MenuRow::Level);
     items.push_back({"HOLD READINGS", [this] { return std::string(held_ ? "ON" : "OFF"); },
                      [this] {
                        menuLast_ = MenuRow::Hold;

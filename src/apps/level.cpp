@@ -110,7 +110,7 @@ std::string raiseText(float deg) {
 
 class LevelScreen : public ui::Screen {
  public:
-  std::string tag() const override { return moduleTag("LEVEL"); }
+  std::string tag() const override { return moduleTag("SENSORS"); }
   bool landscape() const override { return true; }
 
   std::string context() const override {

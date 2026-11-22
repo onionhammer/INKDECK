@@ -11,7 +11,6 @@
 #include "alarms.h"
 #include "apps/clock.h"
 #include "apps/files.h"
-#include "apps/level.h"
 #include "apps/library.h"
 #include "apps/lock.h"
 #include "apps/music.h"
@@ -54,7 +53,7 @@ using ui::Key;
 using ui::Rect;
 
 enum class Kind : uint8_t {
-  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder, News,
+  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Recorder, News,
 #if INKDECK_AGENT
   Agent,
 #endif
@@ -95,8 +94,6 @@ constexpr Module kModules[] = {
      "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music},
     {"SENSORS", "I2C", "Live readouts from every chip on the I2C bus, and Wi-Fi and Bluetooth LE scans.",
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},
-    {"LEVEL", "IMU", "Bubble level for surfaces, a vial for edges, and a tone when it's level.",
-     "QMI8658A @ 0x6B", Kind::Level},
     {"FILES", "SD",
      "Browse the microSD card, onboard flash and NFS shares. Books, music, pictures, text.",
      "SDMMC 4-bit \xC2\xB7 16 MB flash", Kind::Files},
@@ -348,24 +345,6 @@ int statsFor(const Module &m, Stat out[4]) {
       out[3] = {"UPDATED", updated};
       return 4;
     }
-    case Kind::Level: {
-      const qmi8658::Reading m = sensors::motion();
-      if (!m.ok) {
-        out[0] = {"IMU", "NOT ANSWERING"};
-        return 1;
-      }
-      const float g = sqrtf(m.acc[0] * m.acc[0] + m.acc[1] * m.acc[1] + m.acc[2] * m.acc[2]);
-      const bool flat = g > 0 && fabsf(m.acc[2]) / g >= 0.7f;
-      float pitch = 0, roll = 0;
-      sensors::tilt(m, pitch, roll);
-      char tilt[24];
-      snprintf(tilt, sizeof tilt, "%.1f\xC2\xB0", sqrtf(pitch * pitch + roll * roll));
-      out[0] = {"POSE", flat ? "LYING FLAT" : "ON AN EDGE"};
-      out[1] = {"TILT", flat ? tilt : "--"};
-      out[2] = {"OPENS", "LANDSCAPE"};
-      out[3] = {"IMU", "QMI8658A \xC2\xB7 56 Hz"};
-      return 4;
-    }
     case Kind::Recorder: {
       const MemoSummary memos = memoSummary();
       const audio::RecordStatus r = audio::recordStatus();
@@ -517,7 +496,6 @@ class HomeScreen : public ui::Screen {
       case Kind::Clock: ui::nav::push(makeClock()); break;
       case Kind::Podcasts: ui::nav::push(makePodcasts()); break;
       case Kind::Weather: ui::nav::push(makeWeather()); break;
-      case Kind::Level: ui::nav::push(makeLevel()); break;
       case Kind::Recorder: ui::nav::push(makeRecorder()); break;
       case Kind::News: ui::nav::push(makeNews()); break;
 #if INKDECK_AGENT
