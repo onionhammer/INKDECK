@@ -183,7 +183,20 @@ answers, the dialer gives up, or 60 s pass, and the dialer sees how many are rin
 a ring nobody answers, the dialer can **leave a message** instead (up to 60 s): the boards ask
 again for every frame they missed until it's whole (a checksum says so), keep it on the card
 (`SD:/.inkdeck/comms/`, in RAM without one) until played and for a day after, and play it only
-when asked. The screens above show all of this.
+when asked. The screens above show all of this. **Baby monitor** (the engine; its screens come
+later): a board left in a room sends that room's sound to the boards that listen, only when it's
+over a threshold you set (−60 to 0 dBFS, in 3 dB steps), with the half second before it so the
+start of a cry isn't cut, and 2 s more after it quiets, all half a second late. It's started on
+the room's board only, for all of the group or a list of boards; nothing another board sends
+switches its mic on. Every 2 s it says it's still there, with the loudest sound since and its
+battery, and it keeps 2 hours of levels for a listener that opens late. The room stays silent: no
+rings, chirps or calls, except a listener talking back to it alone (its mic pauses meanwhile, so
+that isn't sent back). A listener hears the sound at its volume as it comes (about 0.7 s behind),
+sees QUIET, SOUND (LOUD or SOFT) or NO LINK, the night's events and the chart; NO LINK, when the
+room has gone silent for 20 s, sounds an alarm until you silence it or the link is back, and a
+LOUD sound with the volume turned low chirps once. Calls and rings still play on a listener, the
+monitor carrying on after. Both boards stay on and keep the radio on while it runs, on battery
+too. The list of who may listen isn't encryption: use a group whose secret only those boards have.
 Boards pass each other's packets on (a **mesh**: flooding, up to three relays), also for groups
 they aren't in, unread, and each board knows how the others are reached: over the air with their
 signal, through which relay, or away. A board listens on USB power, or while a Comms screen holds
@@ -205,8 +218,15 @@ through a third board, a conversation of three boards, a board off Wi-Fi, range 
 commands over USB: `!comms`, `!commstest`, `!commsping`, `!commstalk N [board]`, `!commsplay`,
 `!commsring [board]`, `!commsringstop`, `!commsanswer`, `!commsignore`, `!commsjoin`,
 `!commsleave`, `!commsmsg N`, `!commsplaymsg`, `!commsgroup` (a test group without the card),
-`!commschannel`, `!commsrelay`, `!commsresend`, and the test switches `!commsringvanish` and
-`!commsdropmsg N`.
+`!commschannel`, `!commsrelay`, `!commsresend`, the test switches `!commsringvanish` and
+`!commsdropmsg N`, and for the baby monitor `!commsmon [all|boards] [dB]`, `!commsmonstop`,
+`!commsmonthr`, `!commslisten [room]`, `!commslistenstop`, `!commslistenack`, and the test switches
+`!commsmonvanish` and `!commsmontone S dB`. The baby monitor's room costs about 9 KB of internal RAM
+while it monitors (the mic), a listener about 19 KB while the sound plays and none while it's
+quiet; the image grows by about 35 KB for it. Tested 2026-11-23 between two boards in different
+rooms, each as the room and as the listener, with test tones in place of the mic (nobody was
+there to make a sound or to listen): allow-lists, sounds with their pre-roll and hang, NO LINK
+and its alarm, a clean stop, talk back, and a ring and a call to all leaving the room silent.
 
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
@@ -224,7 +244,7 @@ cable can read them, as they can the `.env` values built into the firmware.
 US and metric units, and `INKDECK_AGENT` builds the agent in (`1`, as set) or leaves
 it out (`0`): no AGENT on Home, and HOLD BOOT only raises the player sheet. `INKDECK_TAILNET`
 does the same for the tailnet: `0` saves about 123 KB of flash and 7 KB of internal RAM, and
-`INKDECK_COMMS` for comms (about 126 KB of flash).
+`INKDECK_COMMS` for comms (about 161 KB of flash).
 
 ```ini
 [wifi]

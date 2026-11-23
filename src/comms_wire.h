@@ -1,6 +1,7 @@
 // The comms packet format (docs/comms-protocol.md has it byte by byte), and the two tables that
 // decide whether a packet is new: the seen-cache, which the mesh relays by, and the replay
-// window, which the board trusts by. Conversations and message transfers are in comms_calls.h.
+// window, which the board trusts by. Conversations and message transfers are in comms_calls.h,
+// the baby monitor (type 15's packets) in comms_monitor.h.
 //
 // Plain C++ with no Arduino or ESP-IDF calls, so the self-test (comms::selfTest()) checks it on
 // the board and it builds on a computer too. Not thread-safe: comms.cpp's task owns the tables.
@@ -36,9 +37,12 @@ enum Type : uint8_t {
   kMessage = 12,    // a numbered 20 ms frame of a message (not live: it's sent to be complete)
   kMessageEnd = 13, // a message's frame count and checksum, or that it was dropped
   kMessageAsk = 14, // a board asks for the frames of a message it missed, or has them all
+  kExt = 15,        // the last 4-bit type: the body's byte after sentAt says which (the baby
+                    // monitor's packets, comms_monitor.h; later features add theirs there)
 };
-constexpr uint8_t kLastType = kMessageAsk;  // the types this firmware handles
-// A type this firmware handles. Others (a later version's) still parse, open and are relayed.
+constexpr uint8_t kLastType = kExt;  // the types this firmware handles: all 15 there can be
+// A type this firmware handles. An ext type it doesn't (a later version's) still opens and is
+// relayed, as a later type was before type 15 took the last number.
 inline bool knownType(uint8_t t) { return t >= kPresence && t <= kLastType; }
 
 // The cleartext header. Everything but ttl and hops is authenticated (it's the AES-GCM

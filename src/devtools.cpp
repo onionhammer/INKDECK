@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include "apps/agent_face.h"
 #include "apps/news_edition.h"
@@ -387,6 +388,125 @@ void lineCommand(const String &line) {
     comms::release();
     return;
   }
+  // The baby monitor (comms.h): this board as the room, or listening to one.
+  if (line == "commsmonstop") {
+    comms::monitorStop();
+    Serial.println("commsmonstop: the room stops (its off goes out)");
+    return;
+  }
+  if (line.startsWith("commsmonthr")) {
+    String rest = line.substring(11);
+    rest.trim();
+    if (rest.isEmpty()) {
+      Serial.printf("commsmonthr: %d dBFS (!commsmonthr -36 sets it, in 3 dB steps, -60 to 0)\n",
+                    comms::monitorThreshold());
+      return;
+    }
+    comms::setMonitorThreshold(rest.toInt());
+    delay(50);
+    Serial.printf("commsmonthr: %d dBFS\n", comms::monitorThreshold());
+    return;
+  }
+  if (line.startsWith("commsmontone")) {
+    // "!commsmontone S DB": the room's mic input is a 1 kHz tone peaking at DB dBFS for S s.
+    String rest = line.substring(12);
+    rest.trim();
+    const int space = rest.indexOf(' ');
+    const int seconds = std::max(1, std::min(600, static_cast<int>(rest.toInt())));
+    const int db = space < 0 ? -20 : static_cast<int>(rest.substring(space + 1).toInt());
+    if (!comms::monitor().on) {
+      Serial.println("commsmontone: this board isn't a room (!commsmon first)");
+      return;
+    }
+    comms::monitorTone(seconds * 1000u, db);
+    Serial.printf("commsmontone: a 1 kHz tone at %d dBFS for %d s in place of the mic "
+                  "(threshold %d dBFS)\n",
+                  std::min(0, db), seconds, comms::monitor().thresholdDb);
+    return;
+  }
+  if (line == "commsmonvanish" || line == "commsmonvanish off") {
+    const bool on = line == "commsmonvanish";
+    comms::monitorVanish(on);
+    Serial.printf("commsmonvanish: %s\n", on ? "the room sends nothing from now, no off either "
+                                               "(its listeners see NO LINK after 20 s)"
+                                             : "the room is back on air");
+    return;
+  }
+  if (line == "commsmon" || line.startsWith("commsmon ")) {
+    // "!commsmon [all|ID,ID,...] [DB]": this board monitors its room in the active group, for all
+    // of it or the boards listed (hex ids, as !comms lists them), at DB dBFS (else the one kept).
+    String rest = line.substring(8);
+    rest.trim();
+    std::vector<uint32_t> ids;
+    int db = comms::monitorThreshold();
+    while (!rest.isEmpty()) {
+      const int space = rest.indexOf(' ');
+      String word = space < 0 ? rest : rest.substring(0, space);
+      rest = space < 0 ? String() : rest.substring(space + 1);
+      rest.trim();
+      if (word.startsWith("-") || word == "0") {
+        db = word.toInt();
+      } else if (word != "all") {
+        for (int from = 0; from < static_cast<int>(word.length());) {
+          int comma = word.indexOf(',', from);
+          if (comma < 0) comma = word.length();
+          const uint32_t id = strtoul(word.substring(from, comma).c_str(), nullptr, 16);
+          if (id) ids.push_back(id);
+          from = comma + 1;
+        }
+      }
+    }
+    if (!comms::configured()) {
+      Serial.println("comms: no group (a mesh_group line, an agent_token or !commsgroup)");
+      return;
+    }
+    if (!comms::monitorStart(comms::activeGroup(), ids, db)) {
+      Serial.printf("commsmon: %s\n", comms::status().error.c_str());
+      return;
+    }
+    delay(400);
+    const comms::Monitor m = comms::monitor();
+    Serial.printf("commsmon: monitoring the room in group %d for %s at %d dBFS, mic %s "
+                  "(!comms shows it, !commsmonstop stops it)\n",
+                  comms::activeGroup(),
+                  ids.empty() ? "all"
+                              : (String(static_cast<unsigned>(ids.size())) + " boards").c_str(),
+                  m.thresholdDb, m.micOn ? "on" : m.paused.empty() ? "starting" : m.paused.c_str());
+    return;
+  }
+  if (line == "commslistenstop") {
+    comms::listenStop();
+    Serial.println("commslistenstop: not listening");
+    return;
+  }
+  if (line == "commslistenack") {
+    comms::listenAck();
+    Serial.println("commslistenack: NO LINK's alarm silenced (if it sounded)");
+    return;
+  }
+  if (line == "commslisten" || line.startsWith("commslisten ")) {
+    // "!commslisten [ROOM-ID]": listens to a room on air (the first listed without an id).
+    String rest = line.substring(11);
+    rest.trim();
+    const std::vector<comms::RoomOnAir> rooms = comms::monitorRooms();
+    const uint32_t want = rest.isEmpty() ? 0 : strtoul(rest.c_str(), nullptr, 16);
+    const comms::RoomOnAir *room = nullptr;
+    for (const comms::RoomOnAir &r : rooms) {
+      if (!room && (!want || r.id == want)) room = &r;
+    }
+    if (!room) {
+      Serial.printf("commslisten: no room on air that lets this board in%s (%u listed)\n",
+                    want ? " with that id" : "", static_cast<unsigned>(rooms.size()));
+      return;
+    }
+    if (!comms::listenStart(room->group, room->id)) {
+      Serial.printf("commslisten: %s\n", comms::status().error.c_str());
+      return;
+    }
+    Serial.printf("commslisten: listening to %08lX %s in group %d (!comms shows it)\n",
+                  static_cast<unsigned long>(room->id), room->name.c_str(), room->group);
+    return;
+  }
   if (line == "commsping" || line.startsWith("commstalk")) {
     if (!comms::configured()) {
       Serial.println("comms: no group (a mesh_group line, an agent_token or !commsgroup)");
@@ -720,6 +840,8 @@ void task(void *) {
 
 }  // namespace
 
-void begin() { xTaskCreatePinnedToCore(task, "devtools", 4096, nullptr, 1, nullptr, 1); }
+// 6 KB: at 4 KB, `!comms` with the baby monitor's state and `!commstest` came within about 220
+// bytes of the end (2026-11-23).
+void begin() { xTaskCreatePinnedToCore(task, "devtools", 6144, nullptr, 1, nullptr, 1); }
 
 }  // namespace devtools

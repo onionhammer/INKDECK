@@ -1,12 +1,13 @@
 # Comms protocol
 
 How INKDECK boards talk to each other over the radio (COMMS, issue #66): push-to-talk voice in
-groups, rings, conversations, messages, and relaying for each other as a mesh. The board's side is
-`src/comms.h` and `src/comms.cpp`; the packet format is `src/comms_wire.h`, conversations and the
-message reassembly `src/comms_calls.h`, the keys `src/comms_crypto.h`, the codec `src/adpcm.h`,
-messages on the card `src/comms_store.h`. Keep this file and those in step. Version 1, written
-2026-11-22; rings, conversations and messages added the same day without a new version number
-([Versions](#versions)).
+groups, rings, conversations, messages, the baby monitor, and relaying for each other as a mesh.
+The board's side is `src/comms.h` and `src/comms.cpp`; the packet format is `src/comms_wire.h`,
+conversations and the message reassembly `src/comms_calls.h`, the baby monitor's packets and state
+`src/comms_monitor.h`, the keys `src/comms_crypto.h`, the codec `src/adpcm.h`, messages on the
+card `src/comms_store.h`. Keep this file and those in step. Version 1, written 2026-11-22; rings,
+conversations and messages added the same day, the baby monitor (type 15) on 2026-11-23, all
+without a new version number ([Versions](#versions)).
 
 Nothing else speaks it yet. The link through inkharness (phases 5 and 6 of the issue) will carry
 these same packets, still sealed with the group's key, so a daemon or a hub passes them on
@@ -46,7 +47,8 @@ The header is 20 bytes. A receiver drops a frame that is shorter than 36 bytes o
 250, has another magic, a version it doesn't know (a later version changes the number), a nonzero
 reserved byte, type 0, or sender 0. A type it doesn't know it opens and passes on like any other
 packet ([Taking a packet](#taking-a-packet)), without reading it, so a later type crosses boards
-that don't know it.
+that don't know it; since type 15 took the last number, later types are ext types
+([Type 15](#type-15-extended)), relayed the same way.
 
 **Sealing.** The key is the group's. The 12-byte nonce is sender, boot and seq, 4 bytes each,
 little-endian, as in the header. The associated data is the 20-byte header with its hops/ttl byte
@@ -71,6 +73,7 @@ a new id.
 | `12` | message | a numbered 20 ms frame of a message |
 | `13` | message end | a message's frame count and checksum, or that it was dropped |
 | `14` | message ask | a board asks for the frames of a message it missed, or has them all |
+| `15` | extended | the last 4-bit type: the body's byte after sentAt is a second type ([Type 15](#type-15-extended)): the baby monitor's packets |
 
 ## Bodies
 
@@ -148,6 +151,51 @@ bytes. "I have it all" has span 0.
 A body that ends before its fields do is dropped. Bytes after the fields are ignored, so a later
 version can add fields at the end without a new version number.
 
+### Type 15, extended
+
+The type is 4 bits, and 15 is the last number, so type 15's body says its own type: sentAt (4),
+the **ext type** (1), then the fields below. A board opens and relays an ext type it doesn't know,
+as it does any packet ([Taking a packet](#taking-a-packet)). All six are the baby monitor's
+([Baby monitor](#baby-monitor)). A level is a byte: how many dB the loudest sample of a 20 ms
+frame is below full scale, 0 to 96 (96: silence or quieter), `0xFF` for none. A listener list is
+a count (1, up to 8; `0`: all of the group) and that many board ids (4 each).
+
+| Ext | Name | |
+| --- | --- | --- |
+| `1` | monitor audio | 20 ms of the room's sound, to its listeners |
+| `2` | still here | the room is on: every 2 s |
+| `3` | monitor off | the room stopped |
+| `4` | listening | a listener says it listens to the room, about every 4 s (or has stopped) |
+| `5` | history ask | a listener asks the room for its 2 hours of levels |
+| `6` | history | the room's levels, to the listener that asked |
+
+**Monitor audio** (1): listeners (the list), sound (2: the room's counter, one more each sound),
+frame (2: within the sound, from 0), level (1: this frame's, as the room measured it before
+encoding), predictor (2, signed), step index (1), byte count (1, up to 160), then the IMA ADPCM
+bytes, as a voice frame's. 243 bytes on the air with 8 listeners and a full frame, 211 to all of
+the group. Each frame is sent half a second after it was captured ([the gate](#baby-monitor)).
+
+**Still here** (2): flags (1: `0x01` sending a sound now, `0x02` on USB power, `0x04` the mic is
+off: a talk back plays, or an alarm, the Recorder, music or the agent has it), battery (1:
+percent, `0xFF` none), threshold (1: dB below full scale, 0 to 60), peak (1: the loudest frame
+since the last still-here, a level), on for (4: seconds since it started), bar (2: the 2-minute
+bar now, numbered from the start), bar peak (1: that bar's loudest frame so far, a level), pre-roll
+(1: in 20 ms frames, 25), listeners (the list). Sent every 2 s (plus up to 0.2 s), and at once
+when the threshold changes. 86 bytes on the air with 8 listeners.
+
+**Monitor off** (3): reason (1: `1` stopped, `2` the board is powering off). Sent three times,
+40 ms apart (at once, back to back, for a power-off).
+
+**Listening** (4): room (4: the room's id), flags (1: `0x01` stopped listening). Sent when a board
+starts listening and every 4 s (plus up to 0.5 s) after, and once with `0x01` when it stops.
+
+**History ask** (5): room (4). Sent when a board starts listening and again 2 s apart until the
+history comes (three at most), and again once the link is back after NO LINK.
+
+**History** (6): to (4: the listener that asked), first bar (2), count (1, up to 60), then that
+many levels, the bars first to first + count - 1, the last the bar now. 108 bytes on the air with
+60 bars.
+
 ## Keys
 
 Per group, HKDF-SHA256 (RFC 5869) from the secret: the group line's secret as UTF-8 bytes as the
@@ -183,6 +231,15 @@ Reference values (`!commstest` checks them):
 - In that group, a ring from sender `11223344`, boot 7, seq 2, ttl 3, sentAt 0, to all, ring 9,
   conversation `a1b2c3d4`, rung 4200 ms, is the 54-byte frame
   `c7180300e13e368e44332211070000000200000095184362b8f980d1bcabd37b688b9e0f2160c1a57c8f182d6add0b5f6239176f7ac4`.
+- In that group, a still-here from sender `11223344`, boot 7, seq 3, ttl 3, sentAt 0: flags 3
+  (sending, on USB), no battery, threshold 30, peak 24, on for 600 s, bar 5, bar peak 18,
+  pre-roll 25, for board `55667788` alone (body `000000000203ff1e1858020000050012190188776655`),
+  is the 58-byte frame
+  `c71f0300e13e368e443322110700000003000000e74688b9939c604d7e97b0aa142e8a21bd52a8396506401237bb8bb8155b460b4a4194992ab6`.
+- In that group, monitor audio from sender `11223344`, boot 7, seq 4, ttl 3, sentAt 0: to all,
+  sound 2, frame 9, level 21, predictor -1234, step index 40, the 8 bytes `0102030405060708`
+  (body `00000000010002000900152efb28080102030405060708`), is the 59-byte frame
+  `c71f0300e13e368e443322110700000004000000a8c23f21808172d6dd8b0b0da60caee3a3b1e53cd7201641f9f72080f0d7effe32e380e4eaf1e9`.
 
 ## Taking a packet
 
@@ -206,9 +263,11 @@ In this order:
 7. **Relayed**, if ttl isn't 0 and RELAY FOR OTHERS is on, 1 to 6 ms later, unchanged but for
    hops and ttl, unless it was for this board alone: the first field after sentAt names it (a call,
    pong, heard, ring, ringing, ring end or message ask to this board), or for a message or message
-   end the second (`to`). An answer is never for one board alone: it floods so every board the
-   ring rang stops. A type this board doesn't know is relayed unread. A packet starts with ttl 3:
-   three relays, four hops over the air at most.
+   end the second (`to`); for type 15 the first field after the ext type (a listening packet's or
+   history ask's room, a history's listener), or monitor audio whose list is this board alone. An
+   answer is never for one board alone: it floods so every board the ring rang stops. A type (or
+   ext type) this board doesn't know is relayed unread. A packet starts with ttl 3: three relays,
+   four hops over the air at most.
 
 Every board in range of a sender relays each of its packets once, so with n boards in range the
 air carries a voice packet up to n times. With two boards each relays the other's packets back
@@ -309,6 +368,67 @@ From 5 s into a ring with no answer (or once it's NO ANSWER) the dialer may leav
   dropped on the receiver (66 dropped) complete after 3 asks (84, 14, 2 frames), checksum alike on
   both; 5 s with every 5th dropped, complete after 3 asks; 10 s with none dropped, no ask.
 
+## Baby monitor
+
+A board left in a room (the **room**) sends that room's sound to boards that listen
+(**listeners**), over the radio like the rest, in its group.
+
+- **Started on the room's board only.** No packet starts it, and nothing a listener sends switches
+  a mic on: a listening packet or a history ask only gets an answer from a room that is on. A
+  talk back plays in the room and pauses its mic. It doesn't survive a restart on either side.
+- **The gate.** The room's mic captures all the time. Each 20 ms frame's level is its loudest
+  sample (dBFS), compared with the threshold (-60 to 0 dBFS in 3 dB steps, -30 by default; a
+  board keeps its last in NVS). Every frame is kept half a second (25 frames) and encoded as it
+  comes (IMA ADPCM, voice's 16 kHz); a frame goes out half a second after it was captured, and
+  only if a frame at or over the threshold came within the half second after it or the 2 s
+  before it. So a sound goes out with the half second before it (pre-roll: the start of a cry
+  isn't cut), and on for 2 s after the level drops (hang), all half a second late; two sounds
+  closer than 2.5 s are one. A sound gets the next sound number (they go on across starts, from a
+  random one each boot); its frames are numbered from 0. Nothing goes out while it's quiet but
+  the still-here. The first 200 ms after the mic starts are dropped: its start-up thump (3
+  frames of zeros, then to -39 dBFS over 4 more, measured 2026-11-23) isn't a sound.
+- **Still here** every 2 s while on, with the threshold, the loudest frame since the last one (so
+  a listener's meter moves when nothing is sent), power, the bar now and who may listen; three
+  "off" packets when stopped. The room's presence carries the `0x04` flag while it's on.
+- **History.** The room keeps 60 bars of 2 minutes, the loudest frame of each, numbered from its
+  start, and sends them to a listener that asks; the bar now comes in every still-here, so a
+  listener that opened late has the whole chart within a packet or two.
+- **The room stays silent.** It doesn't ring for rings (it sends no ringing either, so a dialer
+  doesn't count it), doesn't chirp, and doesn't play calls to all of the group or a
+  conversation's; it doesn't join conversations. It plays only a call to it alone (target its
+  id) from a board it lets listen: **talk back**. Its mic stops before that plays and starts
+  again 0.4 s after the speaker has played it out, so the talk back isn't sent back; the
+  still-here's `0x04` says the mic is off meanwhile.
+- **A listener** lists the rooms whose still-here (in the last 20 s) lets it in, and listens to one
+  at a time. It says so to the room every 4 s, and asks for the history. The sound plays as it
+  comes, through a jitter buffer like a call's, at the set volume. **SOUND** while frames come,
+  **QUIET** 0.6 s after the last; a sound is **LOUD** if a frame of it is 12 dB or more over the
+  room's threshold, else **SOFT**; with the volume at 30 or below, a sound turning LOUD chirps
+  once at half volume at least. **NO LINK** when nothing (still-here or audio) has come from the
+  room for 20 s: an alarm (a siren's two notes, at half volume at least) every 2.5 s until the
+  board silences it or the link is back. An "off" ends listening as **STOPPED**, without an alarm.
+- **The delay** from the room's mic to a listener's speaker is the pre-roll (0.5 s), the speaker's
+  buffer (0.2 s, audio.cpp's stream) and a frame: about 0.72 s, computed rather than measured.
+- **Who plays what on a listener.** A call (live or PLAY LAST), a message, this board's own talk
+  (talk back is a call to the room alone) and a ring's trill take the speaker over the monitor's
+  sound; the sound plays on with its next frame after (a chirp holds it off 1 s). Monitor audio
+  isn't a call: it isn't logged, doesn't count as unheard and doesn't raise the call sheet.
+- **What the allow-list is worth.** The packets are sealed with the group's key like every other,
+  so the listener list is an address filter: boards not on it don't list the room and don't play
+  it, but a modified board holding the group's secret could decode every frame. A baby monitor
+  wants a group whose secret only its listeners have (a `mesh_group` line on those boards alone).
+  There are no keys per board.
+- **Tested** (2026-11-23, two boards in different rooms on channel 6, -69 to -74 dBm, each as
+  the room and as the listener, with `!commsmontone` in place of the mic): an allow-list and all
+  of the group; a board not let in lists nothing and plays nothing; a tone over the threshold
+  arrives with its pre-roll and hang (3 s at -20 dBFS: 276 frames, 25 + 150 + 100 + 1), 1.4 to
+  2.2 % of frames lost on the air (9 % in one run just after a restart); under it nothing goes; SOFT and LOUD, and the chirp at volume
+  25; still-heres, the listener shown on the room; the history to a listener 2 minutes late;
+  NO LINK 20 s after the last packet, the alarm, its silencing and the link back; a clean stop;
+  talk back in the room with nothing sent back; a ring and a call to all leaving the room silent;
+  a message played on a listener over the sound. Not tested: by ear, a real call or ring on a
+  listener during the sound, on battery, a power-off's off, more than two boards.
+
 ## Versions
 
 Rings, conversations and messages kept version 1: their packets are new types, and what they add to
@@ -316,13 +436,18 @@ presence and voice comes after the fields a board from before reads, which ignor
 before them drops the new types (its parser refused types it didn't know, so it doesn't relay them
 either); it still hears and plays the newer boards' calls, and theirs plays on them as a call
 outside any conversation. From now on a board relays types it doesn't know, so later types can be
-added the same way.
+added the same way. The baby monitor took type 15, the last 4-bit number, as an extended type
+whose body carries a second type byte: later features add ext types, and a board relays ext types
+it doesn't know. A board from before it relays type 15 unread (it relays types it doesn't know)
+and ignores the room's presence flag.
 
 ## Not built yet
 
 - **`via`**: `air` and `both` both go over the radio; `net` sends nothing, since the inkharness
   link (and the hub, the rendezvous id's use) is a later phase.
-- **The baby monitor** (the room's flag is in presence, unused).
+- **The baby monitor's** ESP-NOW power save (a listener or a room on battery waking in windows
+  instead of keeping its radio on), keys per board (the allow-list is an address filter only), and
+  the monitor over inkharness.
 - **Reachable on battery** (a sleeping board polling), boards on USB holding rings or messages for
   sleeping boards, and inkharness holding them: a board that isn't listening when a ring or a
   message goes gets nothing.

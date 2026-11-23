@@ -54,6 +54,20 @@
 //   !wom [N [MG]]   arm the IMU's wake on motion for N seconds (10) at a threshold of MG
 //               (100 mg, as the picture viewer's nap does) and print each event; then the IMU
 //               goes back to normal
+//   !comms...   comms (with INKDECK_COMMS, comms.h); AGENTS.md's Comms paragraph lists them all.
+//               The baby monitor's:
+//   !commsmon [all|ID,ID,...] [DB]   this board monitors its room in the active group, for all
+//               of it or the boards listed (hex ids, as !comms lists them), at DB dBFS (else the
+//               threshold kept); again while on: starts over with the new list
+//   !commsmonstop   the room stops (its off goes out)
+//   !commsmonthr [DB]   the threshold: shown, or set (3 dB steps, -60 to 0; kept in NVS)
+//   !commsmontone S DB   the room's mic input is a 1 kHz tone peaking at DB dBFS for S seconds
+//               (nobody in the room to make a sound)
+//   !commsmonvanish [off]   the room sends nothing more, no off either, as if out of range (its
+//               listeners see NO LINK after 20 s); "off": back on air
+//   !commslisten [ROOM-ID]   listen to a room on air that lets this board in (without an id, the
+//               first listed); !commslistenstop stops, !commslistenack silences NO LINK's alarm.
+//               !comms shows the room, the rooms on air and the one listened to
 #pragma once
 
 namespace devtools {

@@ -80,6 +80,13 @@ void chirp(bool rising);
 // holds for the trill and plays on.
 void ringChirp();
 void messageChirp();
+// The baby monitor (comms.h): the listener's alarm when the room's link is lost, a siren's two
+// notes twice (about 0.8 s; comms repeats it), and one chirp for a LOUD sound while the volume is
+// low, three rising pips. Like ringChirp(), over music too and ignored while anything records,
+// rings, listens or streams; but at the music volume and never below half, so neither goes
+// unheard at a low volume (as the alarm tone).
+void monitorAlarm();
+void monitorChirp();
 
 // --- Recording: 16 kHz, mono, 16-bit WAV. record() stops playback first. The file is
 // finished (its header's sizes filled in) by stopRecording(), or by stop(), which power-off

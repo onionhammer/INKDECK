@@ -488,7 +488,8 @@ void ringStep() {
 // ---------------------------------------------------------------------------------------------
 // Tones (audio task only): a run of tones and silences, each tone with soft edges and gliding
 // from hz to hzEnd, then enough silence to push them through the DMA buffers before the output
-// goes off again. Returns once they have played. At the music volume: at 0, nothing plays.
+// goes off again. Returns once they have played. At the music volume: at 0, nothing plays. With
+// minVolume, never below it (the baby monitor's alarm and chirp, as the alarm tone).
 
 struct Tone {
   uint16_t ms;
@@ -496,13 +497,16 @@ struct Tone {
   uint16_t hzEnd;  // the glide's end; hz for a steady tone
 };
 
-void tonesNow(const Tone *tones, int count, float level, uint32_t rampMs) {
+void tonesNow(const Tone *tones, int count, float level, uint32_t rampMs, int minVolume = 0) {
   constexpr float kTwoPi = 2 * static_cast<float>(M_PI);
-  if (volume.load() == 0) return;
+  const int vol = volume.load();
+  if (vol == 0 && minVolume == 0) return;
   // Over music that plays, into its output at its rate, which then plays on; else on their own.
   const bool over = tx != nullptr;
   const uint32_t kRate = over ? txRate : 16000;
   if (!over && !outputStart(kRate)) return;
+  const bool raised = minVolume > vol;
+  if (raised) es8311::setVolume(minVolume);
   const uint32_t ramp = std::max<uint32_t>(1, rampMs * kRate / 1000);
   constexpr int kFrames = 256;
   int n = 0;
@@ -537,7 +541,11 @@ void tonesNow(const Tone *tones, int count, float level, uint32_t rampMs) {
     size_t written = 0;
     i2s_channel_write(tx, p.pcm, n * 2 * sizeof(int16_t), &written, portMAX_DELAY);
   }
-  if (!over) outputStop();
+  if (!over) {
+    outputStop();
+  } else if (raised) {
+    es8311::setVolume(vol);  // the music, at its own volume again
+  }
 }
 
 // audio::beep(): one tone.
@@ -571,6 +579,16 @@ constexpr Tone kRingTrill[] = {RING_BURST, {120, 0, 0}, RING_BURST};
 // A comms message that came (audio::messageChirp()): high, low, high.
 constexpr Tone kMessageChirp[] = {{50, 1500, 1500}, {30, 0, 0}, {50, 1125, 1125},
                                   {30, 0, 0}, {80, 1500, 1500}};
+// The baby monitor's NO LINK alarm (audio::monitorAlarm()): hi-lo twice, a siren's two notes at
+// the 2 kHz the small speaker is loudest at and a fourth below, louder than the cues. Repeated by
+// comms every 2.5 s until it's silenced. And a LOUD sound heard with the volume low
+// (audio::monitorChirp()): three quick rising pips. Both at half volume at least.
+constexpr Tone kMonitorAlarm[] = {{160, 2000, 2000}, {40, 0, 0}, {160, 1500, 1500}, {40, 0, 0},
+                                  {160, 2000, 2000}, {40, 0, 0}, {160, 1500, 1500}};
+constexpr Tone kMonitorChirp[] = {{40, 1125, 1125}, {25, 0, 0}, {40, 1500, 1500}, {25, 0, 0},
+                                  {60, 2000, 2000}};
+constexpr float kMonitorAlarmLevel = 0.6f;
+constexpr int kMonitorMinVolume = 50;
 
 // ---------------------------------------------------------------------------------------------
 // WAV playback (audio task only): 16-bit PCM read straight into the output.
@@ -1003,6 +1021,12 @@ void handle(const Command &c) {
       if (recOn || ring.on || strm.on || rec.capture) break;
       if (c.arg == 2) {  // comms's ring: over music too (tonesNow() plays into its output)
         tonesNow(kRingTrill, sizeof kRingTrill / sizeof kRingTrill[0], kCueLevel, kCueRampMs);
+      } else if (c.arg == 4) {  // the baby monitor's: over music too, at half volume at least
+        tonesNow(kMonitorAlarm, sizeof kMonitorAlarm / sizeof kMonitorAlarm[0], kMonitorAlarmLevel,
+                 kRampMs, kMonitorMinVolume);
+      } else if (c.arg == 5) {
+        tonesNow(kMonitorChirp, sizeof kMonitorChirp / sizeof kMonitorChirp[0], kCueLevel,
+                 kCueRampMs, kMonitorMinVolume);
       } else if (state == State::Stopped && c.arg == 3) {
         tonesNow(kMessageChirp, sizeof kMessageChirp / sizeof kMessageChirp[0], kCueLevel,
                  kCueRampMs);
@@ -1330,6 +1354,10 @@ void chirp(bool rising) { send(Cmd::Chirp, rising ? 1 : 0); }
 void ringChirp() { send(Cmd::Chirp, 2); }
 
 void messageChirp() { send(Cmd::Chirp, 3); }
+
+void monitorAlarm() { send(Cmd::Chirp, 4); }
+
+void monitorChirp() { send(Cmd::Chirp, 5); }
 
 void record(const std::string &path) {
   if (!lock) return;

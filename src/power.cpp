@@ -54,13 +54,17 @@ const char *modeName(Mode m) {
 }
 
 // A sync, a download, a copy from a share, a Wi-Fi drive session or a agent exchange that a
-// power-off would cut short.
+// power-off would cut short; or the baby monitor, as its room or a listener, which runs until
+// it's stopped (on battery until the battery gives out: the listeners then see NO LINK).
 bool working() {
   if (weather::syncing() || podcasts::busy() || ota::active() || webdav::active()) return true;
   if (news::busy() || pagefetch::busy()) return true;
   if (filecopy::busy()) return true;
 #if INKDECK_AGENT
   if (agent::busy()) return true;
+#endif
+#if INKDECK_COMMS
+  if (comms::monitorActive()) return true;
 #endif
   const timesync::Phase t = timesync::status().phase;
   return t == timesync::Phase::Connecting || t == timesync::Phase::Asking;

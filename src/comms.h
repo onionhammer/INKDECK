@@ -42,9 +42,15 @@
 // missed) and kept on the card (SD:/.inkdeck/comms/), in RAM without one, until played and for
 // a day after. It never plays by itself.
 //
+// The baby monitor: a board left in a room (the room) sends the sound there to the boards that
+// listen (listeners), only when it's over a threshold, half a second early and 2 s on after. It's
+// started on the room's board only; nothing a listener sends switches a mic on. A listener sees
+// QUIET, SOUND or NO LINK (an alarm), 2 hours of levels and the night's events, and can talk back
+// (a call to the room alone, which is all the room plays). See "Baby monitor" below.
+//
 // When it listens: on USB power, or while something holds it (hold(); the Comms screens and the
-// call sheet), and for 10 s after; never without a group. On battery with nothing holding it the
-// radio is off, and no calls come in.
+// call sheet), and for 10 s after; while this board is a room or listens to one; never without a
+// group. On battery with none of that the radio is off, and no calls come in.
 //
 // Threading: one task ("comms") owns the radio, the keys and the audio paths. Every call below is
 // safe from any task (the UI's included) and returns at once: the ones that act post a command to
@@ -90,8 +96,10 @@ void release();
 
 // Changes whenever anything below that a screen shows has changed: a group, a board's route,
 // signal (in steps of 4 dB), name or flags, the call log, a setting, the state, a ring, a
-// conversation, a message; and while a call, a ring or a message is on, at most 4 times a
-// second, for the meter and the seconds.
+// conversation, a message, the baby monitor's state, listeners, rooms, sounds and events; while
+// a call, a ring or a message is on, at most 4 times a second, for the meter and the seconds; and
+// when the room's mic meter or a listener's level moves a segment (3 dB), at most 4 times a
+// second. Seconds counting up (on for, heard ago, NO LINK for) don't change it: poll for them.
 uint32_t generation();
 
 // --- Groups --------------------------------------------------------------------------------
@@ -131,7 +139,7 @@ enum class Route : uint8_t {
 // Flags a board sends with its presence.
 constexpr uint8_t kFlagUsb = 0x01;    // on USB power: it listens all the time
 constexpr uint8_t kFlagRelay = 0x02;  // it relays for others
-constexpr uint8_t kFlagRoom = 0x04;   // monitoring its room (the baby monitor, later)
+constexpr uint8_t kFlagRoom = 0x04;   // monitoring its room (the baby monitor's room)
 
 struct Board {
   uint32_t id = 0;
@@ -382,6 +390,201 @@ std::vector<Message> messages(int group = -1);  // newest first
 // (status().error) if there's no such message, or the board is busy as for PLAY LAST.
 bool playMessage(uint32_t id);
 
+// --- Baby monitor --------------------------------------------------------------------------------
+//
+// The room: monitorStart() on the board left in the room, and only there (no packet starts it).
+// Its mic captures from then on; each 20 ms frame's level (its loudest sample, dBFS) is compared
+// with the threshold. A frame over it starts a sound: the half second before it goes out first
+// (pre-roll), then the sound, and 2 s more after the level drops (hang), each frame half a second
+// after it was captured, as voice's IMA ADPCM frames, to the listeners it allows. Every 2 s a
+// still-here says it's on (its threshold, the loudest frame since the last one, its power, who
+// may listen); monitorStop() sends a clear "off". The room stays silent: it doesn't ring, chirp
+// or play calls to all or a conversation, and refuses talkStart(), ringStart(), messageStart(),
+// playLast() and playMessage(). It plays only a call to it alone from a listener it allows (talk
+// back): the mic pauses for it and for 0.4 s after, then picks up by itself, and so for an alarm,
+// the Recorder, music or the agent taking the speaker or the mic. The first 200 ms after each
+// start of the mic are dropped (its start-up thump). Nothing survives a restart.
+//
+// A listener: monitorRooms() lists the rooms on air in its groups that let it in; listenStart()
+// listens to one (one at a time). The room's sound plays through the stream path at the set
+// volume as it comes; a call or a ring plays over it (the monitor pauses and plays on after),
+// and so does this board's own talk (talkStart() to the room: talk back). A LOUD sound
+// (kLoudMarginDb over the threshold) with the volume at kLowVolume or below chirps once, loud
+// enough to hear.
+// No still-here or audio for kNoLinkMs: NO LINK, and an alarm that repeats until listenAck() or
+// the link is back. A clean off from the room ends listening as STOPPED, without an alarm.
+// Monitor audio isn't a call: status().incoming doesn't change for it, calls() doesn't list it,
+// and nothing counts as unheard.
+//
+// While this board is a room or listens, the radio stays on and the board stays awake, on battery
+// too (monitorActive(): power.cpp's idle power-off waits for it; it doesn't nap either, since the
+// radio is held). A power-off (PWR) sends the room's off, or the listener's "stopped", first.
+//
+// Who may listen is an address filter only: the packets are under the group's key, so any board
+// holding the group's secret could decode them. A monitor wants a group whose secret only the
+// listeners have (docs/comms-protocol.md).
+
+constexpr int kMaxListeners = 8;      // a room's allow-list; an empty list: all of the group
+constexpr int kMonitorMinDb = -60;    // the threshold, in kMonitorStepDb steps: 20 meter segments
+constexpr int kMonitorMaxDb = 0;
+constexpr int kMonitorStepDb = 3;
+constexpr int kMonitorDefaultDb = -30;
+constexpr int kLoudMarginDb = 12;     // a sound this far over the threshold is LOUD, else SOFT
+constexpr int kLowVolume = 30;        // at or below this volume a LOUD sound chirps
+constexpr uint32_t kPreRollMs = 500;  // sent before the first frame over the threshold
+constexpr uint32_t kHangMs = 2000;    // sent on after the last
+constexpr uint32_t kStillHereMs = 2000;
+constexpr uint32_t kNoLinkMs = 20000;  // nothing from the room this long: NO LINK
+constexpr int kHistoryBars = 60;       // 2 hours of
+constexpr uint32_t kHistoryBarMs = 120000;  // 2-minute bars, the loudest frame of each
+constexpr int8_t kNoBar = -128;        // a bar with no level: before the start, the mic off
+
+// The room's view of a board that may listen.
+struct MonitorListener {
+  uint32_t id = 0;
+  std::string name;   // "" for a board not heard from yet
+  bool listening = false;  // it said so in the last 13 s
+  bool ever = false;       // it has listened since the start
+  uint32_t heardAgoS = 0;  // its last "listening" (when ever)
+  Route route = Route::Away;  // how it's reached, as boards() has it
+  int hops = 0;
+  int rssi = 0;
+};
+
+// A sound the room sent.
+struct MonitorSound {
+  time_t at = 0;        // its first frame (the pre-roll's), UTC; 0 while the clock isn't set
+  uint32_t agoS = 0;
+  uint32_t ms = 0;      // pre-roll and hang included
+  float peakDb = -96;
+  bool loud = false;    // kLoudMarginDb over the threshold
+  int listeners = 0;    // boards listening while it went
+  bool live = false;    // going now
+};
+
+struct Monitor {
+  bool on = false;
+  int group = 0;
+  time_t since = 0;    // UTC; 0 while the clock isn't set
+  uint32_t ms = 0;     // on for
+  int thresholdDb = kMonitorDefaultDb;
+  float levelDb = -96;  // the mic now: the loudest frame of the last 200 ms
+  bool sending = false;
+  bool micOn = false;
+  std::string paused;   // why the mic is off now: TALK BACK, AN ALARM IS RINGING, MUSIC IS
+                        // PLAYING, THE RECORDER IS ON, THE AGENT IS LISTENING (or SPEAKING),
+                        // STARTING, THE MIC WON'T START; "" while it's on
+  bool talkBack = false;  // a listener's talk back plays here now
+  bool toAll = true;      // all of the group may listen
+  std::vector<MonitorListener> listeners;  // the boards allowed; to all: those that listened
+  int listeningNow = 0;
+  std::vector<MonitorSound> sent;  // newest first, the last 32
+  std::vector<int8_t> bars;        // kHistoryBars, oldest first, the last the bar now: dBFS or
+                                   // kNoBar
+  uint32_t framesSent = 0, sounds = 0, stillHeres = 0, histories = 0, talkBacks = 0;
+  uint32_t count = 0;     // changes each time it starts
+  bool vanished = false;  // monitorVanish(): nothing goes out
+};
+Monitor monitor();
+// Starts this board as the room in a group, for all of it (listeners empty) or the boards
+// listed, at thresholdDb (snapped to kMonitorStepDb, kept in NVS). Again while on: starts over
+// with the new list. False (status().error) if it can't: no such group, net only, too many
+// listeners, listening to a room, talking or recording a message, the Recorder or an alarm.
+// The mic opens in the comms task; monitor().paused says if it won't.
+bool monitorStart(int group, const std::vector<uint32_t> &listeners, int thresholdDb);
+void monitorStop();     // the off goes out; the mic closes
+int monitorThreshold();  // NVS, kMonitorDefaultDb at first
+void setMonitorThreshold(int db);  // snapped and kept; a room that's on uses it at once
+
+// A room on air that lets this board in.
+struct RoomOnAir {
+  int group = 0;
+  uint32_t id = 0;
+  std::string name;
+  uint32_t onS = 0;      // on for, as it says
+  int thresholdDb = kMonitorDefaultDb;
+  bool sending = false;
+  bool micOn = true;
+  int battery = -1;      // percent, -1 none
+  bool usb = false;
+  bool toAll = true;     // all of the group may listen (else a list with this board)
+  uint32_t heardAgoS = 0;
+  Route route = Route::Away;
+  int hops = 0;
+  int rssi = 0;
+  bool listened = false;  // this board listens to it now
+};
+// Rooms heard in the last kNoLinkMs that let this board in, by group and signal.
+std::vector<RoomOnAir> monitorRooms();
+
+enum class Link : uint8_t {
+  Off,      // not listening
+  Quiet,    // the room is there, nothing over its threshold
+  Sound,    // its sound comes
+  NoLink,   // nothing from it for kNoLinkMs (the alarm sounds until listenAck())
+  Stopped,  // it said it stopped: listening is over (no alarm)
+};
+
+// An event of the night, as the listener saw it.
+struct MonitorEvent {
+  bool noLink = false;  // else a sound
+  time_t at = 0;        // its start, UTC; 0 while the clock isn't set
+  uint32_t agoS = 0;
+  uint32_t ms = 0;      // so far, while live
+  bool loud = false;    // a sound: LOUD, else SOFT
+  float peakDb = -96;
+  bool live = false;
+};
+
+struct Listen {
+  Link link = Link::Off;
+  bool on = false;      // Quiet, Sound or NoLink
+  int group = 0;
+  uint32_t room = 0;
+  std::string roomName;
+  uint32_t linkMs = 0;  // in this state for (NO LINK: since the last packet from the room)
+  uint32_t ms = 0;      // listening for
+  time_t since = 0;
+  bool heardSound = false;   // a sound since it started
+  uint32_t lastSoundAgoS = 0;  // the last one's end (now, while SOUND)
+  bool lastSoundLoud = false;
+  float levelDb = -96;  // SOUND: what plays (200 ms); else the room's loudest since its last
+                        // still-here (every 2 s)
+  int thresholdDb = kMonitorDefaultDb;
+  bool playing = false; // the room's sound comes out of the speaker now
+  // The room.
+  Route route = Route::Away;
+  int hops = 0;
+  int rssi = 0;
+  uint32_t heardAgoMs = 0;
+  int roomBattery = -1;  // percent, -1 none
+  bool roomUsb = false;
+  bool roomMicOn = true;  // off: a talk back plays there, or something else took its mic
+  uint32_t delayMs = 0;   // from the room's mic to this speaker: its pre-roll, the speaker's 200
+                          // ms buffer and a frame (computed)
+  std::vector<int8_t> bars;  // as Monitor::bars, from the room
+  std::vector<MonitorEvent> events;  // newest first: sounds and NO LINKs since it started
+  bool alarm = false;    // NO LINK's alarm sounds
+  bool roomPoweredOff = false;  // Stopped: the room powered off (else it was stopped)
+  // This board, for LASTS: its battery, and how fast it has gone down since listening began
+  // (measured after 15 minutes and 1 %; on USB none).
+  int battery = -1;
+  bool onUsb = false;
+  float drainPctPerHour = -1;  // -1: not known yet
+  int lastsMin = -1;           // battery / drain; -1 on USB or not known yet
+  uint32_t frames = 0, lost = 0, late = 0, histories = 0;
+  uint32_t count = 0;  // changes each time listening starts
+};
+Listen listenState();
+// Listens to a room of monitorRooms() (another one stops first). False (status().error) if
+// there's no such room on air, it doesn't let this board in, or this board is a room.
+bool listenStart(int group, uint32_t room);
+void listenStop();   // the room hears this board stopped; listenState() goes back to Off
+void listenAck();    // NO LINK's alarm stops (the state stays until the link is back)
+
+// This board is a room or listens to one: it mustn't power off by itself (power.cpp).
+bool monitorActive();
+
 // --- Settings (NVS) ----------------------------------------------------------------------------
 
 bool relayForOthers();  // on by default
@@ -411,12 +614,13 @@ struct Pong {
 };
 std::vector<Pong> pongs();  // answers to the last ping, in the order they came
 
-// Groups, boards, state, channel, conversations, rings, messages and counters: sent, received,
-// dropped by reason, relayed.
+// Groups, boards, state, channel, conversations, rings, messages, the baby monitor and counters:
+// sent, received, dropped by reason, relayed.
 void dump(Print &out);
 // A test of the parts that need no radio: HKDF and AES-GCM, the replay window, ADPCM, the
 // packet format (the new types too), the seen-cache, a message's reassembly with frames lost and
-// doubled, and conversations on a made-up clock. Prints PASS or FAIL a check; true if all passed.
+// doubled, conversations on a made-up clock, and the baby monitor's packets, gate, history and
+// listener on one. Prints PASS or FAIL a check; true if all passed.
 bool selfTest(Print &out);
 
 // Dev overrides (devtools.cpp's !commsgroup and !commschannel), kept in NVS: a test group from a
@@ -433,6 +637,11 @@ void resend(bool firstVoice);
 // dropped as if lost (0: none), so the asking again shows.
 void ringVanish();
 void dropMessageFrames(int nth);
+// Testing the monitor (!commsmonvanish, !commsmontone): the room sends nothing more, no off
+// either, as if it had gone out of range (false: it's back); and for ms, the room's mic input is
+// a 1 kHz tone peaking at db dBFS instead of the mic (nobody is in the room to make a sound).
+void monitorVanish(bool on);
+void monitorTone(uint32_t ms, int db);
 
 // The board is powering off: the radio's ESP-NOW side stops now, for good (power.cpp, before
 // Wi-Fi goes).
