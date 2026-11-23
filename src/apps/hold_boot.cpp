@@ -24,14 +24,14 @@ namespace apps {
 namespace {
 
 #if INKDECK_AGENT || INKDECK_COMMS
-// What the last hold's edge chose: the agent, the boards (the Comms screens and the call sheet
-// say so in their talkTo()), or neither (music or a podcast playing, or talking not allowed).
+// What the last hold's edge chose: the agent, a message to the boards (the dialer's ringing sheet
+// says so in its talkTo()), or neither (music or a podcast playing, or talking not allowed).
 // key() follows it, so the two can't disagree if playback ends in between.
 enum class Hold : uint8_t { None, Agent, Comms };
 std::atomic<Hold> holdTalks{Hold::None};
 
 // HOLD BOOT's two ends, from the input timer: straight to the agent's task or comms', so the mic
-// opens on time even while the panel is refreshing. Over the Comms screens the boards come
+// opens on time even while the panel is refreshing. Over the ringing sheet the message comes
 // first; elsewhere playback does: while it plays, HOLD BOOT is the player's. The release always
 // goes (a stray one does nothing).
 void edge(bool down) {
@@ -55,7 +55,7 @@ void edge(bool down) {
 #endif
   holdTalks = hold;
 #if INKDECK_COMMS
-  if (hold == Hold::Comms) commsTalk(to);  // or a message, or an answer (the comms sheets)
+  if (hold == Hold::Comms) commsTalk(to);  // the message
 #endif
 #if INKDECK_AGENT
   if (hold == Hold::Agent) agent::talkStart();  // with no session, opens one
@@ -64,8 +64,8 @@ void edge(bool down) {
 #endif
 
 // HOLD BOOT in the UI task, after edge(): the agent sheet if the hold talks to the agent (unless
-// it is on top already); nothing more for the boards (the screen on top shows the call);
-// otherwise the player sheet.
+// it is on top already); nothing more for a message (the ringing sheet shows it); otherwise the
+// player sheet.
 void key(bool held) {
   if (!held) return;  // the release went to the agent or comms already; the navigator redraws
 #if INKDECK_COMMS

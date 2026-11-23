@@ -54,6 +54,9 @@
 //   !wom [N [MG]]   arm the IMU's wake on motion for N seconds (10) at a threshold of MG
 //               (100 mg, as the picture viewer's nap does) and print each event; then the IMU
 //               goes back to normal
+//   !quiet [off]   testing next to someone: 30 dB less at the DAC for every sound, the ones that
+//               play at a minimum volume included (alarms, comms's LOST alarm and chirps). RAM
+//               only, off at boot; the volume itself is unchanged
 //   !comms...   comms (with INKDECK_COMMS, comms.h); AGENTS.md's Comms paragraph lists them all.
 //               The mic's:
 //   !commsmic [all|ID] [DB]   this board's mic on in the active group, to all of it or one board

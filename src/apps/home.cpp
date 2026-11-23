@@ -93,7 +93,7 @@ constexpr Module kModules[] = {
      "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather},
 #if INKDECK_COMMS
     {"COMMS", "RF",
-     "Push-to-talk with the other boards in your groups: board to board, no router.",
+     "Open mics with the other boards in your groups: board to board, no router.",
      "ESP-NOW \xC2\xB7 ES8311", Kind::Comms},
 #endif
     {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
@@ -423,14 +423,8 @@ int statsFor(const Module &m, Stat out[4]) {
                                    : commsui::boardName(c.fromName, c.from)) +
                            dot + commsui::whenText(c.at, c.agoS)};
       }
-      const comms::Status st = comms::status();
-      std::string state = commsui::stateWord(st.state);
-      if (st.state == comms::State::Hearing) {
-        state += " " + commsui::boardName(st.peerName, st.peer);
-      } else if (st.state == comms::State::Off && !pmic::status().vbus) {
-        state += dot + "ON BATTERY";  // it listens only while a Comms screen is up
-      }
-      out[3] = {"STATE", state};
+      // The mics on: this board's, the others', a LOST one.
+      out[3] = {"MICS", commsui::micsGlance()};
       return 4;
     }
 #endif
@@ -534,14 +528,13 @@ class HomeScreen : public ui::Screen {
     drawnAgent_ = sig;
 #endif
 #if INKDECK_COMMS
-    // The COMMS preview: calls, the state, who is reached; its row's "1 NEW" wherever the cursor.
-    const uint32_t cg = comms::generation();
-    if (cg != drawnComms_) {
-      const int unheard = commsUnheard();
-      changed |= kind == Kind::Comms || unheard != drawnCommsNew_;
-      drawnCommsNew_ = unheard;
-    }
-    drawnComms_ = cg;
+    // The COMMS preview when it shows, and its row's "1 NEW" wherever the cursor: redrawn only
+    // when what they say changes (comms::generation() changes several times a second while a
+    // mic is on).
+    const int unheard = commsUnheard();
+    changed |= unheard != drawnCommsNew_;
+    drawnCommsNew_ = unheard;
+    if (kind == Kind::Comms) changed |= commsPreview() != drawnCommsPreview_;
 #endif
     return changed;
   }
@@ -549,6 +542,10 @@ class HomeScreen : public ui::Screen {
   void draw(ui::Canvas &c, const Rect &body) override {
     drawnGeneration_ = audio::status().generation;
     drawnWeather_ = weather::status().phase;
+#if INKDECK_COMMS
+    drawnCommsNew_ = commsUnheard();
+    drawnCommsPreview_ = kModules[cursor_.cursor()].kind == Kind::Comms ? commsPreview() : "";
+#endif
     Rect r = body;
     const Rect list = r.takeBottom(kModuleCount * ui::kRowH);
     const Rect header = r.takeBottom(ui::kSectionH);
@@ -686,7 +683,21 @@ class HomeScreen : public ui::Screen {
   uint32_t drawnAgent_ = 0;
 #endif
 #if INKDECK_COMMS
-  uint32_t drawnComms_ = 0;
+  // What COMMS's preview says, as drawn.
+  static std::string commsPreview() {
+    Stat stats[4];
+    const int n = statsFor(kModules[commsIndex()], stats);
+    std::string k;
+    for (int i = 0; i < n; ++i) k += stats[i].key + "=" + stats[i].value + "\n";
+    return k;
+  }
+  static int commsIndex() {
+    for (int i = 0; i < kModuleCount; ++i) {
+      if (kModules[i].kind == Kind::Comms) return i;
+    }
+    return 0;
+  }
+  std::string drawnCommsPreview_;
   int drawnCommsNew_ = 0;
 #endif
 };

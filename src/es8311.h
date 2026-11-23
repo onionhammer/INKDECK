@@ -18,6 +18,10 @@ void powerDown();
 
 // 0..100, mapped linearly in dB to -50..0 dB (0.5 dB steps). 0 = silence. Never adds gain.
 void setVolume(int volume);
+// Testing only (devtools' !quiet): 30 dB less at the DAC under every volume set from now on, so
+// every sound, the ones played at a minimum volume included (an alarm, comms's LOST alarm and
+// chirps), comes out quieter. Off at boot; RAM only.
+void setQuiet(bool on);
 
 void mute(bool muted);
 

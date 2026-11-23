@@ -20,9 +20,12 @@ constexpr int kPadX = 14;  // side padding of chrome bands and list rows
 constexpr int kRowH = 34;  // single-line list row
 constexpr int kRowTallH = 48;  // two-line list row
 
-// --- Status bar: inverted module tag, context text, then [▶/‖] [?n] [bubble n] [WIFI] [temp]
-// battery % and clock.
+// --- Status bar: inverted module tag, context text, then [▶/‖] [?n] [bubble n] [MIC] [WIFI]
+// [temp] battery % and clock.
 enum class Playback : uint8_t { None, Playing, Paused };
+// This board's comms mic (issue #66): on (an inverted MIC), or on but paused while something else
+// has the mic for now, the agent listening (an outlined MIC).
+enum class MicMark : uint8_t { None, On, Paused };
 struct StatusInfo {
   std::string tag;      // "01 READER"
   std::string context;  // "~/home", a path, a book title
@@ -36,6 +39,7 @@ struct StatusInfo {
   int asks = 0;  // agent questions waiting: an inverted ?n after the ▶ (issue #52)
   int conversation = 0;  // boards in a conversation this board isn't in: an inverted speech
                          // bubble with the count after the ?n (issue #66)
+  MicMark mic = MicMark::None;  // after the bubble
 };
 void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info);
 int drawBattery(Canvas &c, int x, int centerY, int percent);  // returns its width
@@ -45,6 +49,10 @@ int drawPlaybackMark(Canvas &c, int x, int centerY, Playback playback);
 // its width (0 for a count of 0).
 int drawConversationMark(Canvas &c, int x, int centerY, int count);
 int conversationMarkWidth(int count);
+// The MIC mark, 20 px tall, left edge at x, in `color` (kPaper on ink); returns its width (0 for
+// None).
+int drawMicMark(Canvas &c, int x, int centerY, MicMark mark, uint16_t color = kInk);
+int micMarkWidth(MicMark mark);
 
 // --- Section header: "// LABEL" on the left, a count or address on the right, rule below.
 struct SectionOptions {

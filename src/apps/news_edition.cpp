@@ -490,6 +490,10 @@ void drawStory(Canvas &c, const Card &card, const Clock &k) {
 }
 
 // The foot: the frog, the cycle, the next fetch, the way back.
+// Live on USB with the comms mic on (it stays on there; issue #66): the foot's band says MIC ON.
+// Set by the face before it draws.
+bool micShown = false;
+
 void drawFoot(Canvas &c, const Card &card, const Clock &k) {
   using namespace ui;
   const int top = kStoryBottom;
@@ -538,7 +542,7 @@ void drawFoot(Canvas &c, const Card &card, const Clock &k) {
   y += kRowH + kGap;
 
   std::string band;
-  if (k.mode == Mode::Usb) band = "LIVE" + dot() + "USB";
+  if (k.mode == Mode::Usb) band = (micShown ? "MIC ON" : "LIVE") + dot() + "USB";
   if (k.mode == Mode::Stopped && k.battery >= 0) {
     band = "BATTERY " + std::to_string(k.battery) + "%";
   }
@@ -592,6 +596,8 @@ class FaceScreen : public OffFaceScreen {
       // brings something.
       const uint32_t gen = news::generation();
       const bool minute = minuteStart(now) != minuteStart(clock_.now);
+      const bool mic = ui::nav::micMark() != ui::MicMark::None;
+      if (mic != micShown) return true;  // the band: MIC ON or LIVE
       if (!minute && gen == gen_) return false;
       Card next = card_;
       if (card_.kind != Kind::Story && gen != gen_) {
@@ -628,6 +634,7 @@ class FaceScreen : public OffFaceScreen {
   }
 
   void draw(Canvas &c, const Rect &) override {
+    micShown = usb_ && ui::nav::micMark() != ui::MicMark::None;
     drawFace(c, clock_, card_);
     drawn();
   }

@@ -18,6 +18,7 @@
 #include "board_pins.h"
 #include "comms.h"
 #include "epub.h"
+#include "es8311.h"
 #include "features.h"
 #include "flashfs.h"
 #include "forecast.h"
@@ -576,6 +577,15 @@ void lineCommand(const String &line) {
     return;
   }
 #endif
+  if (line == "quiet" || line == "quiet off") {
+    // Testing only: 30 dB less at the DAC for every sound, minimum-volume ones included.
+    const bool on = line == "quiet";
+    es8311::setQuiet(on);
+    audio::changeVolume(0);  // set again now if the codec is on
+    Serial.printf("quiet: %s\n", on ? "on, 30 dB less for every sound until !quiet off or a reset"
+                                     : "off");
+    return;
+  }
   if (line == "sdtest") {
     // Writes 64 KB of a pattern from internal RAM, from PSRAM and from flash, reads each back.
     constexpr size_t kSize = 64 * 1024;

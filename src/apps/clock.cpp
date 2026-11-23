@@ -566,8 +566,10 @@ void drawFace(ui::Canvas &c, const Rect &body, const Face &f) {
 
 // A whole "off" frame, chrome included: the standby face is drawn with no screen running it,
 // and the desk face mirrors it.
+// The desk face passes the mic's mark (it stays on there: comms, issue #66); standby's is drawn
+// on the way to a power-off, which switches the mic off.
 void drawOffFace(ui::Canvas &c, const Face &f, const std::string &context, const ui::Hint &hint,
-                 bool wifi = false) {
+                 bool wifi = false, ui::MicMark mic = ui::MicMark::None) {
   Rect r{0, 0, c.width(), c.height()};
   ui::StatusInfo info;
   info.tag = moduleTag("CLOCK");
@@ -575,6 +577,7 @@ void drawOffFace(ui::Canvas &c, const Face &f, const std::string &context, const
   info.battery = f.battery;
   info.usb = f.usb;
   info.wifi = wifi;
+  info.mic = mic;
   ui::drawStatusBar(c, r.takeTop(ui::kStatusBarH), info);
   ui::drawHintBar(c, r.takeBottom(ui::kHintBarH), &hint, 1);
   drawFace(c, r, f);
@@ -894,17 +897,22 @@ class DeskScreen : public ui::Screen {
       sleepNow();
       return false;
     }
-    return minuteKey() != drawnMinute_;
+    return minuteKey() != drawnMinute_ || ui::nav::micMark() != drawnMic_;
   }
   void draw(ui::Canvas &c, const Rect &) override {
     drawnMinute_ = minuteKey();
+    drawnMic_ = ui::nav::micMark();
     Face f = liveFace(-1);
     addStrip(f);
-    drawOffFace(c, f, deskContext(f), {"ANY KEY", "WAKE"}, wlan::radioOn());
+    // The comms mic stays on here: the status bar's MIC, and MIC ON in words after ON USB.
+    std::string context = deskContext(f);
+    if (drawnMic_ != ui::MicMark::None) context.insert(10, "MIC ON \xC2\xB7 ");
+    drawOffFace(c, f, context, {"ANY KEY", "WAKE"}, wlan::radioOn(), drawnMic_);
   }
 
  private:
   long drawnMinute_ = -2;
+  ui::MicMark drawnMic_ = ui::MicMark::None;  // the comms mic's mark, as drawn
 };
 
 // --- Standby --------------------------------------------------------------------------------

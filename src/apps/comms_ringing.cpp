@@ -1,9 +1,10 @@
-// The dialer's ringing sheet (apps/comms_ui.h): ● RING on the talk screen raises it over that
-// screen while the ring goes. RINGING with the seconds and how many boards ring, a bar to the
-// 60 s; from 5 s HOLD BOOT records a message instead (RECORDING, the meter), letting go sends it
-// (SENT, how many have it whole, then it closes); NO ANSWER at 60 s stays up for a message or
-// ● RING AGAIN. BOOT gives up (or closes). When someone answers it closes, and the talk screen
-// shows the conversation.
+// The dialer's ringing sheet (apps/comms_ui.h): RING in the talk screen's menu raises it over
+// that screen while the ring goes. RINGING with the seconds and how many boards ring, a bar to
+// the 60 s; from 5 s HOLD BOOT records a message instead (RECORDING, the meter), letting go sends
+// it (SENT, how many have it whole, then it closes); NO ANSWER at 60 s stays up for a message or
+// ● RING AGAIN. BOOT gives up (or closes). When someone answers it becomes the call sheet for the
+// conversation, with ● MIC ON: the answer doesn't switch this board's mic on (no packet does; the
+// dialer may have walked away).
 #include "features.h"
 
 #if INKDECK_COMMS  // the whole file (features.h)
@@ -100,10 +101,13 @@ class RingingSheet : public ui::Screen {
     load();
     const uint32_t now = millis();
     switch (state()) {
-      case comms::DialState::Answered:
+      case comms::DialState::Answered: {
+        const uint32_t by = dial_.answeredBy;
         comms::ringStop();  // dial() back to None; the conversation is on
-        ui::nav::pop();     // the talk screen shows it
+        ui::nav::replace(makeConversationCallSheet(group_, by, target_ == 0, "ANSWERED BY",
+                                                   "\xE2\x97\x8F MIC ON TO TALK"));
         return false;
+      }
       case comms::DialState::Sent:
         if (!sentMs_) sentMs_ = now;
         if (now - sentMs_ > kSentShowMs && input::idleMs() > kSentShowMs) {

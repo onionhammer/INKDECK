@@ -2,49 +2,73 @@
 // with INKDECK_COMMS (features.h). Named comms_ui.h, not comms.h, so it can't shadow the engine's
 // header for the files in apps/ (AGENTS.md, gotcha 8).
 //
+// The mic: this board's mic is on or off. ● on the talk screen switches it (to the row selected
+// in TALK TO: all of the group, or one board); it stays on after BOOT, on every screen, until ●
+// again, a power-off or a restart. While it's on, the status bar shows an inverted MIC on every
+// screen (outlined while something else has the mic for now: the agent listening), and so do the
+// screens that draw their own (comms_sheet.cpp has the list).
+//
 // The talk screen: one group at a time. A band of the groups (the one on screen in a pill, a
-// boxed count on a group with calls, missed rings or messages not heard, its via on the right),
-// then CHANNEL (the state in large type: QUIET, MIC ON, HEARING, OFF, or CONVERSATION while the
-// group has one, a line or two under it, the 20-segment meter, a small map of the boards
-// reached), TALK TO (ALL OF the group, then its boards: how each is reached) and HEARD (the
-// group's calls, rings and messages, newest first).
-//   ▲▼ move in TALK TO   ● ring the row selected (JOIN the group's conversation, or LEAVE the one
-//   this board is in)   HOLD ● menu   HOLD BOOT talk to the row selected (to the conversation
-//   this board is in)   BOOT back (STOP while PLAY LAST or a message plays)
+// boxed count on a group with calls, missed rings, messages or LOSTs not seen, its via on the
+// right), then CHANNEL (the state in large type: QUIET, MIC ON inverted, HEARING, LOST inverted,
+// OFF, two lines under it, the 20-segment meter: this board's mic with its threshold's ▲ while
+// it's on, else what plays; a small map of the boards reached), TALK TO (ALL OF the group, then
+// its boards: how each is reached, or its mic: MIC ON 12 MIN · QUIET) and HEARD (one row a mic
+// session, rings and messages, newest first).
+//   ▲▼ move in TALK TO   ● mic on (to the row selected) / off   HOLD ● menu   BOOT back (STOP
+//   while PLAY LAST or a message plays; the mic stays as it is)
 // It holds the radio while it exists (comms::hold()), so calls come in on battery too, and the
-// group's calls count as heard while it shows them.
+// group's calls count as heard while it shows them. It redraws only when what it shows changes:
+// a meter at most once a second while sound goes or comes, nothing while open mics are quiet
+// (lengths go in whole minutes then, all turning over with the status bar's clock).
 //
-// The menu (HOLD ●): PLAY LAST, MESSAGES, RELAY FOR OTHERS, CALL CHIRP, GROUPS. The Messages sheet
-// (MESSAGES): the group's messages, ● plays one. The Groups sheet (GROUPS): a row a group, ✓ on
-// the one on screen;
-//   ▲▼ move   ● switch to it   HOLD ● its via (AIR+NET → AIR → NET)   BOOT close
+// The menu (HOLD ●): KITCHEN'S MIC (when the row selected is a board with its mic on: the mic
+// screen), RING the row selected (the ringing sheet), LEAVE or JOIN (while the group has a
+// conversation), MIC LEVEL (the threshold's sheet), PLAY LAST, MESSAGES (the Messages sheet: ●
+// plays one), RELAY FOR OTHERS, CALL CHIRP, GROUPS (the Groups sheet: a row a group, ✓ on the one
+// on screen;
+//   ▲▼ move   ● switch to it   HOLD ● its via (AIR+NET → AIR → NET)   BOOT close).
 //
-// The ringing sheet (comms_ringing.cpp): ● RING raises it over the talk screen while the ring
-// goes: RINGING with the seconds and how many boards ring; from 5 s HOLD BOOT leaves a message
-// instead; NO ANSWER at 60 s (● rings again); BOOT gives up. It closes when someone answers.
+// The mic screen (comms_mics.cpp): one board's open mic, the long-open case (a room): QUIET,
+// SOUND or LOST and for how long, its level against its threshold, two hours of it as a chart,
+// its power and how it's reached, its sounds and LOSTs newest first.
+//   ▲▼ volume   ● this board's mic on (to that board) / off   BOOT back
+// The MIC LEVEL sheet (comms_mics.cpp): this board's mic meter with the threshold's ▲.
+//   ▲▼ the threshold, 3 dB a step   ● mic on / off   BOOT done
+//
+// The ringing sheet (comms_ringing.cpp): RING from the menu raises it over the talk screen while
+// the ring goes: RINGING with the seconds and how many boards ring; from 5 s HOLD BOOT leaves a
+// message instead (HOLD BOOT's one Comms use: talkTo() says comms); NO ANSWER at 60 s (● rings
+// again); BOOT gives up. Answered, it becomes the call sheet for the conversation, with ● MIC ON:
+// the answer doesn't switch the dialer's mic on.
 //
 // The sheets that rise over the screen in use (comms_sheet.cpp; apps::pollComms() raises them):
-// - the call sheet, when a call starts playing: who calls, the meter, the calls before. HOLD BOOT
-//   replies (to all of the group, or to the caller for a call to this board); during a
-//   conversation it says so and lists who is in it, and BOOT leaves the conversation. It closes
-//   10 s after the last word, or on BOOT;
-// - the ring sheet, when a ring starts here: who rings, ● ANSWER (then it's the call sheet), HOLD
-//   BOOT answers and talks at once, BOOT IGNORE; a ring that ends unanswered shows MISSED, or LEFT A
-//   MESSAGE with ● PLAY, for a few seconds;
-// - the conversation sheet, once per conversation this board isn't in: who is in it, ● JOIN, BOOT
-//   LATER; it closes by itself 10 s after it rose or the last key.
+// - the call sheet, once per mic session that starts playing here: whose mic, the meter, the
+//   calls before. ● this board's mic on (to the conversation) / off, ▲▼ volume, HOLD ● leaves the
+//   conversation, BOOT closes. It closes 10 s after the last sound and as long since a key,
+//   leaving this board in the conversation and its mic as it is;
+// - the ring sheet, when a ring starts here: who rings, ● ANSWER (and this board's mic on: then
+//   it's the call sheet), BOOT IGNORE; a ring that ends unanswered shows MISSED, or LEFT A MESSAGE
+//   with ● PLAY, for a few seconds;
+// - the conversation sheet, once per conversation this board isn't in, 5 s after it was seen
+//   (boards that hear a mic open join by themselves, so it's rare; joined so while it's up, it
+//   closes): who is in it, ● JOIN, BOOT LATER;
+// - the LOST sheet, when LOST's alarm starts: whose mic, not heard for how long, ● SILENCE, BOOT
+//   closes (and silences); BACK when it's heard again.
 // Not over the lock, an off face or the desk face, the Recorder, a ringing alarm, the agent sheet
 // while it listens or replies. The call and conversation sheets don't rise over the Comms screen,
-// which shows them in place (the call plays anyway, and stays not heard); the ring sheet does.
+// which shows them in place (the call plays anyway, and stays not heard); the ring and LOST
+// sheets do. In their first second, the call sheet's ● doesn't switch the mic on and the ring
+// sheet's doesn't answer: a press meant for the screen under them mustn't open a mic. Where the LOST sheet can't rise, the first key anywhere silences the alarm (and does
+// nothing else), and the sheet rises once it may.
 //
-// HOLD BOOT on these screens switches this board's mic on while held, for now (the engine's open
-// mic replaced push-to-talk; a later slice gives the mic its own switch), not the agent: the
-// screens' talkTo() says comms, and apps/hold_boot.cpp calls commsTalk() (comms::micOn()) from the
-// input timer and commsTalkStop() (comms::micOff()) at the release; on the ringing sheet it
-// records a message, on the ring sheet it answers first.
+// HOLD BOOT is the agent's on these screens and sheets, as anywhere; the engine pauses an open
+// mic while the agent listens or speaks, and the screens say PAUSED. The one exception is the
+// ringing sheet's message (apps/hold_boot.cpp calls commsTalk() and commsTalkStop()).
 //
-// The status bar's mark: an inverted speech bubble with a count while a conversation is on in one
-// of this board's groups and this board isn't in it (the count: the boards in it).
+// The status bar's marks: an inverted speech bubble with a count while a conversation is on in
+// one of this board's groups and this board isn't in it (the count: the boards in it); MIC while
+// this board's mic is on.
 #pragma once
 #include "features.h"
 
@@ -64,47 +88,61 @@ namespace apps {
 
 std::unique_ptr<ui::Screen> makeComms();
 
-// From loop(): raises the ring sheet when a ring starts here, the call sheet when a call starts
-// playing, and the conversation sheet once per conversation this board isn't in.
+// From loop(): raises the ring sheet when a ring starts here, the call sheet when a mic session
+// starts playing, the conversation sheet once per conversation this board isn't in, and the LOST
+// sheet when LOST's alarm starts.
 void pollComms();
 
-// HOLD BOOT's two ends on a screen whose talkTo() says comms (apps/hold_boot.cpp, from the input
-// timer): the call starts (or the message, or the answer and the call), and the screens show
-// status().error as a notice if it doesn't. The release ends what the hold began.
+// HOLD BOOT's two ends on the ringing sheet, whose talkTo() says comms (apps/hold_boot.cpp, from
+// the input timer): the message starts, and the sheet shows status().error as a notice if it
+// doesn't. The release sends it.
 void commsTalk(const ui::TalkTo &to);
 void commsTalkStop();
 
 namespace commsui {
 
-// The reason the last talk (or PLAY LAST, ring, join) from these screens didn't happen, for a "!"
-// notice: for a few seconds after the attempt, while the board isn't talking. "" otherwise.
+// The reason the last attempt (the mic, PLAY LAST, a ring, a join, a message) from these screens
+// didn't happen, for a "!" notice: for a few seconds after it. "" otherwise.
 std::string attemptError();
-void noteAttempt();  // PLAY LAST from the menu, a ring, a join
+void noteAttempt();
 
 // PLAY LAST or a message is playing (status().replay): BOOT stops it first.
 bool playing();
 // Stops it, if one plays; true if it did (BOOT's first use on the Comms screens and sheets).
 bool stopIfPlaying();
 
+// ●'s mic: off if it's on (wherever it goes), else on in `group` to `target` (0: all of it).
+void toggleMic(int group, uint32_t target);
+
+// The status bar's MIC: On while this board's mic is on, Paused while something else has it for
+// now (not at its start).
+ui::MicMark micMark();
+
 // "QUIET", "MIC ON", "HEARING", "OFF".
 const char *stateWord(comms::State s);
 // Segments lit of 20 for a level in dBFS (-60 to 0, 3 dB each).
 int meterFill(float levelDb);
-// "0:06": a call's length.
+// "0:06": a length in seconds.
 std::string lengthText(uint32_t ms);
+// A length that grows, for while nothing moves: only whole minutes, all of them turning over
+// together with the status bar's clock ("<1 MIN", "12 MIN", "1 H 05").
+std::string minutesText(uint32_t ms);
+// LOST's length: 10 s steps under a minute ("0:20"), then minutesText().
+std::string lostText(uint32_t ms);
 // When a call began: "14:08" today, "21 NOV" before, "5 MIN" ago while the clock isn't set.
 std::string whenText(time_t at, uint32_t agoS);
 // "KITCHEN", or a board not heard from yet by its id.
 std::string boardName(const std::string &name, uint32_t id);
 // "KITCHEN → ALL", "YOU → KITCHEN", "KITCHEN → YOU".
 std::string whoText(const comms::Call &c);
-// A note for the log: "VIA KITCHEN", "2 SENT" (this board's mic session: its sounds), "LOST",
-// "NOT PLAYED", "LIVE"; for a ring "RINGING",
-// "ANSWERED", "RANG", "MISSED", "NO ANSWER"; for a message "MSG COMING", "NEW MSG", "MSG",
-// "MSG PART", "RECORDING", "MSG SENT", "MSG · 1 GOT IT"; "" for none.
+// A note for the log: for a mic session "LIVE", "LOST", "NOT PLAYED", "3 SOUNDS", "VIA KITCHEN";
+// for a ring "RINGING", "ANSWERED", "RANG", "MISSED", "NO ANSWER"; for a message "MSG COMING",
+// "NEW MSG", "MSG", "MSG PART", "RECORDING", "MSG SENT", "MSG · 1 GOT IT"; "" for none.
 std::string noteText(const comms::Call &c);
-// The note asks for attention (a missed ring, a message not played): drawn inverted.
+// The note asks for attention (a missed ring, a LOST not seen, a message not played): inverted.
 bool noteNeedsYou(const comms::Call &c);
+// Its length: "0:06" once it's over, whole minutes while it's live (minutesText()).
+std::string callLength(const comms::Call &c);
 
 // "TODAY · 6" when every call listed is from today, else "6 CALLS"; "" for none.
 std::string countText(const std::vector<comms::Call> &calls);
@@ -113,15 +151,44 @@ std::string boardsText(int n);
 
 // Who is in a conversation: "YOU + KITCHEN" (this board in it), "KITCHEN + GARAGE".
 std::string membersText(const comms::Conversation &c);
-// How long it has been on, in whole minutes so it needn't redraw every second: "JUST BEGUN",
-// "FOR 1 MIN", "FOR 1 H 05".
+// How long it has been on, in whole minutes: "JUST BEGUN", "FOR 1 MIN", "FOR 1 H 05".
 std::string forText(uint32_t ms);
 // The group's name, "" for none.
 std::string groupName(int group);
 
+// A board as the sheets say how it's reached: "ON AIR · −52 dBm", "VIA KITCHEN · 1 HOP"; "" if
+// not known. The signal as steadyRssi() keeps it.
+std::string reachText(uint32_t id, comms::Route route, int hops, const std::string &relay,
+                      int rssi);
+// A board's signal as the screens show it: it changes only when it has moved 6 dB from what was
+// shown, so a signal wavering between two values doesn't redraw the screen.
+int steadyRssi(uint32_t id, int rssi);
+// "AGENT LISTENING": mic().paused, short enough for a line beside the map.
+std::string pausedText(const std::string &why);
+// A board's open mic for its row and the sheets: "MIC ON 12 MIN · QUIET", "MIC ON 3 MIN · SOUND",
+// "MIC ON 1 MIN · PAUSED", "LOST 0:30"; with "TO YOU" or "TO GARAGE" after the minutes for a mic
+// to one board.
+std::string micLine(const comms::OpenMic &m);
+// The open mic of board `id` in group `group`, or nullptr.
+const comms::OpenMic *findMic(const std::vector<comms::OpenMic> &mics, int group, uint32_t id);
+// Home's MICS: "none on", "KITCHEN on · 12 min", "2 on", "yours on", "yours + 1 on",
+// "KITCHEN lost".
+std::string micsGlance();
+
+// A key came within the last 30 s: the meters show the mic's level even under the threshold, and
+// lengths count seconds. Otherwise they move only while sound goes or comes.
+bool keyedLately();
+
 // A 30 px log row: the time, who to whom (and the note after a dot, without a note column), the
 // length on the right; a 1 px dashed rule under it.
 void drawCallRow(ui::Canvas &c, const ui::Rect &r, const comms::Call &call, bool noteColumn);
+// What a log row shows, for a screen's record of what it drew.
+std::string callRowKey(const comms::Call &call);
+
+// A 20-segment meter (-60 to 0 dBFS) after its label (a 34 px column), the segments `h` px tall;
+// with a threshold (> -100), a ▲ under the meter where it falls (9 px more). In `color`.
+void drawMicMeter(ui::Canvas &c, int x, int y, int w, int h, const char *label, int filled,
+                  int thresholdDb, uint16_t color = ui::kInk);
 
 // The sheets' 52 px state row: a word in 22 px ExtraBold on the left, then the 20-segment meter
 // (filled >= 0) or a text on the right in the same size (`right`), a dashed rule under it.
@@ -137,12 +204,17 @@ int drawNameBlock(ui::Canvas &c, const ui::Rect &r, const std::string &label,
 void drawEarlier(ui::Canvas &c, ui::Rect r, const std::vector<comms::Call> &calls,
                  const std::string &foot);
 
-// The sheets, for each other: the call sheet for a conversation this board is in now (answered
-// or joined), with `peer` the board it's with (the dialer, or 0); the dialer's ringing sheet;
-// the Messages sheet for a group.
-std::unique_ptr<ui::Screen> makeConversationCallSheet(int group, uint32_t peer, bool toAll);
+// The sheets and screens, for each other: the call sheet for a conversation this board is in now
+// (answered, joined, or the dialer's ring answered), with `peer` the board it's with (or 0), the
+// label over its name (FROM, WITH, ANSWERED BY) and how it began (ANSWERED, JOINED); the dialer's
+// ringing sheet; the Messages sheet for a group; the MIC LEVEL sheet (● switches the mic to
+// `target`); a board's mic screen.
+std::unique_ptr<ui::Screen> makeConversationCallSheet(int group, uint32_t peer, bool toAll,
+                                                      const char *label, const char *how);
 std::unique_ptr<ui::Screen> makeRingingSheet(int group, uint32_t target);
 std::unique_ptr<ui::Screen> makeMessagesSheet(int group);
+std::unique_ptr<ui::Screen> makeMicLevelSheet(int group, uint32_t target);
+std::unique_ptr<ui::Screen> makeMicScreen(int group, uint32_t board);
 
 }  // namespace commsui
 }  // namespace apps
