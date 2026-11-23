@@ -38,12 +38,12 @@ void noteAttempt() {
 
 std::string attemptError() {
   const uint32_t at = attemptMs.load();
-  if (!at || millis() - at > kErrorShowMs || comms::talking()) return {};
+  if (!at || millis() - at > kErrorShowMs || comms::micEnabled()) return {};
   // Not before the engine has acted on it (it bumps the generation when it fails, and clears
   // the error when it doesn't): until then status().error is an older attempt's.
   if (comms::generation() == attemptGen.load()) return {};
   const comms::Status s = comms::status();
-  if (s.state == comms::State::Talking || s.state == comms::State::Hearing) return {};
+  if (s.state == comms::State::Mic || s.state == comms::State::Hearing) return {};
   return s.error;
 }
 
@@ -59,7 +59,7 @@ const char *stateWord(comms::State s) {
   switch (s) {
     case comms::State::Off: return "OFF";
     case comms::State::Quiet: return "QUIET";
-    case comms::State::Talking: return "TALKING";
+    case comms::State::Mic: return "MIC ON";
     case comms::State::Hearing: return "HEARING";
   }
   return "";
@@ -114,7 +114,8 @@ std::string noteText(const comms::Call &c) {
     return c.complete ? "MSG" : "MSG PART";
   }
   if (c.live) return "LIVE";
-  if (c.outgoing) return c.heardBy > 0 ? std::to_string(c.heardBy) + " HEARD" : "";
+  if (c.outgoing) return c.sounds ? std::to_string(c.sounds) + " SENT" : "";
+  if (c.linkLost) return "LOST";
   if (!c.played) return "NOT PLAYED";
   if (c.route == comms::Route::Relayed) {
     if (!c.relayName.empty()) return "VIA " + c.relayName;
@@ -245,8 +246,9 @@ void drawEarlier(ui::Canvas &c, ui::Rect r, const std::vector<comms::Call> &call
 }  // namespace commsui
 
 namespace {
-// What the last HOLD BOOT began, so its release ends that: a talk, or a message (the ringing
-// sheet). The input timer calls both ends; the UI task may undo a hold (hold_boot.cpp).
+// What the last HOLD BOOT began, so its release ends that: the mic (on while held, until the
+// screens slice gives the mic its own switch), or a message (the ringing sheet). The input timer
+// calls both ends; the UI task may undo a hold (hold_boot.cpp).
 enum class Held : uint8_t { None, Talk, Message };
 std::atomic<Held> held{Held::None};
 }  // namespace
@@ -258,15 +260,15 @@ void commsTalk(const ui::TalkTo &to) {
     comms::messageStart();
     return;
   }
-  if (to.answer) comms::answer();  // the ring sheet: answered, then the talk goes into it
+  if (to.answer) comms::answer();  // the ring sheet: answered, then the mic goes into it
   held = Held::Talk;
-  comms::talkStart(to.group, to.board);
+  comms::micOn(to.group, to.board);
 }
 
 void commsTalkStop() {
   switch (held.exchange(Held::None)) {
     case Held::Message: comms::messageSend(); break;
-    case Held::Talk: comms::talkStop(); break;
+    case Held::Talk: comms::micOff(); break;
     case Held::None: break;
   }
 }
@@ -297,7 +299,7 @@ std::string dbm(int rssi) { return ui::signedNumber(static_cast<float>(rssi), 0)
 
 std::string routeTag(const comms::Board &b) {
   if (b.route == comms::Route::Away) return "AWAY";
-  if (b.flags & comms::kFlagRoom) return "ROOM";
+  if (b.flags & comms::kFlagMic) return "MIC";
   switch (b.route) {
     case comms::Route::Air: return "AIR";
     case comms::Route::Relayed: return plural(b.hops, "HOP", "HOPS");
@@ -324,7 +326,7 @@ std::string routeLine(const comms::Board &b) {
                     : "NOT HEARD FOR " + std::to_string(m / 60) + " H";
     }
   }
-  if (b.flags & comms::kFlagRoom) return s + kDot + "MONITORING THE ROOM";
+  if (b.flags & comms::kFlagMic) return s + kDot + "MIC ON";
   if (b.talkedAt) s += kDot + "TALKED " + whenText(b.talkedAt, 0);
   return s;
 }
@@ -1008,7 +1010,7 @@ class CommsScreen : public ui::Screen {
     const int x = r.x + kPadX;
     const int w = r.w - 2 * kPadX - kGap - kMapW;
     const int base = top + 33;
-    const bool live = s.state == comms::State::Talking || s.state == comms::State::Hearing;
+    const bool live = s.state == comms::State::Mic || s.state == comms::State::Hearing;
     std::string line1 = stateLine(s), line2;
     if (conv_.on && !live) {
       // Capitals at the same height as the 38 px words'.
@@ -1039,7 +1041,7 @@ class CommsScreen : public ui::Screen {
         return millis() - openedMs_ < kStartingMs ? "THE RADIO IS STARTING\xE2\x80\xA6"
                                                   : "THE RADIO WON'T START";
       // As the log says it (KITCHEN → YOU), so it fits beside the map.
-      case comms::State::Talking:
+      case comms::State::Mic:
         return "YOU \xE2\x86\x92 " +
                (s.toAll ? std::string("ALL") : boardName(s.peerName, s.peer)) + kDot + len +
                inGroup;

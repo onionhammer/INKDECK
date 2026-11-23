@@ -1,7 +1,7 @@
 // The comms packet format (docs/comms-protocol.md has it byte by byte), and the two tables that
 // decide whether a packet is new: the seen-cache, which the mesh relays by, and the replay
 // window, which the board trusts by. Conversations and message transfers are in comms_calls.h,
-// the baby monitor (type 15's packets) in comms_monitor.h.
+// the open mic (types 2, 3, 4 and 15's bodies) in comms_mic.h.
 //
 // Plain C++ with no Arduino or ESP-IDF calls, so the self-test (comms::selfTest()) checks it on
 // the board and it builds on a computer too. Not thread-safe: comms.cpp's task owns the tables.
@@ -24,12 +24,12 @@ constexpr uint8_t kTtl = 3;  // relays a packet may pass through (so 4 hops over
 enum Type : uint8_t {
   kPresence = 1,    // "here": name, flags, battery; a hello asks the others to answer; the
                     // conversation the board is in
-  kVoiceStart = 2,  // a call begins (the voice packets carry the same, so it may be lost)
-  kVoice = 3,       // 20 ms of IMA ADPCM, self-contained
-  kVoiceEnd = 4,    // a call ended, with how many frames it had
+  kMic = 2,         // the board's mic is on (every 2 s while it is): its level, since when
+  kVoice = 3,       // 20 ms of an open mic, IMA ADPCM, self-contained
+  kMicOff = 4,      // the mic went off
   kPing = 5,        // !commsping
   kPong = 6,        // the answer, to the pinger
-  kHeard = 7,       // a call played here: the caller counts who heard it
+                    // 7 is unused (push-to-talk's heard receipt, before the open mic)
   kRing = 8,        // a dialer rings all of a group or one board of it, about once a second
   kRinging = 9,     // a board rings for it (or has stopped: ignored): the dialer counts them
   kAnswer = 10,     // a ring answered: it floods, so every board it rang stops
@@ -37,13 +37,13 @@ enum Type : uint8_t {
   kMessage = 12,    // a numbered 20 ms frame of a message (not live: it's sent to be complete)
   kMessageEnd = 13, // a message's frame count and checksum, or that it was dropped
   kMessageAsk = 14, // a board asks for the frames of a message it missed, or has them all
-  kExt = 15,        // the last 4-bit type: the body's byte after sentAt says which (the baby
-                    // monitor's packets, comms_monitor.h; later features add theirs there)
+  kExt = 15,        // the last 4-bit type: the body's byte after sentAt says which (a mic's
+                    // history, comms_mic.h; later features add theirs there)
 };
-constexpr uint8_t kLastType = kExt;  // the types this firmware handles: all 15 there can be
-// A type this firmware handles. An ext type it doesn't (a later version's) still opens and is
-// relayed, as a later type was before type 15 took the last number.
-inline bool knownType(uint8_t t) { return t >= kPresence && t <= kLastType; }
+constexpr uint8_t kLastType = kExt;  // the last type there can be
+// A type this firmware handles (all but 7). One it doesn't (or an ext type it doesn't: a later
+// version's) still opens and is relayed.
+inline bool knownType(uint8_t t) { return t >= kPresence && t <= kLastType && t != 7; }
 
 // The cleartext header. Everything but ttl and hops is authenticated (it's the AES-GCM
 // associated data), so a relay can count down ttl and count up hops without the key.

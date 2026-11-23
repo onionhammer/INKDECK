@@ -16,7 +16,7 @@
 #include "adpcm.h"
 #include "comms_calls.h"
 #include "comms_crypto.h"
-#include "comms_monitor.h"
+#include "comms_mic.h"
 #include "comms_wire.h"
 
 namespace comms {
@@ -173,8 +173,9 @@ void testAdpcm(Checker &c) {
   snprintf(what, sizeof what, "ADPCM round trip, packets decoded on their own: SNR %.1f dB (>= 20)",
            snr);
   c.check(snr >= 20, what);
-  c.check(kFrameBytes == 160 && kHeader + 4 + 4 + 2 + 2 + 2 + 1 + 1 + kFrameBytes + kTag == 212,
-          "a voice packet is 212 bytes (ESP-NOW v1 takes 250)");
+  c.check(kFrameBytes == 160 &&
+              kHeader + 4 + 4 + 4 + 2 + 2 + 2 + 1 + 1 + 2 + 1 + 1 + kFrameBytes + kTag == 220,
+          "a voice packet is 220 bytes (ESP-NOW v1 takes 250)");
 }
 
 void testPacket(Checker &c) {
@@ -266,7 +267,8 @@ void testCallPackets(Checker &c) {
   }
   f[1] = static_cast<uint8_t>(kVersion << 4);  // type 0
   ok = ok && !parseHeader(f, kHeader + kTag + 8, p) && kExt == 15 && kLastType == 15;
-  c.check(ok, "the new types parse, 15 (ext) the last there can be; type 0 doesn't");
+  ok = ok && knownType(kMic) && knownType(kVoice) && knownType(kMicOff) && !knownType(7);
+  c.check(ok, "the types parse, 15 (ext) the last there can be, 7 unused; type 0 doesn't");
 
   // A presence with the conversation after the name, and one from before conversations.
   uint8_t b[96];
@@ -300,9 +302,8 @@ void testCallPackets(Checker &c) {
   c.check(ok && po.ok() && po.left() == 0,
           "presence: the conversation follows the name; an older board's ends there");
   c.check(kHeader + 4 + 4 + 4 + 2 + 2 + 1 + 1 + kFrameBytes + kTag == 214 &&
-              kHeader + 4 + 4 + 4 + 1 + 2 + 2 + 2 + 195 + kTag == 250 &&
-              kHeader + 4 + 4 + 2 + 2 + 2 + 1 + 1 + kFrameBytes + 5 + kTag == 217,
-          "a message frame is 214 bytes, an ask mapping 1560 frames 250, voice 217");
+              kHeader + 4 + 4 + 4 + 1 + 2 + 2 + 2 + 195 + kTag == 250,
+          "a message frame is 214 bytes, an ask mapping 1560 frames 250");
 }
 
 void testMessages(Checker &c) {
@@ -438,124 +439,144 @@ void testConversations(Checker &c) {
 }
 
 
-// The monitor's checks run in their own frames (noinline): the dev tools' task has 4 KB of stack,
+// The mic's checks run in their own frames (noinline): the dev tools' task has 4 KB of stack,
 // and LTO would add them all to selfTest()'s.
-__attribute__((noinline)) void testMonitorPackets(Checker &c) {
+__attribute__((noinline)) void testMicPackets(Checker &c) {
   const crypto::GroupKeys k = crypto::derive(kSecret, false);
   std::unique_ptr<crypto::Sealer> s(new crypto::Sealer());
   s->setKey(k.key);
   // On the heap: the dev tools' task has a small stack.
   struct Bufs {
     uint8_t f[kMaxFrame], b[kMaxBody];
-    StillHere st, back;
-    MonitorAudio a, ab, full, x;
+    MicStill st, back;
+    Voice v, vb, full;
+    MicOff off, offb;
     History hist;
   };
   std::unique_ptr<Bufs> u(new Bufs());
   uint8_t *f = u->f;
   uint8_t *b = u->b;
-  StillHere &st = u->st;
-  StillHere &back = u->back;
-  MonitorAudio &a = u->a;
-  MonitorAudio &ab = u->ab;
-  MonitorAudio &full = u->full;
-  MonitorAudio &x = u->x;
-  History &hist = u->hist;
-  // A still-here from sender 11223344, boot 7, seq 3: sending, on USB, no battery, threshold
-  // -30, peak -24, on 600 s, bar 5 at -18, pre-roll 25 frames, for 55667788 alone
-  // (docs/comms-protocol.md has these bytes).
+  // A still-here (type 2) from sender 11223344, boot 7, seq 3: sending, on USB, no battery,
+  // threshold -30, peak -24, session 5, on 600 s, bar 5 at -18, pre-roll 8 frames, to all, in
+  // conversation A1B2C3D4 (docs/comms-protocol.md has these bytes).
   Header h;
-  h.type = kExt;
+  h.type = kMic;
   h.ttl = 3;
   h.group = k.id;
   h.sender = 0x11223344;
   h.boot = 7;
   h.seq = 3;
   putHeader(h, f);
-  st.flags = kStillSending | kStillUsb;
+  MicStill &st = u->st;
+  st.flags = kMicSending | kMicUsb;
   st.battery = 0xFF;
   st.threshold = 30;
   st.peak = 24;
+  st.session = 5;
   st.onS = 600;
   st.bar = 5;
   st.barPeak = 18;
-  st.listeners.n = 1;
-  st.listeners.ids[0] = 0x55667788;
-  size_t n = s->seal(f, putStillHere(f + kHeader, kMaxBody, 0, st));
+  st.preFrames = 8;
+  st.target = 0;
+  st.conv = 0xA1B2C3D4;
+  size_t n = s->seal(f, putMicStill(f + kHeader, kMaxBody, 0, st));
   std::vector<uint8_t> want = unhex(
-      "c71f0300e13e368e443322110700000003000000e74688b9939c604d7e97b0aa142e8a21bd52a8396506401237bb"
-      "8bb8155b460b4a4194992ab6");
+      "c7120300e13e368e443322110700000003000000e74688b99260814b63cfeaa8142b8f33b65b204e035360b158"
+      "2729fcbda72e8993accf2e6124db819103");
   c.check(n == want.size() && memcmp(f, want.data(), n) == 0,
-          "a sealed still-here (type 15, ext 2) matches the reference bytes");
+          "a sealed still-here (type 2) matches the reference bytes");
   size_t body = 0;
   bool ok = s->open(f, n, body);
   Reader r(f + kHeader, body);
   r.u32();
-  ok = ok && r.u8() == kStillHere && readStillHere(r, back) && back.flags == st.flags &&
-       back.threshold == 30 && back.peak == 24 && back.onS == 600 && back.bar == 5 &&
-       back.barPeak == 18 && back.preFrames == 25 && back.listeners.n == 1 &&
-       back.listeners.allows(0x55667788) && !back.listeners.allows(0x11111111) && r.left() == 0;
-  c.check(ok, "the still-here reads back field by field, its listener list too");
+  MicStill &back = u->back;
+  ok = ok && readMicStill(r, back) && back.flags == st.flags && back.threshold == 30 &&
+       back.peak == 24 && back.session == 5 && back.onS == 600 && back.bar == 5 &&
+       back.barPeak == 18 && back.preFrames == 8 && back.target == 0 &&
+       back.conv == 0xA1B2C3D4 && r.left() == 0;
+  c.check(ok, "the still-here reads back field by field");
 
-  // Monitor audio, seq 4: to all, sound 2, frame 9, level -21, predictor -1234, index 40, 8 bytes.
+  // Voice (type 3), seq 4: to all, conversation A1B2C3D4, session 5, sound 2, frame 9, level -21,
+  // opening, predictor -1234, index 40, 8 bytes.
+  h.type = kVoice;
   h.seq = 4;
   putHeader(h, f);
-  a.sound = 2;
-  a.frame = 9;
-  a.level = 21;
-  a.predictor = -1234;
-  a.index = 40;
-  a.bytes = 8;
-  for (uint8_t i = 0; i < 8; ++i) a.data[i] = static_cast<uint8_t>(i + 1);
-  n = s->seal(f, putMonitorAudio(f + kHeader, kMaxBody, 0, a));
+  Voice &v = u->v;
+  v.conv = 0xA1B2C3D4;
+  v.session = 5;
+  v.sound = 2;
+  v.frame = 9;
+  v.level = 21;
+  v.flags = kVoiceOpening;
+  v.predictor = -1234;
+  v.index = 40;
+  v.bytes = 8;
+  for (uint8_t i = 0; i < 8; ++i) v.data[i] = static_cast<uint8_t>(i + 1);
+  n = s->seal(f, putVoice(f + kHeader, kMaxBody, 0, v));
   want = unhex(
-      "c71f0300e13e368e443322110700000004000000a8c23f21808172d6dd8b0b0da60caee3a3b1e53cd7201641f9f7"
-      "2080f0d7effe32e380e4eaf1e9");
+      "c7130300e13e368e443322110700000004000000a8c23f21818170d60048ac825824a4e2a8b2f438ffdc362dda"
+      "38f9995ef899d129751713f97265f70f5fe1782ab0339a");
   ok = n == want.size() && memcmp(f, want.data(), n) == 0;
   ok = ok && s->open(f, n, body);
-  Reader ra(f + kHeader, body);
-  ra.u32();
-  ok = ok && ra.u8() == kMonitorAudio && readMonitorAudio(ra, ab) && ab.listeners.all() &&
-       ab.sound == 2 && ab.frame == 9 && ab.level == 21 && ab.predictor == -1234 &&
-       ab.index == 40 && ab.bytes == 8 && ab.data[7] == 8 && extFor(f + kHeader, body) == 0;
-  c.check(ok, "a sealed monitor frame (ext 1) matches the reference bytes and reads back");
+  Reader rv(f + kHeader, body);
+  rv.u32();
+  Voice &vb = u->vb;
+  ok = ok && readVoice(rv, vb) && vb.target == 0 && vb.conv == 0xA1B2C3D4 && vb.session == 5 &&
+       vb.sound == 2 && vb.frame == 9 && vb.level == 21 && vb.flags == kVoiceOpening &&
+       vb.predictor == -1234 && vb.index == 40 && vb.bytes == 8 && vb.data[7] == 8;
+  c.check(ok, "a sealed voice frame (type 3) matches the reference bytes and reads back");
 
-  // Sizes: a full frame to 8 listeners, a history of 60 bars, under 250; and who each is for.
+  // Mic off (type 4), seq 5: session 5, switched off, on 600 s.
+  h.type = kMicOff;
+  h.seq = 5;
+  putHeader(h, f);
+  u->off.session = 5;
+  u->off.reason = kOffSwitched;
+  u->off.onS = 600;
+  n = s->seal(f, putMicOff(f + kHeader, kMaxBody, 0, u->off));
+  want = unhex(
+      "c7140300e13e368e4433221107000000050000003ddb4c9843cacf766c0a6f4f4f5c99a236200cdcbdbf1bb3fd"
+      "7296");
+  ok = n == want.size() && memcmp(f, want.data(), n) == 0 && s->open(f, n, body);
+  Reader ro(f + kHeader, body);
+  ro.u32();
+  ok = ok && readMicOff(ro, u->offb) && u->offb.session == 5 && u->offb.reason == kOffSwitched &&
+       u->offb.onS == 600;
+  c.check(ok, "a sealed mic off (type 4) matches the reference bytes and reads back");
+
+  // Sizes: a full voice frame, a still-here, a history of 60 bars, under 250; who each is for.
+  Voice &full = u->full;
   full.bytes = kFrameBytes;
-  full.listeners.n = ListenerSet::kMax;
-  for (size_t i = 0; i < ListenerSet::kMax; ++i) full.listeners.ids[i] = 0x100 + i;
-  const size_t fullLen = putMonitorAudio(b, kMaxBody, 0, full);
+  full.target = 0x55667788;
+  const size_t fullLen = putVoice(b, kMaxBody, 0, full);
+  ok = fullLen && kHeader + fullLen + kTag == 220 && get32(b + 4) == 0x55667788;
+  History &hist = u->hist;
   hist.to = 0x55667788;
-  hist.count = MonitorHistory::kBars;
+  hist.count = MicHistory::kBars;
   const size_t histLen = putHistory(b, kMaxBody, 0, hist);
-  ok = fullLen && kHeader + fullLen + kTag == 243 && kHeader + histLen + kTag == 108;
-  full.listeners.n = 1;
-  full.listeners.ids[0] = 0x55667788;
-  ok = ok && extFor(b, putMonitorAudio(b, kMaxBody, 0, full)) == 0x55667788;
-  ok = ok && extFor(b, putToRoom(b, kMaxBody, 0, kListening, 0x11223344, 0)) == 0x11223344 &&
-       extFor(b, putToRoom(b, kMaxBody, 0, kHistoryAsk, 0x11223344, 0)) == 0x11223344 &&
-       extFor(b, putHistory(b, kMaxBody, 0, hist)) == 0x55667788 &&
-       extFor(b, putStillHere(b, kMaxBody, 0, st)) == 0 &&
-       extFor(b, putMonitorOff(b, kMaxBody, 0, kOffStopped)) == 0;
-  // A list longer than 8 is refused.
+  ok = ok && kHeader + histLen + kTag == 110 &&
+       kHeader + putMicStill(b, kMaxBody, 0, st) + kTag == 62;
+  ok = ok && extFor(b, putHistory(b, kMaxBody, 0, hist)) == 0x55667788 &&
+       extFor(b, putHistoryAsk(b, kMaxBody, 0, 0x11223344)) == 0x11223344;
+  // A frame of more than 160 bytes, or a step index past 88, is refused.
   b[0] = b[1] = b[2] = b[3] = 0;
-  b[4] = kMonitorAudio;
-  b[5] = 9;
-  Reader bad(b + 5, 60);
-  ok = ok && !readMonitorAudio(bad, x);
-  c.check(ok, "monitor frames to 8 listeners are 243 bytes, a 2 h history 108; each for whom it "
-              "says; a list of 9 is refused");
+  const size_t len = putVoice(b, kMaxBody, 0, full);
+  b[4 + 4 + 4 + 2 + 2 + 2 + 1 + 1 + 2] = 89;  // the step index
+  Reader bad(b + 4, len - 4);
+  ok = ok && !readVoice(bad, u->vb);
+  c.check(ok, "voice is 220 bytes full, a still-here 62, a 2 h history 110; each for whom it says; "
+              "a bad step index is refused");
 }
 
 __attribute__((noinline)) void testGate(Checker &c) {
   // -30 dBFS threshold; 100 quiet frames, 10 over it, then quiet.
-  std::unique_ptr<MonitorGate> g(new MonitorGate());
+  std::unique_ptr<MicGate> g(new MicGate());
   g->setThreshold(-30);
   int sent = 0, firsts = 0;
   uint32_t firstAt = 0, lastAt = 0;
   for (uint32_t i = 0; i < 400; ++i) {
     const float db = i >= 100 && i < 110 ? -20.0f : -45.0f;
-    const MonitorGate::Step s = g->frame(db);
+    const MicGate::Step s = g->frame(db);
     if (s.send) {
       if (!sent) firstAt = i;
       lastAt = i;
@@ -563,14 +584,14 @@ __attribute__((noinline)) void testGate(Checker &c) {
     }
     if (s.first) ++firsts;
   }
-  const uint32_t P = MonitorGate::kPreFrames, H = MonitorGate::kHangFrames;
-  // The first frame sent is frame 75 (the pre-roll), sent at frame 100; the last, frame 109 + H,
-  // sent P later.
+  const uint32_t P = MicGate::kPreFrames, H = MicGate::kHangFrames;
+  // The first frame sent is frame 100 - P (the pre-roll), sent at frame 100; the last, frame
+  // 109 + H, sent P later.
   bool ok = sent == static_cast<int>(P + 10 + H) && firsts == 1 && firstAt == 100 &&
-            lastAt - P == 109 + H && !g->sending();
-  c.check(ok, "gate: a sound goes with 0.5 s before it and 2 s after, half a second late");
+            lastAt - P == 109 + H && !g->sending() && P * kFrameMs == 160;
+  c.check(ok, "gate: a sound goes with 160 ms before it and 2 s after, 160 ms late");
 
-  g.reset(new MonitorGate());
+  g.reset(new MicGate());
   g->setThreshold(-30);
   sent = 0;
   for (uint32_t i = 0; i < 300; ++i) sent += g->frame(i % 50 == 0 ? -30.5f : -60.0f).send;
@@ -582,9 +603,9 @@ __attribute__((noinline)) void testGate(Checker &c) {
   ok = ok && sent == static_cast<int>(300 - P);
   c.check(ok, "gate: below the threshold nothing goes; at -60 a -59 dBFS room goes all the time");
 
-  // Two loud frames 2 s apart are one sound; 3 s apart, two. A loud frame right after a reset
+  // Two loud frames 2 s apart are one sound; 5 s apart, two. A loud frame right after a reset
   // has only the pre-roll there is.
-  g.reset(new MonitorGate());
+  g.reset(new MicGate());
   g->setThreshold(-30);
   firsts = 0;
   for (uint32_t i = 0; i < 600; ++i) {
@@ -595,7 +616,7 @@ __attribute__((noinline)) void testGate(Checker &c) {
   g->reset();
   sent = 0;
   for (uint32_t i = 0; i < 30; ++i) {
-    const MonitorGate::Step s = g->frame(i == 3 ? -10.0f : -50.0f);
+    const MicGate::Step s = g->frame(i == 3 ? -10.0f : -50.0f);
     if (s.send && !sent) firstAt = i;
     sent += s.send;
   }
@@ -603,11 +624,53 @@ __attribute__((noinline)) void testGate(Checker &c) {
           "gate: sounds 2 s apart are one, 5 s apart two; after a pause the pre-roll starts there");
 }
 
+__attribute__((noinline)) void testEchoGate(Checker &c) {
+  // The speaker plays from frame 50 to 150, putting up to -20 dBFS on the mic (with the
+  // margin): the echo alone (-24 at the mic) opens nothing.
+  std::unique_ptr<MicGate> g(new MicGate());
+  g->setThreshold(-30);
+  int sent = 0;
+  for (uint32_t i = 0; i < 300; ++i) {
+    const bool playing = i >= 50 && i < 150;
+    sent += g->frame(playing ? -24.0f : -50.0f, playing ? -20.0f : -96.0f).send;
+  }
+  bool ok = sent == 0;
+  // Someone speaks over it at -10 (frames 100 to 109): it goes, and the frames around it that
+  // the echo could explain go as silence; after the speaker stops, the hang's frames go as they
+  // are.
+  g.reset(new MicGate());
+  g->setThreshold(-30);
+  int loud = 0, muted = 0, plain = 0, firsts = 0;
+  for (uint32_t i = 0; i < 400; ++i) {
+    const bool playing = i >= 50 && i < 150;
+    const bool talk = i >= 100 && i < 110;
+    const float db = talk ? -10.0f : playing ? -24.0f : -50.0f;
+    const MicGate::Step s = g->frame(db, playing ? -20.0f : -96.0f);
+    if (!s.send) continue;
+    firsts += s.first;
+    const uint32_t f = i - MicGate::kPreFrames;  // the frame that goes
+    if (f >= 100 && f < 110) {
+      loud += !s.muted;
+    } else if (f < 150) {
+      muted += s.muted;
+    } else {
+      plain += !s.muted;
+    }
+  }
+  const uint32_t P = MicGate::kPreFrames, H = MicGate::kHangFrames;
+  // The pre-roll (P before 100) and the hang's part while the speaker played (110 to 149) muted;
+  // the hang after it (150 to 109 + H) as it is.
+  ok = ok && firsts == 1 && loud == 10 && muted == static_cast<int>(P + 40) &&
+       plain == static_cast<int>(109 + H - 150 + 1);
+  c.check(ok, "echo gate: the speaker's echo alone opens nothing; a voice over it goes, the "
+              "echo around it as silence");
+}
+
 __attribute__((noinline)) void testHistory(Checker &c) {
-  // The room: 130 minutes, louder each 2 minutes, the mic off for bars 20 and 21.
-  std::unique_ptr<MonitorHistory> h(new MonitorHistory());
+  // A mic on 130 minutes, louder each 2 minutes, paused for bars 20 and 21.
+  std::unique_ptr<MicHistory> h(new MicHistory());
   for (uint32_t ms = 0; ms < 130 * 60000u; ms += 1000) {
-    const uint32_t bar = ms / MonitorHistory::kBarMs;
+    const uint32_t bar = ms / MicHistory::kBarMs;
     if (bar == 20 || bar == 21) continue;
     h->note(ms, -90.0f + bar + (ms % 7000 == 0 ? 5 : 0));
   }
@@ -615,8 +678,8 @@ __attribute__((noinline)) void testHistory(Checker &c) {
             h->at(64) == 21 && h->at(20) == kNoLevel && h->at(22) == 63 && h->at(65) == kNoLevel;
   c.check(ok, "history: 60 bars of 2 minutes, the loudest frame each, the oldest forgotten");
 
-  // A listener: the history it asked for, then bars from still-heres, one skipped (no link).
-  std::unique_ptr<MonitorHistory> l(new MonitorHistory());
+  // A board that hears it: the history it asked for, then bars from still-heres, one skipped.
+  std::unique_ptr<MicHistory> l(new MicHistory());
   for (uint16_t b = h->first(); b <= h->top(); ++b) l->set(b, h->at(b));
   ok = l->top() == 64 && l->at(5) == 80 && l->at(20) == kNoLevel && l->at(64) == 21;
   l->set(66, 30);
@@ -624,19 +687,21 @@ __attribute__((noinline)) void testHistory(Checker &c) {
   l->set(200, 10);
   c.check(ok && l->at(66) == kNoLevel && l->at(200) == 10 && levelByte(-96.5f) == 96 &&
               levelByte(3) == 0 && levelDb(kNoLevel) == -96,
-          "history: a listener mirrors it; a gap clears the bars skipped");
+          "history: a board that hears the mic mirrors it; a gap clears the bars skipped");
 }
 
-__attribute__((noinline)) void testListen(Checker &c) {
-  using L = ListenState;
+__attribute__((noinline)) void testHeard(Checker &c) {
+  using L = HeardMic;
   std::unique_ptr<L> s(new L());
   s->setThreshold(-30);
-  s->start(0, 0);
+  // Session 5, on 4 s when first heard.
+  L::Change ch = s->on(1000, 5, 4000);
+  bool ok = ch.began && !ch.ended && s->link() == L::Link::Quiet && s->startMs() == 0 - 3000u;
   bool loud = false;
   // A soft sound (-25: over the threshold, not 12 dB over), then a loud one.
   for (uint32_t t = 1000; t < 3000; t += 20) s->audio(t, 1, -25, loud);
-  bool ok = s->link() == L::Link::Sound && !loud;
-  s->tick(3000 + L::kSoundEndMs);
+  ok = ok && s->link() == L::Link::Sound && !loud;
+  s->tick(3000 + L::kSoundEndMs, true);
   ok = ok && s->link() == L::Link::Quiet && s->events().size() == 1 && !s->events()[0].loud &&
        s->events()[0].endMs - s->events()[0].startMs == 1980;
   int becameLoud = 0;
@@ -645,33 +710,160 @@ __attribute__((noinline)) void testListen(Checker &c) {
     becameLoud += loud;
   }
   ok = ok && becameLoud == 1 && s->events().back().loud && s->events().back().peakDb == -18;
-  c.check(ok, "listener: SOUND, then QUIET 0.6 s after; LOUD 12 dB over the threshold, once");
+  c.check(ok, "heard mic: SOUND, then QUIET 0.6 s after; LOUD 12 dB over its threshold, once");
 
-  // Still-heres every 2 s until 10 s; then nothing: NO LINK at 30 s, the alarm, ack, link back.
-  for (uint32_t t = 6000; t <= 10000; t += 2000) s->heard(t);
-  s->tick(29999);
-  ok = s->link() == L::Link::Quiet && !s->alarm();
-  s->tick(30000);
-  ok = ok && s->link() == L::Link::NoLink && s->alarm() && s->sinceMs() == 10000;
-  ok = ok && s->ack() && !s->alarm() && s->link() == L::Link::NoLink && !s->ack();
-  s->heard(45000);
+  // Still-heres every 2 s until 10 s; then nothing: LOST at 30 s, the alarm, ack, the link back.
+  for (uint32_t t = 6000; t <= 10000; t += 2000) ok = ok && !s->on(t, 5, t + 3000).began;
+  s->tick(29999, true);
+  ok = ok && s->link() == L::Link::Quiet && !s->alarm();
+  s->tick(30000, true);
+  ok = ok && s->link() == L::Link::Lost && s->alarm() && s->sinceMs() == 10000;
+  ok = ok && s->ack() && !s->alarm() && s->link() == L::Link::Lost && !s->ack();
+  ch = s->on(45000, 5, 48000);
   const L::Event &e = s->events().back();
-  ok = ok && s->link() == L::Link::Quiet && e.noLink && !e.open && e.endMs - e.startMs == 35000;
-  s->tick(66000);  // lost again: the alarm sounds again
-  ok = ok && s->alarm();
-  c.check(ok, "listener: NO LINK 20 s after the last packet, its alarm until ack, the event 35 s");
+  ok = ok && ch.back && !ch.began && s->link() == L::Link::Quiet && e.lost && !e.open &&
+       e.endMs - e.startMs == 35000;
+  s->tick(66000, false);  // lost again, this board not hearing it now: no alarm
+  ok = ok && s->link() == L::Link::Lost && !s->alarm();
+  c.check(ok, "heard mic: LOST 20 s after the last packet, its alarm until ack, the outage 35 s; "
+              "no alarm where it isn't heard");
 
-  s->heard(67000);
-  ok = s->off(68000) && s->link() == L::Link::Stopped && !s->alarm() && !s->on();
-  bool dummy;
-  ok = ok && !s->audio(69000, 3, -10, dummy) && !s->tick(200000) && s->link() == L::Link::Stopped;
-  ListenerSet set;
-  ok = ok && set.allows(42);
-  set.n = 2;
-  set.ids[0] = 7;
-  set.ids[1] = 9;
-  c.check(ok && set.allows(9) && !set.allows(42) && !set.allows(0),
-          "listener: a clean off is STOPPED, no alarm; the allow-list lets in only those listed");
+  // Sessions: back, then its off: session 5 ended, 70 s long. Session 6 begins; 7 comes without
+  // 6's off: 6 ends, 7 begins. An off for another session changes nothing.
+  s->on(67000, 5, 70000);
+  ch = s->off(68000, 5);
+  ok = ch.ended && ch.endedSession == 5 && ch.endedMs == 71000 && s->link() == L::Link::Off &&
+       !s->alarm();
+  ok = ok && !s->audio(69000, 3, -10, loud) && !s->tick(200000, true) &&
+       s->link() == L::Link::Off;
+  ch = s->on(300000, 6, 0);
+  ok = ok && ch.began && !ch.ended && s->session() == 6;
+  ch = s->on(310000, 7, 1000);
+  ok = ok && ch.ended && ch.endedSession == 6 && ch.endedMs == 10000 && ch.began &&
+       s->session() == 7 && !s->off(320000, 6).ended && s->on();
+  c.check(ok, "heard mic: a session a log entry, on to off; a new one without the off ends the "
+              "one before; a clean off is no alarm");
+}
+
+__attribute__((noinline)) void testMixer(Checker &c) {
+  std::unique_ptr<Mixer> m(new Mixer());
+  struct Bufs {
+    int16_t tone[3][kFrameSamples];
+    Mixer::Frame f[3];
+    int16_t out[kFrameSamples];
+    int16_t dec[kFrameSamples];
+  };
+  std::unique_ptr<Bufs> u(new Bufs());
+  // Three boards, each a tone at -20 dBFS (3277 peak), 20 frames each, frames arriving in
+  // turn every 20 ms, one of B's lost on the air.
+  for (int s = 0; s < 3; ++s) {
+    for (size_t i = 0; i < kFrameSamples; ++i) {
+      u->tone[s][i] = static_cast<int16_t>(
+          3277 * sinf(2 * static_cast<float>(M_PI) * (300 + 400 * s) * i / kVoiceRate));
+    }
+  }
+  int most = 0, rounds = 0, lostSeen = 0;
+  adpcm::State enc[3];
+  uint32_t now = 1000;
+  for (uint16_t fr = 0; fr < 20; ++fr, now += 20) {
+    for (int s = 0; s < 3; ++s) {
+      Mixer::Frame &f = u->f[s];
+      f.frame = fr;
+      f.predictor = enc[s].predictor;
+      f.index = enc[s].index;
+      f.bytes = kFrameBytes;
+      adpcm::encode(enc[s], u->tone[s], kFrameSamples, f.data);
+      if (s == 1 && fr == 10) continue;  // lost on the air
+      m->add(0xA0 + s, 7, f, now);
+    }
+    const int n = m->pull(u->out, now);
+    most = std::max(most, n);
+    if (n) ++rounds;
+    size_t k = 0;
+    const Mixer::Played *p = m->played(k);
+    for (size_t i = 0; i < k; ++i) lostSeen += p[i].lost;
+  }
+  bool ok = most == 3 && m->sources() == 3 && lostSeen == 1;
+  // Late: a frame already played is dropped; one still waiting, a copy.
+  ok = ok && m->add(0xA1, 7, u->f[1], now) == Mixer::Took::Copy;
+  u->f[1].frame = 5;
+  ok = ok && m->add(0xA1, 7, u->f[1], now) == Mixer::Took::Late;
+  // A fourth board fits, a fifth doesn't.
+  u->f[0].frame = 0;
+  ok = ok && m->add(0xA3, 9, u->f[0], now) == Mixer::Took::Ok &&
+       m->add(0xA4, 9, u->f[0], now) == Mixer::Took::NoRoom;
+  c.check(ok, "mixer: three boards at once, a frame lost on the air covered, a late one "
+              "dropped; four sources, the fifth waits");
+
+  // The sum: two boards in one pull are their frames decoded and added, sample for sample.
+  m.reset(new Mixer());
+  adpcm::State e1, e2;
+  Mixer::Frame &a = u->f[0];
+  Mixer::Frame &b = u->f[1];
+  int err = 0, pulls = 0;
+  for (uint16_t fr = 0; fr < 4; ++fr) {
+    a.frame = b.frame = fr;
+    a.bytes = b.bytes = kFrameBytes;
+    a.predictor = e1.predictor;
+    a.index = e1.index;
+    adpcm::encode(e1, u->tone[0], kFrameSamples, a.data);
+    b.predictor = e2.predictor;
+    b.index = e2.index;
+    adpcm::encode(e2, u->tone[2], kFrameSamples, b.data);
+    m->add(1, 1, a, 5000 + fr * 20);
+    m->add(2, 1, b, 5000 + fr * 20);
+    if (fr == 0) continue;  // two frames in before it plays: frame 0 plays at fr 1
+  }
+  // Frames 0..3 of each are in; the pulls play them in order. Frame 0 again, to compare.
+  adpcm::State d1, d2;
+  e1 = adpcm::State();
+  e2 = adpcm::State();
+  for (uint16_t fr = 0; fr < 4; ++fr) {
+    adpcm::State s1 = e1, s2 = e2;
+    uint8_t p1[kFrameBytes], p2[kFrameBytes];
+    adpcm::encode(e1, u->tone[0], kFrameSamples, p1);
+    adpcm::encode(e2, u->tone[2], kFrameSamples, p2);
+    adpcm::decode(s1, p1, kFrameBytes, u->dec);
+    int16_t other[kFrameSamples];
+    adpcm::decode(s2, p2, kFrameBytes, other);
+    pulls += m->pull(u->out, 5080 + fr * 20) == 2;
+    for (size_t i = 0; i < kFrameSamples; ++i) {
+      err = std::max(err, abs(u->out[i] - (u->dec[i] + other[i])));
+    }
+  }
+  (void)d1;
+  (void)d2;
+  err = pulls == 4 ? err : 99999;
+  // Loud: three boards near full scale don't wrap round.
+  m.reset(new Mixer());
+  for (int s = 0; s < 3; ++s) {
+    for (size_t i = 0; i < kFrameSamples; ++i) u->tone[s][i] = (i / 8) % 2 ? 30000 : -30000;
+    adpcm::State e;
+    for (uint16_t fr = 0; fr < 3; ++fr) {
+      Mixer::Frame &f = u->f[s];
+      f.frame = fr;
+      f.predictor = e.predictor;
+      f.index = e.index;
+      f.bytes = kFrameBytes;
+      adpcm::encode(e, u->tone[s], kFrameSamples, f.data);
+      m->add(0x10 + s, 1, f, 7000);
+    }
+  }
+  int peak = 0;
+  bool wrapped = false;
+  for (int k = 0; k < 3; ++k) {
+    m->pull(u->out, 7000 + k * 20);
+    for (size_t i = 8; i < kFrameSamples; ++i) {
+      peak = std::max(peak, abs(static_cast<int>(u->out[i])));
+      // Every board's square wave has the same sign here: the sum mustn't flip it.
+      if ((i / 8) % 2 && u->out[i] < 0) wrapped = true;
+    }
+  }
+  // Idle: a board with nothing for 2 s is gone.
+  m->pull(u->out, 7000 + 3 * 20 + Mixer::kIdleMs);
+  m->pull(u->out, 7000 + 4 * 20 + Mixer::kIdleMs);
+  c.check(err == 0 && peak > 30000 && peak <= 32767 && !wrapped && m->sources() == 0,
+          "mixer: two at once in one pull; three near full scale held under it; gone after 2 s");
 }
 
 }  // namespace
@@ -688,10 +880,12 @@ bool selfTest(Print &out) {
   testCallPackets(c);
   testMessages(c);
   testConversations(c);
-  testMonitorPackets(c);
+  testMicPackets(c);
   testGate(c);
+  testEchoGate(c);
   testHistory(c);
-  testListen(c);
+  testHeard(c);
+  testMixer(c);
   out.printf("commstest: %s (%d failed) in %lu ms\n", c.failed ? "FAILED" : "all passed",
              c.failed, static_cast<unsigned long>(millis() - t0));
   return c.failed == 0;

@@ -41,7 +41,7 @@ constexpr uint32_t kDmaFrames = 511;
 
 enum class Cmd : uint8_t {
   Play, TogglePause, Next, Stop, Volume, Ring, Beep, Chirp, Record, RecordStop, RecordPause,
-  MicGain, Capture, CaptureStop, StreamStart, StreamAbort
+  MicGain, Capture, CaptureStop, StreamStart, StreamAbort, DuplexStart, DuplexStop, DuplexLoopback
 };
 struct Command {
   Cmd cmd;
@@ -53,6 +53,7 @@ struct Command {
 // Shared state (UI task <-> audio task)
 
 QueueHandle_t commands = nullptr;
+TaskHandle_t taskHandle = nullptr;
 SemaphoreHandle_t lock = nullptr;  // guards `shared` and `playlist`
 Status shared;
 std::vector<std::string> playlist;
@@ -85,6 +86,20 @@ std::atomic<bool> captureOn{false};
 std::atomic<uint32_t> captureDropped{0};  // bytes lost because nobody read the ring in time
 std::atomic<bool> streamOn{false};
 std::atomic<bool> streamEnded{false};
+// Duplex (comms): the mic's blocks to comms, comms's PCM to the speaker. PSRAM.
+constexpr size_t kDuplexPlayBytes = 32 * 1024;  // 1 s at 16 kHz
+constexpr size_t kDuplexMicBlocks = 48;         // 480 ms of the mic waiting for comms
+StreamBufferHandle_t duplexPlay = nullptr;
+QueueHandle_t duplexMicQ = nullptr;
+std::atomic<bool> duplexLive{false};
+std::atomic<bool> duplexMicOn{false};
+std::atomic<bool> duplexAmp{false};
+std::atomic<uint32_t> duplexBlocks{0};
+std::atomic<uint32_t> duplexUnderruns{0};
+std::atomic<uint32_t> duplexMicDropped{0};
+std::atomic<int> duplexSpeakerCenti{-9600};
+std::atomic<uint32_t> duplexQueuedSum{0}, duplexQueuedBlocks{0};  // comms's queue, in samples
+std::atomic<int> duplexLoopBlocks{6};  // the echo delay in blocks: measured 2026-11-23 (comms.h)
 
 struct Locked {
   Locked() { xSemaphoreTake(lock, portMAX_DELAY); }
@@ -489,7 +504,7 @@ void ringStep() {
 // Tones (audio task only): a run of tones and silences, each tone with soft edges and gliding
 // from hz to hzEnd, then enough silence to push them through the DMA buffers before the output
 // goes off again. Returns once they have played. At the music volume: at 0, nothing plays. With
-// minVolume, never below it (the baby monitor's alarm and chirp, as the alarm tone).
+// minVolume, never below it (comms's LOST alarm and loud chirp, as the alarm tone).
 
 struct Tone {
   uint16_t ms;
@@ -579,16 +594,19 @@ constexpr Tone kRingTrill[] = {RING_BURST, {120, 0, 0}, RING_BURST};
 // A comms message that came (audio::messageChirp()): high, low, high.
 constexpr Tone kMessageChirp[] = {{50, 1500, 1500}, {30, 0, 0}, {50, 1125, 1125},
                                   {30, 0, 0}, {80, 1500, 1500}};
-// The baby monitor's NO LINK alarm (audio::monitorAlarm()): hi-lo twice, a siren's two notes at
-// the 2 kHz the small speaker is loudest at and a fourth below, louder than the cues. Repeated by
-// comms every 2.5 s until it's silenced. And a LOUD sound heard with the volume low
-// (audio::monitorChirp()): three quick rising pips. Both at half volume at least.
-constexpr Tone kMonitorAlarm[] = {{160, 2000, 2000}, {40, 0, 0}, {160, 1500, 1500}, {40, 0, 0},
-                                  {160, 2000, 2000}, {40, 0, 0}, {160, 1500, 1500}};
-constexpr Tone kMonitorChirp[] = {{40, 1125, 1125}, {25, 0, 0}, {40, 1500, 1500}, {25, 0, 0},
-                                  {60, 2000, 2000}};
-constexpr float kMonitorAlarmLevel = 0.6f;
-constexpr int kMonitorMinVolume = 50;
+// Comms's LOST alarm (audio::lostAlarm()): hi-lo twice, a siren's two notes at the 2 kHz the
+// small speaker is loudest at and a fourth below, louder than the cues. Repeated by comms every
+// 2.5 s until it's silenced. And a LOUD sound heard with the volume low (audio::loudChirp()):
+// three quick rising pips. Both at half volume at least.
+constexpr Tone kLostAlarm[] = {{160, 2000, 2000}, {40, 0, 0}, {160, 1500, 1500}, {40, 0, 0},
+                               {160, 2000, 2000}, {40, 0, 0}, {160, 1500, 1500}};
+constexpr Tone kLoudChirp[] = {{40, 1125, 1125}, {25, 0, 0}, {40, 1500, 1500}, {25, 0, 0},
+                               {60, 2000, 2000}};
+constexpr float kLostAlarmLevel = 0.6f;
+constexpr int kLostMinVolume = 50;
+// A mic that was on a long while switched off (audio::micOffChirp()): the agent's falling pips,
+// softer.
+constexpr float kMicOffLevel = 0.15f;
 
 // ---------------------------------------------------------------------------------------------
 // WAV playback (audio task only): 16-bit PCM read straight into the output.
@@ -993,7 +1011,354 @@ void recordStep() {
   if (rec.fill >= kRecWriteBytes) recordFlush();
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Duplex (audio task only): comms's open mic and the voices it plays, at once. TX and RX on
+// I2S_NUM_0 as one full-duplex pair (they share BCLK and WS), both stereo 16-bit at 16 kHz, MCLK
+// 256 x fs; the mic is the left slot (REG44 0x08: the ADC on both). The loop is clocked by RX:
+// each 10 ms block read from the mic is followed by one written to the speaker, from what comms
+// queued (10 dB up through the stream's limiter, as a stream), else silence. The DMA buffers are
+// small: 6 x 10 ms each way, so the speaker is about 50 ms behind what's written and a stall of
+// the task up to 60 ms loses nothing from the mic.
+//
+// The echo reference: the peak of each block played (after the volume) is kept, and each mic
+// block carries the loudest of those that could be in it: the blocks written the loopback delay
+// before it (measured by duplexLoopback()), and 80 ms before that for the room's tail.
+
+constexpr uint32_t kDuplexDesc = 6;           // DMA buffers each way, 10 ms each
+constexpr uint32_t kDuplexAmpHoldMs = 1500;   // the amp stays on this long after the last sound
+constexpr uint32_t kDuplexUnmuteMs = 20;      // the DAC unmutes this long after the amp comes on
+constexpr int kDuplexHistory = 32;            // played blocks' peaks kept for the echo reference
+constexpr int kDuplexTail = 8;                // the room's tail: 80 ms of echo after a block
+constexpr uint32_t kDuplexPopBlocks = 4;      // the amp's switching thump: mic blocks masked
+constexpr int kLoopPre = 50, kLoopPost = 40;  // the loopback test's silence before and after
+
+struct DuplexTones {
+  const Tone *tones = nullptr;
+  int count = 0, at = 0;
+  uint32_t done = 0;  // samples into tones[at]
+  float phase = 0, level = 0, gain = 1;
+  uint32_t ramp = 1;
+};
+
+struct Duplex {
+  bool on = false;
+  i2s_chan_handle_t tx = nullptr, rx = nullptr;
+  bool amp = false, muted = true;
+  uint32_t lastSoundMs = 0, ampOnMs = 0;
+  uint32_t popUntil = 0;  // mic blocks before this seq heard the amp switch
+  float limit = 1, release = 0;
+  bool sounding = false;  // a sound is playing: queued blocks came lately
+  int gap = 0;            // blocks with nothing queued since it last had something
+  float peaks[kDuplexHistory] = {};
+  uint32_t seq = 0;
+  float speaker[20] = {};
+  int speakerAt = 0;
+  DuplexTones tones;
+  // The loopback test.
+  bool test = false;
+  float testLevelDb = 0;
+  uint32_t testStart = 0, testBlocks = 0, testPhase = 0;
+  int8_t *testMic = nullptr;  // the mic's peak each block of it, dBFS
+  LoopbackResult result;
+} dpx;
+
+std::atomic<bool> loopDone{false};
+
+float volumeDb() {
+  const int v = volume.load();
+  return v <= 0 ? -96.0f : -0.5f * (100 - v);  // es8311::setVolume(): 0.5 dB a step, 100 = 0 dB
+}
+
+void duplexAmpOn(bool on) {
+  if (on == dpx.amp) return;
+  if (on) {
+    digitalWrite(board::AMP_EN, HIGH);
+    dpx.ampOnMs = millis();  // the DAC unmutes kDuplexUnmuteMs later, ahead of the sound (the DMA)
+  } else {
+    es8311::mute(true);
+    dpx.muted = true;
+    digitalWrite(board::AMP_EN, LOW);
+  }
+  dpx.amp = on;
+  duplexAmp = on;
+  dpx.popUntil = dpx.seq + kDuplexPopBlocks;
+}
+
+bool duplexBegin() {
+  if (dpx.on) return true;
+  // The alarm, a recording or the agent's capture, the agent's reply: theirs, not comms's. Music
+  // (playing or paused) stops: comms plays it on later.
+  if (ring.on || recOn || strm.on) return false;
+  releaseOutput();
+  if (!duplexPlay) {
+    duplexPlay = xStreamBufferCreateWithCaps(kDuplexPlayBytes, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  if (!duplexMicQ) {
+    duplexMicQ = xQueueCreateWithCaps(kDuplexMicBlocks, sizeof(DuplexBlock),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  if (!duplexPlay || !duplexMicQ) return false;
+  xStreamBufferReset(duplexPlay);
+  xQueueReset(duplexMicQ);
+  i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  chan.dma_desc_num = kDuplexDesc;
+  chan.dma_frame_num = kDuplexBlock;
+  chan.auto_clear = true;
+  if (i2s_new_channel(&chan, &dpx.tx, &dpx.rx) != ESP_OK) {
+    log_e("audio: duplex: i2s_new_channel failed");
+    dpx.tx = dpx.rx = nullptr;
+    return false;
+  }
+  i2s_std_config_t cfg = stdConfig(kDuplexRate);
+  cfg.gpio_cfg.din = static_cast<gpio_num_t>(board::I2S_DIN);
+  if (i2s_channel_init_std_mode(dpx.tx, &cfg) != ESP_OK ||
+      i2s_channel_init_std_mode(dpx.rx, &cfg) != ESP_OK || i2s_channel_enable(dpx.tx) != ESP_OK ||
+      i2s_channel_enable(dpx.rx) != ESP_OK) {
+    log_e("audio: duplex: I2S setup failed");
+    i2s_del_channel(dpx.tx);
+    i2s_del_channel(dpx.rx);
+    dpx.tx = dpx.rx = nullptr;
+    return false;
+  }
+  delay(5);  // MCLK running before the codec's state machine starts
+  codecOn();
+  es8311::micBegin(micDigitalDb.load());
+  es8311::setVolume(volume.load());
+  es8311::mute(true);
+  const i2s_chan_handle_t t = dpx.tx, r = dpx.rx;
+  int8_t *mic = dpx.testMic;
+  dpx = Duplex{};
+  dpx.tx = t;
+  dpx.rx = r;
+  dpx.testMic = mic;
+  dpx.release = 1 - expf(-1000.0f / (kStreamReleaseMs * kDuplexRate));
+  for (float &x : dpx.peaks) x = -96;
+  for (float &x : dpx.speaker) x = -96;
+  dpx.on = true;
+  duplexBlocks = duplexUnderruns = duplexMicDropped = 0;
+  duplexQueuedSum = duplexQueuedBlocks = 0;
+  duplexSpeakerCenti = -9600;
+  duplexLive = true;
+  outputLive = true;
+  log_i("audio: duplex on (16 kHz, mic gain %d dB)", es8311::kMicPgaDb + micDigitalDb.load());
+  return true;
+}
+
+void duplexEnd() {
+  if (!dpx.on) return;
+  duplexAmpOn(false);
+  i2s_channel_disable(dpx.tx);
+  i2s_channel_disable(dpx.rx);
+  i2s_del_channel(dpx.tx);
+  i2s_del_channel(dpx.rx);
+  dpx.tx = dpx.rx = nullptr;
+  codecOff();
+  dpx.on = false;
+  if (dpx.test) {
+    dpx.test = false;
+    loopDone = true;
+  }
+  duplexLive = false;
+  outputLive = false;
+  duplexSpeakerCenti = -9600;
+  log_i("audio: duplex off after %lu blocks (%lu underruns, %lu mic blocks dropped)",
+        (unsigned long)duplexBlocks.load(), (unsigned long)duplexUnderruns.load(),
+        (unsigned long)duplexMicDropped.load());
+}
+
+// The tones of a chirp into the duplex output, over the voices (at minVolume at least, by gain:
+// the DAC's volume is the voices' too).
+void duplexChirp(const Tone *tones, int count, float level, uint32_t rampMs, int minVolume = 0) {
+  const int vol = volume.load();
+  if (vol == 0 && minVolume == 0) return;
+  DuplexTones &t = dpx.tones;
+  t = DuplexTones{};
+  t.tones = tones;
+  t.count = count;
+  t.level = level;
+  t.ramp = std::max<uint32_t>(1, rampMs * kDuplexRate / 1000);
+  t.gain = minVolume > vol ? powf(10, (minVolume - vol) * 0.5f / 20) : 1;
+}
+
+float duplexToneSample() {
+  DuplexTones &t = dpx.tones;
+  if (!t.tones) return 0;
+  const Tone &tone = t.tones[t.at];
+  const uint32_t total = std::max<uint32_t>(1, tone.ms * kDuplexRate / 1000);
+  float v = 0;
+  if (tone.hz) {
+    float amp = t.level;
+    if (t.done < t.ramp) amp *= static_cast<float>(t.done) / t.ramp;
+    if (total - t.done < t.ramp) amp *= static_cast<float>(total - t.done) / t.ramp;
+    const float hz = tone.hz + (static_cast<float>(tone.hzEnd) - tone.hz) * t.done / total;
+    t.phase += 2 * static_cast<float>(M_PI) * hz / kDuplexRate;
+    if (t.phase > 2 * static_cast<float>(M_PI)) t.phase -= 2 * static_cast<float>(M_PI);
+    v = amp * 32767 * sinf(t.phase) * t.gain;
+  }
+  if (++t.done >= total) {
+    t.done = 0;
+    t.phase = 0;
+    if (++t.at >= t.count) t.tones = nullptr;
+  }
+  return v;
+}
+
+// The loopback test is over: what the mic heard, against what was played.
+void loopbackFinish() {
+  LoopbackResult &r = dpx.result;
+  r = LoopbackResult{};
+  r.volume = volume.load();
+  r.playedDb = dpx.testLevelDb + volumeDb();
+  const int8_t *m = dpx.testMic;
+  float noise = -96;
+  for (int i = kLoopPre - 20; i < kLoopPre; ++i) {  // after the codec's start-up thump
+    noise = std::max(noise, static_cast<float>(m[i]));
+  }
+  r.noiseDb = noise;
+  const int tone = static_cast<int>(dpx.testBlocks);
+  for (int i = kLoopPre; i < kLoopPre + tone + kLoopPost; ++i) {
+    if (m[i] > noise + 15) {
+      r.delayBlocks = i - kLoopPre;
+      break;
+    }
+  }
+  if (r.delayBlocks >= 0 && tone > 8) {
+    std::vector<int8_t> steady(m + kLoopPre + r.delayBlocks + 4, m + kLoopPre + r.delayBlocks + tone);
+    std::sort(steady.begin(), steady.end());
+    r.micDb = steady[steady.size() / 2];
+    r.couplingDb = r.micDb - r.playedDb;
+    r.ok = true;
+  }
+  dpx.test = false;
+  loopDone = true;
+  char line[3 * 64 + 1];
+  for (int at = 0; at < kLoopPre + tone + kLoopPost; at += 64) {
+    size_t n = 0;
+    for (int i = at; i < at + 64 && i < kLoopPre + tone + kLoopPost; ++i) {
+      n += snprintf(line + n, sizeof line - n, "%3d", -m[i]);
+    }
+    log_i("audio: loopback blocks from %d (dB below full scale):%s", at, line);
+  }
+  log_i("audio: loopback: tone %.0f dBFS at VOL %d, mic %.0f dBFS (noise %.0f), coupling %.0f dB, "
+        "delay %d blocks",
+        static_cast<double>(dpx.testLevelDb), r.volume, static_cast<double>(r.micDb),
+        static_cast<double>(r.noiseDb), static_cast<double>(r.couplingDb), r.delayBlocks);
+}
+
+void duplexStep() {
+  int16_t *st = p.pcm;  // the stereo block, in and then out
+  size_t got = 0;
+  if (i2s_channel_read(dpx.rx, st, kDuplexBlock * 4, &got, 100) != ESP_OK ||
+      got < kDuplexBlock * 4) {
+    return;
+  }
+  const uint32_t k = dpx.seq++;
+  duplexBlocks.fetch_add(1, std::memory_order_relaxed);
+  const uint32_t now = millis();
+
+  // The mic: the left slot, with the echo reference for it.
+  DuplexBlock b;
+  int micPeak = 0;
+  for (size_t i = 0; i < kDuplexBlock; ++i) {
+    b.pcm[i] = st[2 * i];
+    micPeak = std::max(micPeak, std::abs(static_cast<int>(b.pcm[i])));
+  }
+  b.seq = k;
+  const int d = duplexLoopBlocks.load();
+  float echo = -96;
+  for (int j = d - 1; j <= d + kDuplexTail; ++j) {  // blocks written j before this one
+    if (j < 1 || static_cast<uint32_t>(j) > k) continue;
+    echo = std::max(echo, dpx.peaks[(k - j) % kDuplexHistory]);
+  }
+  if (k < dpx.popUntil) echo = 0;  // the amp's thump: anything goes as echo
+  b.echoDb = echo;
+  if (dpx.test) {
+    const uint32_t i = k - dpx.testStart;
+    if (i < kLoopPre + dpx.testBlocks + kLoopPost) {
+      dpx.testMic[i] = static_cast<int8_t>(std::max(-96.0f, peakDb(micPeak)));
+    }
+  } else if (duplexMicOn.load(std::memory_order_relaxed)) {
+    if (xQueueSend(duplexMicQ, &b, 0) != pdTRUE) {
+      duplexMicDropped.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+
+  // The speaker: comms's queue (or the test's tone), the chirps over it.
+  int16_t mono[kDuplexBlock];
+  size_t n = 0;
+  bool raw = false;  // the test's tone: as it is, not 10 dB up
+  if (dpx.test) {
+    const uint32_t i = k - dpx.testStart;
+    if (i >= kLoopPre && i < kLoopPre + dpx.testBlocks) {
+      const float amp = 32767 * powf(10, dpx.testLevelDb / 20);
+      for (size_t s = 0; s < kDuplexBlock; ++s, ++dpx.testPhase) {  // 1 kHz: 16 samples a period
+        mono[s] = static_cast<int16_t>(
+            lroundf(amp * sinf(2 * static_cast<float>(M_PI) * (dpx.testPhase % 16) / 16)));
+      }
+      n = kDuplexBlock;
+      raw = true;
+    }
+    if (i + 1 >= kLoopPre + dpx.testBlocks + kLoopPost) loopbackFinish();
+  } else {
+    n = xStreamBufferReceive(duplexPlay, mono, sizeof mono, 0) / 2;
+    if (n) {  // what's still queued behind this block: comms's lead over the speaker
+      duplexQueuedSum.fetch_add(xStreamBufferBytesAvailable(duplexPlay) / 2,
+                                std::memory_order_relaxed);
+      duplexQueuedBlocks.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+  // An underrun: comms's queue ran dry in the middle of a sound (it came back within 3 blocks),
+  // or handed over part of a block.
+  if (n > 0 && dpx.sounding && (n < kDuplexBlock || (dpx.gap > 0 && dpx.gap <= 3))) {
+    duplexUnderruns.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (n > 0) {
+    dpx.sounding = true;
+    dpx.gap = 0;
+  } else if (dpx.sounding && ++dpx.gap > 3) {
+    dpx.sounding = false;
+  }
+  for (size_t s = n; s < kDuplexBlock; ++s) mono[s] = 0;
+  const bool chirping = dpx.tones.tones != nullptr;
+  int peak = 0;
+  for (size_t s = 0; s < kDuplexBlock; ++s) {
+    float x = mono[s];
+    if (!raw) {
+      x *= kStreamBoost;
+      const float a = fabsf(x);
+      if (a * dpx.limit > kStreamCeiling) dpx.limit = kStreamCeiling / a;
+      x *= dpx.limit;
+      dpx.limit += (1 - dpx.limit) * dpx.release;
+    }
+    if (chirping) x += duplexToneSample();
+    const int v = std::clamp(static_cast<int>(lroundf(x)), -32767, 32767);
+    st[2 * s] = st[2 * s + 1] = static_cast<int16_t>(v);
+    peak = std::max(peak, std::abs(v));
+  }
+  if (n > 0 || chirping || dpx.test) dpx.lastSoundMs = now;
+  if (!dpx.amp && (n > 0 || chirping || dpx.test)) duplexAmpOn(true);
+  if (dpx.amp && dpx.muted && now - dpx.ampOnMs >= kDuplexUnmuteMs) {
+    es8311::mute(false);
+    dpx.muted = false;
+  }
+  if (dpx.amp && now - dpx.lastSoundMs > kDuplexAmpHoldMs) duplexAmpOn(false);
+  const float out = dpx.amp ? peakDb(peak) + volumeDb() : -96;  // what goes into the room
+  dpx.peaks[k % kDuplexHistory] = out;
+  dpx.speaker[dpx.speakerAt] = out;
+  dpx.speakerAt = (dpx.speakerAt + 1) % 20;
+  duplexSpeakerCenti = static_cast<int>(*std::max_element(dpx.speaker, dpx.speaker + 20) * 100);
+  size_t written = 0;
+  i2s_channel_write(dpx.tx, st, kDuplexBlock * 4, &written, 50);
+}
+
 void handle(const Command &c) {
+  // Anything else that plays or records takes the port from the duplex path (comms sees it go).
+  if (dpx.on && (c.cmd == Cmd::Play || c.cmd == Cmd::TogglePause || c.cmd == Cmd::Stop ||
+                 c.cmd == Cmd::StreamStart || c.cmd == Cmd::Capture || c.cmd == Cmd::Record ||
+                 (c.cmd == Cmd::Ring && c.arg) || c.cmd == Cmd::DuplexStop)) {
+    duplexEnd();
+  }
   if (ring.on && c.cmd != Cmd::Ring && c.cmd != Cmd::Volume && c.cmd != Cmd::Beep &&
       c.cmd != Cmd::Chirp) {
     ringStop();
@@ -1015,18 +1380,38 @@ void handle(const Command &c) {
   }
   switch (c.cmd) {
     case Cmd::Beep:
-      if (!recOn && !ring.on && !strm.on && state == State::Stopped) beepNow(c.arg, c.arg2, c.arg2);
+      if (!recOn && !ring.on && !strm.on && !dpx.on && state == State::Stopped) {
+        beepNow(c.arg, c.arg2, c.arg2);
+      }
       break;
     case Cmd::Chirp:
       if (recOn || ring.on || strm.on || rec.capture) break;
+      if (dpx.on) {  // into the duplex output, over the voices
+#define TONES(t) t, static_cast<int>(sizeof t / sizeof t[0])
+        switch (c.arg) {
+          case 2: duplexChirp(TONES(kRingTrill), kCueLevel, kCueRampMs); break;
+          case 3: duplexChirp(TONES(kMessageChirp), kCueLevel, kCueRampMs); break;
+          case 4: duplexChirp(TONES(kLostAlarm), kLostAlarmLevel, kRampMs, kLostMinVolume); break;
+          case 5: duplexChirp(TONES(kLoudChirp), kCueLevel, kCueRampMs, kLostMinVolume); break;
+          case 6: duplexChirp(TONES(kCue), kCueLevel, kCueRampMs); break;
+          case 7: duplexChirp(TONES(kFall), kMicOffLevel, kCueRampMs); break;
+          default: duplexChirp(c.arg ? kRise : kFall, 3, kCueLevel, kCueRampMs); break;
+        }
+#undef TONES
+        break;
+      }
       if (c.arg == 2) {  // comms's ring: over music too (tonesNow() plays into its output)
         tonesNow(kRingTrill, sizeof kRingTrill / sizeof kRingTrill[0], kCueLevel, kCueRampMs);
-      } else if (c.arg == 4) {  // the baby monitor's: over music too, at half volume at least
-        tonesNow(kMonitorAlarm, sizeof kMonitorAlarm / sizeof kMonitorAlarm[0], kMonitorAlarmLevel,
-                 kRampMs, kMonitorMinVolume);
+      } else if (c.arg == 4) {  // comms's LOST alarm: over music too, at half volume at least
+        tonesNow(kLostAlarm, sizeof kLostAlarm / sizeof kLostAlarm[0], kLostAlarmLevel, kRampMs,
+                 kLostMinVolume);
       } else if (c.arg == 5) {
-        tonesNow(kMonitorChirp, sizeof kMonitorChirp / sizeof kMonitorChirp[0], kCueLevel,
-                 kCueRampMs, kMonitorMinVolume);
+        tonesNow(kLoudChirp, sizeof kLoudChirp / sizeof kLoudChirp[0], kCueLevel, kCueRampMs,
+                 kLostMinVolume);
+      } else if (state == State::Stopped && c.arg == 6) {
+        tonesNow(kCue, sizeof kCue / sizeof kCue[0], kCueLevel, kCueRampMs);
+      } else if (state == State::Stopped && c.arg == 7) {
+        tonesNow(kFall, 3, kMicOffLevel, kCueRampMs);
       } else if (state == State::Stopped && c.arg == 3) {
         tonesNow(kMessageChirp, sizeof kMessageChirp / sizeof kMessageChirp[0], kCueLevel,
                  kCueRampMs);
@@ -1046,6 +1431,26 @@ void handle(const Command &c) {
       break;
     case Cmd::StreamAbort:
       break;  // stopped above
+    case Cmd::DuplexStart:
+      ack(duplexBegin());
+      break;
+    case Cmd::DuplexStop:
+      ack(true);  // ended above
+      break;
+    case Cmd::DuplexLoopback:
+      if (!dpx.on || dpx.test) {
+        dpx.result = LoopbackResult{};
+        loopDone = true;
+        break;
+      }
+      if (!dpx.testMic) dpx.testMic = new int8_t[kLoopPre + 200 + kLoopPost];
+      dpx.test = true;
+      dpx.testLevelDb = std::min(0.0f, c.arg / 100.0f);
+      dpx.testBlocks = std::min<uint32_t>(200, std::max<uint32_t>(20, c.arg2 / 10));
+      dpx.testStart = dpx.seq;
+      dpx.testPhase = 0;
+      duplexAmpOn(true);  // its thump falls in the silence before the tone
+      break;
     case Cmd::Record:
       recordStart();
       break;
@@ -1104,7 +1509,7 @@ void handle(const Command &c) {
       setState(State::Stopped);
       break;
     case Cmd::Volume:
-      if (tx && !ring.on) es8311::setVolume(c.arg);
+      if ((tx || dpx.on) && !ring.on) es8311::setVolume(c.arg);
       break;
     case Cmd::Ring:
       if (c.arg) {
@@ -1265,7 +1670,7 @@ void task(void *) {
       state = shared.state;
     }
     const bool playing = state == State::Playing && (p.decoder || p.wav);
-    const bool busy = playing || ring.on || recOn || strm.on;
+    const bool busy = playing || ring.on || recOn || strm.on || dpx.on;
     Command c;
     if (xQueueReceive(commands, &c, busy ? 0 : portMAX_DELAY) == pdTRUE) {
       handle(c);
@@ -1277,6 +1682,8 @@ void task(void *) {
       ringStep();
     } else if (strm.on) {
       streamStep();
+    } else if (dpx.on) {
+      duplexStep();
     } else if (playing) {
       step();
     }
@@ -1301,7 +1708,7 @@ void begin() {
     log_e("audio: buffer allocation failed");
     return;
   }
-  xTaskCreatePinnedToCore(task, "audio", 8192, nullptr, 5, nullptr, 0);
+  xTaskCreatePinnedToCore(task, "audio", 8192, nullptr, 5, &taskHandle, 0);
 }
 
 void play(std::vector<std::string> list, int index, uint32_t startMs) {
@@ -1355,9 +1762,13 @@ void ringChirp() { send(Cmd::Chirp, 2); }
 
 void messageChirp() { send(Cmd::Chirp, 3); }
 
-void monitorAlarm() { send(Cmd::Chirp, 4); }
+void lostAlarm() { send(Cmd::Chirp, 4); }
 
-void monitorChirp() { send(Cmd::Chirp, 5); }
+void loudChirp() { send(Cmd::Chirp, 5); }
+
+void micCue() { send(Cmd::Chirp, 6); }
+
+void micOffChirp() { send(Cmd::Chirp, 7); }
 
 void record(const std::string &path) {
   if (!lock) return;
@@ -1424,6 +1835,62 @@ void streamAbort() { send(Cmd::StreamAbort); }
 
 bool streaming() { return streamOn.load(); }
 
+bool duplexStart() { return sendAndWait(Cmd::DuplexStart); }
+
+void duplexStop() {
+  if (duplexLive.load()) sendAndWait(Cmd::DuplexStop);
+}
+
+bool duplexOn() { return duplexLive.load(); }
+
+void duplexMic(bool on) {
+  if (on && duplexMicQ) xQueueReset(duplexMicQ);
+  duplexMicOn = on;
+}
+
+bool duplexRead(DuplexBlock &b, uint32_t timeoutMs) {
+  if (!duplexMicQ) return false;
+  return xQueueReceive(duplexMicQ, &b, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+
+size_t duplexWrite(const int16_t *pcm, size_t samples) {
+  if (!duplexLive.load() || !duplexPlay) return 0;
+  const size_t room = xStreamBufferSpacesAvailable(duplexPlay) / 2;
+  const size_t n = std::min(samples, room);
+  return n ? xStreamBufferSend(duplexPlay, pcm, n * 2, 0) / 2 : 0;
+}
+
+uint32_t duplexQueuedMs() {
+  if (!duplexPlay) return 0;
+  return static_cast<uint32_t>(xStreamBufferBytesAvailable(duplexPlay) / 2 * 1000 / kDuplexRate);
+}
+
+DuplexStats duplexStats() {
+  DuplexStats s;
+  s.on = duplexLive.load();
+  s.ampOn = duplexAmp.load();
+  s.blocks = duplexBlocks.load();
+  s.underruns = duplexUnderruns.load();
+  s.micDropped = duplexMicDropped.load();
+  s.speakerDb = s.on ? duplexSpeakerCenti.load() / 100.0f : -96;
+  s.loopbackBlocks = duplexLoopBlocks.load();
+  s.stackFree = taskHandle ? uxTaskGetStackHighWaterMark(taskHandle) : 0;
+  const uint32_t qb = duplexQueuedBlocks.load();
+  s.queuedMs = qb ? static_cast<float>(duplexQueuedSum.load()) / qb * 1000 / kDuplexRate : 0;
+  return s;
+}
+
+LoopbackResult duplexLoopback(float levelDb, uint32_t ms) {
+  if (!commands || !duplexLive.load()) return LoopbackResult{};
+  loopDone = false;
+  send(Cmd::DuplexLoopback, static_cast<int>(lroundf(levelDb * 100)), static_cast<int>(ms));
+  const uint32_t t0 = millis();
+  while (!loopDone.load() && millis() - t0 < ms + 2500) delay(10);
+  return loopDone.load() ? dpx.result : LoopbackResult{};
+}
+
+void setDuplexLoopback(int blocks) { duplexLoopBlocks = std::clamp(blocks, 1, 20); }
+
 bool active() {
   if (!lock) return false;
   Locked l;
@@ -1440,7 +1907,7 @@ bool outputOn() { return outputLive.load(); }
 
 bool busy() {
   if (!lock) return false;
-  if (outputLive.load() || recOn.load() || ringOn.load()) return true;
+  if (outputLive.load() || recOn.load() || ringOn.load() || duplexLive.load()) return true;
   Locked l;
   return shared.state == State::Playing;
 }

@@ -16,12 +16,13 @@
 //                       2026-11-21), and 42 KB more while the board is on the tailnet. 0 or unset:
 //                       none of it is built, and System's TAILNET row says so.
 //   -DINKDECK_COMMS=1   COMMS (comms.h, issue #66): boards talking to each other over ESP-NOW,
-//                       push-to-talk in groups from the card's mesh_group lines, relaying for
-//                       each other as a mesh. Home's COMMS, its screens and the call sheet
-//                       (apps/comms_ui.h), where HOLD BOOT talks to the boards; the baby monitor's
-//                       engine. It listens on USB power, while a Comms screen holds it, or while
-//                       the board is a monitor's room or listens to one. 0 or unset: none of it is
-//                       built, and the dev commands !comms... are left out.
+//                       open mics in groups from the card's mesh_group lines (a board's mic on
+//                       or off, several at once, mixed), relaying for each other as a mesh.
+//                       Home's COMMS, its screens and the call sheet (apps/comms_ui.h), where
+//                       HOLD BOOT switches the mic on while held, for now. It listens on USB
+//                       power, while a Comms screen holds it, while this board's mic is on, or
+//                       while it's in a conversation where another board's mic is on. 0 or unset:
+//                       none of it is built, and the dev commands !comms... are left out.
 #pragma once
 
 #if !defined(INKDECK_AGENT) && defined(INKDECK_VOICE)

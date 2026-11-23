@@ -29,7 +29,7 @@ board instead, and the wheel keeps its portrait sense there.
 | **Recorder** | Voice memos from the onboard mic as 16 kHz WAV, with a live waveform, input meter and gain. Memos play back on the device with a volume meter (▲▼), and can be deleted |
 | **Talk** | Hold BOOT on any screen and talk to an assistant on your network: a sheet rises over the lower half of the screen with what it heard and its reply; it speaks back, and can play music on speakers through Home Assistant. It can also use the board: find and open a book, read out the forecast, set an alarm, change the volume, open a screen, or say how the battery is (`src/apps/board_tools.h`), and search the web (SearXNG, Brave or Tavily). A screen it opens comes up once the reply has been said. **Long answers go on the screen**: for a recipe, the steps of a how-to or a list, it says a sentence or two and puts the whole thing up as a **note** (`src/apps/note.h`), paged like the Reader (▲▼, Literata in three sizes), with headings, bullets, numbered steps and checklists. Each note is kept as Markdown in `SD:/Notes/` (the onboard flash without a card), where Files opens it again; "show me the recipe again" brings back the last one where it was left, and it can read the note on screen to answer a follow-up ("double it"). The board streams the mic, encrypted with the token both ends hold, to [`inkharness serve`](inkharness/README.md), a Rust daemon that runs speech-to-text, a language model and text-to-speech (hosted or local, each swappable; a model that hears or speaks can stand in for the first or last), and plays the reply as it arrives. Set `agent_host` in `SD:/inkdeck.ini`: a machine on your network, or on your tailnet from any Wi-Fi (Tailnet, below). Protocol: [`docs/voice-protocol.md`](docs/voice-protocol.md). The same program, installed with one line, is also a chat in the terminal and an HTTP API, using what it finds in the folder it starts in (`AGENTS.md`, skills, `.mcp.json`). **Not yet tested on the board** |
 | **Agent** | Home → AGENT (03) lists the sessions inkharness runs for you: jobs that keep working on the daemon while the board sleeps, grouped NEEDS YOU, RUNNING, SCHEDULED and DONE (`src/apps/agent.h`). A session shows its plan as a checklist, the steps it has taken, its cost, and its result (● puts it up as a note); HOLD ● pauses, resumes, stops or deletes it. **Schedules** ("every weekday at seven, brief me") show their time, days, prompt and last runs, and can wake the board, show the result as a note, or say it on USB; **watches** ("tell me when the fare to Lisbon drops under $700") show their readings as a sparkline; a session can also draw a **panel** of its own (stats, rows, a chart, a choice). When one asks you to choose, an **ask sheet** rises over whatever you're doing (once per question; BOOT: in an hour), with a chirp, `?1` in the status bar and `1 ASK` on Home: ▲▼, ● sends, HOLD BOOT answers in words. HOLD BOOT on the Agent starts a session, or talks into the one on screen. Anywhere else HOLD BOOT is a talk turn: the limited assistant above, which can't see or start sessions, but can file a job that waits on the list until you start it. The board doesn't hold Wi-Fi for this: the connection is live on the Agent's screens and on USB, and otherwise the board checks in every 5 to 30 minutes, or when inkharness asks. PWR on the Agent, or while something runs or waits, shows the **Agent face** (`src/apps/agent_face.h`) and powers off; the RTC wakes the board to check in, chirp and redraw it, and HOLD PWR opens the Agent. With `agent` in `INKDECK_PIN_ON`, the Agent opens behind the PIN, which is asked again after every start or PWR, the same digits unlock inkharness's own PIN (`pin_sha256`), and the sheet, Home and the face show counts only (`agent_face_details = on` shows everything on the face). Needs an inkharness with an `[agent]` table (issue #52). Tested on the board 2026-11-21 against the live inkharness: the list, the ask sheet answered by key, the face, and its RTC check-in |
-| **Comms** | Home → COMMS (05): push-to-talk with the other boards of your groups, board to board over the radio with no router (`src/apps/comms_ui.h`; the engine below). One group at a time: its boards and how each is reached (over the air with its signal, through which relay, or away) as a list and a small map, the channel and the state (QUIET, TALKING, HEARING) with a level meter, and the group's calls. **HOLD BOOT talks** to the row selected, all of the group or one board (or to the conversation you're in), and letting go sends; on these screens it's the boards' push-to-talk, not the agent's. **● rings** the row selected: a ringing sheet counts the seconds and the boards ringing, from 5 s HOLD BOOT leaves a message instead (letting go sends it, and the sheet says how many have it whole), and at 60 s it says NO ANSWER and offers to ring again. A ring for this board raises a **ring sheet** over whatever you're doing: ● answers, HOLD BOOT answers and talks at once, BOOT ignores it; a ring that ends unanswered shows MISSED, or LEFT A MESSAGE with ● to play it, for a few seconds. While a **conversation** is on in the group, the screen shows who is in it and for how long, and ● joins or leaves it; once per conversation you aren't in, a sheet offers to join (it doesn't ring), and the status bar shows a speech bubble with how many are in it. When a call comes in, a **call sheet** rises over whatever you're doing with who calls and the calls before, and HOLD BOOT there replies (to the group, or to the caller for a call to you alone); in a conversation ● there leaves it and BOOT just closes the sheet; it closes 10 s after the last word. Where the sheets can't rise (the lock, the Recorder, an off face) the call still plays and waits as a new call, and a ring rings by sound and waits as a missed one. HOLD ● opens PLAY LAST, MESSAGES (the messages left for you, ● plays one), RELAY FOR OTHERS, CALL CHIRP and GROUPS (to switch, and to set each one's way: AIR+NET, AIR, NET). BOOT stops PLAY LAST or a message first. Home's COMMS shows `1 NEW` while calls, missed rings or messages wait. The screens hold the radio, so calls come in on battery while they're up; otherwise the board listens on USB only. Tested with two boards 2026-11-22 |
+| **Comms** | Home → COMMS (05): open mics with the other boards of your groups, board to board over the radio with no router (`src/apps/comms_ui.h`; the engine below). One group at a time: its boards and how each is reached (over the air with its signal, through which relay, or away) as a list and a small map, the channel and the state (QUIET, MIC ON, HEARING) with a level meter, and the group's mic sessions, rings and messages. **HOLD BOOT switches your mic on** while held, for now, to the row selected, all of the group or one board (or to the conversation you're in), and letting go switches it off; on these screens it's the boards', not the agent's. **● rings** the row selected: a ringing sheet counts the seconds and the boards ringing, from 5 s HOLD BOOT leaves a message instead (letting go sends it, and the sheet says how many have it whole), and at 60 s it says NO ANSWER and offers to ring again. A ring for this board raises a **ring sheet** over whatever you're doing: ● answers, HOLD BOOT answers and talks at once, BOOT ignores it; a ring that ends unanswered shows MISSED, or LEFT A MESSAGE with ● to play it, for a few seconds. While a **conversation** is on in the group, the screen shows who is in it and for how long, and ● joins or leaves it; once per conversation you aren't in, a sheet offers to join (it doesn't ring), and the status bar shows a speech bubble with how many are in it. When a call comes in, a **call sheet** rises over whatever you're doing with who calls and the calls before, and HOLD BOOT there replies (to the group, or to the caller for a call to you alone); in a conversation ● there leaves it and BOOT just closes the sheet; it closes 10 s after the last word. Where the sheets can't rise (the lock, the Recorder, an off face) the call still plays and waits as a new call, and a ring rings by sound and waits as a missed one. HOLD ● opens PLAY LAST, MESSAGES (the messages left for you, ● plays one), RELAY FOR OTHERS, CALL CHIRP and GROUPS (to switch, and to set each one's way: AIR+NET, AIR, NET). BOOT stops PLAY LAST or a message first. Home's COMMS shows `1 NEW` while calls, missed rings or messages wait. The screens hold the radio, so calls come in on battery while they're up; otherwise the board listens on USB only. Tested with two boards 2026-11-22 |
 | **Sensors** | Temperature and humidity with a 24 h sparkline, the IMU, PMIC readings, and a scan panel: the live I2C bus, the Wi-Fi networks in range or the Bluetooth LE devices around, the strongest seven of each. A CSV log to the card. Its menu opens the full scans. **Wi-Fi**: a 2.4 GHz channel chart and every network with its channel, width, security and generation; a network's detail follows its signal live (two minutes of history) and shows what the driver reports (ciphers, WPS, country, BSS colour, FTM) and the networks that share its channels. **Bluetooth LE**, in a build with `INKDECK_BLE=1` in `platformio.ini` (off by default: it keeps about 26 KB of internal RAM from boot and takes about 230 KB of flash; the S3 has no Bluetooth Classic): a proximity strip and every advertising device, named or decoded from its advert (Apple Continuity, Microsoft Swift Pair, iBeacon, Eddystone, Fast Pair, appearance, services, maker); a device's detail has its live signal, transmit power and path loss, advertising interval and raw advert bytes. Both details can beep once a second, higher as the signal gets stronger, to walk towards it |
 | **Level** | Opened from Sensors' menu (SPIRIT LEVEL, which shows the live tilt), not from Home. Landscape bubble level and long-edge vial. Shows which side to raise and by how much, can be zeroed, and beeps when it's level |
 | **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. With a PIN set, it can ask for it first unless you used it in the last minute (see Lock). A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, they stay as they were (tilt decides, not the picture's shape). The wheel works
@@ -166,67 +166,64 @@ over 2.4 GHz Wi-Fi, so it's much slower than a computer would be. System's TAILN
 free); traffic through it isn't tested yet.
 
 **Comms** (issue #66; the engine, `src/comms.h`, under the screens above): boards talk to each
-other directly, board to board over the radio with no router (ESP-NOW). Push-to-talk voice in
-**groups**: each `mesh_group` line in `inkdeck.ini` (up to 4) is a secret its boards share, which
-keys the group's encryption (AES-GCM) and gives its id, whose first 4 hex digits (`7F3A`) the
-screens show so boards can be checked against each other. The whole line is the invite:
-paste it on every board of the group. Without a line, a board with an `agent_token` is in one
-group, HOME, with the other boards of that token. Voice goes as IMA ADPCM, 16 kHz (64 kbps), 20 ms
-a packet; a call doesn't play over the Recorder, an alarm, the agent or another call, and stops
-music, which plays on afterwards. The last call heard is kept to play again, with a log of calls.
-**Conversations:** a group has one at a time, from an answered ring or the first call until 60 s
-after the last word; the voice plays only on the boards in it (the ones that answered, joined,
-talked, or were listening when it began), every board of the group sees it's on and who is in
-it, and a board can leave it (its voice stops playing there) and join again. **Ringing:** a board
-rings all of a group or one board; the others ring (a phone's trill every few seconds) until one
-answers, the dialer gives up, or 60 s pass, and the dialer sees how many are ringing. From 5 s into
-a ring nobody answers, the dialer can **leave a message** instead (up to 60 s): the boards ask
-again for every frame they missed until it's whole (a checksum says so), keep it on the card
+other directly, board to board over the radio with no router (ESP-NOW), in **groups**: each
+`mesh_group` line in `inkdeck.ini` (up to 4) is a secret its boards share, which keys the group's
+encryption (AES-GCM) and gives its id, whose first 4 hex digits (`7F3A`) the screens show so boards
+can be checked against each other. The whole line is the invite: paste it on every board of the
+group. Without a line, a board with an `agent_token` is in one group, HOME, with the other boards
+of that token. **The mic:** a board's mic is on or off. You switch yours on (to all of the group,
+or to one board), and off when you're done; nothing another board sends switches it on, and it
+doesn't survive a restart. Several boards can have theirs on and speak at once: each plays the
+others' voices mixed (up to 4) while its own mic listens, and holds back the echo of its own
+speaker, so a voice over what plays gets through and the echo doesn't. An open mic sends only
+what's over a threshold you set (−60 to 0 dBFS, in 3 dB steps), with the 160 ms before it so the
+start of a word isn't cut, and 2 s more after it quiets: a mic left on in a quiet room costs
+almost no airtime. That is also how a room is heard from elsewhere: leave a board there with its
+mic on. Voice goes as IMA ADPCM, 16 kHz (64 kbps), 20 ms a packet, and reaches the other board's
+speaker about 0.28 s after it was said. Every board of the group sees whose mics are on, each one's
+level, for how long and its last 2 hours of levels; a mic that goes silent without switching off
+is **LOST** after 20 s, with an alarm on the boards that heard it until you silence it or it's
+back; one that switches off after more than 5 minutes chirps once where it was heard. A board
+whose mic is on doesn't ring or chirp (a room with someone asleep stays quiet), but plays the
+conversation's voice, which is how the room is talked to. Voice doesn't play over the Recorder, an
+alarm or the agent, and stops music, which plays on afterwards; those, and music you start, pause
+an open mic, which picks up by itself once they're done. The last 60 s heard are kept to play
+again, with a log of mic sessions, rings and messages. **Conversations:** a group has one at a
+time, on while a mic in it is on or from an answered ring, until 60 s after the last word; the
+voice plays only on the boards in it (switching a mic on joins it or opens it, and every board
+that hears that mic is in), every board of the group sees it's on and who is in it, and a board
+can leave it (its voice stops playing there, and its mic goes off) and join again. **Ringing:** a
+board rings all of a group or one board; the others ring (a phone's trill every few seconds) until
+one answers, the dialer gives up, or 60 s pass, and the dialer sees how many are ringing. From 5 s
+into a ring nobody answers, the dialer can **leave a message** instead (up to 60 s): the boards
+ask again for every frame they missed until it's whole (a checksum says so), keep it on the card
 (`SD:/.inkdeck/comms/`, in RAM without one) until played and for a day after, and play it only
-when asked. The screens above show all of this. **Baby monitor** (the engine; its screens come
-later): a board left in a room sends that room's sound to the boards that listen, only when it's
-over a threshold you set (−60 to 0 dBFS, in 3 dB steps), with the half second before it so the
-start of a cry isn't cut, and 2 s more after it quiets, all half a second late. It's started on
-the room's board only, for all of the group or a list of boards; nothing another board sends
-switches its mic on. Every 2 s it says it's still there, with the loudest sound since and its
-battery, and it keeps 2 hours of levels for a listener that opens late. The room stays silent: no
-rings, chirps or calls, except a listener talking back to it alone (its mic pauses meanwhile, so
-that isn't sent back). A listener hears the sound at its volume as it comes (about 0.7 s behind),
-sees QUIET, SOUND (LOUD or SOFT) or NO LINK, the night's events and the chart; NO LINK, when the
-room has gone silent for 20 s, sounds an alarm until you silence it or the link is back, and a
-LOUD sound with the volume turned low chirps once. Calls and rings still play on a listener, the
-monitor carrying on after. Both boards stay on and keep the radio on while it runs, on battery
-too. The list of who may listen isn't encryption: use a group whose secret only those boards have.
-Boards pass each other's packets on (a **mesh**: flooding, up to three relays), also for groups
-they aren't in, unread, and each board knows how the others are reached: over the air with their
-signal, through which relay, or away. A board listens on USB power, or while a Comms screen holds
-it; on battery otherwise the radio stays off. It uses the Wi-Fi network's channel while joined,
-else `mesh_channel` (6): set that to your Wi-Fi's channel so boards on and off it hear each other.
-`via` per group (`air`, `net` or `both`) is there for the link through inkharness, which isn't
-built: `net` sends nothing yet. Packet format and keys:
-[`docs/comms-protocol.md`](docs/comms-protocol.md). On USB with the tailnet up, listening costs
-about 8.5 KB of internal RAM (80 KB free instead of 89 KB) and a call playing about 19 KB more;
-ringing costs none, and receiving a message none (it's in PSRAM); the image grows by about 126 KB
-with the screens (`INKDECK_COMMS=0` leaves it out). Tested 2026-11-22 with two boards
-in one room (−76 dBm): ping (about 14 ms there and back over the air), calls both ways with the
-heard receipt, about 4% of frames lost on the air (each covered by the one before), PLAY LAST, and
-the duplicate and replay drops; rings answered, given up, unanswered for 60 s and with the dialer
-gone silent (stopped 5 s after its last ring packet), ringing one board, conversations (a talk each
-way, leave and join, the end 60 s after the last word), and messages arriving whole with every 5th
-or 7th frame dropped on purpose, one kept on the card through a restart. Not tested: relaying
-through a third board, a conversation of three boards, a board off Wi-Fi, range and current. Dev
-commands over USB: `!comms`, `!commstest`, `!commsping`, `!commstalk N [board]`, `!commsplay`,
-`!commsring [board]`, `!commsringstop`, `!commsanswer`, `!commsignore`, `!commsjoin`,
-`!commsleave`, `!commsmsg N`, `!commsplaymsg`, `!commsgroup` (a test group without the card),
-`!commschannel`, `!commsrelay`, `!commsresend`, the test switches `!commsringvanish` and
-`!commsdropmsg N`, and for the baby monitor `!commsmon [all|boards] [dB]`, `!commsmonstop`,
-`!commsmonthr`, `!commslisten [room]`, `!commslistenstop`, `!commslistenack`, and the test switches
-`!commsmonvanish` and `!commsmontone S dB`. The baby monitor's room costs about 9 KB of internal RAM
-while it monitors (the mic), a listener about 19 KB while the sound plays and none while it's
-quiet; the image grows by about 35 KB for it. Tested 2026-11-23 between two boards in different
-rooms, each as the room and as the listener, with test tones in place of the mic (nobody was
-there to make a sound or to listen): allow-lists, sounds with their pre-roll and hang, NO LINK
-and its alarm, a clean stop, talk back, and a ring and a call to all leaving the room silent.
+when asked. The screens above show most of this; for now HOLD BOOT there switches the mic on while
+held. Boards pass each other's packets on (a **mesh**: flooding, up to three relays), also for
+groups they aren't in, unread, and each board knows how the others are reached: over the air with
+their signal, through which relay, or away. A board listens on USB power, while a Comms screen
+holds it, while its mic is on or it hears another board's; on battery otherwise the radio stays
+off. It uses the Wi-Fi network's channel while joined, else `mesh_channel` (6): set that to your
+Wi-Fi's channel so boards on and off it hear each other. `via` per group (`air`, `net` or `both`)
+is there for the link through inkharness, which isn't built: `net` sends nothing yet. Packet format
+and keys: [`docs/comms-protocol.md`](docs/comms-protocol.md). Measured 2026-11-23 on USB: a mic on,
+or voice playing, costs about 10 KB of internal RAM (the speaker and the mic at once: 67 KB free
+instead of 77 KB with the tailnet up); the image is 2.62 MB (`INKDECK_COMMS=0` leaves comms out).
+Tested 2026-11-23 between two boards in different rooms (−73 to −79 dBm), both ways, with test
+tones added to the mic (nobody was there to speak or listen): mics to all and to one board, sounds
+with their pre-roll and hang and nothing under the threshold, both mics on at once with each
+board's echo held back and no echo loop, LOST and its alarm, a clean off and the chirp after a long
+session, no ringing on a board with its mic on, ring and answer, a message, leaving, and the alarm,
+the Recorder and the agent pausing an open mic; 1.5 to 11% of frames lost on the air, each covered
+by the one before. Rings, conversations and messages were tested 2026-11-22 the same way. Not
+tested: anything by ear, three boards at once, on battery, range and current. Dev commands over
+USB: `!comms`, `!commstest`, `!commsping`, `!commsmic [all|board] [dB]`, `!commsmicoff`,
+`!commsmicthr`, `!commstalk N [board]`, `!commsplay`, `!commsring [board]`, `!commsringstop`,
+`!commsanswer`, `!commsignore`, `!commsjoin`, `!commsleave`, `!commsmsg N`, `!commsplaymsg`,
+`!commsecho` (how loud the speaker comes back on the mic), `!commsgroup` (a test group without the
+card), `!commschannel`, `!commsrelay`, `!commsresend`, and the test switches `!commstone S dB`,
+`!commsvanish`, `!commsack`, `!commslong S`, `!commsbusy`, `!commsringvanish` and
+`!commsdropmsg N`.
 
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the

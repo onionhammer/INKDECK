@@ -197,11 +197,11 @@ class CallSheet : public ui::Screen {
       follow(s);
       ui::nav::talkChanged();
     }
-    if (s.state == comms::State::Talking || s.state == comms::State::Hearing ||
-        comms::talking()) {
+    if (s.state == comms::State::Mic || s.state == comms::State::Hearing ||
+        comms::micEnabled()) {
       activeMs_ = now;
     }
-    if (s.state == comms::State::Talking) {
+    if (s.state == comms::State::Mic) {
       replied_ = true;
       waiting_ = false;
     }
@@ -229,7 +229,7 @@ class CallSheet : public ui::Screen {
     const comms::Status s = comms::status();
     conv_ = comms::conversation(group_);
     const bool inConv = conv_.on && conv_.in;
-    const bool talking = s.state == comms::State::Talking;
+    const bool talking = s.state == comms::State::Mic;
     const std::vector<comms::Call> calls = comms::calls(group_, 12);
 
     // Over a screen without chrome, the sheet shows its keys itself.
@@ -288,8 +288,8 @@ class CallSheet : public ui::Screen {
                lengthText(s.ms) + " SO FAR";
       } else if (shown) {
         line = lengthText(shown->ms) + kDot +
-               (shown->heardBy > 0 ? std::to_string(shown->heardBy) + " HEARD IT"
-                                   : std::string("SENT"));
+               (shown->sounds ? std::to_string(shown->sounds) + " SOUNDS SENT"
+                              : std::string("SENT"));
       }
     } else if (!peer_) {  // joined: with whoever is in it
       label = "WITH";
@@ -372,7 +372,7 @@ class ConversationSheet : public ui::Screen {
 
   std::string tag() const override { return {}; }
   bool overlay() const override { return true; }
-  // HOLD BOOT joins it and talks at once (talkStart() joins the group's conversation).
+  // HOLD BOOT joins it and talks at once (micOn() joins the group's conversation).
   ui::TalkTo talkTo() const override {
     ui::TalkTo to;
     to.comms = true;
@@ -415,7 +415,7 @@ class ConversationSheet : public ui::Screen {
       return false;
     }
     if (millis() - sinceMs_ > kConvSheetMs && input::idleMs() > kConvSheetMs &&
-        comms::status().state != comms::State::Talking) {
+        comms::status().state != comms::State::Mic) {
       ui::nav::pop();
       return false;
     }
@@ -554,7 +554,7 @@ class RingSheet : public ui::Screen {
         return false;
       default: break;
     }
-    if (comms::status().state == comms::State::Talking) {  // a reply: the call sheet shows it
+    if (comms::status().state == comms::State::Mic) {  // a reply: the call sheet shows it
       toConversation(group_, from_, toAll_);
       return false;
     }

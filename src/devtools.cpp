@@ -255,13 +255,13 @@ void lineCommand(const String &line) {
     return;
   }
   if (line == "commsplay") {
-    // PLAY LAST: the last call heard, again.
+    // PLAY LAST: the last 60 s heard, again.
     if (!comms::playLast()) {
       Serial.printf("commsplay: %s\n", comms::status().error.c_str());
     } else {
       const comms::LastCall c = comms::lastCall();
-      Serial.printf("commsplay: playing %s's call again, %lu ms\n", c.fromName.c_str(),
-                    static_cast<unsigned long>(c.ms));
+      Serial.printf("commsplay: playing the last %lu ms heard again (the last from %s)\n",
+                    static_cast<unsigned long>(c.ms), c.fromName.c_str());
     }
     return;
   }
@@ -388,123 +388,140 @@ void lineCommand(const String &line) {
     comms::release();
     return;
   }
-  // The baby monitor (comms.h): this board as the room, or listening to one.
-  if (line == "commsmonstop") {
-    comms::monitorStop();
-    Serial.println("commsmonstop: the room stops (its off goes out)");
+  // The mic (comms.h): this board's open mic, and the others' heard here.
+  if (line.startsWith("commsbusy")) {
+    // "!commsbusy alarm|rec|stop": something else takes the audio, as the Clock's alarm or the
+    // Recorder would (for what the mic does meanwhile); stop: back to nothing.
+    String rest = line.substring(9);
+    rest.trim();
+    if (rest == "alarm") {
+      audio::ring(true);
+    } else if (rest == "rec") {
+      audio::record("/sdcard/commsbusy.wav");
+    } else if (rest == "stop") {
+      audio::ring(false);
+      audio::stopRecording();
+    } else {
+      Serial.println("commsbusy: alarm, rec or stop");
+      return;
+    }
+    Serial.printf("commsbusy: %s\n", rest.c_str());
     return;
   }
-  if (line.startsWith("commsmonthr")) {
+  if (line == "commsmicoff") {
+    comms::micOff();
+    Serial.println("commsmicoff: the mic goes off (its off goes out)");
+    return;
+  }
+  if (line.startsWith("commsmicthr")) {
     String rest = line.substring(11);
     rest.trim();
     if (rest.isEmpty()) {
-      Serial.printf("commsmonthr: %d dBFS (!commsmonthr -36 sets it, in 3 dB steps, -60 to 0)\n",
-                    comms::monitorThreshold());
+      Serial.printf("commsmicthr: %d dBFS (!commsmicthr -36 sets it, in 3 dB steps, -60 to 0)\n",
+                    comms::micThreshold());
       return;
     }
-    comms::setMonitorThreshold(rest.toInt());
+    comms::setMicThreshold(rest.toInt());
     delay(50);
-    Serial.printf("commsmonthr: %d dBFS\n", comms::monitorThreshold());
+    Serial.printf("commsmicthr: %d dBFS\n", comms::micThreshold());
     return;
   }
-  if (line.startsWith("commsmontone")) {
-    // "!commsmontone S DB": the room's mic input is a 1 kHz tone peaking at DB dBFS for S s.
-    String rest = line.substring(12);
+  if (line.startsWith("commstone")) {
+    // "!commstone S DB": a 1 kHz tone peaking at DB dBFS added to the mic's input for S s.
+    String rest = line.substring(9);
     rest.trim();
     const int space = rest.indexOf(' ');
     const int seconds = std::max(1, std::min(600, static_cast<int>(rest.toInt())));
     const int db = space < 0 ? -20 : static_cast<int>(rest.substring(space + 1).toInt());
-    if (!comms::monitor().on) {
-      Serial.println("commsmontone: this board isn't a room (!commsmon first)");
+    if (!comms::mic().on) {
+      Serial.println("commstone: the mic is off (!commsmic first)");
       return;
     }
-    comms::monitorTone(seconds * 1000u, db);
-    Serial.printf("commsmontone: a 1 kHz tone at %d dBFS for %d s in place of the mic "
+    comms::micTone(seconds * 1000u, db);
+    Serial.printf("commstone: a 1 kHz tone at %d dBFS for %d s added to the mic "
                   "(threshold %d dBFS)\n",
-                  std::min(0, db), seconds, comms::monitor().thresholdDb);
+                  std::min(0, db), seconds, comms::mic().thresholdDb);
     return;
   }
-  if (line == "commsmonvanish" || line == "commsmonvanish off") {
-    const bool on = line == "commsmonvanish";
-    comms::monitorVanish(on);
-    Serial.printf("commsmonvanish: %s\n", on ? "the room sends nothing from now, no off either "
-                                               "(its listeners see NO LINK after 20 s)"
-                                             : "the room is back on air");
+  if (line == "commsvanish" || line == "commsvanish off") {
+    const bool on = line == "commsvanish";
+    comms::micVanish(on);
+    Serial.printf("commsvanish: %s\n", on ? "the mic sends nothing from now, its off neither "
+                                            "(the boards that hear it see LOST after 20 s)"
+                                          : "the mic is back on air");
     return;
   }
-  if (line == "commsmon" || line.startsWith("commsmon ")) {
-    // "!commsmon [all|ID,ID,...] [DB]": this board monitors its room in the active group, for all
-    // of it or the boards listed (hex ids, as !comms lists them), at DB dBFS (else the one kept).
+  if (line == "commsack") {
+    comms::ackLost();
+    Serial.println("commsack: LOST's alarm silenced (if it sounded)");
+    return;
+  }
+  if (line.startsWith("commslong")) {
+    // "!commslong S": a mic heard counts as on long after S s, not 5 minutes (0: 5 minutes).
+    const int seconds = std::max(0, static_cast<int>(line.substring(9).toInt()));
+    comms::setLongMicMs(seconds * 1000u);
+    Serial.printf("commslong: a mic on longer than %d s chirps once where it's heard as it goes "
+                  "off\n",
+                  seconds ? seconds : static_cast<int>(comms::kLongMicMs / 1000));
+    return;
+  }
+  if (line == "commsecho" || line.startsWith("commsecho ")) {
+    // "!commsecho [DB [MS]]": the loopback test: a 1 kHz tone at DB dBFS (-20) for MS ms (1000)
+    // through the duplex path, and what the mic hears of it.
+    String rest = line.substring(9);
+    rest.trim();
+    const int space = rest.indexOf(' ');
+    const int db = rest.isEmpty() ? -20 : static_cast<int>(rest.toInt());
+    const int ms = space < 0 ? 1000 : static_cast<int>(rest.substring(space + 1).toInt());
+    comms::hold();
+    for (int i = 0; i < 60 && !comms::listening(); ++i) delay(50);
+    const comms::EchoTest e = comms::echoTest(static_cast<float>(std::min(0, db)), ms);
+    comms::release();
+    if (!e.ok) {
+      Serial.printf("commsecho: %s\n", e.error.c_str());
+      return;
+    }
+    Serial.printf("commsecho: VOL %d, played %d dBFS (DAC out), the mic heard %d dBFS (quiet %d): "
+                  "coupling %+d dB, delay %d ms (the delay used from now on, until a restart)\n",
+                  e.volume, static_cast<int>(lroundf(e.playedDb)), static_cast<int>(lroundf(e.micDb)),
+                  static_cast<int>(lroundf(e.noiseDb)), static_cast<int>(lroundf(e.couplingDb)),
+                  e.delayMs);
+    return;
+  }
+  if (line == "commsmic" || line.startsWith("commsmic ")) {
+    // "!commsmic [all|ID] [DB]": this board's mic on in the active group, to all of it or one
+    // board (hex id, as !comms lists it), at DB dBFS (else the threshold kept).
     String rest = line.substring(8);
     rest.trim();
-    std::vector<uint32_t> ids;
-    int db = comms::monitorThreshold();
+    uint32_t target = 0;
     while (!rest.isEmpty()) {
       const int space = rest.indexOf(' ');
       String word = space < 0 ? rest : rest.substring(0, space);
       rest = space < 0 ? String() : rest.substring(space + 1);
       rest.trim();
       if (word.startsWith("-") || word == "0") {
-        db = word.toInt();
+        comms::setMicThreshold(word.toInt());
       } else if (word != "all") {
-        for (int from = 0; from < static_cast<int>(word.length());) {
-          int comma = word.indexOf(',', from);
-          if (comma < 0) comma = word.length();
-          const uint32_t id = strtoul(word.substring(from, comma).c_str(), nullptr, 16);
-          if (id) ids.push_back(id);
-          from = comma + 1;
-        }
+        target = strtoul(word.c_str(), nullptr, 16);
       }
     }
     if (!comms::configured()) {
       Serial.println("comms: no group (a mesh_group line, an agent_token or !commsgroup)");
       return;
     }
-    if (!comms::monitorStart(comms::activeGroup(), ids, db)) {
-      Serial.printf("commsmon: %s\n", comms::status().error.c_str());
+    if (!comms::micOn(comms::activeGroup(), target)) {
+      Serial.printf("commsmic: %s\n", comms::status().error.c_str());
       return;
     }
-    delay(400);
-    const comms::Monitor m = comms::monitor();
-    Serial.printf("commsmon: monitoring the room in group %d for %s at %d dBFS, mic %s "
-                  "(!comms shows it, !commsmonstop stops it)\n",
-                  comms::activeGroup(),
-                  ids.empty() ? "all"
-                              : (String(static_cast<unsigned>(ids.size())) + " boards").c_str(),
-                  m.thresholdDb, m.micOn ? "on" : m.paused.empty() ? "starting" : m.paused.c_str());
-    return;
-  }
-  if (line == "commslistenstop") {
-    comms::listenStop();
-    Serial.println("commslistenstop: not listening");
-    return;
-  }
-  if (line == "commslistenack") {
-    comms::listenAck();
-    Serial.println("commslistenack: NO LINK's alarm silenced (if it sounded)");
-    return;
-  }
-  if (line == "commslisten" || line.startsWith("commslisten ")) {
-    // "!commslisten [ROOM-ID]": listens to a room on air (the first listed without an id).
-    String rest = line.substring(11);
-    rest.trim();
-    const std::vector<comms::RoomOnAir> rooms = comms::monitorRooms();
-    const uint32_t want = rest.isEmpty() ? 0 : strtoul(rest.c_str(), nullptr, 16);
-    const comms::RoomOnAir *room = nullptr;
-    for (const comms::RoomOnAir &r : rooms) {
-      if (!room && (!want || r.id == want)) room = &r;
+    delay(600);
+    const comms::Mic m = comms::mic();
+    Serial.printf("commsmic: the mic is %s in group %d to %s at %d dBFS (!comms shows it, "
+                  "!commsmicoff switches it off)\n",
+                  m.capturing ? "on" : m.paused.empty() ? "starting" : m.paused.c_str(),
+                  comms::activeGroup(), target ? "one board" : "all", m.thresholdDb);
+    if (!m.on && !comms::status().error.empty()) {
+      Serial.printf("commsmic: %s\n", comms::status().error.c_str());
     }
-    if (!room) {
-      Serial.printf("commslisten: no room on air that lets this board in%s (%u listed)\n",
-                    want ? " with that id" : "", static_cast<unsigned>(rooms.size()));
-      return;
-    }
-    if (!comms::listenStart(room->group, room->id)) {
-      Serial.printf("commslisten: %s\n", comms::status().error.c_str());
-      return;
-    }
-    Serial.printf("commslisten: listening to %08lX %s in group %d (!comms shows it)\n",
-                  static_cast<unsigned long>(room->id), room->name.c_str(), room->group);
     return;
   }
   if (line == "commsping" || line.startsWith("commstalk")) {
@@ -535,27 +552,24 @@ void lineCommand(const String &line) {
         Serial.printf("commsping: %u answers\n", static_cast<unsigned>(answers.size()));
       }
     } else {
-      // "!commstalk N [board-id]": to all of the group, or to one board (hex, as !comms lists it).
+      // "!commstalk N [board-id]": the mic on for N s to all of the group, or to one board (hex,
+      // as !comms lists it), then off.
       String rest = line.substring(9);
       rest.trim();
       const int space = rest.indexOf(' ');
-      const int seconds = std::max(1, std::min(60, static_cast<int>(rest.toInt())));
+      const int seconds = std::max(1, std::min(600, static_cast<int>(rest.toInt())));
       const uint32_t board =
           space < 0 ? 0 : strtoul(rest.substring(space + 1).c_str(), nullptr, 16);
-      if (!comms::talkStart(group, board)) {
+      if (!comms::micOn(group, board)) {
         Serial.printf("commstalk: %s\n", comms::status().error.c_str());
       } else {
-        Serial.printf("commstalk: talking to group %d for %d s\n", group, seconds);
+        Serial.printf("commstalk: the mic on in group %d for %d s\n", group, seconds);
         delay(seconds * 1000);
-        comms::talkStop();
-        delay(300);
-        const std::vector<comms::Call> c = comms::calls(group, 1);
-        if (!c.empty() && c[0].outgoing) {
-          Serial.printf("commstalk: sent %lu ms; %d boards said they heard it (so far)\n",
-                        static_cast<unsigned long>(c[0].ms), c[0].heardBy);
-        } else {
-          Serial.printf("commstalk: %s\n", comms::status().error.c_str());
-        }
+        const comms::Mic m = comms::mic();
+        comms::micOff();
+        Serial.printf("commstalk: off; %lu sounds, %lu frames sent (%lu as echo)\n",
+                      static_cast<unsigned long>(m.sounds), static_cast<unsigned long>(m.framesSent),
+                      static_cast<unsigned long>(m.framesMuted));
       }
     }
     comms::release();
@@ -840,8 +854,8 @@ void task(void *) {
 
 }  // namespace
 
-// 6 KB: at 4 KB, `!comms` with the baby monitor's state and `!commstest` came within about 220
-// bytes of the end (2026-11-23).
+// 6 KB: at 4 KB, `!comms` with the open mics' state and `!commstest` came within about 220 bytes
+// of the end (2026-11-23).
 void begin() { xTaskCreatePinnedToCore(task, "devtools", 6144, nullptr, 1, nullptr, 1); }
 
 }  // namespace devtools

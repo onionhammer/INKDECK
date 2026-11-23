@@ -4,7 +4,7 @@
 //
 // The talk screen: one group at a time. A band of the groups (the one on screen in a pill, a
 // boxed count on a group with calls, missed rings or messages not heard, its via on the right),
-// then CHANNEL (the state in large type: QUIET, TALKING, HEARING, OFF, or CONVERSATION while the
+// then CHANNEL (the state in large type: QUIET, MIC ON, HEARING, OFF, or CONVERSATION while the
 // group has one, a line or two under it, the 20-segment meter, a small map of the boards
 // reached), TALK TO (ALL OF the group, then its boards: how each is reached) and HEARD (the
 // group's calls, rings and messages, newest first).
@@ -37,9 +37,11 @@
 // while it listens or replies. The call and conversation sheets don't rise over the Comms screen,
 // which shows them in place (the call plays anyway, and stays not heard); the ring sheet does.
 //
-// HOLD BOOT on these screens is push-to-talk to the boards, not the agent: the screens' talkTo()
-// says comms, and apps/hold_boot.cpp starts the call (commsTalk()) from the input timer; on the
-// ringing sheet it records a message, on the ring sheet it answers first.
+// HOLD BOOT on these screens switches this board's mic on while held, for now (the engine's open
+// mic replaced push-to-talk; a later slice gives the mic its own switch), not the agent: the
+// screens' talkTo() says comms, and apps/hold_boot.cpp calls commsTalk() (comms::micOn()) from the
+// input timer and commsTalkStop() (comms::micOff()) at the release; on the ringing sheet it
+// records a message, on the ring sheet it answers first.
 //
 // The status bar's mark: an inverted speech bubble with a count while a conversation is on in one
 // of this board's groups and this board isn't in it (the count: the boards in it).
@@ -84,7 +86,7 @@ bool playing();
 // Stops it, if one plays; true if it did (BOOT's first use on the Comms screens and sheets).
 bool stopIfPlaying();
 
-// "QUIET", "TALKING", "HEARING", "OFF".
+// "QUIET", "MIC ON", "HEARING", "OFF".
 const char *stateWord(comms::State s);
 // Segments lit of 20 for a level in dBFS (-60 to 0, 3 dB each).
 int meterFill(float levelDb);
@@ -96,7 +98,8 @@ std::string whenText(time_t at, uint32_t agoS);
 std::string boardName(const std::string &name, uint32_t id);
 // "KITCHEN → ALL", "YOU → KITCHEN", "KITCHEN → YOU".
 std::string whoText(const comms::Call &c);
-// A note for the log: "VIA KITCHEN", "2 HEARD", "NOT PLAYED", "LIVE"; for a ring "RINGING",
+// A note for the log: "VIA KITCHEN", "2 SENT" (this board's mic session: its sounds), "LOST",
+// "NOT PLAYED", "LIVE"; for a ring "RINGING",
 // "ANSWERED", "RANG", "MISSED", "NO ANSWER"; for a message "MSG COMING", "NEW MSG", "MSG",
 // "MSG PART", "RECORDING", "MSG SENT", "MSG · 1 GOT IT"; "" for none.
 std::string noteText(const comms::Call &c);

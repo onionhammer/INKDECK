@@ -28,7 +28,7 @@
 #include "audio.h"
 #include "comms_calls.h"
 #include "comms_crypto.h"
-#include "comms_monitor.h"
+#include "comms_mic.h"
 #include "comms_store.h"
 #include "comms_wire.h"
 #include "kv_store.h"
@@ -45,14 +45,13 @@ using namespace wire;
 // NVS ("comms"): id, the board's; boot, the last boot number; active, the active group's id;
 // norelay and nochirp, 1 when those are off; via0..via3, a group's via changed on the board
 // (the card line's hash with the via in its low 2 bits); devgrp and devchan, the dev overrides;
-// monthr, the baby monitor's threshold (dB below full scale, plus 1: 0 is none set).
+// micthr, the mic's threshold (dB below full scale, plus 1: 0 is none set).
 constexpr const char *kNs = "comms";
 
 constexpr uint32_t kPresenceMs = 30000;   // each group hears where the board is this often
 constexpr uint32_t kAwayMs = 95000;       // three presences missed: away
 constexpr uint32_t kLingerMs = 10000;     // listening on after the last hold or unplugging
 constexpr uint32_t kUsbPollMs = 5000;
-constexpr uint32_t kCallTimeoutMs = 800;  // no voice this long: the call is over
 constexpr uint32_t kHelloAnswerGapMs = 5000;
 constexpr uint32_t kTickMs = 1000;
 constexpr uint32_t kSleepCheckMs = 250;
@@ -60,14 +59,10 @@ constexpr uint32_t kChannelCheckMs = 1000;
 constexpr uint32_t kCallBumpMs = 250;
 constexpr size_t kRxDepth = 96;     // frames from the radio waiting for the task (PSRAM)
 constexpr size_t kPending = 16;     // relays and delayed packets waiting to go
-constexpr size_t kSlots = 8;        // the jitter buffer: 160 ms of frames
-constexpr int kJitterWait = 3;      // frames ahead before a missing one is taken as lost
-constexpr int kResyncFrames = 50;   // a jump this far (1 s) starts again there, no silence
 constexpr size_t kLastFrames = 3000;  // PLAY LAST keeps 60 s
 constexpr uint8_t kFlagHello = 0x80;  // in a presence: answer with yours
 // Conversations, rings and messages (docs/comms-protocol.md).
 constexpr uint32_t kConvPresenceMs = 4000;  // in a conversation, presence this often (+ 0-1 s)
-constexpr uint8_t kVoiceOpening = 0x01;     // voice flags: this call opened its conversation
 constexpr uint32_t kRingEveryMs = 1000;     // a ring packet
 constexpr uint32_t kRingLostMs = 5000;      // none for this long: the dialer has gone
 constexpr uint32_t kRingChirpMs = 3000;     // a ringing board's chirp
@@ -89,38 +84,41 @@ constexpr size_t kInbound = 2;              // messages coming in at once
 constexpr size_t kMessageRam = 1536 * 1024; // kept in PSRAM without a card: about 3 minutes
 constexpr time_t kMessageDayS = 24 * 3600;  // a played message is kept this long
 constexpr int kMaxNameLen = 16;
-// The baby monitor (docs/comms-protocol.md, comms_monitor.h).
-constexpr size_t kRoomRing = 32;           // frames kept: the pre-roll's 25 and some
-constexpr size_t kRoomEars = 16;           // boards that said they listen
-constexpr size_t kRoomSounds = 32;         // sounds the room logs
-constexpr uint32_t kEarFreshMs = 13000;    // a listener that said so this recently listens
-constexpr uint32_t kListeningEveryMs = 4000;  // a listener says so (+ 0-0.5 s)
-constexpr uint32_t kResumeAfterMs = 400;   // the room's mic, once what paused it is over
-constexpr uint32_t kMicRetryMs = 2000;     // after the mic wouldn't start
-// Frames dropped after the mic starts: 3 of zeros, then a thump from -39 to -51 dBFS over 4 more,
-// before a quiet room's -55 to -61 (measured 2026-11-23). Not sound, nor a bar's peak.
-constexpr uint32_t kMicSettleFrames = 10;
-constexpr uint32_t kListenIdleMs = 1500;   // the listener's speaker goes off this long after
-constexpr uint32_t kChirpHoldMs = 1000;    // the monitor's speaker waits this long for a chirp
-constexpr uint32_t kAlarmEveryMs = 2500;   // NO LINK's alarm
+// The open mic (docs/comms-protocol.md, comms_mic.h).
+constexpr size_t kMicRing = MicGate::kRing;  // the mic's frames kept: the pre-roll and more
+constexpr size_t kMicSounds = 32;            // sounds the mic logs
+constexpr size_t kMaxOpenMics = 12;          // other boards' mics kept, all groups together
+constexpr uint32_t kResumeAfterMs = 400;     // the mic, once what paused it is over
+constexpr uint32_t kMicRetryMs = 2000;       // after the mic wouldn't start
+// Frames dropped after the duplex path starts: 100 ms of zeros, then a thump from -39 dBFS that
+// falls to a quiet room's -56 to -64 over about 150 ms (measured 2026-11-23, !commsecho). Not
+// sound, nor a bar's peak.
+constexpr uint32_t kMicSettleFrames = 12;
+constexpr uint32_t kDuplexIdleMs = 1500;     // with the mic off, the duplex path goes this long
+                                             // after the last voice
+constexpr uint32_t kMixAheadMs = 30;         // queued for the speaker ahead of what plays
+constexpr uint32_t kPlayingMs = 300;         // a board's voice played this recently plays now
+constexpr uint32_t kAlarmEveryMs = 2500;     // LOST's alarm
 constexpr uint32_t kHistoryAskMs = 2000;
 constexpr int kHistoryAsks = 3;
-constexpr uint32_t kStreamBufferMs = 200;  // audio.cpp buffers a stream this much before playing
-static_assert(MonitorGate::kPreFrames * kFrameMs == kPreRollMs, "comms.h's pre-roll is the gate's");
-static_assert(MonitorGate::kHangFrames * kFrameMs == kHangMs, "comms.h's hang is the gate's");
-static_assert(ListenState::kNoLinkMs == kNoLinkMs && ListenState::kLoudMarginDb == kLoudMarginDb,
-              "comms.h's monitor constants are comms_monitor.h's");
-static_assert(MonitorHistory::kBars == kHistoryBars && MonitorHistory::kBarMs == kHistoryBarMs,
-              "comms.h's history is comms_monitor.h's");
-static_assert(ListenerSet::kMax == kMaxListeners, "comms.h's listener list is the packets'");
-static_assert(kHeader + 5 + 1 + 4 * ListenerSet::kMax + 2 + 2 + 1 + 2 + 1 + 1 + kFrameBytes +
-                      kTag <=
-                  kMaxFrame,
-              "monitor audio to 8 listeners must fit ESP-NOW v1's 250 bytes");
+constexpr uint32_t kLostKeepMs = 2 * 3600000u;  // a LOST mic is forgotten after this, at most
+// The delay from a mic to the other board's speaker, besides the pre-roll, as measured 2026-11-23
+// (two boards, !commstone): the capture (a 10 ms DMA block, the 20 ms frame filling, comms's
+// turn), the air and both radio tasks (half a ping's 9 ms), the mixer's jitter buffer (2 to 30 ms
+// to the second frame), what the mixer keeps queued (25 ms on average), and the speaker's DMA
+// (the loopback's 60 ms less the mic's 10).
+constexpr uint32_t kCaptureMs = 22, kAirMs = 5, kJitterMs = 20, kQueueMs = 25, kSpeakerMs = 50;
+static_assert(MicGate::kPreFrames * kFrameMs == kPreRollMs, "comms.h's pre-roll is the gate's");
+static_assert(MicGate::kHangFrames * kFrameMs == kHangMs, "comms.h's hang is the gate's");
+static_assert(HeardMic::kLostMs == kLostMs && HeardMic::kLoudMarginDb == kLoudMarginDb,
+              "comms.h's mic constants are comms_mic.h's");
+static_assert(MicHistory::kBars == kHistoryBars && MicHistory::kBarMs == kHistoryBarMs,
+              "comms.h's history is comms_mic.h's");
+static_assert(Mixer::kSources == kMaxVoices, "comms.h's voices at once are the mixer's");
+static_assert(kHeader + 4 + 4 + 4 + 2 + 2 + 2 + 1 + 1 + 2 + 1 + 1 + kFrameBytes + kTag <= kMaxFrame,
+              "a voice packet must fit ESP-NOW v1's 250 bytes");
 const uint8_t kBroadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-static_assert(kHeader + 4 + 4 + 2 + 2 + 2 + 1 + 1 + kFrameBytes + 4 + 1 + kTag <= kMaxFrame,
-              "a voice packet, its conversation too, must fit ESP-NOW v1's 250 bytes");
 static_assert(kHeader + 4 + 4 + 4 + 2 + 2 + 1 + 1 + kFrameBytes + kTag <= kMaxFrame,
               "a message frame must fit ESP-NOW v1's 250 bytes");
 static_assert(kHeader + 4 + 4 + 4 + 1 + 2 + 2 + 2 + kAskMapBytes + kTag <= kMaxFrame,
@@ -137,23 +135,22 @@ enum Drop : uint8_t {
   kDropStale,
   kDropViaNet,
   kDropNotForUs,
-  kDropTalking,
+  kDropRecording,
   kDropLate,
   kDropRelayFull,
   kDropNotInConversation,
   kDropMessageTest,
   kDropUnknownType,
-  kDropNotLetIn,
-  kDropRoomSilent,
-  kDropNotListening,
+  kDropNoVoiceRoom,
+  kDropCantPlay,
   kDropCount
 };
 const char *const kDropNames[kDropCount] = {
     "malformed", "queue full", "own (relayed back)", "duplicate", "other group (not relayed)",
     "bad tag",   "replayed",   "stale",              "via net",   "not for us",
-    "while talking", "late frame", "relay queue full", "not in the conversation",
+    "while recording a message", "late frame", "relay queue full", "not in the conversation",
     "message frame (dropped to test)", "a later type (relayed only)",
-    "monitor: not let in", "the room plays only talk back", "monitor audio: not listening to it"};
+    "voice: more boards at once than the mixer plays", "voice: the speaker is busy"};
 
 struct Counters {
   std::atomic<uint32_t> sent{0}, sendFailed{0}, txFailed{0}, received{0}, handled{0}, relayed{0};
@@ -210,15 +207,17 @@ struct CallRec {
   int group = 0;
   bool outgoing = false;
   uint32_t from = 0, to = 0;
-  uint16_t call = 0;
+  uint16_t call = 0;  // Voice: the mic's session; Ring: the ring's number
   uint32_t ms = 0;
   bool live = true;
   int hops = 0;
   uint32_t relay = 0;
   int rssi = 0;
   bool played = false, heard = false;
-  uint32_t lost = 0;  // frames that never came, played as silence
-  std::vector<uint32_t> heardBy;
+  bool linkLost = false;  // Voice: it ended LOST
+  uint32_t sounds = 0;    // Voice: the gate's sounds in it
+  uint32_t lost = 0;      // frames that never came, covered
+  std::vector<uint32_t> heardBy;  // a message: the boards that have it whole
   uint32_t conv = 0;      // Voice: its conversation
   bool answered = false;  // Ring
   bool missed = false;    // Ring, incoming: it rang out here, nobody answering or ignoring it
@@ -226,94 +225,17 @@ struct CallRec {
   uint32_t message = 0;   // Message: its id in messages()
 };
 
-struct Slot {
-  bool full = false;
-  uint16_t frame = 0;
-  int16_t predictor = 0;
-  uint8_t index = 0;
-  uint8_t bytes = 0;
-  uint8_t data[kFrameBytes];
-};
-
-// Covers a lost 20 ms frame: the one before it again at half the level, then silence. A click-free
-// gap for the odd frame the air loses (about 4% at -76 dBm between two boards, 2026-11-22).
-struct Concealer {
-  int16_t prev[kFrameSamples] = {};
-  size_t samples = 0;
-  int run = 0;  // lost frames in a row
-  // pcm holds what decoded (or silence, for a lost frame); fixes up a lost one.
-  void apply(int16_t *pcm, size_t n, bool lost) {
-    if (!lost) {
-      memcpy(prev, pcm, n * sizeof(int16_t));
-      samples = n;
-      run = 0;
-      return;
-    }
-    if (run++ == 0 && samples) {
-      for (size_t i = 0; i < n; ++i) pcm[i] = static_cast<int16_t>(prev[i % samples] / 2);
-    }
-  }
-};
-
-struct Hearing {
-  bool active = false;
-  int group = 0;
-  uint32_t from = 0, target = 0;
-  uint16_t call = 0;
-  uint32_t startMs = 0, lastMs = 0;
-  bool started = false;  // next is set
-  uint16_t next = 0;     // the next frame to play
-  bool playing = false;  // the stream is this call's now
-  bool played = false;   // it ever was
-  bool held = false;     // a hold() came while it played
-  uint32_t frames = 0;   // played, lost ones as silence included
-  uint32_t lost = 0;
-  bool ending = false;
-  uint16_t endFrames = 0;
-  int hops = 0;
-  uint32_t relay = 0;
-  int rssi = 0;
-  uint32_t conv = 0;       // its conversation (0: an older board's call, none)
-  bool joinOnPlay = false; // this board joins the conversation once the call plays
-  Slot slots[kSlots];
-  Concealer conceal;
-};
-
-struct Talk {
-  bool on = false;
-  int group = 0;
-  uint32_t target = 0;
-  uint32_t conv = 0;
-  bool opening = false;  // this call opens its conversation
-  uint16_t call = 0;
-  uint16_t frame = 0;
-  uint32_t startMs = 0;
-  adpcm::State enc;
-  size_t fillBytes = 0;
-  int16_t pcm[kFrameSamples];
-};
-
+// PLAY LAST or a message, played into the mix a frame at a time.
 struct Replay {
   bool on = false;
-  const std::vector<uint8_t> *src = nullptr;  // lastAudio (PLAY LAST) or msgAudio (a message)
+  const std::vector<uint8_t> *src = nullptr;  // replayAudio (PLAY LAST) or msgAudio (a message)
   uint32_t message = 0;  // the message playing, 0 for PLAY LAST
   int group = 0;
   uint32_t from = 0;
   size_t pos = 0;  // into src, in stored frames
-  int16_t pcm[kFrameSamples];
-  size_t pcmOff = 0, pcmLen = 0;  // bytes of pcm still to write
   uint32_t frames = 0;
   bool held = false;
   Concealer conceal;
-};
-
-// Another call while one plays: logged, not played.
-struct Other {
-  bool used = false;
-  int group = 0;
-  uint32_t from = 0;
-  uint16_t call = 0;
-  uint32_t lastMs = 0, frames = 0;
 };
 
 struct Pending {
@@ -414,101 +336,93 @@ struct MsgRec {
   uint32_t arrivedMs = 0;
 };
 
-// The baby monitor's room: this board's mic, the frames kept for pre-roll, the sounds sent.
-struct RoomFrame {
+// This board's mic: the frames kept for the pre-roll, the sounds sent.
+struct MicFrame {
   int16_t predictor = 0;
-  uint8_t index = 0, bytes = 0, level = kNoLevel;
+  uint8_t index = 0, level = kNoLevel;
   uint8_t data[kFrameBytes];
-};
-struct RoomEar {  // a board that said it listens
-  uint32_t id = 0, heardMs = 0;
-  bool stopped = false;
 };
 struct SoundRec {
   time_t at = 0;
-  uint32_t startMs = 0, frames = 0;
+  uint32_t startMs = 0, frames = 0, muted = 0;
   uint8_t peak = kNoLevel;
-  int listeners = 0;
   bool live = false;
 };
-struct RoomRec {
+struct MicRec {
   bool on = false;
   int group = 0;
-  ListenerSet allowed;
+  uint32_t target = 0;
+  uint32_t conv = 0;     // the group's conversation, as of the last tick
+  bool opened = false;   // its session opened the conversation
+  uint16_t session = 0;
   uint32_t startMs = 0;
   time_t since = 0;
-  MonitorGate gate;
-  MonitorHistory hist;
-  bool mic = false;            // this board's capture runs for it
-  const char *paused = "STARTING";  // why the mic is off (a literal)
-  uint32_t resumeMs = 0;       // the mic may start again from this
+  MicGate gate;
+  MicHistory hist;
+  bool capturing = false;  // the duplex path's mic blocks come
+  const char *paused = "STARTING";  // why it isn't capturing (a literal)
+  uint32_t resumeMs = 0;   // it may capture again from this
   uint32_t retryMs = 0;
+  bool cue = false;        // the cue plays once it captures
   adpcm::State enc;
-  size_t fill = 0;             // bytes in pcm
+  size_t fill = 0;         // samples in pcm
   int16_t pcm[kFrameSamples];
-  RoomFrame ring[kRoomRing];   // frame n at n % kRoomRing
-  uint32_t captured = 0;       // frames since the mic started (after it settled)
-  uint32_t settle = 0;         // frames still to drop while it settles
-  uint16_t sound = 0, frame = 0;
+  float echo = -96;        // the echo reference of the frame's blocks (audio.h's echoDb)
+  float echoGate = -96;    // the last frame's echo level, as the gate took it
+  MicFrame ring[kMicRing]; // frame n at n % kMicRing
+  uint32_t captured = 0;   // frames since it began capturing (after it settled)
+  uint32_t settle = 0;     // frames still to drop while it settles
+  uint16_t frame = 0;      // within the sound
   float peaks[10] = {-96, -96, -96, -96, -96, -96, -96, -96, -96, -96};
   int peakAt = 0;
   float level = -96, shownLevel = -96;
   uint32_t shownMs = 0;
   uint8_t peakSince = kNoLevel;  // the loudest frame since the last still-here
   uint32_t nextStillMs = 0;
-  RoomEar ears[kRoomEars];
   std::vector<SoundRec> sounds;  // oldest first
-  uint32_t framesSent = 0, soundsSent = 0, stillHeres = 0, histories = 0, talkBacks = 0;
-  bool vanished = false;         // !commsmonvanish: nothing goes out
-  uint32_t toneUntilMs = 0;      // !commsmontone: the mic's input is a tone until then
+  uint32_t framesSent = 0, framesMuted = 0, soundsSent = 0, stillHeres = 0, histories = 0;
+  // While the speaker played: frames captured, the loudest of them and the echo gate it met, and
+  // those over the gate (they counted as sound when over the threshold too).
+  uint32_t playFrames = 0, playOver = 0;
+  float playPeak = -96, playPeakGate = -96;
+  bool vanished = false;         // !commsvanish: nothing goes out
+  uint32_t toneUntilMs = 0;      // !commstone: the mic's input is a tone until then
   float toneAmp = 0;
   uint32_t tonePhase = 0;
 };
 
-// The room this board listens to.
-struct ListenRec {
+// Another board's mic that's on, or LOST (under mu).
+struct OpenMicRec {
   int group = 0;
-  uint32_t room = 0;
-  ListenState st;
-  MonitorHistory hist;
-  uint32_t startMs = 0;
-  time_t since = 0;
-  StillHere last;  // the room's last still-here
-  uint8_t offReason = 0;
-  uint32_t nextListeningMs = 0;
+  uint32_t id = 0;
+  uint32_t boot = 0;     // its board's boot when the mic was heard on
+  uint32_t lastSeq = 0;  // the seq of its last mic packet (a presence older than it says nothing)
+  HeardMic st;
+  MicHistory hist;
+  MicStill last;         // its last still-here
+  bool haveStill = false;
+  uint32_t target = 0, conv = 0;
+  bool opened = false;
   bool haveHistory = false;
   int historyAsks = 0;
   uint32_t nextAskMs = 0;
-  int batteryStart = -1;  // for LASTS: the battery when this stretch on battery began
-  uint32_t batteryStartMs = 0;
-  // Playing the sound: a jitter buffer like a call's.
-  bool playing = false;  // the stream is the monitor's now
-  bool started = false, flushed = true;
-  uint16_t sound = 0, next = 0;
-  Slot slots[kSlots];
-  Concealer conceal;
-  uint32_t lastFrameMs = 0, holdOffMs = 0, nextAlarmMs = 0;
+  uint32_t playedMs = 0;       // its voice last came out of the speaker
+  bool sessionPlayed = false;  // its session has played here (incoming counted once)
+  bool logged = false;         // its session has its log entry
+  uint32_t frames = 0, lost = 0, late = 0, histories = 0;
   float peaks[10] = {-96, -96, -96, -96, -96, -96, -96, -96, -96, -96};
   int peakAt = 0;
   float level = -96, shownLevel = -96;
   uint32_t shownMs = 0;
-  uint32_t frames = 0, lost = 0, late = 0, histories = 0;
-};
-
-// A room heard on air that lets this board in (under mu).
-struct RoomSeen {
-  int group = 0;
-  uint32_t id = 0;
-  uint32_t heardMs = 0;
-  StillHere s;
+  int hops = 0;
+  uint32_t relay = 0;
+  int rssi = 0;
 };
 
 enum class Cmd : uint8_t {
-  Wake, Talk, TalkStop, PlayLast, StopPlay, Ping, Reload, Resend,
-  Ring, RingStop, Answer, Ignore, Join, Leave, MessageStart, MessageSend, MessageCancel,
-  PlayMessage, RingVanish,
-  MonitorStart, MonitorStop, MonitorThreshold, MonitorVanish, MonitorTone, ListenStart,
-  ListenStop, ListenAck, PowerOff,
+  Wake, MicOn, MicOff, MicThreshold, MicVanish, MicTone, AckLost, EchoTest, PlayLast, StopPlay,
+  Ping, Reload, Resend, Ring, RingStop, Answer, Ignore, Join, Leave, MessageStart, MessageSend,
+  MessageCancel, PlayMessage, RingVanish, PowerOff,
 };
 struct Command {
   Cmd cmd;
@@ -524,26 +438,23 @@ struct Core {
   int active = 0;
   std::vector<CallRec> log;  // oldest first
   LastCall last;
-  std::vector<uint8_t> lastAudio;  // the last call, kStoredFrame a frame
   std::vector<Pong> pongs;
   Status pub;
   Dial pubDial;
   Ring pubRing;
+  Mic pubMic;
   std::vector<MsgRec> msgs;  // oldest first
   uint32_t msgCounter = 0;
   bool relayOn = true, chirpOn = true;
   int devChannel = 0;
-  std::vector<RoomSeen> rooms;
-  Monitor pubMonitor;
-  Listen pubListen;
-  ListenerSet monitorWant;  // monitorStart()'s, for the task
-  int monitorWantDb = kMonitorDefaultDb;
-  int thresholdDb = kMonitorDefaultDb;
+  std::vector<OpenMicRec> mics;  // other boards' mics, on or LOST
+  int thresholdDb = kMicDefaultDb;
+  uint32_t micWantTarget = 0;  // micOn()'s, for the task
+  EchoTest echo;               // echoTest()'s result
 
   // The task's own.
   uint32_t id = 0, boot = 0, seq = 0;
   std::string name;
-  uint16_t callCounter = 0;
   uint16_t ringCounter = 0;
   uint32_t pingId = 0;
   Dialing dialing;
@@ -559,35 +470,46 @@ struct Core {
   SeenCache seen;
   ReplayGuard guard;
   Pending pending[kPending];
-  Hearing hear;
-  Talk talk;
   Replay replay;
-  Other others[2];
+  std::vector<uint8_t> replayAudio;  // PLAY LAST's copy of heardAudio, as it was
   MacId macs[32];
   uint32_t macTick = 0;
-  std::vector<uint8_t> recAudio;  // the call being heard, until it ends
-  uint32_t finishedFrom = 0;      // the call that ended last: its stray packets are ignored
-  uint16_t finishedCall = 0;
   Music music;
-  bool streamOurs = false;
-  // PLAY LAST is queued to the speaker far faster than it plays: once it's all queued, it still
-  // counts as hearing until the stream has played out (status() and the screens).
-  bool replayTail = false;
-  float level = -96;
-  float peaks[10] = {};  // the last 200 ms of played frames, for the meter
+  // The duplex path: comms started it, and it runs.
+  bool duplexOurs = false;
+  uint32_t duplexStartMs = 0, duplexRetryMs = 0, lastPlayMs = 0;
+  float couplingDb = kEchoCouplingDb;  // the echo gate's (comms.h)
+  // The mix: the voices playing, and the last 60 s heard (a ring of stored frames).
+  Mixer mixer;
+  int16_t mixPcm[kFrameSamples];
+  int16_t replayPcm[kFrameSamples];
+  audio::DuplexBlock block;
+  std::vector<uint8_t> heardAudio;
+  size_t heardHead = 0, heardCount = 0;  // the next frame written; frames kept
+  adpcm::State heardEnc;
+  uint32_t heardFrom = 0;
+  int heardGroup = 0;
+  uint32_t heardLastMs = 0;
+  float level = -96;     // what plays: the loudest of the last 200 ms of frames
+  float peaks[10] = {};
   int peakAt = 0;
+  float msgLevel = -96;  // a message recording: the mic
   bool onUsb = false;
   int battery = -1;  // percent, -1 none (with onUsb, polled every 5 s)
-  RoomRec room;
-  ListenRec listen;
-  uint32_t roomCount = 0, listenCount = 0;
-  // The room's sound numbers go on across starts, from a random one each boot: a listener's
-  // jitter buffer never takes a new sound for one it has just played.
-  uint16_t roomSound = 0;
+  MicRec mic;
+  uint32_t micCount = 0;
+  uint16_t micSession = 0;
+  // The gate's sound numbers go on across sessions, from a random one each boot: a board's mixer
+  // never takes a new sound for one it has just played.
+  uint16_t micSound = 0;
+  bool alarm = false;      // LOST's alarm sounds for one of the mics
+  uint32_t nextAlarmMs = 0;
+  uint32_t longMicMs = kLongMicMs;  // !commslong
   std::string error;
   uint32_t incoming = 0;
   RxFrame rx;  // the frame being handled: too big for the task's stack
-  // For !commsresend: the last frame this board sent, and the first voice frame of its last call.
+  // For !commsresend: the last frame this board sent, and the first voice frame of its last
+  // sound.
   uint8_t lastSent[kMaxFrame];
   uint8_t lastSentLen = 0;
   uint8_t firstVoice[kMaxFrame];
@@ -603,12 +525,13 @@ TaskHandle_t taskHandle = nullptr;
 std::atomic<int> holders{0};
 std::atomic<uint32_t> gen{1};
 std::atomic<bool> isListening{false};
-std::atomic<bool> talkWanted{false};  // a Talk command is on its way or talking
+std::atomic<bool> micWanted{false};  // a MicOn command is on its way, or the mic is on
 std::atomic<bool> hasGroups{false};
 std::atomic<bool> poweringOff{false};  // forceOff(): the radio stays off
 std::atomic<int> dropNth{0};  // !commsdropmsg: every nth message frame that comes is dropped
-std::atomic<bool> monitorOn{false};     // this board is a room or listens to one
-std::atomic<bool> powerOffSent{false};  // forceOff(): the monitor's last packets have gone
+std::atomic<bool> awake{false};         // keepAwake()
+std::atomic<bool> powerOffSent{false};  // forceOff(): the mic's off has gone
+std::atomic<bool> echoDone{false};      // echoTest() has its result
 uint32_t dropTick = 0;
 std::mutex radioMu;  // the ESP-NOW calls, against forceOff()
 bool espnowUp = false;
@@ -616,17 +539,13 @@ bool espnowUp = false;
 void bump() { gen.fetch_add(1, std::memory_order_relaxed); }
 
 // x as freshly made, built where it is: `x = T()` would build a T on the task's stack first,
-// and Hearing is 2 KB.
+// and MicRec is 4 KB.
 template <typename T>
 void renew(T &x) {
   x.~T();
   new (&x) T();
 }
 void drop(Drop d) { counters.dropped[d].fetch_add(1, std::memory_order_relaxed); }
-
-// The baby monitor's, used before its section.
-void stopListenPlay(bool abort);
-void roomMicOff(const char *why);
 
 uint32_t stamp() {  // millis() made non-zero, for "0: never"
   const uint32_t m = millis();
@@ -878,17 +797,6 @@ CallRec *findLogged(Kind kind, uint32_t from, uint32_t key, bool outgoing) {
   return nullptr;
 }
 
-// Under mu.
-CallRec *findCall(int group, uint32_t from, uint16_t call, bool outgoing) {
-  for (auto it = core->log.rbegin(); it != core->log.rend(); ++it) {
-    if (it->kind == Kind::Voice && it->group == group && it->from == from && it->call == call &&
-        it->outgoing == outgoing) {
-      return &*it;
-    }
-  }
-  return nullptr;
-}
-
 // --- The radio -----------------------------------------------------------------------------------
 
 // In the Wi-Fi task: copy and go.
@@ -1073,7 +981,7 @@ void sendPresence(GroupRec &g, bool hello) {
     }
   }
   w.u8(static_cast<uint8_t>((core->onUsb ? kFlagUsb : 0) | (relay ? kFlagRelay : 0) |
-                            (core->room.on ? kFlagRoom : 0) | (hello ? kFlagHello : 0)));
+                            (core->mic.on ? kFlagMic : 0) | (hello ? kFlagHello : 0)));
   const pmic::Status p = pmic::status();
   w.u8(p.ok && p.battery && p.percent >= 0 ? static_cast<uint8_t>(p.percent) : 0xFF);
   w.u8(static_cast<uint8_t>(core->name.size()));
@@ -1093,23 +1001,23 @@ void presenceSoon(GroupRec &g) { g.presenceDue = millis() + 20 + esp_random() % 
 
 // --- Audio -------------------------------------------------------------------------------------
 
-// A call may play now: nothing that it mustn't interrupt is going on.
-bool canPlay() {
-  if (audio::recording() || audio::ringing()) return false;  // the Recorder, an alarm
-  if (audio::capturing()) return false;                      // the agent listens
-  if (audio::streaming() && !core->streamOurs) return false;  // the agent speaks
-  return true;
+// Why comms can't have the speaker and the mic now, or nullptr: something voice doesn't play over
+// (and that takes the mic from an open mic).
+const char *duplexBlocked() {
+  if (core->out.recording) return "A MESSAGE IS RECORDING";
+  if (audio::ringing()) return "AN ALARM IS RINGING";
+  if (audio::recording()) return "THE RECORDER IS ON";
+  if (audio::capturing()) return "THE AGENT IS LISTENING";
+  if (audio::streaming()) return "THE AGENT IS SPEAKING";
+  return nullptr;
 }
 
-// A ring's chirp, or a message's, may sound now: as canPlay(), and nothing of comms's plays or
-// records either. (Music doesn't stop it: audio plays a ring over music.)
-bool canChirp() {
-  if (core->room.on) return false;  // the baby monitor's room stays silent
-  if (!canPlay() || audio::streaming()) return false;
-  return !core->talk.on && !core->hear.active && !core->replay.on && !core->out.recording;
-}
+// A ring's chirp, or a message's, may sound now: this board's mic is off (an open mic doesn't
+// chirp: it's in the conversation, and a room with someone asleep in it stays quiet), and nothing
+// that voice doesn't play over is on. Over voice and music it plays (audio mixes it in).
+bool canChirp() { return !core->mic.on && !duplexBlocked(); }
 
-// Music that a call stops plays on afterwards.
+// Music that voice stops plays on afterwards.
 void rememberMusic() {
   if (core->music.pending || !audio::playing()) return;
   const audio::Status s = audio::status();
@@ -1120,9 +1028,8 @@ void rememberMusic() {
 
 void resumeMusicWhenFree() {
   Music &m = core->music;
-  if (!m.pending || core->talk.on || core->hear.active || core->replay.on) return;
-  if (core->listen.playing || core->room.on) return;  // the baby monitor's sound, or its room
-  if (audio::streaming() || audio::capturing()) return;
+  if (!m.pending || core->mic.on || core->duplexOurs || core->replay.on) return;
+  if (core->mixer.active() || audio::streaming() || audio::capturing()) return;
   m.pending = false;
   if (audio::active() || audio::recording() || audio::ringing()) return;  // something else began
   audio::play(std::move(m.list), 0, m.ms);
@@ -1148,19 +1055,30 @@ void resetLevel() {
   core->level = -96;
 }
 
-// --- Hearing -----------------------------------------------------------------------------------
-
-void storeFrame(std::vector<uint8_t> &to, const Slot *s) {
-  if (to.size() / kStoredFrame >= kLastFrames) return;
-  const size_t at = to.size();
-  to.resize(at + kStoredFrame, 0);
-  if (!s) return;  // lost: stored as 0 bytes, which plays as 20 ms of silence
-  to[at] = static_cast<uint8_t>(s->predictor);
-  to[at + 1] = static_cast<uint8_t>(static_cast<uint16_t>(s->predictor) >> 8);
-  to[at + 2] = s->index;
-  to[at + 3] = s->bytes;
-  memcpy(&to[at + 4], s->data, s->bytes);
+void setError(const char *why) {
+  std::lock_guard<std::mutex> l(core->mu);
+  core->error = why;
+  bump();
 }
+
+// The speaker and the mic, for comms: audio's duplex path, started if it isn't (music that plays
+// stops, to play on later). False if something voice doesn't play over has the port.
+bool ensureDuplex(uint32_t now) {
+  if (core->duplexOurs && audio::duplexOn()) return true;
+  core->duplexOurs = false;  // taken, if it was ours
+  if (duplexBlocked() || static_cast<int32_t>(now - core->duplexRetryMs) < 0) return false;
+  rememberMusic();
+  if (!audio::duplexStart()) {
+    core->duplexRetryMs = now + kMicRetryMs;
+    log_w("comms: the duplex path won't start");
+    return false;
+  }
+  core->duplexOurs = true;
+  core->duplexStartMs = core->lastPlayMs = now;
+  return true;
+}
+
+// --- Stored frames, PLAY LAST and messages ------------------------------------------------------
 
 // Decodes one stored frame (or a lost one, as silence) into pcm; returns the samples.
 size_t decodeStored(const uint8_t *f, int16_t *pcm) {
@@ -1173,412 +1091,56 @@ size_t decodeStored(const uint8_t *f, int16_t *pcm) {
   st.predictor = static_cast<int16_t>(f[0] | f[1] << 8);
   st.index = f[2];
   adpcm::decode(st, f + 4, bytes, pcm);
-  return bytes * 2u;
+  for (size_t i = bytes * 2u; i < kFrameSamples; ++i) pcm[i] = 0;
+  return kFrameSamples;
 }
 
-// Plays (or for a call that can't play, only keeps) the next frame; s is null for a lost one.
-void playFrame(const Slot *s) {
-  Hearing &h = core->hear;
-  uint8_t stored[kStoredFrame] = {};
-  if (s) {
-    stored[0] = static_cast<uint8_t>(s->predictor);
-    stored[1] = static_cast<uint8_t>(static_cast<uint16_t>(s->predictor) >> 8);
-    stored[2] = s->index;
-    stored[3] = s->bytes;
-    memcpy(stored + 4, s->data, s->bytes);
-  }
-  int16_t pcm[kFrameSamples];
-  const size_t samples = decodeStored(stored, pcm);
-  h.conceal.apply(pcm, samples, !s);
-  notePlayedLevel(peakDb(pcm, samples));
-  if (h.playing) {
-    const size_t want = samples * 2;
-    const size_t n = audio::streamWrite(reinterpret_cast<const uint8_t *>(pcm), want, 20);
-    if (n < want && !audio::streaming()) {  // the agent took the speaker
-      h.playing = false;
-      core->streamOurs = false;
-    }
-  }
-  storeFrame(core->recAudio, s);
-  ++h.frames;
-  if (!s) ++h.lost;
+// A mixed frame that had voice in it goes into the last 60 s heard (PLAY LAST), as a stored frame
+// of its own.
+void keepHeard(const int16_t *pcm, uint32_t from, int group, uint32_t now) {
+  if (core->heardAudio.empty()) core->heardAudio.assign(kLastFrames * kStoredFrame, 0);
+  uint8_t *s = &core->heardAudio[core->heardHead * kStoredFrame];
+  adpcm::State &e = core->heardEnc;
+  s[0] = static_cast<uint8_t>(e.predictor);
+  s[1] = static_cast<uint8_t>(static_cast<uint16_t>(e.predictor) >> 8);
+  s[2] = e.index;
+  s[3] = kFrameBytes;
+  adpcm::encode(e, pcm, kFrameSamples, s + 4);
+  core->heardHead = (core->heardHead + 1) % kLastFrames;
+  if (core->heardCount < kLastFrames) ++core->heardCount;
+  if (from) core->heardFrom = from;
+  core->heardGroup = group;
+  core->heardLastMs = now;
 }
 
-// Plays what's ready in order through play(slot), null for a lost frame. A missing frame is
-// given up (as 20 ms of silence) once a frame kJitterWait further on has come, or at once when
-// flushing. A call's frames and the baby monitor's.
-template <typename Play>
-void drainSlots(Slot (&slots)[kSlots], uint16_t &next, bool flush, Play play) {
-  for (;;) {
-    Slot &s = slots[next % kSlots];
-    if (s.full && s.frame == next) {
-      play(&s);
-      s.full = false;
-      ++next;
-      continue;
-    }
-    int ahead = -1;
-    for (const Slot &x : slots) {
-      if (x.full) ahead = std::max(ahead, static_cast<int>(static_cast<int16_t>(x.frame - next)));
-    }
-    if (ahead < 0) break;
-    if (ahead >= kJitterWait || flush) {
-      play(nullptr);
-      ++next;
-      continue;
-    }
-    break;
-  }
-}
-
-void drain(bool flush) {
-  Hearing &h = core->hear;
-  if (!h.started) return;
-  drainSlots(h.slots, h.next, flush, playFrame);
-}
-
-void beginHearing(int gi, const Header &hd, uint32_t target, uint16_t call, int rssi,
-                  uint32_t relay, uint32_t conv, bool joinOnPlay) {
-  Hearing &h = core->hear;
-  renew(h);
-  h.active = true;
-  h.group = gi;
-  h.from = hd.sender;
-  h.target = target;
-  h.call = call;
-  h.conv = conv;
-  h.joinOnPlay = joinOnPlay;
-  h.startMs = h.lastMs = millis();
-  h.hops = hd.hops;
-  h.relay = relay;
-  h.rssi = hd.hops == 0 ? rssi : 0;
-  core->replayTail = false;
-  core->recAudio.clear();
-  resetLevel();
-  const bool can = canPlay();
-  {
-    std::lock_guard<std::mutex> l(core->mu);
-    CallRec c;
-    c.at = utcNow();
-    c.startMs = h.startMs;
-    c.group = gi;
-    c.from = hd.sender;
-    c.to = target;
-    c.call = call;
-    c.hops = h.hops;
-    c.relay = relay;
-    c.rssi = h.rssi;
-    c.conv = conv;
-    c.heard = core->room.on;  // a talk back into the baby monitor's room: nobody to show it to
-    logCall(c);
-    if (BoardRec *b = findBoard(core->groups[gi], hd.sender)) b->talkedAt = c.at;
-  }
-  if (can) {
-    if (core->replay.on) {  // a live call goes before PLAY LAST
-      audio::streamAbort();
-      core->replay.on = false;
-    }
-    stopListenPlay(true);  // and before the baby monitor's sound, which plays on after
-    rememberMusic();
-    bool chirp;
-    {
-      std::lock_guard<std::mutex> l(core->mu);
-      chirp = core->chirpOn;
-    }
-    if (chirp) audio::chirp(true);
-    if (audio::streamStart(kVoiceRate)) {
-      h.playing = h.played = true;
-      core->streamOurs = true;
-      // A talk back in the baby monitor's room doesn't raise the call sheet over its screen.
-      if (core->room.on) {
-        ++core->room.talkBacks;
-      } else {
-        ++core->incoming;
-      }
-      if (joinOnPlay && conv) {  // it played here, so this board is in its conversation
-        std::lock_guard<std::mutex> l(core->mu);
-        core->groups[gi].conv.join(millis(), conv);
-        presenceSoon(core->groups[gi]);
-      }
-    }
-  }
-  log_i("comms: call from %08lX in %s%s", static_cast<unsigned long>(hd.sender),
-        core->groups[gi].name.c_str(), h.playing ? "" : " (busy: not played)");
-  bump();
-}
-
-void endHearing(bool abort) {
-  Hearing &h = core->hear;
-  if (!h.active) return;
-  if (!abort) drain(true);
-  if (h.playing) {
-    if (abort) {
-      audio::streamAbort();
-      core->streamOurs = false;
-    } else {
-      audio::streamEnd();
-    }
-  }
-  const uint32_t ms = h.frames * kFrameMs;
-  {
-    std::lock_guard<std::mutex> l(core->mu);
-    if (CallRec *c = findCall(h.group, h.from, h.call, false)) {
-      c->ms = ms;
-      c->live = false;
-      c->lost = h.lost;
-      c->played = h.played;
-      c->heard = c->heard || (h.played && h.held);
-    }
-    if (h.frames > 0) {
-      core->lastAudio.swap(core->recAudio);
-      core->last.have = true;
-      core->last.group = h.group;
-      core->last.from = h.from;
-      core->last.fromName = nameOf(h.from);
-      core->last.ms = static_cast<uint32_t>(core->lastAudio.size() / kStoredFrame) * kFrameMs;
-      core->last.at = utcNow() ? utcNow() - ms / 1000 : 0;
-    }
-  }
-  core->recAudio.clear();
-  core->recAudio.shrink_to_fit();
-  if (h.played) {  // the caller counts who heard it
-    uint8_t body[12];
-    Writer w(body, sizeof body);
-    w.u32(sentAt());
-    w.u32(h.from);
-    w.u16(h.call);
-    sendOwn(core->groups[h.group], kHeard, body, w.size(), 50 + esp_random() % 200);
-  }
-  log_i("comms: call from %08lX over, %lu ms%s", static_cast<unsigned long>(h.from),
-        static_cast<unsigned long>(ms), h.played ? "" : " (not played)");
-  core->finishedFrom = h.from;
-  core->finishedCall = h.call;
-  h.active = false;
-  resetLevel();
-  bump();
-}
-
-// A frame (or the start or end) of a call that isn't the one playing: logged only.
-void otherCall(int gi, const Header &hd, uint32_t target, uint16_t call, bool end) {
-  Other *o = nullptr;
-  for (Other &x : core->others) {
-    if (x.used && x.from == hd.sender && x.call == call) o = &x;
-  }
-  const uint32_t now = millis();
-  if (!o) {
-    if (end) return;
-    for (Other &x : core->others) {
-      if (!x.used) o = &x;
-    }
-    if (!o) return;  // three at once: the third isn't even logged
-    *o = Other{true, gi, hd.sender, call, now, 0};
-    std::lock_guard<std::mutex> l(core->mu);
-    CallRec c;
-    c.at = utcNow();
-    c.startMs = now;
-    c.group = gi;
-    c.from = hd.sender;
-    c.to = target;
-    c.call = call;
-    c.hops = hd.hops;
-    logCall(c);
-  }
-  o->lastMs = now;
-  if (!end) ++o->frames;
-  if (end) {
-    std::lock_guard<std::mutex> l(core->mu);
-    if (CallRec *c = findCall(o->group, o->from, o->call, false)) {
-      c->ms = o->frames * kFrameMs;
-      c->live = false;
-    }
-    o->used = false;
-    bump();
-  }
-}
-
-enum class Whose : uint8_t {
-  Ours,  // this board is in its conversation (or it's an older board's, with none): it plays
-  Join,  // it plays, and puts this board in its conversation
-  No,    // another conversation's: not played, not logged
-};
-
-// Whether a call in conversation conv (to target, with the voice flags) plays here.
-Whose whose(int gi, uint32_t conv, uint8_t flags, uint32_t target) {
-  if (!conv) return Whose::Ours;  // a board from before conversations: as it always was
-  std::lock_guard<std::mutex> l(core->mu);
-  const ConvState &c = core->groups[gi].conv;  // a group has one: conv is it, or merges into it
-  if (c.mine()) return Whose::Ours;
-  if (c.left()) return Whose::No;  // left: nothing plays here until join()
-  if (target == core->id) return Whose::Join;  // to this board alone
-  if (flags & kVoiceOpening) return Whose::Join;  // its first call: the walkie-talkie
-  return Whose::No;
-}
-
-void onVoice(int gi, const Header &hd, const RxFrame &f, Reader &r, uint32_t relay) {
-  const uint32_t target = r.u32();
-  const uint16_t call = r.u16();
-  Slot in;
-  uint16_t endFrames = 0;
-  if (hd.type == kVoice) {
-    in.frame = r.u16();
-    in.predictor = static_cast<int16_t>(r.u16());
-    in.index = r.u8();
-    in.bytes = r.u8();
-    const uint8_t *data = r.bytes(in.bytes);
-    if (!r.ok() || in.bytes > kFrameBytes || in.index > 88) {
-      drop(kDropMalformed);
-      return;
-    }
-    memcpy(in.data, data, in.bytes);
-    in.full = true;
-  } else if (hd.type == kVoiceStart) {
-    r.u8();  // the codec
-  } else if (hd.type == kVoiceEnd) {
-    endFrames = r.u16();
-  }
-  if (!r.ok()) {
-    drop(kDropMalformed);
-    return;
-  }
-  // The conversation, after the fields (a board from before conversations sends none).
-  uint32_t conv = 0;
-  uint8_t vflags = 0;
-  if (r.left() >= 5) {
-    conv = r.u32();
-    vflags = r.u8();
-  }
-  if (conv && (hd.type != kVoice || in.frame % 10 == 0)) {  // a word in it, now and then
-    std::lock_guard<std::mutex> l(core->mu);
-    if (core->groups[gi].conv.spoke(millis(), conv, hd.sender, core->id)) bump();
-  }
-  if (target && target != core->id) {
-    drop(kDropNotForUs);
-    return;
-  }
-  if (core->talk.on || core->out.recording) {  // half-duplex (a message records like a talk)
-    drop(kDropTalking);
-    return;
-  }
-  if (core->finishedFrom == hd.sender && core->finishedCall == call) return;  // its tail
-  // The baby monitor's room plays only a call to it alone from a board it lets listen: talk
-  // back, outside any conversation (it doesn't join one).
-  RoomRec &room = core->room;
-  if (room.on && (target != core->id || gi != room.group || !room.allowed.allows(hd.sender))) {
-    drop(kDropRoomSilent);
-    return;
-  }
-  Hearing &h = core->hear;
-  const bool thisCall = h.active && h.from == hd.sender && h.call == call;
-  const Whose w = thisCall || room.on ? Whose::Ours : whose(gi, conv, vflags, target);
-  if (w == Whose::No) {
-    drop(kDropNotInConversation);
-    return;
-  }
-  if (h.active && !thisCall) {
-    otherCall(gi, hd, target, call, hd.type == kVoiceEnd);
-    return;
-  }
-  if (!h.active) {
-    if (hd.type == kVoiceEnd) return;  // all of it was missed
-    if (room.on) roomMicOff("TALK BACK");  // half-duplex: it isn't sent back
-    beginHearing(gi, hd, target, call, f.rssi, relay, conv, w == Whose::Join);
-  }
-  h.lastMs = millis();
-  if (hd.type == kVoice) {
-    if (!h.started) {
-      h.started = true;
-      h.next = in.frame <= kJitterWait ? 0 : in.frame;
-    }
-    int ahead = static_cast<int16_t>(in.frame - h.next);
-    if (ahead < 0) {
-      drop(kDropLate);
-      return;
-    }
-    if (ahead > kResyncFrames) {  // a long gap: carry on from here
-      for (Slot &s : h.slots) s.full = false;
-      h.next = in.frame;
-      ahead = 0;
-    }
-    while (ahead >= static_cast<int>(kSlots)) {  // no room: what's missing is lost
-      drain(true);
-      ahead = static_cast<int16_t>(in.frame - h.next);
-      if (ahead >= static_cast<int>(kSlots)) {
-        playFrame(nullptr);
-        ++h.next;
-        ahead = static_cast<int16_t>(in.frame - h.next);
-      }
-    }
-    h.slots[in.frame % kSlots] = in;
-    drain(false);
-  } else if (hd.type == kVoiceEnd) {
-    h.ending = true;
-    h.endFrames = endFrames;
-    endHearing(false);
-  }
-}
-
-// --- Replay (PLAY LAST) --------------------------------------------------------------------------
-
-void stopReplay(bool abort) {
+void stopReplay() {
   Replay &p = core->replay;
   if (!p.on) return;
-  if (abort) {
-    audio::streamAbort();
-    core->streamOurs = false;
-  } else {
-    audio::streamEnd();
-  }
   p.on = false;
-  core->replayTail = !abort;
   if (p.held && !p.message) {
     std::lock_guard<std::mutex> l(core->mu);
-    for (auto it = core->log.rbegin(); it != core->log.rend(); ++it) {
-      if (!it->outgoing && it->from == core->last.from && it->group == core->last.group) {
-        it->heard = true;
-        break;
-      }
+    for (CallRec &c : core->log) {
+      if (c.kind == Kind::Voice && !c.outgoing && c.played) c.heard = true;
     }
   }
-  resetLevel();
   bump();
 }
 
-// Plays src (lastAudio for PLAY LAST, or msgAudio with the message's id) through the stream.
+// Plays src (replayAudio for PLAY LAST, or msgAudio with the message's id) into the mix, over any
+// voice that plays.
 void startReplay(const std::vector<uint8_t> &src, uint32_t message, int group, uint32_t from) {
-  if (core->room.on) {
-    std::lock_guard<std::mutex> l(core->mu);
-    core->error = "THE ROOM IS MONITORING";
-    bump();
-    return;
-  }
-  if (core->talk.on || core->hear.active || core->replay.on || core->out.recording) {
-    std::lock_guard<std::mutex> l(core->mu);
-    core->error = "BUSY";
-    bump();
-    return;
-  }
-  if (src.empty() || !canPlay()) {
-    std::lock_guard<std::mutex> l(core->mu);
-    core->error = !src.empty() ? "AUDIO BUSY" : message ? "THE MESSAGE WON'T LOAD" : "NO CALL TO PLAY";
-    bump();
-    return;
-  }
-  stopListenPlay(true);  // the baby monitor's sound plays on after
-  rememberMusic();
-  if (!audio::streamStart(kVoiceRate)) {
-    std::lock_guard<std::mutex> l(core->mu);
-    core->error = "THE SPEAKER WON'T START";
-    bump();
-    return;
-  }
-  core->streamOurs = true;
+  if (core->out.recording) return setError("A MESSAGE IS RECORDING");
+  if (src.empty()) return setError(message ? "THE MESSAGE WON'T LOAD" : "NOTHING HEARD TO PLAY");
+  if (const char *why = duplexBlocked()) return setError(why);
+  if (!ensureDuplex(millis())) return setError("THE SPEAKER WON'T START");
+  stopReplay();
   renew(core->replay);
-  core->replay.on = true;
-  core->replay.src = &src;
-  core->replay.message = message;
-  core->replay.group = group;
-  core->replay.from = from;
-  resetLevel();
+  Replay &p = core->replay;
+  p.on = true;
+  p.src = &src;
+  p.message = message;
+  p.group = group;
+  p.from = from;
   {
     std::lock_guard<std::mutex> l(core->mu);
     core->error.clear();
@@ -1586,65 +1148,152 @@ void startReplay(const std::vector<uint8_t> &src, uint32_t message, int group, u
   bump();
 }
 
-void pumpReplay() {
+// The replay's next frame, into replayPcm; false at its end.
+bool replayFrame() {
   Replay &p = core->replay;
-  if (!p.on) return;
+  if (!p.on) return false;
   if (holders.load() > 0) p.held = true;
-  for (int i = 0; i < 8; ++i) {
-    if (p.pcmLen == 0) {
-      if ((p.pos + 1) * kStoredFrame > p.src->size()) {
-        stopReplay(false);
-        return;
+  if ((p.pos + 1) * kStoredFrame > p.src->size()) {
+    stopReplay();
+    return false;
+  }
+  const uint8_t *stored = &(*p.src)[p.pos * kStoredFrame];
+  decodeStored(stored, core->replayPcm);
+  p.conceal.apply(core->replayPcm, kFrameSamples, stored[3] == 0);
+  ++p.pos;
+  ++p.frames;
+  return true;
+}
+
+// --- Playing: the voices heard, mixed --------------------------------------------------------
+
+OpenMicRec *findMic(int gi, uint32_t id);
+OpenMicRec *findMicById(uint32_t id);
+CallRec *ensureLogged(OpenMicRec &o, uint32_t now);
+
+// What the last pull played, by board: counts, levels, the log, the call sheet.
+void notePlayed(uint32_t now) {
+  size_t n = 0;
+  const Mixer::Played *played = core->mixer.played(n);
+  for (size_t i = 0; i < n; ++i) {
+    const Mixer::Played &p = played[i];
+    bool firstOfSession = false;
+    uint32_t queued = 0;
+    {
+      std::lock_guard<std::mutex> l(core->mu);
+      OpenMicRec *o = findMicById(p.sender);
+      if (!o) continue;
+      ++o->frames;
+      if (p.lost) ++o->lost;
+      o->peaks[o->peakAt] = p.levelDb;
+      o->peakAt = (o->peakAt + 1) % 10;
+      o->level = *std::max_element(o->peaks, o->peaks + 10);
+      o->playedMs = now;
+      CallRec *c = ensureLogged(*o, now);
+      if (c) {
+        c->played = true;
+        c->lost = o->lost;
+        if (holders.load() > 0) c->heard = true;
+        if (p.first) ++c->sounds;
       }
-      const uint8_t *stored = &(*p.src)[p.pos * kStoredFrame];
-      const size_t samples = decodeStored(stored, p.pcm);
-      p.conceal.apply(p.pcm, samples, stored[3] == 0);
-      ++p.pos;
-      ++p.frames;
-      p.pcmOff = 0;
-      p.pcmLen = samples * 2;
-      notePlayedLevel(peakDb(p.pcm, samples));
-    }
-    const size_t n = audio::streamWrite(reinterpret_cast<const uint8_t *>(p.pcm) + p.pcmOff,
-                                        p.pcmLen, 0);
-    if (n == 0) {
-      if (!audio::streaming()) {  // the speaker was taken
-        core->streamOurs = false;
-        p.on = false;
+      if (BoardRec *b = findBoard(core->groups[o->group], o->id)) b->talkedAt = utcNow();
+      if (!o->sessionPlayed) {
+        o->sessionPlayed = true;
+        firstOfSession = true;
+        ++core->incoming;
         bump();
       }
-      return;  // the ring is full: on with it next time round
     }
-    p.pcmOff += n;
-    p.pcmLen -= n;
+    if (p.first) {
+      queued = audio::duplexQueuedMs();
+      log_i("comms: %08lX's sound %u plays %lu ms after its first frame came (%lu ms queued)",
+            static_cast<unsigned long>(p.sender), p.sound, static_cast<unsigned long>(p.waitedMs),
+            static_cast<unsigned long>(queued));
+    }
+    if (firstOfSession) {
+      bool chirp;
+      {
+        std::lock_guard<std::mutex> l(core->mu);
+        chirp = core->chirpOn;
+      }
+      if (chirp && !core->mic.on) audio::chirp(true);
+    }
   }
 }
 
-// --- Talking -----------------------------------------------------------------------------------
-
-void sendVoiceFrame(size_t samples) {
-  Talk &t = core->talk;
-  uint8_t body[kMaxBody];
-  Writer w(body, sizeof body);
-  w.u32(sentAt());
-  w.u32(t.target);
-  w.u16(t.call);
-  w.u16(t.frame++);
-  w.u16(static_cast<uint16_t>(t.enc.predictor));
-  w.u8(t.enc.index);
-  samples &= ~static_cast<size_t>(1);
-  uint8_t data[kFrameBytes];
-  adpcm::encode(t.enc, t.pcm, samples, data);
-  w.u8(static_cast<uint8_t>(samples / 2));
-  w.bytes(data, samples / 2);
-  w.u32(t.conv);
-  w.u8(t.opening ? kVoiceOpening : 0);
-  core->markFirstVoice = t.frame == 1;  // the one just numbered 0
-  sendOwn(core->groups[t.group], kVoice, body, w.size());
-  if (t.frame % 25 == 1) {  // a word in the conversation, twice a second
-    std::lock_guard<std::mutex> l(core->mu);
-    core->groups[t.group].conv.spoke(millis(), t.conv, core->id, core->id);
+// Keeps the speaker fed while voices or a replay play: a mixed frame at a time, kMixAheadMs ahead
+// of what's heard.
+void pumpPlay(uint32_t now) {
+  Mixer &mx = core->mixer;
+  if (!mx.active() && !core->replay.on) return;
+  if (!ensureDuplex(now)) {  // the speaker is someone else's: what came isn't played
+    if (mx.active()) {
+      mx.clear();
+      drop(kDropCantPlay);
+    }
+    if (core->replay.on) stopReplay();
+    return;
   }
+  for (int guard = 0; guard < 8 && audio::duplexQueuedMs() < kMixAheadMs; ++guard) {
+    const int voices = mx.pull(core->mixPcm, now);
+    const bool replay = replayFrame();
+    if (!voices && !replay) break;
+    if (voices) {
+      notePlayed(now);
+      size_t n = 0;
+      const Mixer::Played *played = mx.played(n);
+      uint32_t loudest = 0;
+      float top = -97;
+      for (size_t i = 0; i < n; ++i) {
+        if (played[i].levelDb > top) {
+          top = played[i].levelDb;
+          loudest = played[i].sender;
+        }
+      }
+      int group = core->heardGroup;
+      {
+        std::lock_guard<std::mutex> l(core->mu);
+        if (const OpenMicRec *o = findMicById(loudest)) group = o->group;
+      }
+      keepHeard(core->mixPcm, loudest, group, now);
+    }
+    if (replay) {
+      for (size_t i = 0; i < kFrameSamples; ++i) {
+        const int v = (voices ? core->mixPcm[i] : 0) + core->replayPcm[i];
+        core->mixPcm[i] = static_cast<int16_t>(std::max(-32768, std::min(32767, v)));
+      }
+    }
+    notePlayedLevel(peakDb(core->mixPcm, kFrameSamples));
+    audio::duplexWrite(core->mixPcm, kFrameSamples);
+    core->lastPlayMs = now;
+  }
+}
+
+bool awakeNow();
+
+// The duplex path goes once nothing of comms's needs it. While another board's mic that this
+// board hears is on it stays (its next sound plays without the codec starting again), unless
+// music waits to play on.
+void pumpDuplex(uint32_t now) {
+  if (core->duplexOurs && !audio::duplexOn()) core->duplexOurs = false;
+  if (!core->duplexOurs || core->mic.on || core->mixer.active() || core->replay.on) return;
+  if (now - core->lastPlayMs < kDuplexIdleMs || audio::duplexQueuedMs() > 0) return;
+  if (!core->music.pending && awakeNow()) return;
+  audio::duplexStop();
+  core->duplexOurs = false;
+  resetLevel();
+  bump();
+}
+
+// --- The mic ---------------------------------------------------------------------------------
+
+int snapDb(int db) {
+  const int s = static_cast<int>(lroundf(static_cast<float>(db) / kMicStepDb)) * kMicStepDb;
+  return std::max(kMicMinDb, std::min(kMicMaxDb, s));
+}
+
+uint8_t batteryByte() {
+  return core->battery >= 0 && core->battery <= 100 ? static_cast<uint8_t>(core->battery) : 0xFF;
 }
 
 uint32_t newConvId() {
@@ -1655,137 +1304,339 @@ uint32_t newConvId() {
   return id;
 }
 
-void startTalk(int gi, uint32_t target) {
-  Talk &t = core->talk;
-  auto fail = [](const char *why) {
-    std::lock_guard<std::mutex> l(core->mu);
-    core->error = why;
-    talkWanted = false;
+void endSound(uint32_t now) {
+  MicRec &m = core->mic;
+  if (m.sounds.empty() || !m.sounds.back().live) return;
+  SoundRec &r = m.sounds.back();
+  r.live = false;
+  log_i("comms: the mic sent a sound: %lu ms, peak %d dBFS, %lu frames muted as echo",
+        static_cast<unsigned long>(r.frames * kFrameMs), -static_cast<int>(r.peak),
+        static_cast<unsigned long>(r.muted));
+  (void)now;
+  bump();
+}
+
+// Starts taking the duplex path's mic blocks (it starts the path if it isn't on).
+void micCapture(uint32_t now) {
+  MicRec &m = core->mic;
+  if (!ensureDuplex(now)) {
+    const char *why = duplexBlocked();
+    m.paused = why ? why : audio::playing() ? "MUSIC IS PLAYING" : "THE MIC WON'T START";
+    m.retryMs = now + kMicRetryMs;
     bump();
+    return;
+  }
+  audio::duplexMic(true);
+  m.capturing = true;
+  m.paused = "";
+  m.gate.reset();  // what came before the pause isn't pre-roll for what comes now
+  m.enc = adpcm::State();
+  m.fill = 0;
+  m.echo = -96;
+  m.captured = 0;
+  // Just started: its thump goes. Already on (voice was playing): a frame's worth of slack.
+  m.settle = now - core->duplexStartMs < 500 ? kMicSettleFrames : 1;
+  if (m.cue) {
+    m.cue = false;
+    audio::micCue();  // into the duplex output: the echo gate keeps it off the air
+  }
+  log_i("comms: the mic is capturing (threshold %d dBFS)", m.gate.threshold());
+  bump();
+}
+
+void micPaused(const char *why, uint32_t now) {
+  MicRec &m = core->mic;
+  if (m.capturing) audio::duplexMic(false);
+  m.capturing = false;
+  m.paused = why;
+  m.level = -96;
+  m.echoGate = -96;
+  endSound(now);
+  log_i("comms: the mic paused: %s", why);
+  bump();
+}
+
+void sendMicFrame(const MicFrame &k, bool muted) {
+  MicRec &m = core->mic;
+  Voice v;
+  v.target = m.target;
+  v.conv = m.conv;
+  v.session = m.session;
+  v.sound = core->micSound;
+  v.frame = m.frame++;
+  v.level = k.level;
+  v.flags = m.opened ? kVoiceOpening : 0;
+  if (!muted) {  // else silence: the echo held back
+    v.predictor = k.predictor;
+    v.index = k.index;
+    v.bytes = kFrameBytes;
+    memcpy(v.data, k.data, kFrameBytes);
+  }
+  uint8_t body[kMaxBody];
+  const size_t n = putVoice(body, sizeof body, sentAt(), v);
+  core->markFirstVoice = v.frame == 0;
+  if (!m.vanished && n && sendOwn(core->groups[m.group], kVoice, body, n)) ++m.framesSent;
+  if (muted) ++m.framesMuted;
+}
+
+// One 20 ms frame from the mic: its level against the gate (and the speaker's echo), kept for
+// the pre-roll, and the one from kPreFrames ago sent if the gate says so.
+void micFrame(uint32_t now) {
+  MicRec &m = core->mic;
+  if (m.toneUntilMs) {
+    if (static_cast<int32_t>(now - m.toneUntilMs) < 0) {
+      // 1 kHz at 16 kHz: 16 samples a period, its peak exactly on one of them. Added to what
+      // the mic hears (the speaker's echo too), as a voice in the room would be.
+      for (size_t i = 0; i < kFrameSamples; ++i, ++m.tonePhase) {
+        const float x = sinf(2 * static_cast<float>(M_PI) * (m.tonePhase % 16) / 16);
+        const long v = m.pcm[i] + lroundf(m.toneAmp * x);
+        m.pcm[i] = static_cast<int16_t>(std::max(-32768L, std::min(32767L, v)));
+      }
+    } else {
+      m.toneUntilMs = 0;
+      log_i("comms: the mic's test tone is over");
+    }
+  }
+  const float db = peakDb(m.pcm, kFrameSamples);
+  // What the speaker could put on the mic now, with the margin a voice over it must clear.
+  m.echoGate = m.echo > -96 ? m.echo + core->couplingDb + kEchoMarginDb : -96;
+  MicFrame &k = m.ring[m.captured % kMicRing];
+  k.predictor = m.enc.predictor;
+  k.index = m.enc.index;
+  k.level = levelByte(db);
+  adpcm::encode(m.enc, m.pcm, kFrameSamples, k.data);
+  ++m.captured;
+  m.hist.note(now - m.startMs, db);
+  if (m.peakSince == kNoLevel || k.level < m.peakSince) m.peakSince = k.level;
+  m.peaks[m.peakAt] = db;
+  m.peakAt = (m.peakAt + 1) % 10;
+  m.level = *std::max_element(m.peaks, m.peaks + 10);
+  if (m.echoGate > -96) {
+    ++m.playFrames;
+    if (db > m.echoGate) ++m.playOver;
+    if (db > m.playPeak) {
+      m.playPeak = db;
+      m.playPeakGate = m.echoGate;
+    }
+  }
+  const MicGate::Step s = m.gate.frame(db, m.echoGate);
+  if (s.send) {
+    const MicFrame &out = m.ring[(m.captured - 1 - MicGate::kPreFrames) % kMicRing];
+    if (s.first) {
+      ++core->micSound;
+      m.frame = 0;
+      ++m.soundsSent;
+      if (m.sounds.size() >= kMicSounds) m.sounds.erase(m.sounds.begin());
+      SoundRec r;
+      r.at = utcNow();
+      r.startMs = now - kPreRollMs;
+      r.live = true;
+      m.sounds.push_back(r);
+      log_i("comms: the mic sends a sound (%u): a frame at %d dBFS, the echo gate at %d",
+            core->micSound, static_cast<int>(lroundf(db)), static_cast<int>(lroundf(m.echoGate)));
+      bump();
+    }
+    sendMicFrame(out, s.muted);
+    SoundRec &r = m.sounds.back();
+    ++r.frames;
+    if (s.muted) ++r.muted;
+    if (r.peak == kNoLevel || out.level < r.peak) r.peak = out.level;
+  } else {
+    endSound(now);
+  }
+}
+
+void sendStillHere(uint32_t now) {
+  MicRec &m = core->mic;
+  MicStill s;
+  s.flags = static_cast<uint8_t>((m.gate.sending() && m.capturing ? kMicSending : 0) |
+                                 (core->onUsb ? kMicUsb : 0) | (m.capturing ? 0 : kMicPaused) |
+                                 (m.opened ? kMicOpening : 0));
+  s.battery = batteryByte();
+  s.threshold = static_cast<uint8_t>(-m.gate.threshold());
+  s.peak = m.peakSince;
+  m.peakSince = kNoLevel;
+  s.session = m.session;
+  s.onS = (now - m.startMs) / 1000;
+  s.bar = static_cast<uint16_t>(std::min<uint32_t>((now - m.startMs) / kHistoryBarMs, 0xFFFF));
+  s.barPeak = m.hist.at(s.bar);
+  s.target = m.target;
+  s.conv = m.conv;
+  uint8_t body[kMaxBody];
+  const size_t n = putMicStill(body, sizeof body, sentAt(), s);
+  if (n && sendOwn(core->groups[m.group], kMic, body, n)) ++m.stillHeres;
+}
+
+void sendHistory(uint32_t to, uint32_t now) {
+  MicRec &m = core->mic;
+  History h;
+  h.to = to;
+  h.session = m.session;
+  const uint16_t top =
+      static_cast<uint16_t>(std::min<uint32_t>((now - m.startMs) / kHistoryBarMs, 0xFFFF));
+  h.first = top + 1 >= kHistoryBars ? static_cast<uint16_t>(top + 1 - kHistoryBars) : 0;
+  h.count = static_cast<uint8_t>(top - h.first + 1);
+  for (uint8_t i = 0; i < h.count; ++i) h.bars[i] = m.hist.at(static_cast<uint16_t>(h.first + i));
+  uint8_t body[kMaxBody];
+  const size_t n = putHistory(body, sizeof body, sentAt(), h);
+  if (n && sendOwn(core->groups[m.group], kExt, body, n)) ++m.histories;
+}
+
+void stopMic(uint8_t reason);
+void ignoreRinging();
+
+void startMic(int gi, uint32_t target) {
+  MicRec &m = core->mic;
+  auto fail = [](const char *why) {
+    setError(why);
+    if (!core->mic.on) micWanted = false;
   };
-  if (t.on) return;
   if (gi < 0 || gi >= static_cast<int>(core->groups.size())) return fail("NO SUCH GROUP");
   if (core->groups[gi].via == Via::Net) return fail("NET ONLY: NO LINK YET");
-  if (core->room.on) return fail("THE ROOM IS MONITORING");
-  if (core->out.recording) return fail("A MESSAGE IS RECORDING");
   if (audio::recording()) return fail("THE RECORDER IS ON");
   if (audio::ringing()) return fail("AN ALARM IS RINGING");
-  if (audio::capturing()) return fail("THE AGENT IS LISTENING");
+  if (target == core->id) return fail("THAT'S THIS BOARD");
   if (!isListening && !radioStart()) return fail("THE RADIO WON'T START");
-  if (core->hear.active) endHearing(true);
-  if (core->replay.on) stopReplay(true);
-  core->replayTail = false;
-  stopListenPlay(true);  // talking back to a baby monitor's room: its sound waits
-  rememberMusic();
-  if (!audio::captureStart(true)) return fail("THE MIC WON'T START");
-  renew(t);
-  t.on = true;
-  t.group = gi;
-  t.target = target;
-  t.call = ++core->callCounter;
-  t.startMs = millis();
+  if (m.on) {
+    if (m.group == gi && m.target == target) return;  // as it is
+    stopMic(kOffSwitched);  // to another group or board: a new session
+  }
+  if (core->ringing.on) ignoreRinging();  // a board whose mic is on doesn't ring
+  const uint32_t now = millis();
+  const int db = core->thresholdDb;
+  renew(m);
+  m.on = true;
+  m.group = gi;
+  m.target = target;
+  m.session = ++core->micSession;
+  if (!m.session) m.session = ++core->micSession;
+  m.startMs = now;
+  m.since = utcNow();
+  m.gate.setThreshold(db);
+  m.nextStillMs = now;
+  m.cue = true;
+  ++core->micCount;
+  micWanted = true;
   {
-    // The group's conversation: this board joins the one on and talks in it, to all of it (or
-    // to a board of it: all of it hears). With none on, this call opens one.
+    // The group's conversation: this board joins the one on, else its mic opens one. To a board
+    // in it: to all of it.
     std::lock_guard<std::mutex> l(core->mu);
     ConvState &c = core->groups[gi].conv;
-    t.opening = !c.on();
-    c.join(t.startMs, t.opening ? newConvId() : 0);
-    c.spoke(t.startMs, c.id(), core->id, core->id);
-    t.conv = c.id();
-    // To a board in it: to all of it. Not to the room this board listens to: the room plays
-    // only a call to it alone (talk back).
-    const ListenRec &L = core->listen;
-    if (target && c.isMember(target) && !(L.st.on() && L.room == target)) t.target = 0;
-  }
-  presenceSoon(core->groups[gi]);
-  uint8_t body[24];
-  Writer w(body, sizeof body);
-  w.u32(sentAt());
-  w.u32(t.target);
-  w.u16(t.call);
-  w.u8(1);  // the codec: IMA ADPCM, 16 kHz mono, 20 ms frames
-  w.u32(t.conv);
-  w.u8(t.opening ? kVoiceOpening : 0);
-  sendOwn(core->groups[gi], kVoiceStart, body, w.size());
-  {
-    std::lock_guard<std::mutex> l(core->mu);
+    m.opened = !c.on();
+    c.join(now, m.opened ? newConvId() : 0);
+    c.spoke(now, c.id(), core->id, core->id);
+    m.conv = c.id();
+    if (target && c.isMember(target)) m.target = 0;
     core->error.clear();
-    CallRec c;
-    c.at = utcNow();
-    c.startMs = t.startMs;
-    c.group = gi;
-    c.outgoing = true;
-    c.from = core->id;
-    c.to = t.target;
-    c.call = t.call;
-    c.conv = t.conv;
-    logCall(c);
+    CallRec r;
+    r.at = m.since;
+    r.startMs = now;
+    r.group = gi;
+    r.outgoing = true;
+    r.from = core->id;
+    r.to = m.target;
+    r.call = m.session;
+    r.conv = m.conv;
+    logCall(r);
   }
-  log_i("comms: talking in %s to %s, conversation %08lX%s", core->groups[gi].name.c_str(),
-        t.target ? "one board" : "all", static_cast<unsigned long>(t.conv),
-        t.opening ? " (opens it)" : "");
+  rememberMusic();
+  presenceSoon(core->groups[gi]);  // its flag: the mic is on
+  log_i("comms: the mic is on in %s to %s, conversation %08lX%s, threshold %d dBFS",
+        core->groups[gi].name.c_str(), m.target ? "one board" : "all",
+        static_cast<unsigned long>(m.conv), m.opened ? " (opens it)" : "", db);
   bump();
 }
 
-void stopTalk() {
-  Talk &t = core->talk;
-  if (!t.on) return;
-  audio::captureStop();
-  // The rest of the ring, then a short last frame.
-  for (;;) {
-    const size_t n = audio::captureRead(reinterpret_cast<uint8_t *>(t.pcm) + t.fillBytes,
-                                        kFrameSamples * 2 - t.fillBytes, 0);
-    if (n == 0) break;
-    t.fillBytes += n;
-    if (t.fillBytes == kFrameSamples * 2) {
-      sendVoiceFrame(kFrameSamples);
-      t.fillBytes = 0;
+void stopMic(uint8_t reason) {
+  MicRec &m = core->mic;
+  if (!m.on) return;
+  const uint32_t now = millis();
+  if (m.capturing) audio::duplexMic(false);
+  m.capturing = false;
+  m.level = -96;
+  endSound(now);
+  MicOff o;
+  o.session = m.session;
+  o.reason = reason;
+  o.onS = (now - m.startMs) / 1000;
+  uint8_t body[16];
+  const size_t n = putMicOff(body, sizeof body, sentAt(), o);
+  GroupRec &g = core->groups[m.group];
+  if (!m.vanished) {
+    if (reason == kOffPowerOff) {  // the radio goes in a moment: now, not from the queue
+      for (int i = 0; i < 3; ++i) sendOwn(g, kMicOff, body, n);
+    } else {
+      for (const uint32_t after : {0u, 40u, 80u}) sendOwn(g, kMicOff, body, n, after);
     }
   }
-  if (t.fillBytes >= 4) sendVoiceFrame(t.fillBytes / 2);
-  t.fillBytes = 0;
-  uint8_t body[24];
-  Writer w(body, sizeof body);
-  w.u32(sentAt());
-  w.u32(t.target);
-  w.u16(t.call);
-  w.u16(t.frame);
-  w.u32(t.conv);
-  w.u8(t.opening ? kVoiceOpening : 0);
-  GroupRec &g = core->groups[t.group];
-  for (const uint32_t after : {0u, 40u, 80u}) sendOwn(g, kVoiceEnd, body, w.size(), after);
   {
     std::lock_guard<std::mutex> l(core->mu);
-    g.conv.spoke(millis(), t.conv, core->id, core->id);
-    if (CallRec *c = findCall(t.group, core->id, t.call, true)) {
-      c->ms = t.frame * kFrameMs;
+    if (CallRec *c = findLogged(Kind::Voice, core->id, m.session, true)) {
+      c->ms = now - m.startMs;
       c->live = false;
+      c->sounds = m.soundsSent;
     }
+    g.conv.spoke(now, m.conv, core->id, core->id);  // the last word: 60 s from here
   }
-  log_i("comms: talked %lu ms (%u frames)", static_cast<unsigned long>(millis() - t.startMs),
-        static_cast<unsigned>(t.frame));
-  t.on = false;
-  talkWanted = false;
-  resetLevel();
+  m.on = false;
+  m.vanished = false;
+  m.toneUntilMs = 0;
+  micWanted = false;
+  presenceSoon(g);
+  log_i("comms: the mic is off (%s) after %lu s: %lu sounds, %lu frames sent (%lu as echo)",
+        reason == kOffPowerOff ? "power-off" : "switched", static_cast<unsigned long>(o.onS),
+        static_cast<unsigned long>(m.soundsSent), static_cast<unsigned long>(m.framesSent),
+        static_cast<unsigned long>(m.framesMuted));
   bump();
 }
 
-void pumpTalk() {
-  Talk &t = core->talk;
-  if (!t.on) return;
-  for (int i = 0; i < 4; ++i) {
-    const size_t n = audio::captureRead(reinterpret_cast<uint8_t *>(t.pcm) + t.fillBytes,
-                                        kFrameSamples * 2 - t.fillBytes, 0);
-    if (n == 0) break;
-    t.fillBytes += n;
-    if (t.fillBytes == kFrameSamples * 2) {
-      sendVoiceFrame(kFrameSamples);
-      t.fillBytes = 0;
+void pumpMic(uint32_t now) {
+  MicRec &m = core->mic;
+  if (!m.on) return;
+  if (m.capturing && (!core->duplexOurs || !audio::duplexOn())) {  // something took the port
+    const char *why = duplexBlocked();
+    if (!why && audio::playing()) why = "MUSIC IS PLAYING";
+    micPaused(why ? why : "STARTING", now);
+    core->duplexOurs = false;
+    m.resumeMs = now + kResumeAfterMs;  // what took it shows itself meanwhile
+  }
+  if (!m.capturing && !poweringOff) {
+    const char *why = duplexBlocked();
+    if (!why && audio::playing()) {  // music started here: it has the speaker until it stops
+      why = "MUSIC IS PLAYING";
+      core->music.pending = false;
+    }
+    if (why) {
+      if (strcmp(m.paused, why) != 0) {
+        m.paused = why;
+        bump();
+      }
+      m.resumeMs = now + kResumeAfterMs;  // once it's over, a moment more
+    } else if (static_cast<int32_t>(now - m.resumeMs) >= 0 &&
+               static_cast<int32_t>(now - m.retryMs) >= 0) {
+      micCapture(now);
     }
   }
-  core->level = audio::captureLevelDb();
-  if (!audio::capturing() || millis() - t.startMs >= kMaxTalkMs) stopTalk();
+  if (m.capturing) {
+    audio::DuplexBlock &b = core->block;
+    for (int i = 0; i < 8 && audio::duplexRead(b, 0); ++i) {
+      memcpy(m.pcm + m.fill, b.pcm, sizeof b.pcm);
+      m.fill += audio::kDuplexBlock;
+      m.echo = std::max(m.echo, b.echoDb);
+      if (m.fill < kFrameSamples) continue;
+      if (m.settle) {
+        --m.settle;
+      } else {
+        micFrame(now);
+      }
+      m.fill = 0;
+      m.echo = -96;
+    }
+  }
+  if (!m.vanished && static_cast<int32_t>(now - m.nextStillMs) >= 0) {
+    sendStillHere(now);
+    m.nextStillMs = now + kStillHereMs + esp_random() % 200;
+  }
 }
 
 // --- Incoming packets ----------------------------------------------------------------------------
@@ -1814,7 +1665,10 @@ void learnMac(const uint8_t mac[6], uint32_t id) {
   slot->used = core->macTick;
 }
 
-void onPresence(GroupRec &g, const Header &hd, Reader &r) {
+void micPresence(int gi, const Header &hd);
+
+void onPresence(int gi, const Header &hd, Reader &r) {
+  GroupRec &g = core->groups[gi];
   const uint8_t flags = r.u8();
   const uint8_t battery = r.u8();
   const uint8_t len = r.u8();
@@ -1858,6 +1712,7 @@ void onPresence(GroupRec &g, const Header &hd, Reader &r) {
       bump();
     }
   }
+  if (!(flags & kFlagMic)) micPresence(gi, hd);
   const uint32_t now = millis();
   if ((flags & kFlagHello) && !g.answerDue && now - g.answeredMs > kHelloAnswerGapMs) {
     g.answerDue = stamp() + 100 + esp_random() % 500;
@@ -1903,27 +1758,7 @@ void onPong(const Header &hd, const RxFrame &f, Reader &r) {
   bump();
 }
 
-void onHeard(int gi, const Header &hd, Reader &r) {
-  const uint32_t caller = r.u32();
-  const uint16_t call = r.u16();
-  if (!r.ok() || caller != core->id) return;
-  std::lock_guard<std::mutex> l(core->mu);
-  if (CallRec *c = findCall(gi, core->id, call, true)) {
-    if (std::find(c->heardBy.begin(), c->heardBy.end(), hd.sender) == c->heardBy.end() &&
-        c->heardBy.size() < 16) {
-      c->heardBy.push_back(hd.sender);
-      bump();
-    }
-  }
-}
-
 // --- Rings ---------------------------------------------------------------------------------------
-
-void setError(const char *why) {
-  std::lock_guard<std::mutex> l(core->mu);
-  core->error = why;
-  bump();
-}
 
 // Under mu: the ring's log entry.
 CallRec *ringRec(uint32_t from, uint16_t ring, bool outgoing) {
@@ -1970,7 +1805,6 @@ void startRing(int gi, uint32_t target) {
   if (core->groups[gi].via == Via::Net) return setError("NET ONLY: NO LINK YET");
   if (d.state == DialState::Ringing) return setError("ALREADY RINGING");
   if (d.state == DialState::Recording) return setError("A MESSAGE IS GOING");
-  if (core->room.on) return setError("THE ROOM IS MONITORING");
   if (target == core->id) return setError("THAT'S THIS BOARD");
   if (!isListening && !radioStart()) return setError("THE RADIO WON'T START");
   renew(d);
@@ -2112,7 +1946,7 @@ void onRing(int gi, const Header &hd, Reader &r) {
     return;
   }
   if (target && target != core->id) return;  // for another board (relayed all the same)
-  if (core->room.on) return;  // the baby monitor's room doesn't ring
+  if (core->mic.on) return;  // an open mic doesn't ring: it's in the conversation, and quiet
   Ringing &rg = core->ringing;
   GroupRec &g = core->groups[gi];
   const uint32_t now = millis();
@@ -2171,14 +2005,7 @@ void pumpRinging(uint32_t now) {
   if (now - rg.lastMs >= kRingLostMs) return ringingOver(RingEnd::Lost);
   if (now - rg.startMs >= kRingMs + kRingLostMs) return ringingOver(RingEnd::NoAnswer);
   if (static_cast<int32_t>(now - rg.nextChirpMs) >= 0) {
-    if (core->listen.playing && !core->hear.active && !core->talk.on) {
-      // Over the baby monitor's sound: it stops for the trill and plays on after.
-      stopListenPlay(true);
-      core->listen.holdOffMs = now + kChirpHoldMs;
-      audio::ringChirp();
-    } else if (canChirp()) {
-      audio::ringChirp();
-    }
+    if (canChirp()) audio::ringChirp();  // over voice too: audio mixes it in
     rg.nextChirpMs = now + kRingChirpMs;
   }
 }
@@ -2441,8 +2268,6 @@ void startMessage(int group, uint32_t target) {
   Outbound &o = core->out;
   const uint32_t now = millis();
   if (o.recording) return setError("A MESSAGE IS GOING");
-  if (core->talk.on) return setError("TALKING");
-  if (core->room.on) return setError("THE ROOM IS MONITORING");
   int gi = group;
   uint32_t to = target;
   uint16_t ring = 0;
@@ -2461,10 +2286,14 @@ void startMessage(int group, uint32_t target) {
   if (audio::ringing()) return setError("AN ALARM IS RINGING");
   if (audio::capturing()) return setError("THE AGENT IS LISTENING");
   if (!isListening && !radioStart()) return setError("THE RADIO WON'T START");
-  if (core->hear.active) endHearing(true);
-  if (core->replay.on) stopReplay(true);
-  core->replayTail = false;
-  stopListenPlay(true);
+  // It takes the mic and the speaker: an open mic pauses, voice and a replay stop meanwhile.
+  if (core->mic.capturing) micPaused("A MESSAGE IS RECORDING", now);
+  stopReplay();
+  core->mixer.clear();
+  if (core->duplexOurs) {
+    audio::duplexStop();
+    core->duplexOurs = false;
+  }
   rememberMusic();
   // The ring stops as the message begins: the boards it rang stop ringing and wait for it.
   if (forRing && d.state == DialState::Ringing) {
@@ -2579,7 +2408,7 @@ void pumpMessageOut(uint32_t now) {
         o.fillBytes = 0;
       }
     }
-    core->level = audio::captureLevelDb();
+    core->msgLevel = audio::captureLevelDb();
     if (!audio::capturing() || now - o.startMs >= kMaxMessageMs) finishMessage(true);
     return;
   }
@@ -2913,9 +2742,8 @@ void playMsg(uint32_t local) {
     group = m->group;
     if (!onCard) core->msgAudio = m->audio;
   }
-  if (core->talk.on || core->hear.active || core->replay.on || core->out.recording) {
-    return setError("BUSY");
-  }
+  if (core->out.recording) return setError("A MESSAGE IS RECORDING");
+  stopReplay();  // msgAudio is about to change under it
   if (onCard && !store::loadAudio(e, core->msgAudio)) core->msgAudio.clear();
   startReplay(core->msgAudio, local, group, e.sender);
   if (!core->replay.on || core->replay.message != local) return;
@@ -2939,647 +2767,308 @@ void playMsg(uint32_t local) {
   bump();
 }
 
-// --- Baby monitor: the room ----------------------------------------------------------------------
+// --- Open mics heard ---------------------------------------------------------------------------
 
-void noteMonitorOn() { monitorOn = core->room.on || core->listen.st.on(); }
-
-int snapDb(int db) {
-  const int s = static_cast<int>(lroundf(static_cast<float>(db) / kMonitorStepDb)) * kMonitorStepDb;
-  return std::max(kMonitorMinDb, std::min(kMonitorMaxDb, s));
-}
-
-uint8_t batteryByte() {
-  return core->battery >= 0 && core->battery <= 100 ? static_cast<uint8_t>(core->battery) : 0xFF;
-}
-
-// The boards listening to the room now.
-int earsNow(uint32_t now) {
-  int n = 0;
-  for (const RoomEar &e : core->room.ears) {
-    if (e.id && !e.stopped && within(e.heardMs, now, kEarFreshMs)) ++n;
+// Under mu.
+OpenMicRec *findMic(int gi, uint32_t id) {
+  for (OpenMicRec &o : core->mics) {
+    if (o.group == gi && o.id == id) return &o;
   }
-  return n;
-}
-
-// Why the room's mic can't run now, or nullptr. Called while it's off: capturing() is someone
-// else's capture then.
-const char *roomMicBlocked() {
-  if (core->hear.active || (core->streamOurs && audio::streaming())) return "TALK BACK";
-  if (audio::ringing()) return "AN ALARM IS RINGING";
-  if (audio::recording()) return "THE RECORDER IS ON";
-  if (audio::capturing()) return "THE AGENT IS LISTENING";
-  if (audio::streaming()) return "THE AGENT IS SPEAKING";
-  if (audio::playing()) return "MUSIC IS PLAYING";
   return nullptr;
 }
 
-void endSound(uint32_t now) {
-  RoomRec &m = core->room;
-  if (m.sounds.empty() || !m.sounds.back().live) return;
-  SoundRec &r = m.sounds.back();
-  r.live = false;
-  r.listeners = std::max(r.listeners, earsNow(now));
-  log_i("comms: the room sent a sound: %lu ms, peak %d dBFS, %d listening",
-        static_cast<unsigned long>(r.frames * kFrameMs), -static_cast<int>(r.peak), r.listeners);
-  bump();
-}
-
-void roomMicOff(const char *why) {
-  RoomRec &m = core->room;
-  if (!m.on || !m.mic) return;
-  audio::captureStop();
-  m.mic = false;
-  m.paused = why;
-  m.level = -96;
-  endSound(millis());
-  log_i("comms: the room's mic paused: %s", why);
-  bump();
-}
-
-void roomMicOn(uint32_t now) {
-  RoomRec &m = core->room;
-  if (!audio::captureStart(false)) {
-    m.paused = "THE MIC WON'T START";
-    m.retryMs = now + kMicRetryMs;
-    bump();
-    return;
+// Under mu.
+OpenMicRec *findMicById(uint32_t id) {
+  for (OpenMicRec &o : core->mics) {
+    if (o.id == id) return &o;
   }
-  m.mic = true;
-  m.paused = "";
-  m.gate.reset();  // what came before the pause isn't pre-roll for what comes now
-  m.enc = adpcm::State();
-  m.fill = 0;
-  m.captured = 0;
-  m.settle = kMicSettleFrames;
-  log_i("comms: the room's mic is on (threshold %d dBFS)", m.gate.threshold());
+  return nullptr;
+}
+
+// Under mu: its voice is for this board (to all of the group, or to this board alone).
+bool forMe(const OpenMicRec &o) { return o.target == 0 || o.target == core->id; }
+
+// Under mu: its voice plays here: it's for this board, which is in the group's conversation.
+bool heardHere(const OpenMicRec &o) {
+  return forMe(o) && core->groups[o.group].conv.mine();
+}
+
+// Under mu: the session's log entry, made the first time it's heard here.
+CallRec *ensureLogged(OpenMicRec &o, uint32_t now) {
+  if (o.logged) return findLogged(Kind::Voice, o.id, o.st.session(), false);
+  if (!o.st.on()) return nullptr;
+  o.logged = true;
+  CallRec c;
+  const time_t utc = utcNow();
+  c.at = utc ? utc - static_cast<time_t>((now - o.st.startMs()) / 1000) : 0;
+  c.startMs = o.st.startMs();
+  c.group = o.group;
+  c.from = o.id;
+  c.to = o.target;
+  c.call = o.st.session();
+  c.hops = o.hops;
+  c.relay = o.relay;
+  c.rssi = o.rssi;
+  c.conv = o.conv;
+  return &logCall(c);
+}
+
+// Under mu: the session heard has ended (its off, a new one in its place, or it's forgotten).
+void endHeardSession(OpenMicRec &o, uint16_t session, uint32_t ms) {
+  if (o.logged) {
+    if (CallRec *c = findLogged(Kind::Voice, o.id, session, false)) {
+      c->ms = ms;
+      c->live = false;
+      c->lost = o.lost;
+      if (!c->played) c->heard = true;  // quiet all along: nothing to hear later
+    }
+  }
+  o.logged = o.sessionPlayed = false;
   bump();
 }
 
-void sendRoomFrame(const RoomFrame &k) {
-  RoomRec &m = core->room;
-  MonitorAudio a;
-  a.listeners = m.allowed;
-  a.sound = m.sound;
-  a.frame = m.frame++;
-  a.level = k.level;
-  a.predictor = k.predictor;
-  a.index = k.index;
-  a.bytes = k.bytes;
-  memcpy(a.data, k.data, k.bytes);
-  uint8_t body[kMaxBody];
-  const size_t n = putMonitorAudio(body, sizeof body, sentAt(), a);
-  if (!m.vanished && n && sendOwn(core->groups[m.group], kExt, body, n)) ++m.framesSent;
-}
-
-// One 20 ms frame from the mic: its level, kept for the pre-roll, and the one from kPreFrames ago
-// sent if the gate says so.
-void roomFrame(uint32_t now) {
-  RoomRec &m = core->room;
-  if (m.toneUntilMs) {
-    if (static_cast<int32_t>(now - m.toneUntilMs) < 0) {
-      // 1 kHz at 16 kHz: 16 samples a period, its peak exactly on one of them.
-      for (size_t i = 0; i < kFrameSamples; ++i, ++m.tonePhase) {
-        const float x = sinf(2 * static_cast<float>(M_PI) * (m.tonePhase % 16) / 16);
-        m.pcm[i] = static_cast<int16_t>(lroundf(m.toneAmp * x));
+// Under mu: makes room by forgetting the mic heard from longest ago (not one whose alarm sounds).
+OpenMicRec &micRec(int gi, uint32_t id, uint32_t now) {
+  if (OpenMicRec *o = findMic(gi, id)) return *o;
+  if (core->mics.size() >= kMaxOpenMics) {
+    auto victim = core->mics.end();
+    for (auto it = core->mics.begin(); it != core->mics.end(); ++it) {
+      if (it->st.alarm()) continue;
+      if (victim == core->mics.end() || now - it->st.heardMs() > now - victim->st.heardMs()) {
+        victim = it;
       }
-    } else {
-      m.toneUntilMs = 0;
-      log_i("comms: the room's test tone is over");
     }
+    if (victim == core->mics.end()) victim = core->mics.begin();
+    endHeardSession(*victim, victim->st.session(), victim->st.heardMs() - victim->st.startMs());
+    core->mics.erase(victim);
   }
-  const float db = peakDb(m.pcm, kFrameSamples);
-  RoomFrame &k = m.ring[m.captured % kRoomRing];
-  k.predictor = m.enc.predictor;
-  k.index = m.enc.index;
-  k.bytes = kFrameBytes;
-  k.level = levelByte(db);
-  adpcm::encode(m.enc, m.pcm, kFrameSamples, k.data);
-  ++m.captured;
-  m.hist.note(now - m.startMs, db);
-  if (m.peakSince == kNoLevel || k.level < m.peakSince) m.peakSince = k.level;
-  m.peaks[m.peakAt] = db;
-  m.peakAt = (m.peakAt + 1) % 10;
-  m.level = *std::max_element(m.peaks, m.peaks + 10);
-  const MonitorGate::Step s = m.gate.frame(db);
-  if (s.send) {
-    const RoomFrame &out = m.ring[(m.captured - 1 - MonitorGate::kPreFrames) % kRoomRing];
-    if (s.first) {
-      core->roomSound = ++m.sound;
-      m.frame = 0;
-      ++m.soundsSent;
-      if (m.sounds.size() >= kRoomSounds) m.sounds.erase(m.sounds.begin());
-      SoundRec r;
-      r.at = utcNow();
-      r.startMs = now - kPreRollMs;
-      r.live = true;
-      r.listeners = earsNow(now);
-      m.sounds.push_back(r);
-      log_i("comms: the room sends a sound (%d listening)", r.listeners);
-      bump();
-    }
-    sendRoomFrame(out);
-    SoundRec &r = m.sounds.back();
-    ++r.frames;
-    if (r.peak == kNoLevel || out.level < r.peak) r.peak = out.level;
-  } else {
-    endSound(now);
-  }
-}
-
-void sendStillHere(uint32_t now) {
-  RoomRec &m = core->room;
-  StillHere s;
-  s.flags = static_cast<uint8_t>((m.gate.sending() && m.mic ? kStillSending : 0) |
-                                 (core->onUsb ? kStillUsb : 0) | (m.mic ? 0 : kStillMicOff));
-  s.battery = batteryByte();
-  s.threshold = static_cast<uint8_t>(-m.gate.threshold());
-  s.peak = m.peakSince;
-  m.peakSince = kNoLevel;
-  s.onS = (now - m.startMs) / 1000;
-  s.bar = static_cast<uint16_t>(std::min<uint32_t>((now - m.startMs) / kHistoryBarMs, 0xFFFF));
-  s.barPeak = m.hist.at(s.bar);
-  s.listeners = m.allowed;
-  uint8_t body[kMaxBody];
-  const size_t n = putStillHere(body, sizeof body, sentAt(), s);
-  if (n && sendOwn(core->groups[m.group], kExt, body, n)) ++m.stillHeres;
-}
-
-void sendHistory(uint32_t to, uint32_t now) {
-  RoomRec &m = core->room;
-  History h;
-  h.to = to;
-  const uint16_t top =
-      static_cast<uint16_t>(std::min<uint32_t>((now - m.startMs) / kHistoryBarMs, 0xFFFF));
-  h.first = top + 1 >= kHistoryBars ? static_cast<uint16_t>(top + 1 - kHistoryBars) : 0;
-  h.count = static_cast<uint8_t>(top - h.first + 1);
-  for (uint8_t i = 0; i < h.count; ++i) h.bars[i] = m.hist.at(static_cast<uint16_t>(h.first + i));
-  uint8_t body[kMaxBody];
-  const size_t n = putHistory(body, sizeof body, sentAt(), h);
-  if (n && sendOwn(core->groups[m.group], kExt, body, n)) ++m.histories;
-}
-
-void startRoom(int gi) {
-  RoomRec &m = core->room;
-  ListenerSet want;
-  int db;
-  {
-    std::lock_guard<std::mutex> l(core->mu);
-    want = core->monitorWant;
-    db = core->monitorWantDb;
-  }
-  if (gi < 0 || gi >= static_cast<int>(core->groups.size())) return setError("NO SUCH GROUP");
-  if (core->groups[gi].via == Via::Net) return setError("NET ONLY: NO LINK YET");
-  if (core->listen.st.on()) return setError("LISTENING TO A ROOM");
-  if (core->talk.on) return setError("TALKING");
-  if (core->out.recording) return setError("A MESSAGE IS RECORDING");
-  if (audio::recording()) return setError("THE RECORDER IS ON");
-  if (audio::ringing()) return setError("AN ALARM IS RINGING");
-  if (!isListening && !radioStart()) return setError("THE RADIO WON'T START");
-  if (m.on && m.mic) audio::captureStop();  // again: starts over with the new list
-  if (core->hear.active) endHearing(true);
-  if (core->replay.on) stopReplay(true);
-  if (core->ringing.on) ignoreRinging();  // the room doesn't ring
-  core->music.pending = false;  // nor plays music on after
-  if (audio::active()) audio::stop();  // START: music playing there would hold the mic off
-  const uint32_t now = millis();
-  renew(m);
-  m.on = true;
-  m.group = gi;
-  m.sound = core->roomSound;
-  m.allowed = want;
-  m.startMs = now;
-  m.since = utcNow();
-  m.gate.setThreshold(db);
-  m.nextStillMs = now;
-  ++core->roomCount;
-  noteMonitorOn();
-  {
-    std::lock_guard<std::mutex> l(core->mu);
-    core->error.clear();
-  }
-  presenceSoon(core->groups[gi]);  // its flag: monitoring its room
-  log_i("comms: monitoring the room in %s for %s boards, threshold %d dBFS",
-        core->groups[gi].name.c_str(), want.all() ? "all" : std::to_string(want.n).c_str(), db);
+  OpenMicRec o;
+  o.group = gi;
+  o.id = id;
+  core->mics.push_back(std::move(o));
   bump();
+  return core->mics.back();
 }
 
-void stopRoom(uint8_t reason) {
-  RoomRec &m = core->room;
-  if (!m.on) return;
-  if (m.mic) audio::captureStop();
-  m.mic = false;
-  m.level = -96;
-  endSound(millis());
-  uint8_t body[16];
-  const size_t n = putMonitorOff(body, sizeof body, sentAt(), reason);
-  GroupRec &g = core->groups[m.group];
-  if (reason == kOffPowerOff) {  // the radio goes in a moment: now, not from the queue
-    for (int i = 0; i < 3; ++i) sendOwn(g, kExt, body, n);
-  } else {
-    for (const uint32_t after : {0u, 40u, 80u}) sendOwn(g, kExt, body, n, after);
+// Under mu: what a packet of a mic changed.
+void micChanged(OpenMicRec &o, const HeardMic::Change &ch, uint32_t now) {
+  if (ch.ended) endHeardSession(o, ch.endedSession, ch.endedMs);
+  if (ch.began) {  // a new session: its bars and counts start again
+    o.hist.clear();
+    o.haveHistory = false;
+    o.historyAsks = 0;
+    o.nextAskMs = now;
+    o.frames = o.lost = o.late = o.histories = 0;
+    o.haveStill = false;
+    log_i("comms: %08lX's mic is on (session %u)", static_cast<unsigned long>(o.id),
+          o.st.session());
   }
-  m.on = false;
-  m.vanished = false;
-  m.toneUntilMs = 0;
-  noteMonitorOn();
+  if (ch.back) log_i("comms: %08lX's link is back", static_cast<unsigned long>(o.id));
+  if (ch.shown) bump();
+}
+
+// This board is in the group's conversation `conv` from now (an open mic's walkie-talkie, or a
+// mic to it alone).
+void joinConvWith(int gi, uint32_t conv) {
+  GroupRec &g = core->groups[gi];
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    if (!g.conv.join(millis(), conv)) return;
+  }
+  log_i("comms: in the conversation in %s (%08lX): an open mic's", g.name.c_str(),
+        static_cast<unsigned long>(conv));
   presenceSoon(g);
-  log_i("comms: the room stopped monitoring (%s), %lu sounds sent",
-        reason == kOffPowerOff ? "power-off" : "stop", static_cast<unsigned long>(m.soundsSent));
   bump();
 }
 
-void pumpRoom(uint32_t now) {
-  RoomRec &m = core->room;
-  if (!m.on) return;
-  if (m.mic && !audio::capturing()) {  // something took the mic: an alarm, the Recorder, music
-    m.mic = false;
-    m.level = -96;
-    const char *why = roomMicBlocked();
-    m.paused = why ? why : "STARTING";
-    endSound(now);
-    log_i("comms: the room's mic was taken (%s)", m.paused);
-    bump();
-  }
-  if (m.mic) {
-    for (int i = 0; i < 4; ++i) {
-      const size_t n = audio::captureRead(reinterpret_cast<uint8_t *>(m.pcm) + m.fill,
-                                          kFrameSamples * 2 - m.fill, 0);
-      if (n == 0) break;
-      m.fill += n;
-      if (m.fill == kFrameSamples * 2) {
-        if (m.settle) {
-          --m.settle;
-        } else {
-          roomFrame(now);
-        }
-        m.fill = 0;
-      }
-    }
-  } else if (!poweringOff) {
-    const char *why = roomMicBlocked();
-    if (why) {
-      if (strcmp(m.paused, why) != 0) {
-        m.paused = why;
-        bump();
-      }
-      m.resumeMs = now + kResumeAfterMs;  // once it's over, a moment more (a talk back's tail)
-    } else if (static_cast<int32_t>(now - m.resumeMs) >= 0 &&
-               static_cast<int32_t>(now - m.retryMs) >= 0) {
-      roomMicOn(now);
-    }
-  }
-  if (!m.vanished && static_cast<int32_t>(now - m.nextStillMs) >= 0) {
-    sendStillHere(now);
-    m.nextStillMs = now + kStillHereMs + esp_random() % 200;
-  }
-}
-
-// A board says it listens to this room (or has stopped).
-void onListening(int gi, const Header &hd, Reader &r) {
-  const uint32_t room = r.u32();
-  const uint8_t flags = r.u8();
-  if (!r.ok()) {
+// Type 2: a board's mic is on (every 2 s while it is).
+void onMicStill(int gi, const Header &hd, const RxFrame &f, Reader &r, uint32_t relay) {
+  MicStill s;
+  if (!readMicStill(r, s)) {
     drop(kDropMalformed);
     return;
   }
-  RoomRec &m = core->room;
-  if (!m.on || room != core->id || gi != m.group) return;
-  if (!m.allowed.allows(hd.sender)) {
-    drop(kDropNotLetIn);
+  const uint32_t now = stamp();
+  GroupRec &g = core->groups[gi];
+  bool join = false, ask = false;
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    OpenMicRec &o = micRec(gi, hd.sender, now);
+    micChanged(o, o.st.on(now, s.session, s.onS * 1000), now);
+    o.boot = hd.boot;
+    o.lastSeq = hd.seq;
+    o.hops = hd.hops;
+    o.relay = relay;
+    o.rssi = hd.hops == 0 ? f.rssi : 0;
+    if (!o.haveStill || o.last.flags != s.flags || o.last.threshold != s.threshold ||
+        o.last.battery != s.battery || o.target != s.target) {
+      bump();
+    }
+    o.last = s;
+    o.haveStill = true;
+    o.target = s.target;
+    o.conv = s.conv;
+    o.opened = s.flags & kMicOpening;
+    o.st.setThreshold(-static_cast<int>(s.threshold));
+    o.hist.set(s.bar, s.barPeak);
+    // A mic on in the conversation keeps it on.
+    if (s.conv && g.conv.spoke(now, s.conv, hd.sender, core->id)) bump();
+    if (heardHere(o)) ensureLogged(o, now);  // its session is in the log, sound or not
+    // The walkie-talkie: a mic that opened the conversation, or one to this board alone, puts
+    // this board in it (unless it left).
+    join = forMe(o) && s.conv && !g.conv.mine() && !g.conv.left() &&
+           (o.opened || s.target == core->id) && !core->out.recording;
+    // Came in late to a mic that has been on a while: the bars before, once.
+    ask = forMe(o) && !o.haveHistory && o.historyAsks < kHistoryAsks && s.bar > 0 &&
+          static_cast<int32_t>(now - o.nextAskMs) >= 0;
+    if (ask) {
+      ++o.historyAsks;
+      o.nextAskMs = now + kHistoryAskMs;
+    }
+  }
+  if (join) joinConvWith(gi, s.conv);
+  if (ask) {
+    uint8_t body[16];
+    const size_t n = putHistoryAsk(body, sizeof body, sentAt(), hd.sender);
+    sendOwn(g, kExt, body, n);
+  }
+}
+
+enum class Whose : uint8_t {
+  Ours,  // this board is in its conversation: it plays
+  Join,  // it plays, and puts this board in its conversation
+  No,    // not for this board now: not played
+};
+
+// Whether voice in conversation conv (to target, with the voice flags) plays here.
+Whose whose(int gi, uint32_t conv, uint8_t flags, uint32_t target) {
+  if (!conv) return Whose::Ours;
+  std::lock_guard<std::mutex> l(core->mu);
+  const ConvState &c = core->groups[gi].conv;  // a group has one: conv is it, or merges into it
+  if (c.mine()) return Whose::Ours;
+  if (c.left()) return Whose::No;  // left: nothing plays here until join()
+  if (target == core->id) return Whose::Join;  // to this board alone
+  if (flags & kVoiceOpening) return Whose::Join;  // its mic opened it: the walkie-talkie
+  return Whose::No;
+}
+
+// Type 3: 20 ms of a board's open mic.
+void onVoice(int gi, const Header &hd, const RxFrame &f, Reader &r, uint32_t relay) {
+  Voice v;
+  if (!readVoice(r, v)) {
+    drop(kDropMalformed);
     return;
   }
   const uint32_t now = stamp();
-  RoomEar *e = nullptr;
-  for (RoomEar &x : m.ears) {
-    if (x.id == hd.sender) e = &x;
+  GroupRec &g = core->groups[gi];
+  bool loud = false;
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    OpenMicRec &o = micRec(gi, hd.sender, now);
+    micChanged(o, o.st.on(now, v.session, 0), now);
+    o.boot = hd.boot;
+    o.lastSeq = hd.seq;
+    o.target = v.target;
+    o.conv = v.conv;
+    o.opened = v.flags & kVoiceOpening;
+    o.hops = hd.hops;
+    o.relay = relay;
+    o.rssi = hd.hops == 0 ? f.rssi : 0;
+    if (o.st.audio(now, v.sound, levelDb(v.level), loud)) bump();
+    if (v.conv && v.frame % 10 == 0 && g.conv.spoke(now, v.conv, hd.sender, core->id)) bump();
   }
-  if (!e) {
-    e = &m.ears[0];
-    for (RoomEar &x : m.ears) {
-      if (!x.id) {
-        e = &x;
-        break;
-      }
-      if (x.heardMs < e->heardMs) e = &x;
+  if (v.target && v.target != core->id) {
+    drop(kDropNotForUs);
+    return;
+  }
+  if (core->out.recording) {  // the mic and the speaker are the message's
+    drop(kDropRecording);
+    return;
+  }
+  const Whose w = whose(gi, v.conv, v.flags, v.target);
+  if (w == Whose::No) {
+    drop(kDropNotInConversation);
+    return;
+  }
+  if (w == Whose::Join) joinConvWith(gi, v.conv);
+  Mixer::Frame fr;
+  fr.frame = v.frame;
+  fr.predictor = v.predictor;
+  fr.index = v.index;
+  fr.bytes = v.bytes;
+  memcpy(fr.data, v.data, v.bytes);
+  switch (core->mixer.add(hd.sender, v.sound, fr, now)) {
+    case Mixer::Took::Ok: break;
+    case Mixer::Took::Late: {
+      drop(kDropLate);
+      std::lock_guard<std::mutex> l(core->mu);
+      if (OpenMicRec *o = findMic(gi, hd.sender)) ++o->late;
+      break;
     }
-    *e = RoomEar{hd.sender, 0, false};
+    case Mixer::Took::Copy: drop(kDropDuplicate); break;
+    case Mixer::Took::NoRoom: drop(kDropNoVoiceRoom); break;
   }
-  const bool was = !e->stopped && within(e->heardMs, now, kEarFreshMs);
-  const bool stopped = flags & kListeningStopped;
-  e->heardMs = now;
-  e->stopped = stopped;
-  if (was != !stopped) {
-    log_i("comms: %08lX %s the room", static_cast<unsigned long>(hd.sender),
-          stopped ? "stopped listening to" : "listens to");
+  if (loud && !core->mic.on && audio::status().volume <= kLowVolume) {
+    // Turned down low, a LOUD sound might go unheard: one chirp, at half volume at least.
+    audio::loudChirp();
+    log_i("comms: a LOUD sound from %08lX with the volume low: chirped",
+          static_cast<unsigned long>(hd.sender));
+  }
+}
+
+// Type 4: a board's mic went off.
+void onMicOff(int gi, const Header &hd, Reader &r) {
+  MicOff off;
+  if (!readMicOff(r, off)) {
+    drop(kDropMalformed);
+    return;
+  }
+  const uint32_t now = stamp();
+  bool chirp = false;
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    OpenMicRec *o = findMic(gi, hd.sender);
+    if (!o) return;
+    const bool heard = heardHere(*o);
+    const HeardMic::Change ch = o->st.off(now, off.session);
+    if (!ch.ended) return;
+    const uint32_t ms = std::max<uint32_t>(ch.endedMs, off.onS * 1000);
+    endHeardSession(*o, ch.endedSession, ms);
+    chirp = heard && ms >= core->longMicMs;
+    log_i("comms: %08lX's mic is off (%s) after %lu s%s", static_cast<unsigned long>(hd.sender),
+          off.reason == kOffPowerOff ? "power-off" : "switched", static_cast<unsigned long>(ms / 1000),
+          ch.back ? ", after LOST" : "");
+    core->mics.erase(core->mics.begin() + (o - core->mics.data()));
     bump();
   }
+  // A mic on a long while went off where it was heard: one soft chirp, so a bumped key in the
+  // room isn't silent (not on a board whose own mic is on).
+  if (chirp && canChirp()) {
+    audio::micOffChirp();
+    log_i("comms: a long session ended: chirped");
+  }
+}
+
+// A board's presence says its mic isn't on: its off was missed (or it restarted while LOST).
+void micPresence(int gi, const Header &hd) {
+  std::lock_guard<std::mutex> l(core->mu);
+  OpenMicRec *o = findMic(gi, hd.sender);
+  if (!o || (hd.boot == o->boot && hd.seq <= o->lastSeq)) return;  // older than its mic packets
+  const uint32_t now = stamp();
+  const HeardMic::Change ch = o->st.off(now, 0);
+  if (ch.ended) endHeardSession(*o, ch.endedSession, ch.endedMs);
+  log_i("comms: %08lX says its mic is off%s", static_cast<unsigned long>(hd.sender),
+        ch.back ? " (back after LOST)" : "");
+  core->mics.erase(core->mics.begin() + (o - core->mics.data()));
+  bump();
 }
 
 void onHistoryAsk(int gi, const Header &hd, Reader &r) {
-  const uint32_t room = r.u32();
-  RoomRec &m = core->room;
-  if (!r.ok() || !m.on || room != core->id || gi != m.group || m.vanished) return;
-  if (!m.allowed.allows(hd.sender)) {
-    drop(kDropNotLetIn);
-    return;
-  }
+  const uint32_t board = r.u32();
+  MicRec &m = core->mic;
+  if (!r.ok() || board != core->id || !m.on || gi != m.group || m.vanished) return;
   sendHistory(hd.sender, millis());
-  log_i("comms: sent %08lX the room's history", static_cast<unsigned long>(hd.sender));
-}
-
-// --- Baby monitor: listening ---------------------------------------------------------------------
-
-void stopListenPlay(bool abort) {
-  ListenRec &L = core->listen;
-  if (!L.playing) return;
-  if (abort) {
-    audio::streamAbort();
-    core->streamOurs = false;
-  } else {
-    audio::streamEnd();
-  }
-  L.playing = false;
-  bump();
-}
-
-// The monitor's sound may take the speaker now: no call, talk, message, PLAY LAST or chirp has
-// it, nor anything a call doesn't play over.
-bool ensureListenStream(uint32_t now) {
-  ListenRec &L = core->listen;
-  if (L.playing) return true;
-  if (core->hear.active || core->replay.on || core->talk.on || core->out.recording) return false;
-  if (static_cast<int32_t>(now - L.holdOffMs) < 0) return false;
-  if (!canPlay() || audio::streaming()) return false;  // a call's tail still plays out
-  rememberMusic();
-  if (!audio::streamStart(kVoiceRate)) {
-    L.holdOffMs = now + kMicRetryMs;
-    return false;
-  }
-  L.playing = true;
-  core->streamOurs = true;
-  bump();
-  return true;
-}
-
-void listenPlay(const Slot *s) {
-  ListenRec &L = core->listen;
-  uint8_t stored[kStoredFrame] = {};
-  if (s) {
-    stored[0] = static_cast<uint8_t>(s->predictor);
-    stored[1] = static_cast<uint8_t>(static_cast<uint16_t>(s->predictor) >> 8);
-    stored[2] = s->index;
-    stored[3] = s->bytes;
-    memcpy(stored + 4, s->data, s->bytes);
-  } else {
-    ++L.lost;
-  }
-  int16_t pcm[kFrameSamples];
-  const size_t samples = decodeStored(stored, pcm);
-  L.conceal.apply(pcm, samples, !s);
-  L.peaks[L.peakAt] = peakDb(pcm, samples);
-  L.peakAt = (L.peakAt + 1) % 10;
-  L.level = *std::max_element(L.peaks, L.peaks + 10);
-  if (!ensureListenStream(millis())) return;
-  const size_t want = samples * 2;
-  const size_t n = audio::streamWrite(reinterpret_cast<const uint8_t *>(pcm), want, 20);
-  if (n < want && !audio::streaming()) {  // the speaker was taken
-    L.playing = false;
-    core->streamOurs = false;
-  }
-}
-
-void listenFrame(const MonitorAudio &a, uint32_t now) {
-  ListenRec &L = core->listen;
-  Slot in;
-  in.full = true;
-  in.frame = a.frame;
-  in.predictor = a.predictor;
-  in.index = a.index;
-  in.bytes = a.bytes;
-  memcpy(in.data, a.data, a.bytes);
-  if (!L.started || a.sound != L.sound) {  // a sound begins (or this board came in during one)
-    if (L.started) drainSlots(L.slots, L.next, true, listenPlay);
-    for (Slot &s : L.slots) s.full = false;
-    L.started = true;
-    L.sound = a.sound;
-    L.next = a.frame <= kJitterWait ? 0 : a.frame;
-    L.conceal = Concealer();
-  }
-  int ahead = static_cast<int16_t>(a.frame - L.next);
-  if (ahead < 0) {
-    ++L.late;
-    return;
-  }
-  if (ahead > kResyncFrames) {  // a long gap: on from here
-    for (Slot &s : L.slots) s.full = false;
-    L.next = a.frame;
-    ahead = 0;
-  }
-  while (ahead >= static_cast<int>(kSlots)) {  // no room: what's missing is lost
-    drainSlots(L.slots, L.next, true, listenPlay);
-    ahead = static_cast<int16_t>(a.frame - L.next);
-    if (ahead >= static_cast<int>(kSlots)) {
-      listenPlay(nullptr);
-      ++L.next;
-      ahead = static_cast<int16_t>(a.frame - L.next);
-    }
-  }
-  L.slots[a.frame % kSlots] = in;
-  drainSlots(L.slots, L.next, false, listenPlay);
-  L.lastFrameMs = now;
-  L.flushed = false;
-}
-
-void sendListening(bool stopped) {
-  ListenRec &L = core->listen;
-  uint8_t body[16];
-  const size_t n = putToRoom(body, sizeof body, sentAt(), kListening, L.room,
-                             stopped ? kListeningStopped : 0);
-  sendOwn(core->groups[L.group], kExt, body, n);
-}
-
-// Listening is over: the room stopped (reason), or this board stops (0).
-void endListen(uint8_t reason) {
-  ListenRec &L = core->listen;
-  if (!L.st.on()) return;
-  if (reason) {
-    L.st.off(millis());
-    L.offReason = reason;
-    stopListenPlay(false);
-  } else {
-    sendListening(true);
-    stopListenPlay(true);
-    L.st.stop();
-  }
-  L.started = false;
-  noteMonitorOn();
-  log_i("comms: listening to %08lX over: %s", static_cast<unsigned long>(L.room),
-        reason == kOffPowerOff ? "the room powered off"
-        : reason              ? "the room stopped"
-                              : "stopped here");
-  bump();
-}
-
-void startListen(int gi, uint32_t room) {
-  if (core->room.on) return setError("THIS BOARD IS THE ROOM");
-  RoomSeen seen;
-  bool found = false;
-  const uint32_t now = millis();
-  {
-    std::lock_guard<std::mutex> l(core->mu);
-    for (const RoomSeen &r : core->rooms) {
-      if (r.group == gi && r.id == room && within(r.heardMs, now, kNoLinkMs)) {
-        seen = r;
-        found = true;
-      }
-    }
-  }
-  if (!found) return setError("NO SUCH ROOM ON AIR");
-  if (!isListening && !radioStart()) return setError("THE RADIO WON'T START");
-  ListenRec &L = core->listen;
-  if (L.st.on()) endListen(0);
-  stopListenPlay(true);
-  renew(L);
-  L.group = gi;
-  L.room = room;
-  L.startMs = now;
-  L.since = utcNow();
-  L.last = seen.s;
-  L.st.setThreshold(-static_cast<int>(seen.s.threshold));
-  L.st.start(now, seen.heardMs);
-  L.hist.set(seen.s.bar, seen.s.barPeak);
-  L.nextListeningMs = L.nextAskMs = now;
-  if (!core->onUsb && core->battery >= 0) {
-    L.batteryStart = core->battery;
-    L.batteryStartMs = now;
-  }
-  ++core->listenCount;
-  noteMonitorOn();
-  {
-    std::lock_guard<std::mutex> l(core->mu);
-    core->error.clear();
-  }
-  log_i("comms: listening to the room %08lX in %s", static_cast<unsigned long>(room),
-        core->groups[gi].name.c_str());
-  bump();
-}
-
-void onStillHere(int gi, const Header &hd, Reader &r) {
-  StillHere s;
-  if (!readStillHere(r, s)) {
-    drop(kDropMalformed);
-    return;
-  }
-  const bool allowed = s.listeners.allows(core->id);
-  const uint32_t now = stamp();
-  {
-    std::lock_guard<std::mutex> l(core->mu);
-    auto it = std::find_if(core->rooms.begin(), core->rooms.end(), [&](const RoomSeen &x) {
-      return x.group == gi && x.id == hd.sender;
-    });
-    if (allowed) {
-      if (it == core->rooms.end()) {
-        RoomSeen n;
-        n.group = gi;
-        n.id = hd.sender;
-        core->rooms.push_back(n);
-        it = core->rooms.end() - 1;
-        log_i("comms: a room on air: %08lX", static_cast<unsigned long>(hd.sender));
-        bump();
-      } else if (it->s.flags != s.flags || it->s.threshold != s.threshold ||
-                 it->s.battery != s.battery || !within(it->heardMs, now, kNoLinkMs)) {
-        bump();
-      }
-      it->heardMs = now;
-      it->s = s;
-    } else if (it != core->rooms.end()) {  // it doesn't let this board in (any more)
-      core->rooms.erase(it);
-      bump();
-    }
-  }
-  ListenRec &L = core->listen;
-  if (!L.st.on() || L.group != gi || L.room != hd.sender) return;
-  if (!allowed) {
-    endListen(kOffStopped);
-    return;
-  }
-  bool changed = false;
-  if (L.st.heard(now)) {  // back after NO LINK: the bars it missed
-    L.haveHistory = false;
-    L.historyAsks = 0;
-    L.nextAskMs = now;
-    L.started = false;  // whatever sound comes next is a new one here
-    log_i("comms: the room's link is back");
-    changed = true;
-  }
-  if (s.onS + 5 < L.last.onS) {  // the room started over: another night's bars
-    L.hist.clear();
-    L.haveHistory = false;
-    L.historyAsks = 0;
-    L.nextAskMs = now;
-    L.started = false;
-  }
-  L.st.setThreshold(-static_cast<int>(s.threshold));
-  changed = changed || L.last.flags != s.flags || L.last.threshold != s.threshold ||
-            L.last.battery != s.battery;
-  L.last = s;
-  L.hist.set(s.bar, s.barPeak);
-  if (changed) bump();
-}
-
-void onMonitorAudio(int gi, const Header &hd, Reader &r) {
-  MonitorAudio a;
-  if (!readMonitorAudio(r, a)) {
-    drop(kDropMalformed);
-    return;
-  }
-  if (!a.listeners.allows(core->id)) {
-    drop(kDropNotLetIn);
-    return;
-  }
-  ListenRec &L = core->listen;
-  if (!L.st.on() || L.group != gi || L.room != hd.sender) {
-    drop(kDropNotListening);
-    return;
-  }
-  const uint32_t now = millis();
-  ++L.frames;
-  const bool wasNoLink = L.st.link() == ListenState::Link::NoLink;
-  bool loud = false;
-  if (L.st.audio(now, a.sound, levelDb(a.level), loud)) bump();
-  if (wasNoLink) {
-    L.haveHistory = false;
-    L.historyAsks = 0;
-    L.nextAskMs = now;
-    L.started = false;
-  }
-  listenFrame(a, now);
-  if (loud && audio::status().volume <= kLowVolume) {
-    // Turned down low, a LOUD sound might go unheard: one chirp, at half volume at least.
-    stopListenPlay(true);
-    L.holdOffMs = now + kChirpHoldMs;
-    audio::monitorChirp();
-    log_i("comms: a LOUD sound with the volume low: chirped");
-  }
-}
-
-void onMonitorOff(int gi, const Header &hd, Reader &r) {
-  const uint8_t reason = r.u8();
-  if (!r.ok()) return;
-  {
-    std::lock_guard<std::mutex> l(core->mu);
-    auto it = std::find_if(core->rooms.begin(), core->rooms.end(), [&](const RoomSeen &x) {
-      return x.group == gi && x.id == hd.sender;
-    });
-    if (it != core->rooms.end()) {
-      core->rooms.erase(it);
-      bump();
-    }
-  }
-  ListenRec &L = core->listen;
-  if (L.st.on() && L.group == gi && L.room == hd.sender) {
-    endListen(reason == kOffPowerOff ? kOffPowerOff : kOffStopped);
-  }
+  log_i("comms: sent %08lX the mic's history", static_cast<unsigned long>(hd.sender));
 }
 
 void onHistory(int gi, const Header &hd, Reader &r) {
@@ -3588,55 +3077,21 @@ void onHistory(int gi, const Header &hd, Reader &r) {
     drop(kDropMalformed);
     return;
   }
-  ListenRec &L = core->listen;
-  if (h.to != core->id || !L.st.on() || L.group != gi || L.room != hd.sender) return;
+  std::lock_guard<std::mutex> l(core->mu);
+  OpenMicRec *o = findMic(gi, hd.sender);
+  if (!o || h.to != core->id || h.session != o->st.session()) return;
   for (uint8_t i = 0; i < h.count; ++i) {
     const uint16_t bar = static_cast<uint16_t>(h.first + i);
     // The bar now comes with every still-here too; keep the louder.
-    const uint8_t had = L.hist.at(bar);
-    L.hist.set(bar, had != kNoLevel && (h.bars[i] == kNoLevel || had < h.bars[i]) ? had
-                                                                                  : h.bars[i]);
+    const uint8_t had = o->hist.at(bar);
+    o->hist.set(bar, had != kNoLevel && (h.bars[i] == kNoLevel || had < h.bars[i]) ? had
+                                                                                   : h.bars[i]);
   }
-  L.haveHistory = true;
-  ++L.histories;
-  log_i("comms: the room's history came: %u bars from bar %u", h.count, h.first);
+  o->haveHistory = true;
+  ++o->histories;
+  log_i("comms: %08lX's history came: %u bars from bar %u", static_cast<unsigned long>(hd.sender),
+        h.count, h.first);
   bump();
-}
-
-void pumpListen(uint32_t now) {
-  ListenRec &L = core->listen;
-  if (!L.st.on()) return;
-  const bool wasNoLink = L.st.link() == ListenState::Link::NoLink;
-  if (L.st.tick(now)) {
-    if (!wasNoLink && L.st.link() == ListenState::Link::NoLink) {
-      log_w("comms: NO LINK: nothing from the room %08lX for %lu s",
-            static_cast<unsigned long>(L.room), static_cast<unsigned long>(kNoLinkMs / 1000));
-      L.nextAlarmMs = now;
-    }
-    bump();
-  }
-  // The sound's tail: frames still missing are given up, then the speaker goes off.
-  if (!L.flushed && now - L.lastFrameMs >= ListenState::kSoundEndMs) {
-    drainSlots(L.slots, L.next, true, listenPlay);
-    L.flushed = true;
-  }
-  if (L.playing && now - L.lastFrameMs >= kListenIdleMs) stopListenPlay(false);
-  if (L.st.alarm() && static_cast<int32_t>(now - L.nextAlarmMs) >= 0) {
-    audio::monitorAlarm();
-    L.nextAlarmMs = now + kAlarmEveryMs;
-  }
-  if (static_cast<int32_t>(now - L.nextListeningMs) >= 0) {
-    sendListening(false);
-    L.nextListeningMs = now + kListeningEveryMs + esp_random() % 500;
-  }
-  if (!L.haveHistory && L.historyAsks < kHistoryAsks && !wasNoLink &&
-      static_cast<int32_t>(now - L.nextAskMs) >= 0) {
-    uint8_t body[16];
-    const size_t n = putToRoom(body, sizeof body, sentAt(), kHistoryAsk, L.room, 0);
-    sendOwn(core->groups[L.group], kExt, body, n);
-    ++L.historyAsks;
-    L.nextAskMs = now + kHistoryAskMs;
-  }
 }
 
 // Type 15: the byte after sentAt says which.
@@ -3647,25 +3102,62 @@ void onExt(int gi, const Header &hd, Reader &r) {
     return;
   }
   switch (ext) {
-    case kMonitorAudio: onMonitorAudio(gi, hd, r); break;
-    case kStillHere: onStillHere(gi, hd, r); break;
-    case kMonitorOff: onMonitorOff(gi, hd, r); break;
-    case kListening: onListening(gi, hd, r); break;
     case kHistoryAsk: onHistoryAsk(gi, hd, r); break;
     case kHistory: onHistory(gi, hd, r); break;
     default: drop(kDropUnknownType); break;  // a later version's: passed on all the same
   }
 }
 
-// The board powers off (forceOff()): the room's off, or the listener's "stopped", goes now.
-void monitorPowerOff() {
-  if (core->room.on) stopRoom(kOffPowerOff);
-  if (core->listen.st.on()) {
-    sendListening(true);
-    stopListenPlay(true);
-    core->listen.st.stop();
-    noteMonitorOn();
+// Each second: QUIET after a sound, LOST after kLostMs, and the alarm; LOST mics nobody's alarm
+// is for are forgotten once their conversation is over here.
+void tickMics(uint32_t now) {
+  bool alarm = false;
+  std::lock_guard<std::mutex> l(core->mu);
+  for (size_t i = 0; i < core->mics.size();) {
+    OpenMicRec &o = core->mics[i];
+    // A board whose own mic is on sounds the alarm only for a mic that was on before its own.
+    const bool alarmable =
+        heardHere(o) &&
+        (!core->mic.on || static_cast<int32_t>(o.st.startMs() - core->mic.startMs) < 0);
+    const bool was = o.st.link() == HeardMic::Link::Lost;
+    if (o.st.tick(now, alarmable)) {
+      bump();
+      if (!was && o.st.link() == HeardMic::Link::Lost) {
+        log_w("comms: LOST: nothing from %08lX's mic for %lu s%s", static_cast<unsigned long>(o.id),
+              static_cast<unsigned long>(kLostMs / 1000), o.st.alarm() ? "" : " (no alarm here)");
+        if (o.logged) {
+          if (CallRec *c = findLogged(Kind::Voice, o.id, o.st.session(), false)) c->linkLost = true;
+        }
+        if (o.st.alarm() && !core->alarm) core->nextAlarmMs = now;
+        core->mixer.drop(o.id);
+      }
+    }
+    if (o.st.link() == HeardMic::Link::Lost && !o.st.alarm() &&
+        (!core->groups[o.group].conv.mine() || now - o.st.heardMs() >= kLostKeepMs)) {
+      endHeardSession(o, o.st.session(), o.st.heardMs() - o.st.startMs());
+      log_i("comms: %08lX's LOST mic forgotten", static_cast<unsigned long>(o.id));
+      core->mics.erase(core->mics.begin() + i);
+      bump();
+      continue;
+    }
+    alarm = alarm || o.st.alarm();
+    ++i;
   }
+  if (alarm != core->alarm) {
+    core->alarm = alarm;
+    bump();
+  }
+}
+
+void pumpAlarm(uint32_t now) {
+  if (!core->alarm || static_cast<int32_t>(now - core->nextAlarmMs) < 0) return;
+  audio::lostAlarm();
+  core->nextAlarmMs = now + kAlarmEveryMs;
+}
+
+// The board powers off (forceOff()): the mic's off goes now.
+void micPowerOff() {
+  if (core->mic.on) stopMic(kOffPowerOff);
   powerOffSent = true;
 }
 
@@ -3686,15 +3178,14 @@ void joinConv(int gi) {
 void leaveConv(int gi) {
   if (gi < 0 || gi >= static_cast<int>(core->groups.size())) return;
   GroupRec &g = core->groups[gi];
+  // Out of the conversation, out of it with the mic too.
+  if (core->mic.on && core->mic.group == gi) stopMic(kOffSwitched);
   {
     std::lock_guard<std::mutex> l(core->mu);
     if (!g.conv.leave(millis())) return;
-  }
-  Hearing &h = core->hear;
-  if (h.active && h.group == gi && h.conv && h.playing) {  // its voice stops here
-    audio::streamAbort();
-    h.playing = false;
-    core->streamOurs = false;
+    for (const OpenMicRec &o : core->mics) {  // its voices stop here
+      if (o.group == gi) core->mixer.drop(o.id);
+    }
   }
   log_i("comms: left the conversation in %s", g.name.c_str());
   presenceSoon(g);
@@ -3787,23 +3278,32 @@ void handleFrame(const RxFrame &f) {
   }
 
   // A packet for this board alone isn't relayed: the board it's for is the one its first field
-  // after sentAt names (a message frame's or end's, the second). An answer floods regardless,
-  // so every board the ring rang stops.
-  // Type 15's says so after its own type (extFor()).
-  const size_t aloneAt = hd.type == kMessage || hd.type == kMessageEnd ? 8 : 4;
-  Reader peek(buf + kHeader + aloneAt, bodyLen >= aloneAt ? bodyLen - aloneAt : 0);
-  const bool forUsAlone =
-      hd.type == kExt ? extFor(buf + kHeader, bodyLen) == core->id
-                      : hd.type != kPresence && hd.type != kPing && hd.type != kAnswer &&
-                            knownType(hd.type) && peek.u32() == core->id;
+  // after sentAt names (voice to one board, a pong, a ring, ringing, a ring end, a message ask), a
+  // message frame's or end's second, type 15's the first after its own type (extFor()).
+  // Presence, a mic's still-here and off, a ping and an answer flood regardless: every board of
+  // the group follows whose mic is on, and an answer stops the ring on every board it rang.
+  bool forUsAlone = false;
   switch (hd.type) {
-    case kPresence: onPresence(g, hd, r); break;
-    case kVoiceStart:
     case kVoice:
-    case kVoiceEnd: onVoice(gi, hd, f, r, relay); break;
+    case kPong:
+    case kRing:
+    case kRinging:
+    case kRingEnd:
+    case kMessageAsk:
+      forUsAlone = bodyLen >= 8 && get32(buf + kHeader + 4) == core->id;
+      break;
+    case kMessage:
+    case kMessageEnd: forUsAlone = bodyLen >= 12 && get32(buf + kHeader + 8) == core->id; break;
+    case kExt: forUsAlone = extFor(buf + kHeader, bodyLen) == core->id; break;
+    default: break;
+  }
+  switch (hd.type) {
+    case kPresence: onPresence(gi, hd, r); break;
+    case kMic: onMicStill(gi, hd, f, r, relay); break;
+    case kVoice: onVoice(gi, hd, f, r, relay); break;
+    case kMicOff: onMicOff(gi, hd, r); break;
     case kPing: onPing(g, hd, f, r); break;
     case kPong: onPong(hd, f, r); break;
-    case kHeard: onHeard(gi, hd, r); break;
     case kRing: onRing(gi, hd, r); break;
     case kRinging: onRinging(hd, r); break;
     case kAnswer: onAnswer(gi, hd, r); break;
@@ -3820,7 +3320,7 @@ void handleFrame(const RxFrame &f) {
 // --- The task ----------------------------------------------------------------------------------
 
 // Under mu: 60 bars ending with `top`, oldest first, as comms.h has them.
-std::vector<int8_t> barsOf(const MonitorHistory &h, uint16_t top) {
+std::vector<int8_t> barsOf(const MicHistory &h, uint16_t top) {
   std::vector<int8_t> out(kHistoryBars, kNoBar);
   for (int i = 0; i < kHistoryBars; ++i) {
     const int bar = static_cast<int>(top) - (kHistoryBars - 1) + i;
@@ -3831,7 +3331,7 @@ std::vector<int8_t> barsOf(const MonitorHistory &h, uint16_t top) {
   return out;
 }
 
-// Under mu: how a board is reached, for the monitor's views.
+// Under mu: how a board is reached, for the mic views.
 void routeTo(int gi, uint32_t id, uint32_t now, Route &route, int &hops, int &rssi) {
   route = Route::Away;
   hops = rssi = 0;
@@ -3844,204 +3344,140 @@ void routeTo(int gi, uint32_t id, uint32_t now, Route &route, int &hops, int &rs
 
 // A meter moved a segment (3 dB): a screen redraws it, at most 4 times a second.
 void noteLevel(float level, float &shown, uint32_t &shownMs, uint32_t now) {
-  if (fabsf(level - shown) < kMonitorStepDb || now - shownMs < 250) return;
+  if (fabsf(level - shown) < kMicStepDb || now - shownMs < 250) return;
   shown = level;
   shownMs = now;
   bump();
 }
 
+// The delay from a mic to a speaker that plays it, preFrames of pre-roll (comms.h).
+uint32_t delayOf(uint32_t preFrames) {
+  return kCaptureMs + preFrames * kFrameMs + kAirMs + kJitterMs + kQueueMs + kSpeakerMs;
+}
+
+// Under mu: the bar a mic is on now (its history's top while it's off).
+uint16_t barNow(uint32_t startMs, uint32_t now) {
+  return static_cast<uint16_t>(std::min<uint32_t>((now - startMs) / kHistoryBarMs, 0xFFFF));
+}
+
 // Under mu.
-void publishMonitor(uint32_t now) {
-  const RoomRec &m = core->room;
-  Monitor x;
+void publishMic(uint32_t now) {
+  const MicRec &m = core->mic;
+  Mic x;
   x.on = m.on;
-  x.count = core->roomCount;
+  x.count = core->micCount;
   x.thresholdDb = m.on ? m.gate.threshold() : core->thresholdDb;
-  if (core->roomCount) {
+  if (core->micCount) {
     x.group = m.group;
+    x.target = m.target;
+    x.targetName = nameOf(m.target);
+    x.conversation = m.conv;
+    x.opened = m.opened;
     x.since = m.since;
     x.ms = m.on ? now - m.startMs : 0;
-    x.levelDb = m.on && m.mic ? m.level : -96;
-    x.sending = m.on && m.mic && m.gate.sending();
-    x.micOn = m.on && m.mic;
-    x.paused = m.on && !m.mic ? m.paused : "";
-    x.talkBack = m.on && core->hear.active && core->hear.playing;
-    x.toAll = m.allowed.all();
-    auto add = [&](uint32_t id, const RoomEar *e) {
-      MonitorListener l;
-      l.id = id;
-      l.name = nameOf(id);
-      if (e) {
-        l.ever = true;
-        l.listening = !e->stopped && within(e->heardMs, now, kEarFreshMs);
-        l.heardAgoS = (now - e->heardMs) / 1000;
-      }
-      routeTo(m.group, id, now, l.route, l.hops, l.rssi);
-      if (l.listening) ++x.listeningNow;
-      x.listeners.push_back(std::move(l));
-    };
-    auto earOf = [&](uint32_t id) -> const RoomEar * {
-      for (const RoomEar &e : m.ears) {
-        if (e.id == id) return &e;
-      }
-      return nullptr;
-    };
-    if (m.allowed.all()) {
-      for (const RoomEar &e : m.ears) {
-        if (e.id) add(e.id, &e);
-      }
-    } else {
-      for (uint8_t i = 0; i < m.allowed.n; ++i) add(m.allowed.ids[i], earOf(m.allowed.ids[i]));
-    }
+    x.capturing = m.on && m.capturing;
+    x.levelDb = x.capturing ? m.level : -96;
+    x.echoDb = x.capturing ? m.echoGate : -96;
+    x.sending = x.capturing && m.gate.sending();
+    x.paused = m.on && !m.capturing ? m.paused : "";
     for (auto it = m.sounds.rbegin(); it != m.sounds.rend(); ++it) {
-      MonitorSound snd;
+      MicSound snd;
       snd.at = it->at;
       snd.agoS = (now - it->startMs) / 1000;
       snd.ms = it->frames * kFrameMs;
       snd.peakDb = levelDb(it->peak);
       snd.loud = it->peak != kNoLevel && snd.peakDb >= m.gate.threshold() + kLoudMarginDb;
-      snd.listeners = it->live ? std::max(it->listeners, x.listeningNow) : it->listeners;
+      snd.muted = it->muted;
       snd.live = it->live;
       x.sent.push_back(snd);
     }
-    x.bars = barsOf(m.hist, m.on ? static_cast<uint16_t>(std::min<uint32_t>(
-                                       (now - m.startMs) / kHistoryBarMs, 0xFFFF))
-                                 : m.hist.top());
+    x.bars = barsOf(m.hist, m.on ? barNow(m.startMs, now) : m.hist.top());
+    x.delayMs = delayOf(MicGate::kPreFrames);
     x.framesSent = m.framesSent;
+    x.framesMuted = m.framesMuted;
+    x.playFrames = m.playFrames;
+    x.playOver = m.playOver;
+    x.playPeakDb = m.playPeak;
+    x.playPeakGateDb = m.playPeakGate;
     x.sounds = m.soundsSent;
     x.stillHeres = m.stillHeres;
     x.histories = m.histories;
-    x.talkBacks = m.talkBacks;
     x.vanished = m.vanished;
   }
-  core->pubMonitor = std::move(x);
-}
-
-// Under mu.
-void publishListen(uint32_t now) {
-  const ListenRec &L = core->listen;
-  Listen x;
-  x.count = core->listenCount;
-  x.battery = core->battery;
-  x.onUsb = core->onUsb;
-  using LL = ListenState::Link;
-  switch (L.st.link()) {
-    case LL::Off: x.link = Link::Off; break;
-    case LL::Quiet: x.link = Link::Quiet; break;
-    case LL::Sound: x.link = Link::Sound; break;
-    case LL::NoLink: x.link = Link::NoLink; break;
-    case LL::Stopped: x.link = Link::Stopped; break;
-  }
-  if (x.link != Link::Off) {
-    x.on = L.st.on();
-    x.group = L.group;
-    x.room = L.room;
-    x.roomName = nameOf(L.room);
-    x.linkMs = now - L.st.sinceMs();
-    x.ms = now - L.startMs;
-    x.since = L.since;
-    if (const ListenState::Event *e = L.st.lastSound()) {
-      x.heardSound = true;
-      x.lastSoundAgoS = e->open ? 0 : (now - e->endMs) / 1000;
-      x.lastSoundLoud = e->loud;
-    }
-    x.levelDb = x.link == Link::Sound ? L.level : levelDb(L.last.peak);
-    x.thresholdDb = L.st.threshold();
-    x.playing = L.playing;
-    routeTo(L.group, L.room, now, x.route, x.hops, x.rssi);
-    x.heardAgoMs = now - L.st.heardMs();
-    x.roomBattery = L.last.battery <= 100 ? L.last.battery : -1;
-    x.roomUsb = L.last.flags & kStillUsb;
-    x.roomMicOn = !(L.last.flags & kStillMicOff);
-    x.delayMs = L.last.preFrames * kFrameMs + kStreamBufferMs + kFrameMs;
-    x.bars = barsOf(L.hist, L.hist.top());
-    const time_t utc = utcNow();
-    const auto &ev = L.st.events();
-    for (auto it = ev.rbegin(); it != ev.rend(); ++it) {
-      MonitorEvent e;
-      e.noLink = it->noLink;
-      e.agoS = (now - it->startMs) / 1000;
-      e.at = utc ? utc - static_cast<time_t>(e.agoS) : 0;
-      e.ms = (it->open ? now : it->endMs) - it->startMs + (it->noLink ? 0 : kFrameMs);
-      e.loud = it->loud;
-      e.peakDb = it->peakDb;
-      e.live = it->open;
-      x.events.push_back(e);
-    }
-    x.alarm = L.st.alarm();
-    x.roomPoweredOff = L.offReason == kOffPowerOff;
-    if (!x.onUsb && L.batteryStart >= 0 && x.battery >= 0) {
-      const uint32_t ms = now - L.batteryStartMs;
-      const int drop = L.batteryStart - x.battery;
-      if (ms >= 15 * 60000u && drop >= 1) {
-        x.drainPctPerHour = drop * 3600000.0f / ms;
-        x.lastsMin = static_cast<int>(x.battery * 60 / x.drainPctPerHour);
-      }
-    }
-    x.frames = L.frames;
-    x.lost = L.lost;
-    x.late = L.late;
-    x.histories = L.histories;
-  }
-  core->pubListen = std::move(x);
+  core->pubMic = std::move(x);
 }
 
 void publish() {
+  const uint32_t now = millis();
   Status s;
-  const Hearing &h = core->hear;
-  const Talk &t = core->talk;
-  const bool replay =
-      core->replay.on || (core->replayTail && core->streamOurs && audio::streaming());
-  s.state = !isListening ? State::Off
-            : t.on       ? State::Talking
-            : (h.active && h.playing) || replay ? State::Hearing
-                                                 : State::Quiet;
+  const MicRec &m = core->mic;
+  const bool replay = core->replay.on;
   s.channel = radioChannel();
   s.onNetwork = WiFi.isConnected();
   s.netUp = false;
-  s.levelDb = core->level;
   std::lock_guard<std::mutex> l(core->mu);
+  // The voices playing now, and the loudest of them.
+  const OpenMicRec *loud = nullptr;
+  float top = -97;
+  for (const OpenMicRec &o : core->mics) {
+    if (!o.playedMs || now - o.playedMs >= kPlayingMs) continue;
+    ++s.voices;
+    if (o.level > top) {
+      top = o.level;
+      loud = &o;
+    }
+  }
+  s.hearing = s.voices > 0;
+  s.playLevelDb = s.hearing || replay ? core->level : -96;
+  s.levelDb = s.playLevelDb;
+  s.state = !isListening                  ? State::Off
+            : m.on || core->out.recording ? State::Mic
+            : s.hearing || replay         ? State::Hearing
+                                          : State::Quiet;
   s.group = core->active;
-  if (t.on) {
-    s.group = t.group;
-    s.peer = t.target;
-    s.peerName = nameOf(t.target);
-    s.toAll = t.target == 0;
-    s.ms = millis() - t.startMs;
-  } else if (h.active) {
-    s.group = h.group;
-    s.peer = h.from;
-    s.peerName = nameOf(h.from);
-    s.toAll = h.target == 0;
-    s.ms = h.frames * kFrameMs;
-    s.route = h.hops ? Route::Relayed : Route::Air;
-    s.hops = h.hops;
-    s.relayName = nameOf(h.relay);
-    s.rssi = h.rssi;
-  } else if (replay) {
-    s.replay = true;
-    s.group = core->replay.group;
-    s.peer = core->replay.from;
-    s.peerName = nameOf(core->replay.from);
-    s.ms = core->replay.frames * kFrameMs;
-    s.playingMessage = core->replay.message;
-  } else if (core->out.recording) {  // the mic is on for a message: Talking, as for a call
-    s.state = State::Talking;
+  s.replay = replay;
+  if (m.on) {
+    s.group = m.group;
+    s.peer = m.target;
+    s.peerName = nameOf(m.target);
+    s.toAll = m.target == 0;
+    s.ms = now - m.startMs;
+    s.levelDb = m.capturing ? m.level : -96;
+  } else if (core->out.recording) {  // the mic is on for a message: Mic, as for an open mic
     s.group = core->out.group;
     s.peer = core->out.to;
     s.peerName = nameOf(core->out.to);
     s.toAll = core->out.to == 0;
-    s.ms = millis() - core->out.startMs;
+    s.ms = now - core->out.startMs;
+    s.levelDb = core->msgLevel;
+  } else if (loud) {
+    s.group = loud->group;
+    s.peer = loud->id;
+    s.peerName = nameOf(loud->id);
+    s.toAll = loud->target == 0;
+    s.ms = now - loud->st.startMs();
+    routeTo(loud->group, loud->id, now, s.route, s.hops, s.rssi);
+    if (s.route == Route::Relayed) {
+      if (const BoardRec *b = findBoard(core->groups[loud->group], loud->id)) {
+        s.relayName = nameOf(b->relay);
+      }
+    }
+  } else if (replay) {
+    s.group = core->replay.group;
+    s.peer = core->replay.from;
+    s.peerName = nameOf(core->replay.from);
+    s.ms = core->replay.frames * kFrameMs;
   }
+  if (replay) s.playingMessage = core->replay.message;
   s.incoming = core->incoming;
   s.ringsSeen = core->ringsSeen;
   s.conversationsSeen = core->conversationsSeen;
   s.conversationGroup = core->conversationGroup;
   s.messagesIn = core->messagesIn;
+  s.alarm = core->alarm;
   s.error = core->error;
   core->pub = std::move(s);
 
-  const uint32_t now = millis();
   const Dialing &d = core->dialing;
   const Outbound &o = core->out;
   Dial dl;
@@ -4072,8 +3508,18 @@ void publish() {
   rn.count = core->ringsSeen;
   rn.ended = rg.ended;
   core->pubRing = std::move(rn);
-  publishMonitor(now);
-  publishListen(now);
+  publishMic(now);
+  core->last = LastCall();
+  if (core->heardCount) {
+    core->last.have = true;
+    core->last.group = core->heardGroup;
+    core->last.from = core->heardFrom;
+    core->last.fromName = nameOf(core->heardFrom);
+    core->last.ms = static_cast<uint32_t>(core->heardCount) * kFrameMs;
+    const time_t utc = utcNow();
+    core->last.at = utc ? utc - static_cast<time_t>((now - core->heardLastMs + core->last.ms) / 1000)
+                        : 0;
+  }
 }
 
 void tick(uint32_t now) {
@@ -4084,17 +3530,7 @@ void tick(uint32_t now) {
       for (BoardRec &b : g.boards) noteShown(b, now);
     }
   }
-  // Other calls that stopped without an end.
-  for (Other &o : core->others) {
-    if (!o.used || now - o.lastMs < kCallTimeoutMs) continue;
-    std::lock_guard<std::mutex> l(core->mu);
-    if (CallRec *c = findCall(o.group, o.from, o.call, false)) {
-      c->ms = o.frames * kFrameMs;
-      c->live = false;
-    }
-    o.used = false;
-    bump();
-  }
+  tickMics(now);
   // Conversations: members that went quiet, conversations over; one this board isn't in that
   // has come on is counted once (status().conversationsSeen: the screens offer to join it).
   {
@@ -4102,13 +3538,15 @@ void tick(uint32_t now) {
     for (size_t i = 0; i < core->groups.size(); ++i) {
       GroupRec &g = core->groups[i];
       ConvState &c = g.conv;
-      if (c.mine() && core->talk.on && core->talk.group == static_cast<int>(i)) {
-        c.spoke(now, core->talk.conv, core->id, core->id);
+      MicRec &m = core->mic;
+      if (m.on && m.group == static_cast<int>(i)) {
+        // This board's open mic keeps it on (and opens it again should it have ended).
+        if (!c.on() || !c.mine()) c.join(now, c.on() ? 0 : newConvId());
+        c.spoke(now, c.id(), core->id, core->id);
+        m.conv = c.id();
       }
       if (c.expire(now)) bump();
-      if (c.on() && core->room.on) {
-        g.convSeen = c.id();  // the baby monitor's room: nobody there to offer it to
-      } else if (c.on() && !c.mine() && !c.left() && c.id() != g.convSeen) {
+      if (c.on() && !c.mine() && !c.left() && c.id() != g.convSeen) {
         g.convSeen = c.id();
         ++core->conversationsSeen;
         core->conversationGroup = static_cast<int>(i);
@@ -4125,6 +3563,17 @@ void tick(uint32_t now) {
     lastExpire = now;
     expireMsgs();
   }
+}
+
+// The board keeps its radio on and doesn't power off by itself: its mic is on, LOST's alarm
+// sounds, or it's in a conversation where another board's mic is on.
+bool awakeNow() {
+  if (core->mic.on || core->alarm) return true;
+  std::lock_guard<std::mutex> l(core->mu);
+  for (const OpenMicRec &o : core->mics) {
+    if (o.st.on() && heardHere(o)) return true;
+  }
+  return false;
 }
 
 // Presence: at the start a hello, then every kPresenceMs (kConvPresenceMs while this board is in
@@ -4163,15 +3612,25 @@ void startListening() {
 }
 
 void stopListening() {
-  stopRoom(kOffStopped);  // the radio goes (groups changed, a power-off): the monitor with it
-  endListen(0);
-  if (core->talk.on) stopTalk();
+  stopMic(kOffSwitched);  // the radio goes (groups changed): the mic with it
   if (core->out.recording) finishMessage(true);
-  if (core->hear.active) endHearing(true);
-  if (core->replay.on) stopReplay(true);
+  stopReplay();
+  core->mixer.clear();
+  if (core->duplexOurs) {
+    audio::duplexStop();
+    core->duplexOurs = false;
+  }
   if (core->dialing.state == DialState::Ringing) dialOver(DialState::None, kEndGaveUp);
   ringingOver(RingEnd::Lost);
   for (Inbound &in : core->inbound) finishInbound(in);
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    for (OpenMicRec &o : core->mics) {
+      endHeardSession(o, o.st.session(), o.st.heardMs() - o.st.startMs());
+    }
+    core->mics.clear();
+    core->alarm = false;
+  }
   radioStop();
   bump();
 }
@@ -4189,7 +3648,8 @@ void reload() {
     core->log.clear();
     core->pongs.clear();
     core->last = LastCall();
-    core->lastAudio.clear();
+    core->heardAudio.clear();
+    core->heardHead = core->heardCount = 0;
     // Messages kept stay, under their group's new place (hidden while it isn't configured).
     for (MsgRec &m : core->msgs) {
       m.group = groupIndex(m.e.group);
@@ -4208,41 +3668,105 @@ void reload() {
   bump();
 }
 
+// !commsecho: the loopback test through the duplex path (audio.h), with nothing else of comms's
+// on it.
+void runEchoTest(int levelDb, uint32_t ms) {
+  EchoTest r;
+  if (core->mic.on || core->mixer.active() || core->replay.on) {
+    r.error = "THE MIC IS ON, OR VOICE PLAYS";
+  } else if (!ensureDuplex(millis())) {
+    const char *why = duplexBlocked();
+    r.error = why ? why : "THE DUPLEX PATH WON'T START";
+  } else {
+    audio::duplexMic(false);
+    const audio::LoopbackResult lr = audio::duplexLoopback(static_cast<float>(levelDb), ms);
+    r.ok = lr.ok;
+    r.volume = lr.volume;
+    r.playedDb = lr.playedDb;
+    r.micDb = lr.micDb;
+    r.noiseDb = lr.noiseDb;
+    r.couplingDb = lr.couplingDb;
+    r.delayMs = lr.delayBlocks >= 0 ? lr.delayBlocks * static_cast<int>(audio::kDuplexBlock) *
+                                          1000 / static_cast<int>(audio::kDuplexRate)
+                                    : -1;
+    if (lr.ok) {  // the delay is used from now on, until a restart
+      audio::setDuplexLoopback(lr.delayBlocks);
+    } else {
+      r.error = "THE MIC DIDN'T HEAR THE TONE";
+    }
+    core->lastPlayMs = millis();  // the duplex path goes 1.5 s after
+  }
+  std::lock_guard<std::mutex> l(core->mu);
+  core->echo = r;
+  echoDone = true;
+}
+
 void handleCommand(const Command &c) {
   switch (c.cmd) {
     case Cmd::Wake: break;
-    case Cmd::Talk: startTalk(c.group, c.arg); break;
-    case Cmd::TalkStop:
-      if (core->talk.on) {
-        stopTalk();
-      } else {
-        talkWanted = false;
-      }
-      break;
-    case Cmd::PlayLast: {
-      LastCall last;
+    case Cmd::MicOn: {
+      uint32_t target;
       {
         std::lock_guard<std::mutex> l(core->mu);
-        last = core->last;
+        target = core->micWantTarget;
       }
-      startReplay(core->lastAudio, 0, last.group, last.from);
+      startMic(c.group, target);
       break;
     }
-    case Cmd::StopPlay:
-      if (core->replay.on) stopReplay(true);
-      if (core->replayTail && core->streamOurs && !core->hear.active) {  // still playing out
-        audio::streamAbort();
-        core->streamOurs = false;
-        core->replayTail = false;
-        bump();
+    case Cmd::MicOff:
+      stopMic(kOffSwitched);
+      micWanted = false;
+      break;
+    case Cmd::MicThreshold:
+      core->thresholdDb = -static_cast<int>(c.arg);
+      if (core->mic.on) {
+        core->mic.gate.setThreshold(core->thresholdDb);
+        core->mic.nextStillMs = millis();  // the others see it at once
       }
-      if (core->hear.active && core->hear.playing) {
-        audio::streamAbort();
-        core->hear.playing = false;
-        core->streamOurs = false;
+      bump();
+      break;
+    case Cmd::MicVanish:
+      core->mic.vanished = c.arg != 0;
+      log_i("comms: the mic %s", c.arg ? "vanishes: nothing goes out, its off neither"
+                                       : "is back on air");
+      bump();
+      break;
+    case Cmd::MicTone:
+      if (core->mic.on) {
+        core->mic.toneUntilMs = (millis() + c.arg) | 1;
+        core->mic.toneAmp = std::min(32767.0f, 32767.0f * powf(10, c.group / 20.0f));
+        log_i("comms: a 1 kHz tone at %d dBFS added to the mic for %lu ms", c.group,
+              static_cast<unsigned long>(c.arg));
+      }
+      break;
+    case Cmd::AckLost: {
+      bool any = false;
+      {
+        std::lock_guard<std::mutex> l(core->mu);
+        for (OpenMicRec &o : core->mics) any = o.st.ack() || any;
+        core->alarm = false;
+      }
+      if (any) {
+        log_i("comms: LOST's alarm silenced");
         bump();
       }
       break;
+    }
+    case Cmd::EchoTest: runEchoTest(c.group, c.arg); break;
+    case Cmd::PlayLast: {
+      // What's kept, oldest first, as it is now (live voice goes on adding to the ring).
+      const size_t n = core->heardCount;
+      core->replayAudio.resize(n * kStoredFrame);
+      const size_t first = (core->heardHead + kLastFrames - n) % kLastFrames;
+      for (size_t i = 0; i < n; ++i) {
+        memcpy(&core->replayAudio[i * kStoredFrame],
+               &core->heardAudio[((first + i) % kLastFrames) * kStoredFrame], kStoredFrame);
+      }
+      if (core->replay.on && !core->replay.message) stopReplay();
+      startReplay(core->replayAudio, 0, core->heardGroup, core->heardFrom);
+      break;
+    }
+    case Cmd::StopPlay: stopReplay(); break;
     case Cmd::Ping: {
       if (c.group < 0 || c.group >= static_cast<int>(core->groups.size())) break;
       core->pingId = c.arg;
@@ -4276,45 +3800,7 @@ void handleCommand(const Command &c) {
     case Cmd::MessageSend: finishMessage(true); break;
     case Cmd::MessageCancel: finishMessage(false); break;
     case Cmd::PlayMessage: playMsg(c.arg); break;
-    case Cmd::MonitorStart: startRoom(c.group); break;
-    case Cmd::MonitorStop: stopRoom(kOffStopped); break;
-    case Cmd::MonitorThreshold:
-      core->thresholdDb = -static_cast<int>(c.arg);
-      if (core->room.on) {
-        core->room.gate.setThreshold(core->thresholdDb);
-        core->room.nextStillMs = millis();  // the listeners see it at once
-      }
-      bump();
-      break;
-    case Cmd::MonitorVanish:
-      core->room.vanished = c.arg != 0;
-      log_i("comms: the room %s", c.arg ? "vanishes: nothing goes out, no off either"
-                                        : "is back on air");
-      bump();
-      break;
-    case Cmd::MonitorTone:
-      if (core->room.on) {
-        core->room.toneUntilMs = (millis() + c.arg) | 1;
-        core->room.toneAmp = std::min(32767.0f, 32767.0f * powf(10, c.group / 20.0f));
-        log_i("comms: the room's mic input is a 1 kHz tone at %d dBFS for %lu ms", c.group,
-              static_cast<unsigned long>(c.arg));
-      }
-      break;
-    case Cmd::ListenStart: startListen(c.group, c.arg); break;
-    case Cmd::ListenStop:
-      endListen(0);
-      if (core->listen.st.link() == ListenState::Link::Stopped) {  // shown until stopped here
-        core->listen.st.stop();
-        bump();
-      }
-      break;
-    case Cmd::ListenAck:
-      if (core->listen.st.ack()) {
-        log_i("comms: NO LINK's alarm silenced");
-        bump();
-      }
-      break;
-    case Cmd::PowerOff: monitorPowerOff(); break;
+    case Cmd::PowerOff: micPowerOff(); break;
     case Cmd::RingVanish:
       if (core->dialing.state == DialState::Ringing) {
         core->dialing.vanished = true;
@@ -4327,7 +3813,7 @@ void handleCommand(const Command &c) {
       memcpy(f, c.arg ? core->firstVoice : core->lastSent, n);
       if (n) radioSend(f, n);
       log_i("comms: sent again, byte for byte: %s (%u bytes)",
-            c.arg ? "the first voice frame of the last call" : "the last frame", n);
+            c.arg ? "the first voice frame of the last sound" : "the last frame", n);
       break;
     }
   }
@@ -4335,8 +3821,8 @@ void handleCommand(const Command &c) {
 
 void task(void *) {
   uint32_t lastUsb = 0, lastSleep = 0, lastChannel = 0, lastTick = 0, lastBump = 0,
-           lastPublish = 0, lingerFrom = 0;
-  bool usbKnown = false;
+           lastPublish = 0, lingerFrom = 0, lastAwake = 0;
+  bool usbKnown = false, awakeWas = false;
   for (;;) {
     uint32_t now = millis();
     if (!usbKnown || now - lastUsb >= kUsbPollMs) {
@@ -4345,22 +3831,19 @@ void task(void *) {
       core->battery = p.ok && p.battery ? p.percent : -1;
       lastUsb = now;
       usbKnown = true;
-      // LASTS: the listener's drain is measured over the stretch on battery.
-      ListenRec &L = core->listen;
-      if (core->onUsb || core->battery < 0) {
-        L.batteryStart = -1;
-      } else if (L.st.on() && L.batteryStart < 0) {
-        L.batteryStart = core->battery;
-        L.batteryStartMs = now;
-      }
+    }
+    if (now - lastAwake >= 250) {
+      lastAwake = now;
+      awakeWas = awakeNow();
+      awake = awakeWas;
     }
     bool inbound = false;
     for (const Inbound &in : core->inbound) inbound = inbound || in.used;
     const bool ringOn = core->dialing.state == DialState::Ringing || core->ringing.on;
     const bool msgOn = core->out.recording || core->out.resending || inbound;
-    const bool monitor = core->room.on || core->listen.st.on();  // on battery too
-    const bool busy = core->talk.on || core->hear.active || core->replay.on || talkWanted ||
-                      ringOn || msgOn || monitor;
+    const bool voice = micWanted || core->mic.on || core->mixer.active() || core->replay.on ||
+                       core->duplexOurs;
+    const bool busy = voice || ringOn || msgOn || awakeWas;  // on battery too
     const bool want = hasGroups && !poweringOff && (holders.load() > 0 || core->onUsb || busy);
     if (want) lingerFrom = now;
     if (want && !isListening) {
@@ -4386,13 +3869,12 @@ void task(void *) {
       continue;
     }
 
-    // Frames from the radio: quick turns while a call is on, so the mic and the speaker keep up,
-    // and while a message is recorded or frames of one go again.
-    const bool call = core->talk.on || core->hear.active || core->replay.on ||
-                      core->out.recording || core->out.resending || core->room.mic ||
-                      core->listen.playing;
+    // Frames from the radio: quick turns while the mic captures or voice plays, so the mic and
+    // the speaker keep up, and while a message is recorded or frames of one go again.
+    const bool quick = core->mic.capturing || core->mixer.active() || core->replay.on ||
+                       core->out.recording || core->out.resending;
     RxFrame &frame = core->rx;
-    if (xQueueReceive(rxQueue, &frame, pdMS_TO_TICKS(call ? 4 : 20)) == pdTRUE) {
+    if (xQueueReceive(rxQueue, &frame, pdMS_TO_TICKS(quick ? 4 : 20)) == pdTRUE) {
       int n = 0;
       do {
         handleFrame(frame);
@@ -4400,27 +3882,14 @@ void task(void *) {
     }
     now = millis();
     sendPending(now);
-    pumpTalk();
-    pumpReplay();
+    pumpMic(now);
+    pumpPlay(now);
     pumpMessageOut(now);
     pumpDial(now);
     pumpRinging(now);
     pumpInbound(now);
-    pumpRoom(now);
-    pumpListen(now);
-    Hearing &h = core->hear;
-    if (h.active) {
-      if (h.playing && holders.load() > 0) h.held = true;
-      if (now - h.lastMs >= kCallTimeoutMs) endHearing(false);
-    }
-    if (!core->hear.active && !core->replay.on && !core->talk.on && !core->out.recording &&
-        !core->listen.playing && core->streamOurs && !audio::streaming()) {
-      core->streamOurs = false;
-      if (core->replayTail) {  // PLAY LAST has played out
-        core->replayTail = false;
-        bump();
-      }
-    }
+    pumpDuplex(now);
+    pumpAlarm(now);
     resumeMusicWhenFree();
     presence(now);
     if (now - lastSleep >= kSleepCheckMs) {
@@ -4435,7 +3904,7 @@ void task(void *) {
       lastTick = now;
       tick(now);
     }
-    const bool live = core->talk.on || core->hear.active || core->replay.on || ringOn ||
+    const bool live = core->mic.on || core->mixer.active() || core->replay.on || ringOn ||
                       core->out.recording;
     if (live && now - lastBump >= kCallBumpMs) {
       lastBump = now;
@@ -4445,10 +3914,15 @@ void task(void *) {
       lastPublish = now;
       publish();
     }
-    noteLevel(core->room.on && core->room.mic ? core->room.level : -96, core->room.shownLevel,
-              core->room.shownMs, now);
-    if (core->listen.st.link() == ListenState::Link::Sound) {
-      noteLevel(core->listen.level, core->listen.shownLevel, core->listen.shownMs, now);
+    MicRec &m = core->mic;
+    noteLevel(m.on && m.capturing ? m.level : -96, m.shownLevel, m.shownMs, now);
+    {
+      std::lock_guard<std::mutex> l(core->mu);
+      for (OpenMicRec &o : core->mics) {
+        const float lv = o.playedMs && now - o.playedMs < kPlayingMs ? o.level
+                                                                      : levelDb(o.last.peak);
+        noteLevel(lv, o.shownLevel, o.shownMs, now);
+      }
     }
   }
 }
@@ -4480,8 +3954,8 @@ void ensureCore() {
   core->relayOn = kv::loadU32(kNs, "norelay") == 0;
   core->chirpOn = kv::loadU32(kNs, "nochirp") == 0;
   core->devChannel = static_cast<int>(kv::loadU32(kNs, "devchan"));
-  const uint32_t thr = kv::loadU32(kNs, "monthr");
-  core->thresholdDb = thr ? snapDb(-static_cast<int>(thr - 1)) : kMonitorDefaultDb;
+  const uint32_t thr = kv::loadU32(kNs, "micthr");
+  core->thresholdDb = thr ? snapDb(-static_cast<int>(thr - 1)) : kMicDefaultDb;
   commands = xQueueCreate(8, sizeof(Command));
 }
 
@@ -4519,7 +3993,8 @@ void begin() {
   // Ring numbers start anywhere: a board that rang before a restart doesn't reuse the numbers
   // the others remember as over.
   core->ringCounter = static_cast<uint16_t>(esp_random() ^ core->boot);
-  core->roomSound = static_cast<uint16_t>(esp_random());
+  core->micSound = static_cast<uint16_t>(esp_random());
+  core->micSession = static_cast<uint16_t>(esp_random());
   log_i("comms: %u groups, board %s (%08lX), boot %lu", static_cast<unsigned>(core->groups.size()),
         core->name.c_str(), static_cast<unsigned long>(core->id),
         static_cast<unsigned long>(core->boot));
@@ -4569,6 +4044,9 @@ std::vector<Group> groups() {
     }
     for (const CallRec &c : core->log) {
       if (c.group == static_cast<int>(i) && !c.outgoing && !c.heard && !c.live) ++x.unheard;
+    }
+    for (const OpenMicRec &o : core->mics) {
+      if (o.group == static_cast<int>(i)) ++x.micsOn;
     }
     x.active = static_cast<int>(i) == core->active;
     out.push_back(std::move(x));
@@ -4702,6 +4180,8 @@ std::vector<Call> calls(int group, int max) {
     x.rssi = c.rssi;
     x.played = c.played;
     x.heard = c.heard;
+    x.linkLost = c.linkLost;
+    x.sounds = c.sounds;
     x.heardBy = static_cast<int>(c.heardBy.size());
     x.lost = c.lost;
     x.conversation = c.conv;
@@ -4713,6 +4193,7 @@ std::vector<Call> calls(int group, int max) {
     if (c.kind == Kind::Message && c.live && !c.outgoing) {  // coming: as much as has come
       if (const MsgRec *m = findMsg(c.message)) x.ms = m->e.frames * kFrameMs;
     }
+    if (c.kind == Kind::Voice && c.outgoing && c.live) x.sounds = core->pubMic.sounds;
     out.push_back(std::move(x));
   }
   return out;
@@ -4732,43 +4213,6 @@ void markHeard(int group) {
   if (changed) bump();
 }
 
-bool talkStart(int group, uint32_t target) {
-  if (!core) return false;
-  auto fail = [](const char *why) {
-    std::lock_guard<std::mutex> l(core->mu);
-    core->error = why;
-    core->pub.error = why;
-    bump();
-    return false;
-  };
-  if (!hasGroups) return fail("NO GROUP SET");
-  {
-    std::lock_guard<std::mutex> l(core->mu);
-    if (group < 0 || group >= static_cast<int>(core->groups.size())) {
-      core->error = core->pub.error = "NO SUCH GROUP";
-      bump();
-      return false;
-    }
-    if (core->groups[group].via == Via::Net || core->pubMonitor.on) {
-      core->error = core->pub.error =
-          core->pubMonitor.on ? "THE ROOM IS MONITORING" : "NET ONLY: NO LINK YET";
-      bump();
-      return false;
-    }
-  }
-  if (audio::recording()) return fail("THE RECORDER IS ON");
-  if (audio::ringing()) return fail("AN ALARM IS RINGING");
-  if (talkWanted.exchange(true)) return true;  // already on
-  post(Cmd::Talk, group, target);
-  return true;
-}
-
-void talkStop() {
-  if (talkWanted.load()) post(Cmd::TalkStop);
-}
-
-bool talking() { return talkWanted.load(); }
-
 LastCall lastCall() {
   if (!core) return LastCall();
   std::lock_guard<std::mutex> l(core->mu);
@@ -4781,9 +4225,8 @@ bool playLast() {
   if (!core) return false;
   {
     std::lock_guard<std::mutex> l(core->mu);
-    if (!core->last.have || core->pubMonitor.on) {
-      core->error = core->pub.error =
-          core->pubMonitor.on ? "THE ROOM IS MONITORING" : "NO CALL TO PLAY";
+    if (!core->last.have) {
+      core->error = core->pub.error = "NOTHING HEARD TO PLAY";
       bump();
       return false;
     }
@@ -4810,8 +4253,12 @@ Conversation conversation(int group) {
     out.members.push_back(c.member(i).id);
     out.names.push_back(nameOf(c.member(i).id));
   }
+  if (core->pubMic.on && core->pubMic.group == group) ++out.micsOn;
+  for (const OpenMicRec &o : core->mics) {
+    if (o.group == group && o.st.on()) ++out.micsOn;
+  }
   out.ms = now - c.startMs();
-  out.quietMs = now - c.lastWordMs();
+  out.quietMs = out.micsOn ? 0 : now - c.lastWordMs();
   const time_t utc = utcNow();
   out.since = utc ? utc - static_cast<time_t>(out.ms / 1000) : 0;
   return out;
@@ -4849,8 +4296,7 @@ bool ringStart(int group, uint32_t target) {
                     : core->groups[group].via == Via::Net ? "NET ONLY: NO LINK YET"
                     : core->pubDial.state == DialState::Ringing ? "ALREADY RINGING"
                     : core->pubDial.state == DialState::Recording ? "A MESSAGE IS GOING"
-                    : core->pubMonitor.on ? "THE ROOM IS MONITORING"
-                                          : nullptr;
+                                                                  : nullptr;
   if (why) {
     core->error = core->pub.error = why;
     bump();
@@ -4893,8 +4339,6 @@ bool messageStart(int group, uint32_t target) {
       why = "NO SUCH GROUP";
     } else if (core->pubDial.state == DialState::Recording) {
       why = "A MESSAGE IS GOING";
-    } else if (core->pubMonitor.on) {
-      why = "THE ROOM IS MONITORING";
     }
     if (why) {
       core->error = core->pub.error = why;
@@ -4953,9 +4397,8 @@ bool playMessage(uint32_t id) {
   {
     std::lock_guard<std::mutex> l(core->mu);
     const MsgRec *m = findMsg(id);
-    if (!m || m->receiving || core->pubMonitor.on) {
-      core->error = core->pub.error =
-          core->pubMonitor.on ? "THE ROOM IS MONITORING" : "NO SUCH MESSAGE";
+    if (!m || m->receiving) {
+      core->error = core->pub.error = "NO SUCH MESSAGE";
       bump();
       return false;
     }
@@ -4968,7 +4411,7 @@ void ringVanish() { post(Cmd::RingVanish); }
 
 void dropMessageFrames(int nth) { dropNth = std::max(0, nth); }
 
-// --- Baby monitor ------------------------------------------------------------------------------
+// --- The mic -----------------------------------------------------------------------------------
 
 namespace {
 
@@ -4981,128 +4424,154 @@ bool refuse(const char *why) {
 
 }  // namespace
 
-bool monitorStart(int group, const std::vector<uint32_t> &listeners, int thresholdDb) {
+bool micOn(int group, uint32_t target) {
   if (!core) return false;
   if (!hasGroups) return refuse("NO GROUP SET");
-  ListenerSet set;
-  for (const uint32_t id : listeners) {
-    if (!id || id == core->id || (set.n && set.allows(id))) continue;
-    if (set.n >= ListenerSet::kMax) return refuse("TOO MANY LISTENERS");
-    set.ids[set.n++] = id;
-  }
-  if (!listeners.empty() && set.n == 0) return refuse("NO LISTENER BUT THIS BOARD");
-  const int db = snapDb(thresholdDb);
   {
     std::lock_guard<std::mutex> l(core->mu);
     const char *why = group < 0 || group >= static_cast<int>(core->groups.size())
                           ? "NO SUCH GROUP"
                       : core->groups[group].via == Via::Net ? "NET ONLY: NO LINK YET"
-                      : core->pubListen.on                  ? "LISTENING TO A ROOM"
+                      : target == core->id                  ? "THAT'S THIS BOARD"
                                                             : nullptr;
     if (why) {
       core->error = core->pub.error = why;
       bump();
       return false;
     }
-    core->monitorWant = set;
-    core->monitorWantDb = db;
+    core->micWantTarget = target;
   }
   if (audio::recording()) return refuse("THE RECORDER IS ON");
   if (audio::ringing()) return refuse("AN ALARM IS RINGING");
-  kv::saveU32(kNs, "monthr", static_cast<uint32_t>(-db + 1));
-  post(Cmd::MonitorStart, group);
+  micWanted = true;
+  post(Cmd::MicOn, group, target);
   return true;
 }
 
-void monitorStop() { post(Cmd::MonitorStop); }
+void micOff() {
+  micWanted = false;
+  post(Cmd::MicOff);
+}
 
-int monitorThreshold() {
-  if (!core) return kMonitorDefaultDb;
+bool micEnabled() { return micWanted.load(); }
+
+int micThreshold() {
+  if (!core) return kMicDefaultDb;
   std::lock_guard<std::mutex> l(core->mu);
   return core->thresholdDb;
 }
 
-void setMonitorThreshold(int db) {
+void setMicThreshold(int db) {
   if (!core) return;
   db = snapDb(db);
-  kv::saveU32(kNs, "monthr", static_cast<uint32_t>(-db + 1));
-  post(Cmd::MonitorThreshold, 0, static_cast<uint32_t>(-db));
+  kv::saveU32(kNs, "micthr", static_cast<uint32_t>(-db + 1));
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    core->thresholdDb = db;
+  }
+  post(Cmd::MicThreshold, 0, static_cast<uint32_t>(-db));
 }
 
-Monitor monitor() {
-  if (!core) return Monitor();
+Mic mic() {
+  if (!core) return Mic();
   std::lock_guard<std::mutex> l(core->mu);
-  return core->pubMonitor;
+  return core->pubMic;
 }
 
-std::vector<RoomOnAir> monitorRooms() {
-  std::vector<RoomOnAir> out;
+std::vector<OpenMic> openMics(int group) {
+  std::vector<OpenMic> out;
   if (!core) return out;
   const uint32_t now = millis();
+  const time_t utc = utcNow();
   std::lock_guard<std::mutex> l(core->mu);
-  for (const RoomSeen &r : core->rooms) {
-    if (!within(r.heardMs, now, kNoLinkMs)) continue;
-    RoomOnAir x;
-    x.group = r.group;
-    x.id = r.id;
-    x.name = nameOf(r.id);
-    x.onS = r.s.onS + (now - r.heardMs) / 1000;
-    x.thresholdDb = -static_cast<int>(r.s.threshold);
-    x.sending = r.s.flags & kStillSending;
-    x.micOn = !(r.s.flags & kStillMicOff);
-    x.battery = r.s.battery <= 100 ? r.s.battery : -1;
-    x.usb = r.s.flags & kStillUsb;
-    x.toAll = r.s.listeners.all();
-    x.heardAgoS = (now - r.heardMs) / 1000;
-    routeTo(r.group, r.id, now, x.route, x.hops, x.rssi);
-    const Listen &l = core->pubListen;
-    x.listened = l.on && l.room == r.id && l.group == r.group;
+  for (const OpenMicRec &o : core->mics) {
+    if (group >= 0 && o.group != group) continue;
+    OpenMic x;
+    x.group = o.group;
+    x.id = o.id;
+    x.name = nameOf(o.id);
+    x.target = o.target;
+    x.toMe = o.target == core->id;
+    x.forMe = forMe(o);
+    x.heard = heardHere(o);
+    x.playing = o.playedMs && now - o.playedMs < kPlayingMs;
+    x.opened = o.opened;
+    x.conversation = o.conv;
+    switch (o.st.link()) {
+      case HeardMic::Link::Sound: x.link = Link::Sound; break;
+      case HeardMic::Link::Lost: x.link = Link::Lost; break;
+      default: x.link = Link::Quiet; break;
+    }
+    x.linkMs = now - o.st.sinceMs();
+    x.onS = (now - o.st.startMs()) / 1000;
+    x.since = utc ? utc - static_cast<time_t>(x.onS) : 0;
+    x.thresholdDb = o.st.threshold();
+    x.levelDb = x.playing || x.link == Link::Sound ? o.level : levelDb(o.last.peak);
+    x.sending = o.last.flags & kMicSending;
+    x.paused = o.last.flags & kMicPaused;
+    x.alarm = o.st.alarm();
+    x.battery = o.haveStill && o.last.battery <= 100 ? o.last.battery : -1;
+    x.usb = o.last.flags & kMicUsb;
+    x.heardAgoMs = now - o.st.heardMs();
+    routeTo(o.group, o.id, now, x.route, x.hops, x.rssi);
+    x.delayMs = delayOf(o.haveStill ? o.last.preFrames : MicGate::kPreFrames);
+    x.bars = barsOf(o.hist, x.link == Link::Lost ? o.hist.top() : barNow(o.st.startMs(), now));
+    const auto &ev = o.st.events();
+    for (auto it = ev.rbegin(); it != ev.rend(); ++it) {
+      MicEvent e;
+      e.lost = it->lost;
+      e.agoS = (now - it->startMs) / 1000;
+      e.at = utc ? utc - static_cast<time_t>(e.agoS) : 0;
+      e.ms = (it->open ? now : it->endMs) - it->startMs + (it->lost ? 0 : kFrameMs);
+      e.loud = it->loud;
+      e.peakDb = it->peakDb;
+      e.live = it->open;
+      x.events.push_back(e);
+    }
+    x.frames = o.frames;
+    x.lost = o.lost;
+    x.late = o.late;
+    x.histories = o.histories;
     out.push_back(std::move(x));
   }
-  std::stable_sort(out.begin(), out.end(), [](const RoomOnAir &a, const RoomOnAir &b) {
+  std::stable_sort(out.begin(), out.end(), [](const OpenMic &a, const OpenMic &b) {
     if (a.group != b.group) return a.group < b.group;
-    return a.rssi > b.rssi;
+    return a.onS > b.onS;
   });
   return out;
 }
 
-bool listenStart(int group, uint32_t room) {
-  if (!core) return false;
-  {
-    std::lock_guard<std::mutex> l(core->mu);
-    const uint32_t now = millis();
-    bool found = false;
-    for (const RoomSeen &r : core->rooms) {
-      found = found || (r.group == group && r.id == room && within(r.heardMs, now, kNoLinkMs));
-    }
-    const char *why = core->pubMonitor.on ? "THIS BOARD IS THE ROOM"
-                      : !found            ? "NO SUCH ROOM ON AIR"
-                                          : nullptr;
-    if (why) {
-      core->error = core->pub.error = why;
-      bump();
-      return false;
-    }
+void ackLost() { post(Cmd::AckLost); }
+
+bool keepAwake() { return awake.load(); }
+
+void micVanish(bool on) { post(Cmd::MicVanish, 0, on ? 1 : 0); }
+
+void micTone(uint32_t ms, int db) { post(Cmd::MicTone, std::min(0, db), ms); }
+
+void setLongMicMs(uint32_t ms) {
+  if (!core) return;
+  core->longMicMs = ms ? ms : kLongMicMs;
+}
+
+EchoTest echoTest(float levelDb, uint32_t ms) {
+  EchoTest r;
+  if (!core || !taskHandle) {
+    r.error = "COMMS ISN'T RUNNING";
+    return r;
   }
-  post(Cmd::ListenStart, group, room);
-  return true;
-}
-
-void listenStop() { post(Cmd::ListenStop); }
-
-void listenAck() { post(Cmd::ListenAck); }
-
-Listen listenState() {
-  if (!core) return Listen();
+  echoDone = false;
+  ms = std::max<uint32_t>(300, std::min<uint32_t>(2000, ms));
+  post(Cmd::EchoTest, static_cast<int>(lroundf(levelDb)), ms, 100);
+  const uint32_t t0 = millis();
+  while (!echoDone.load() && millis() - t0 < ms + 4000) delay(20);
+  if (!echoDone.load()) {
+    r.error = "NO ANSWER FROM THE COMMS TASK";
+    return r;
+  }
   std::lock_guard<std::mutex> l(core->mu);
-  return core->pubListen;
+  return core->echo;
 }
-
-bool monitorActive() { return monitorOn.load(); }
-
-void monitorVanish(bool on) { post(Cmd::MonitorVanish, 0, on ? 1 : 0); }
-
-void monitorTone(uint32_t ms, int db) { post(Cmd::MonitorTone, std::min(0, db), ms); }
 
 bool relayForOthers() {
   if (!core) return true;
@@ -5206,9 +4675,8 @@ void setTestChannel(int channel) {
 
 void forceOff() {
   poweringOff = true;
-  if (monitorOn.load() && taskHandle) {
-    // The room's off (or the listener's "stopped") goes first, so the others know it was a
-    // power-off rather than a lost link.
+  if (micWanted.load() && taskHandle) {
+    // The mic's off goes first, so the others know it was a power-off rather than a lost link.
     powerOffSent = false;
     post(Cmd::PowerOff, 0, 0, 100);
     const uint32_t t0 = millis();
@@ -5253,111 +4721,92 @@ const char *powerText(bool usb, int battery, char *buf, size_t cap) {
 
 // In its own frame, its views on the heap: the dev tools' task has 4 KB of stack, and dump()
 // uses most of it.
-__attribute__((noinline)) void dumpMonitor(Print &out) {
+__attribute__((noinline)) void dumpMic(Print &out) {
   struct Views {
-    Monitor m;
-    Listen l;
-    std::vector<RoomOnAir> rooms;
+    Mic m;
+    std::vector<OpenMic> mics;
+    audio::DuplexStats d;
     char bars[128];
     char power[16];
   };
   std::unique_ptr<Views> v(new Views());
-  v->m = monitor();
-  v->rooms = monitorRooms();
-  v->l = listenState();
-  const Monitor &m = v->m;
+  v->m = mic();
+  v->mics = openMics(-1);
+  v->d = audio::duplexStats();
+  const Mic &m = v->m;
   if (m.on) {
-    out.printf("  monitor: ROOM in group %d for ", m.group);
-    if (m.toAll) {
-      out.print("ALL");
+    out.printf("  mic: ON in group %d to %s, session on %lu s, conversation %08lX%s, threshold "
+               "%d dBFS, ",
+               m.group, m.target ? (m.targetName.empty() ? "?" : m.targetName.c_str()) : "ALL",
+               static_cast<unsigned long>(m.ms / 1000), static_cast<unsigned long>(m.conversation),
+               m.opened ? " (opened it)" : "", m.thresholdDb);
+    if (m.capturing) {
+      out.printf("capturing, level %d dBFS, echo gate %d dBFS, %s", static_cast<int>(lroundf(m.levelDb)),
+                 static_cast<int>(lroundf(m.echoDb)), m.sending ? "SENDING" : "quiet");
     } else {
-      out.printf("%u boards", static_cast<unsigned>(m.listeners.size()));
+      out.printf("PAUSED (%s)", m.paused.c_str());
     }
-    out.printf(", on %lu s, threshold %d dBFS, mic ", static_cast<unsigned long>(m.ms / 1000),
-               m.thresholdDb);
-    if (m.micOn) {
-      out.print("on");
-    } else {
-      out.printf("OFF (%s)", m.paused.c_str());
-    }
-    out.printf(", level %d dBFS, %s%s\n", static_cast<int>(lroundf(m.levelDb)),
-               m.sending ? "SENDING" : "quiet", m.vanished ? " (vanished: nothing goes out)" : "");
-    for (const MonitorListener &l : m.listeners) {
-      out.printf("    may listen: %08lX %-16s %s", static_cast<unsigned long>(l.id),
-                 l.name.empty() ? "(no name yet)" : l.name.c_str(),
-                 l.listening ? "LISTENING" : l.ever ? "not listening" : "never listened");
-      if (l.ever) out.printf(", said so %lu s ago", static_cast<unsigned long>(l.heardAgoS));
-      out.printf(", %s", routeName(l.route));
-      if (l.route == Route::Air) out.printf(" %d dBm", l.rssi);
-      out.println();
-    }
+    out.println(m.vanished ? " (vanished: nothing goes out)" : "");
     barsText(m.bars, 10, v->bars, sizeof v->bars);
-    out.printf("    sent %lu frames in %lu sounds, %lu still-heres, %lu histories, %lu talk backs; "
-               "bars (last 10):%s\n",
-               static_cast<unsigned long>(m.framesSent), static_cast<unsigned long>(m.sounds),
-               static_cast<unsigned long>(m.stillHeres), static_cast<unsigned long>(m.histories),
-               static_cast<unsigned long>(m.talkBacks), v->bars);
+    out.printf("    sent %lu frames (%lu as echo) in %lu sounds, %lu still-heres, %lu histories; "
+               "delay to a speaker about %lu ms; bars (last 10):%s\n",
+               static_cast<unsigned long>(m.framesSent), static_cast<unsigned long>(m.framesMuted),
+               static_cast<unsigned long>(m.sounds), static_cast<unsigned long>(m.stillHeres),
+               static_cast<unsigned long>(m.histories), static_cast<unsigned long>(m.delayMs),
+               v->bars);
+    if (m.playFrames) {
+      out.printf("    while the speaker played: %lu frames, the loudest %d dBFS against an echo gate "
+                 "of %d; %lu over the gate\n",
+                 static_cast<unsigned long>(m.playFrames), static_cast<int>(lroundf(m.playPeakDb)),
+                 static_cast<int>(lroundf(m.playPeakGateDb)),
+                 static_cast<unsigned long>(m.playOver));
+    }
     int shown = 0;
-    for (const MonitorSound &snd : m.sent) {
+    for (const MicSound &snd : m.sent) {
       if (++shown > 6) break;
-      out.printf("    sound %lu s ago, %lu ms, peak %d dBFS (%s), to %d listening%s\n",
+      out.printf("    sound %lu s ago, %lu ms, peak %d dBFS (%s), %lu frames as echo%s\n",
                  static_cast<unsigned long>(snd.agoS), static_cast<unsigned long>(snd.ms),
-                 static_cast<int>(lroundf(snd.peakDb)), snd.loud ? "LOUD" : "soft", snd.listeners,
-                 snd.live ? " (going)" : "");
+                 static_cast<int>(lroundf(snd.peakDb)), snd.loud ? "LOUD" : "soft",
+                 static_cast<unsigned long>(snd.muted), snd.live ? " (going)" : "");
     }
   } else {
-    out.printf("  monitor: this board isn't a room (threshold %d dBFS)\n", m.thresholdDb);
+    out.printf("  mic: off (threshold %d dBFS)\n", m.thresholdDb);
   }
-  for (const RoomOnAir &r : v->rooms) {
-    out.printf("  room on air: %08lX %s in group %d, on %lu s, threshold %d dBFS, %s, mic %s, ",
-               static_cast<unsigned long>(r.id), r.name.empty() ? "?" : r.name.c_str(), r.group,
-               static_cast<unsigned long>(r.onS), r.thresholdDb, r.sending ? "SENDING" : "quiet",
-               r.micOn ? "on" : "OFF");
-    out.printf("%s, heard %lu s ago, %s", powerText(r.usb, r.battery, v->power, sizeof v->power),
-               static_cast<unsigned long>(r.heardAgoS), routeName(r.route));
-    if (r.route == Route::Air) out.printf(" %d dBm", r.rssi);
-    out.printf("%s%s\n", r.toAll ? ", for all" : ", for a list with this board",
-               r.listened ? " [listening]" : "");
-  }
-  const Listen &l = v->l;
-  if (l.link == Link::Off) {
-    out.println("  listening to a room: no");
-    return;
-  }
-  static const char *const kLinks[] = {"OFF", "QUIET", "SOUND", "NO LINK", "STOPPED"};
-  out.printf("  listening to %08lX %s in group %d: %s for %lu s%s, listening %lu s, ",
-             static_cast<unsigned long>(l.room), l.roomName.empty() ? "?" : l.roomName.c_str(),
-             l.group, kLinks[static_cast<int>(l.link)], static_cast<unsigned long>(l.linkMs / 1000),
-             l.alarm ? " (ALARM)" : l.link == Link::NoLink ? " (alarm silenced)" : "",
-             static_cast<unsigned long>(l.ms / 1000));
-  out.printf("level %d dBFS (threshold %d), room heard %lu ms ago, %s",
-             static_cast<int>(lroundf(l.levelDb)), l.thresholdDb,
-             static_cast<unsigned long>(l.heardAgoMs), routeName(l.route));
-  if (l.route == Route::Air) out.printf(" %d dBm", l.rssi);
-  out.printf(", room %s, mic %s, delay %lu ms%s%s\n",
-             powerText(l.roomUsb, l.roomBattery, v->power, sizeof v->power),
-             l.roomMicOn ? "on" : "OFF", static_cast<unsigned long>(l.delayMs),
-             l.playing ? ", PLAYING" : "",
-             l.link == Link::Stopped ? (l.roomPoweredOff ? " (the room powered off)"
-                                                         : " (the room stopped)")
-                                     : "");
-  barsText(l.bars, 10, v->bars, sizeof v->bars);
-  // Integers only: float formatting takes more stack than the dev tools' task has left here.
-  const int drainTenths = static_cast<int>(lroundf(l.drainPctPerHour * 10));
-  out.printf("    frames %lu, lost %lu, late %lu, histories %lu; this board %s, "
-             "drain %s%d.%d %%/h, lasts %d min; bars (last 10):%s\n",
-             static_cast<unsigned long>(l.frames), static_cast<unsigned long>(l.lost),
-             static_cast<unsigned long>(l.late), static_cast<unsigned long>(l.histories),
-             powerText(l.onUsb, l.battery, v->power, sizeof v->power), drainTenths < 0 ? "-" : "",
-             abs(drainTenths) / 10, abs(drainTenths) % 10, l.lastsMin, v->bars);
-  int shown = 0;
-  for (const MonitorEvent &e : l.events) {
-    if (++shown > 8) break;
-    out.printf("    %s %lu s ago, %lu ms",
-               e.noLink ? "NO LINK" : e.loud ? "SOUND LOUD" : "SOUND SOFT",
-               static_cast<unsigned long>(e.agoS), static_cast<unsigned long>(e.ms));
-    if (!e.noLink) out.printf(", peak %d dBFS", static_cast<int>(lroundf(e.peakDb)));
-    out.println(e.live ? " (going)" : "");
+  out.printf("  duplex: %s, amp %s, %lu blocks, %lu underruns, %lu mic blocks dropped, speaker %d "
+             "dBFS, queued %d ms, echo delay %d blocks, coupling %d dB; the audio task's stack never "
+             "used: %lu bytes\n",
+             v->d.on ? "ON" : "off", v->d.ampOn ? "on" : "off",
+             static_cast<unsigned long>(v->d.blocks), static_cast<unsigned long>(v->d.underruns),
+             static_cast<unsigned long>(v->d.micDropped), static_cast<int>(lroundf(v->d.speakerDb)),
+             static_cast<int>(lroundf(v->d.queuedMs)), v->d.loopbackBlocks, static_cast<int>(lroundf(core->couplingDb)),
+             static_cast<unsigned long>(v->d.stackFree));
+  static const char *const kLinks[] = {"QUIET", "SOUND", "LOST"};
+  for (const OpenMic &o : v->mics) {
+    out.printf("  mic on: %08lX %s in group %d to %s, %s for %lu s%s, on %lu s, threshold %d, level "
+               "%d dBFS, %s%s%s",
+               static_cast<unsigned long>(o.id), o.name.empty() ? "?" : o.name.c_str(), o.group,
+               o.target ? (o.toMe ? "THIS BOARD" : "another board") : "ALL",
+               kLinks[static_cast<int>(o.link)], static_cast<unsigned long>(o.linkMs / 1000),
+               o.alarm ? " (ALARM)" : o.link == Link::Lost ? " (alarm silenced or not for here)" : "",
+               static_cast<unsigned long>(o.onS), o.thresholdDb, static_cast<int>(lroundf(o.levelDb)),
+               o.heard ? "HEARD here" : "not heard here", o.playing ? ", PLAYING" : "",
+               o.paused ? ", its mic paused" : "");
+    out.printf(", %s, heard %lu ms ago, %s", powerText(o.usb, o.battery, v->power, sizeof v->power),
+               static_cast<unsigned long>(o.heardAgoMs), routeName(o.route));
+    if (o.route == Route::Air) out.printf(" %d dBm", o.rssi);
+    out.printf(", delay %lu ms\n", static_cast<unsigned long>(o.delayMs));
+    barsText(o.bars, 10, v->bars, sizeof v->bars);
+    out.printf("    frames %lu, lost %lu, late %lu, histories %lu; bars (last 10):%s\n",
+               static_cast<unsigned long>(o.frames), static_cast<unsigned long>(o.lost),
+               static_cast<unsigned long>(o.late), static_cast<unsigned long>(o.histories), v->bars);
+    int shown = 0;
+    for (const MicEvent &e : o.events) {
+      if (++shown > 6) break;
+      out.printf("    %s %lu s ago, %lu ms", e.lost ? "LOST" : e.loud ? "SOUND LOUD" : "SOUND SOFT",
+                 static_cast<unsigned long>(e.agoS), static_cast<unsigned long>(e.ms));
+      if (!e.lost) out.printf(", peak %d dBFS", static_cast<int>(lroundf(e.peakDb)));
+      out.println(e.live ? " (going)" : "");
+    }
   }
 }
 
@@ -5369,7 +4818,7 @@ void dump(Print &out) {
     return;
   }
   const Status s = status();
-  static const char *const kStates[] = {"OFF", "QUIET", "TALKING", "HEARING"};
+  static const char *const kStates[] = {"OFF", "QUIET", "MIC ON", "HEARING"};
   uint8_t primary = 0;
   wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
   const bool chOk = esp_wifi_get_channel(&primary, &second) == ESP_OK;
@@ -5393,12 +4842,13 @@ void dump(Print &out) {
              static_cast<unsigned long>(s.incoming), static_cast<unsigned long>(s.ringsSeen),
              static_cast<unsigned long>(s.conversationsSeen), s.conversationGroup,
              static_cast<unsigned long>(s.messagesIn));
-  if (s.state == State::Talking || s.state == State::Hearing) {
-    out.printf("  %s %s%s, %lu ms, level %.0f dBFS\n",
-               s.state == State::Talking ? "talking to" : "hearing",
-               s.peerName.empty() ? (s.peer ? "?" : "all") : s.peerName.c_str(),
-               s.replay ? " (play last)" : "", static_cast<unsigned long>(s.ms),
-               static_cast<double>(s.levelDb));
+  if (s.hearing || s.replay) {
+    out.printf("  hearing %d voices%s, the loudest %s, level %d dBFS%s\n", s.voices,
+               s.replay ? (s.playingMessage ? " and a message" : " and PLAY LAST") : "",
+               s.peerName.empty() ? "?" : s.peerName.c_str(),
+               static_cast<int>(lroundf(s.playLevelDb)), s.alarm ? "; LOST'S ALARM" : "");
+  } else if (s.alarm) {
+    out.println("  LOST's alarm sounds");
   }
   if (!s.error.empty()) out.printf("  last error: %s\n", s.error.c_str());
   const std::vector<Group> gs = groups();
@@ -5420,7 +4870,7 @@ void dump(Print &out) {
       }
       out.printf(", heard %lu s ago, flags%s%s%s, battery %d\n",
                  static_cast<unsigned long>(b.heardAgoS), b.flags & kFlagUsb ? " USB" : "",
-                 b.flags & kFlagRelay ? " RELAY" : "", b.flags & kFlagRoom ? " ROOM" : "",
+                 b.flags & kFlagRelay ? " RELAY" : "", b.flags & kFlagMic ? " MIC" : "",
                  b.battery);
     }
     const Conversation cv = conversation(static_cast<int>(i));
@@ -5433,9 +4883,9 @@ void dump(Print &out) {
         snprintf(id, sizeof id, "%08lX", static_cast<unsigned long>(cv.members[k]));
         who += (who.empty() ? "" : " + ") + (cv.names[k].empty() ? std::string(id) : cv.names[k]);
       }
-      out.printf("    conversation %08lX on %lu s, quiet %lu s: %s; this board %s\n",
+      out.printf("    conversation %08lX on %lu s, quiet %lu s, %d mics on: %s; this board %s\n",
                  static_cast<unsigned long>(cv.id), static_cast<unsigned long>(cv.ms / 1000),
-                 static_cast<unsigned long>(cv.quietMs / 1000), who.c_str(),
+                 static_cast<unsigned long>(cv.quietMs / 1000), cv.micsOn, who.c_str(),
                  cv.in ? "IN it" : cv.left ? "LEFT it" : "not in it");
     }
   }
@@ -5512,11 +4962,11 @@ void dump(Print &out) {
       out.printf("  dropping every %d message frames that come (!commsdropmsg)\n", dropNth.load());
     }
   }
-  dumpMonitor(out);
+  dumpMic(out);
   const std::vector<Call> cs = calls(-1, 8);
   if (!cs.empty()) out.println("  calls (newest first):");
   for (const Call &c : cs) {
-    static const char *const kKinds[] = {"call", "RING", "MESSAGE"};
+    static const char *const kKinds[] = {"MIC", "RING", "MESSAGE"};
     out.printf("    %lu s ago, group %d, %s %s -> %s, %lu ms%s", static_cast<unsigned long>(c.agoS),
                c.group, kKinds[static_cast<int>(c.kind)],
                c.outgoing ? "YOU" : (c.fromName.empty() ? "?" : c.fromName.c_str()),
@@ -5538,18 +4988,19 @@ void dump(Print &out) {
     }
     if (c.conversation) out.printf(", conversation %08lX", static_cast<unsigned long>(c.conversation));
     if (c.outgoing) {
-      out.printf(", %d heard\n", c.heardBy);
+      out.printf(", %lu sounds\n", static_cast<unsigned long>(c.sounds));
     } else {
-      out.printf(", %s%s%s, %s, %s, %lu frames lost\n", c.hops ? "relayed " : "air ",
+      out.printf(", %s%s%s, %lu sounds, %s, %s, %lu frames lost%s\n", c.hops ? "relayed " : "air ",
                  c.hops ? std::to_string(c.hops).c_str() : std::to_string(c.rssi).c_str(),
-                 c.hops ? " hops" : " dBm", c.played ? "played" : "not played",
-                 c.heard ? "heard" : "unheard", static_cast<unsigned long>(c.lost));
+                 c.hops ? " hops" : " dBm", static_cast<unsigned long>(c.sounds),
+                 c.played ? "played" : "not played", c.heard ? "heard" : "unheard",
+                 static_cast<unsigned long>(c.lost), c.linkLost ? ", LOST on the way" : "");
     }
   }
   const LastCall lc = lastCall();
   if (lc.have) {
-    out.printf("  last call kept: %s, %lu ms\n", lc.fromName.c_str(),
-               static_cast<unsigned long>(lc.ms));
+    out.printf("  heard and kept for PLAY LAST: %lu ms, the last from %s\n",
+               static_cast<unsigned long>(lc.ms), lc.fromName.empty() ? "?" : lc.fromName.c_str());
   }
   out.printf("  sent %lu (refused %lu, tx failed %lu), received %lu, handled %lu, relayed %lu "
              "(%lu of them unread, for groups not this board's)\n",
