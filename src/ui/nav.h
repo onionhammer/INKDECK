@@ -16,8 +16,9 @@
 //            half a second, the agent sheet rises over the lower half; let go to send. Not while
 //            the lock is on the stack, under an off face, or over a screen that has the mic or
 //            the speaker (allowsTalk()). While music or a podcast plays, it raises the player
-//            sheet instead (apps/music.h). On the Comms screens and the call sheet it talks to
-//            other boards instead (talkTo(), apps/comms_ui.h; in a build with INKDECK_COMMS).
+//            sheet instead (apps/music.h). On the Comms screens and sheets it talks to other
+//            boards instead (talkTo(), apps/comms_ui.h; in a build with INKDECK_COMMS): on the
+//            dialer's ringing sheet it records a message, on the ring sheet it answers first.
 //            Screens never see it.
 //
 // Screens draw only their body. For portrait screens with chrome() the navigator draws the
@@ -47,6 +48,9 @@ struct TalkTo {
   bool comms = false;   // to boards over the radio (apps/comms_ui.h), not the agent
   int group = 0;        // with comms: the group (an index into comms::groups())
   uint32_t board = 0;   // with comms: the board talked to; 0 for all of the group
+  bool message = false;  // with comms: records a message for the ring not answered (the
+                         // dialer's ringing sheet) instead of talking
+  bool answer = false;   // with comms: answers the ring first, then talks (the ring sheet)
 };
 
 class Screen {
@@ -171,6 +175,9 @@ void onPowerKey(void (*handler)());
 void onTalkKey(void (*handler)(bool held));
 // Questions the agent has waiting, for the status bar's ?n (apps/agent.h); none without one.
 void onAsks(int (*count)());
+// The boards in a conversation this board isn't in, for the status bar's speech bubble after the
+// ?n (apps/comms_ui.h); none without one.
+void onConversation(int (*count)());
 
 }  // namespace nav
 }  // namespace ui

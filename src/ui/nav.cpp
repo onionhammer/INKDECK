@@ -26,6 +26,7 @@ std::string drawnStatus;  // clock + battery as last drawn, to spot when they ch
 void (*powerKeyHandler)() = nullptr;
 void (*talkKeyHandler)(bool) = nullptr;
 int (*asksCount)() = nullptr;
+int (*conversationCount)() = nullptr;
 bool dialSwapped = false;  // the swap orientDial() chose at the dial's press, kept for its repeats
 std::atomic<bool> talkOk{false};  // talkAllowed(), worked out when the stack changes
 std::mutex talkToLock;            // guards talkTo
@@ -80,6 +81,7 @@ StatusInfo statusFor(const Screen &s) {
     case audio::State::Stopped: break;
   }
   info.asks = asksCount ? asksCount() : 0;
+  info.conversation = conversationCount ? conversationCount() : 0;
   if (!s.statusClock()) {
     info.clock.clear();
   } else if (rtc::timeValid()) {
@@ -98,7 +100,8 @@ StatusInfo statusFor(const Screen &s) {
 std::string signature(const StatusInfo &info) {
   return info.clock + "|" + std::to_string(info.battery) + "|" + (info.usb ? "u" : "") +
          (info.wifi ? "w" : "") + std::to_string(static_cast<int>(info.playback)) + "|" +
-         info.temp + "|" + std::to_string(info.asks);
+         info.temp + "|" + std::to_string(info.asks) + "|" +
+         std::to_string(info.conversation);
 }
 
 // How many screens home() keeps: the root, or everything up to the topmost lock screen.
@@ -294,5 +297,7 @@ void onPowerKey(void (*handler)()) { powerKeyHandler = handler; }
 void onTalkKey(void (*handler)(bool held)) { talkKeyHandler = handler; }
 
 void onAsks(int (*count)()) { asksCount = count; }
+
+void onConversation(int (*count)()) { conversationCount = count; }
 
 }  // namespace ui::nav

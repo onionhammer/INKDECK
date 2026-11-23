@@ -225,6 +225,8 @@ struct Call {
   uint32_t lost = 0;    // incoming: 20 ms frames that never came (played as silence)
   uint32_t conversation = 0;  // Voice: the conversation it was in (0: none, an older board's)
   bool answered = false;  // Ring: someone answered (incoming: this board, or another)
+  bool missed = false;    // Ring, incoming: it rang out here unanswered and not ignored (the
+                          // dialer gave up, rang 60 s, or went silent); stays after markHeard()
   bool complete = true;   // Message: every frame came
   uint32_t message = 0;   // Message: its id, for playMessage()
 };

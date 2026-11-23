@@ -45,6 +45,28 @@ int drawPlaybackMark(Canvas &c, int x, int centerY, Playback playback) {
   return kW;
 }
 
+int conversationMarkWidth(int count) {
+  if (count <= 0) return 0;
+  return 5 + 15 + 4 + textWidth(style::kStatusTag, std::to_string(count)) + 5;
+}
+
+int drawConversationMark(Canvas &c, int x, int centerY, int count) {
+  const int w = conversationMarkWidth(count);
+  if (w == 0) return 0;
+  constexpr int kH = 20;
+  fill(c, {x, centerY - kH / 2, w, kH}, kInk);
+  // A speech bubble in paper with two lines of ink "words", its tail down on the left.
+  const Rect bubble{x + 5, centerY - 7, 15, 10};
+  fill(c, bubble, kPaper);
+  c.fillTriangle(bubble.x + 3, bubble.bottom() - 1, bubble.x + 3, bubble.bottom() + 4,
+                 bubble.x + 8, bubble.bottom() - 1, kPaper);
+  fill(c, {bubble.x + 3, bubble.y + 3, 9, 1}, kInk);
+  fill(c, {bubble.x + 3, bubble.y + 6, 6, 1}, kInk);
+  drawText(c, bubble.right() + 4, baselineCentered(style::kStatusTag, centerY - kH / 2, kH),
+           std::to_string(count), style::kStatusTag, kPaper);
+  return w;
+}
+
 void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   const Rect band{r.x, r.y, r.w, r.h - kRule};
   hrule(c, r.x, band.bottom(), r.w);
@@ -55,7 +77,8 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   drawText(c, {band.x + 12, band.y, tagW - 24, band.h}, info.tag, style::kStatusTag, Align::Left,
            kPaper);
 
-  // Right block: [▶/‖] [WIFI] [temp] [battery glyph + %] [clock], after a 3 px rule.
+  // Right block: [▶/‖] [?n] [bubble n] [WIFI] [temp] [battery glyph + %] [clock], after a 3 px
+  // rule.
   constexpr int kGap = 14;
   constexpr int kBatteryGlyphW = 28 + 6;
   constexpr int kPlaybackW = 22;
@@ -74,6 +97,7 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   if (info.playback != Playback::None) blockW += kPlaybackW + kGap;
   const std::string asks = info.asks > 0 ? "?" + std::to_string(info.asks) : std::string();
   if (!asks.empty()) blockW += tagWidth(asks, style::kStatusTag, 5) + kGap;
+  if (info.conversation > 0) blockW += conversationMarkWidth(info.conversation) + kGap;
   const int blockX = band.right() - std::max(blockW, 0) - 12;
   vrule(c, blockX - 12 - kRule, band.y, band.h);
   const int baseline = baselineCentered(style::kStatus, band.y, band.h);
@@ -83,6 +107,9 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   }
   if (!asks.empty()) {
     x += drawTag(c, x, band.centerY(), 20, asks, style::kStatusTag, TagKind::Inverted, 5) + kGap;
+  }
+  if (info.conversation > 0) {
+    x += drawConversationMark(c, x, band.centerY(), info.conversation) + kGap;
   }
   for (int i = 0; i < 4; ++i) {
     if (texts[i].empty()) continue;

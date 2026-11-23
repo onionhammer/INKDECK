@@ -55,7 +55,7 @@ void edge(bool down) {
 #endif
   holdTalks = hold;
 #if INKDECK_COMMS
-  if (hold == Hold::Comms) commsTalk(to.group, to.board);
+  if (hold == Hold::Comms) commsTalk(to);  // or a message, or an answer (the comms sheets)
 #endif
 #if INKDECK_AGENT
   if (hold == Hold::Agent) agent::talkStart();  // with no session, opens one

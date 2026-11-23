@@ -20,8 +20,8 @@ constexpr int kPadX = 14;  // side padding of chrome bands and list rows
 constexpr int kRowH = 34;  // single-line list row
 constexpr int kRowTallH = 48;  // two-line list row
 
-// --- Status bar: inverted module tag, context text, then [▶/‖] [?n] [WIFI] [temp] battery % and
-// clock.
+// --- Status bar: inverted module tag, context text, then [▶/‖] [?n] [bubble n] [WIFI] [temp]
+// battery % and clock.
 enum class Playback : uint8_t { None, Playing, Paused };
 struct StatusInfo {
   std::string tag;      // "01 READER"
@@ -34,11 +34,17 @@ struct StatusInfo {
   bool wifi = false;    // the radio is on: "WIFI" before the rest
   Playback playback = Playback::None;  // music or a podcast: an inverted ▶ or ‖ first
   int asks = 0;  // agent questions waiting: an inverted ?n after the ▶ (issue #52)
+  int conversation = 0;  // boards in a conversation this board isn't in: an inverted speech
+                         // bubble with the count after the ?n (issue #66)
 };
 void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info);
 int drawBattery(Canvas &c, int x, int centerY, int percent);  // returns its width
 // The inverted ▶ or ‖ box, 22 x 20, left edge at x; returns its width (0 for None).
 int drawPlaybackMark(Canvas &c, int x, int centerY, Playback playback);
+// The inverted speech bubble and count (a conversation on), 20 px tall, left edge at x; returns
+// its width (0 for a count of 0).
+int drawConversationMark(Canvas &c, int x, int centerY, int count);
+int conversationMarkWidth(int count);
 
 // --- Section header: "// LABEL" on the left, a count or address on the right, rule below.
 struct SectionOptions {

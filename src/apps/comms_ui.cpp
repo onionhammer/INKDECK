@@ -24,20 +24,35 @@ namespace {
 
 constexpr uint32_t kErrorShowMs = 8000;  // a failed talk's notice
 std::atomic<uint32_t> attemptMs{0};      // the last talk or PLAY LAST from these screens
+std::atomic<uint32_t> attemptGen{0};     // comms::generation() then
 
 constexpr ui::TextStyle kLogText{&ui::fonts::kMono14Bold, 0};    // the log's who → whom
 constexpr ui::TextStyle kLogTime{&ui::fonts::kMono14Medium, 0};  // its time
 
 }  // namespace
 
-void noteAttempt() { attemptMs = millis() | 1; }
+void noteAttempt() {
+  attemptGen = comms::generation();
+  attemptMs = millis() | 1;
+}
 
 std::string attemptError() {
   const uint32_t at = attemptMs.load();
   if (!at || millis() - at > kErrorShowMs || comms::talking()) return {};
+  // Not before the engine has acted on it (it bumps the generation when it fails, and clears
+  // the error when it doesn't): until then status().error is an older attempt's.
+  if (comms::generation() == attemptGen.load()) return {};
   const comms::Status s = comms::status();
   if (s.state == comms::State::Talking || s.state == comms::State::Hearing) return {};
   return s.error;
+}
+
+bool playing() { return comms::status().replay; }
+
+bool stopIfPlaying() {
+  if (!playing()) return false;
+  comms::stopPlaying();
+  return true;
 }
 
 const char *stateWord(comms::State s) {
@@ -83,11 +98,20 @@ std::string noteText(const comms::Call &c) {
   // Rings and messages share the log with calls (comms.h, Kind).
   if (c.kind == comms::Kind::Ring) {
     if (c.live) return "RINGING";
-    return c.answered ? "RANG" : c.outgoing ? "NO ANSWER" : "MISSED";
+    if (c.answered) return "ANSWERED";
+    if (c.outgoing) return "NO ANSWER";
+    return c.missed ? "MISSED" : "RANG";  // RANG: ignored here, or a message instead
   }
   if (c.kind == comms::Kind::Message) {
+    if (c.outgoing) {
+      if (c.live) return "RECORDING";
+      return c.heardBy > 0 ? "MSG" + std::string(" ") + ui::glyph::kDot + " " +
+                                 std::to_string(c.heardBy) + " GOT IT"
+                           : "MSG SENT";
+    }
     if (c.live) return "MSG COMING";
-    return c.outgoing || c.played ? "MSG" : c.complete ? "MSG NEW" : "MSG PART";
+    if (!c.played) return "NEW MSG";
+    return c.complete ? "MSG" : "MSG PART";
   }
   if (c.live) return "LIVE";
   if (c.outgoing) return c.heardBy > 0 ? std::to_string(c.heardBy) + " HEARD" : "";
@@ -99,6 +123,13 @@ std::string noteText(const comms::Call &c) {
   return "";
 }
 
+bool noteNeedsYou(const comms::Call &c) {
+  if (c.outgoing || c.live) return false;
+  if (c.kind == comms::Kind::Ring) return c.missed && !c.heard;
+  if (c.kind == comms::Kind::Message) return !c.played;
+  return false;
+}
+
 std::string countText(const std::vector<comms::Call> &calls) {
   if (calls.empty()) return {};
   bool today = rtc::timeValid();
@@ -106,6 +137,32 @@ std::string countText(const std::vector<comms::Call> &calls) {
   for (const comms::Call &c : calls) today = today && c.at && timeutil::sameLocalDay(c.at, now);
   const std::string n = std::to_string(calls.size());
   return today ? "TODAY \xC2\xB7 " + n : n + (calls.size() == 1 ? " CALL" : " CALLS");
+}
+
+std::string boardsText(int n) { return std::to_string(n) + (n == 1 ? " BOARD" : " BOARDS"); }
+
+std::string membersText(const comms::Conversation &c) {
+  std::string s = c.in ? "YOU" : "";
+  for (size_t i = 0; i < c.members.size(); ++i) {
+    if (!s.empty()) s += " + ";
+    s += boardName(i < c.names.size() ? c.names[i] : std::string(), c.members[i]);
+  }
+  return s;
+}
+
+std::string forText(uint32_t ms) {
+  const uint32_t m = ms / 60000;
+  if (m == 0) return "JUST BEGUN";
+  if (m < 60) return "FOR " + std::to_string(m) + " MIN";
+  char buf[24];
+  snprintf(buf, sizeof buf, "FOR %lu H %02lu", static_cast<unsigned long>(m / 60),
+           static_cast<unsigned long>(m % 60));
+  return buf;
+}
+
+std::string groupName(int group) {
+  const std::vector<comms::Group> gs = comms::groups();
+  return group >= 0 && group < static_cast<int>(gs.size()) ? gs[group].name : std::string();
 }
 
 void drawCallRow(ui::Canvas &c, const ui::Rect &r, const comms::Call &call, bool noteColumn) {
@@ -120,7 +177,11 @@ void drawCallRow(ui::Canvas &c, const ui::Rect &r, const comms::Call &call, bool
   std::string who = whoText(call);
   const std::string note = noteText(call);
   if (!note.empty()) {
-    if (noteColumn) {
+    if (noteColumn && noteNeedsYou(call)) {  // a missed ring, a message not played: inverted
+      const int w = tagWidth(note, style::kCap, 4);
+      drawTag(c, right - w, band.centerY(), 19, note, style::kCap, TagKind::Inverted, 4);
+      right -= w + 8;
+    } else if (noteColumn) {
       const int w = textWidth(style::kKey, note);
       drawText(c, {right - w, band.y, w, band.h}, note, style::kKey);
       right -= w + 8;
@@ -131,14 +192,84 @@ void drawCallRow(ui::Canvas &c, const ui::Rect &r, const comms::Call &call, bool
   drawText(c, {band.x + kTimeW, band.y, right - band.x - kTimeW, band.h}, who, kLogText);
 }
 
-}  // namespace commsui
-
-void commsTalk(int group, uint32_t board) {
-  commsui::noteAttempt();
-  comms::talkStart(group, board);
+void drawStateRow(ui::Canvas &c, const ui::Rect &row, const std::string &word, int filled,
+                  const std::string &right) {
+  using namespace ui;
+  dashedH(c, row.x, row.bottom() - 1, row.w);
+  const int base = baselineCentered(style::kReading, row.y, row.h - 1);
+  const int end = drawText(c, row.x + kPadX, base, word, style::kReading);
+  if (filled >= 0) {
+    const int meterX = std::max(row.x + kPadX + 120 + 14, end + 14);
+    drawSegments(c, {meterX, row.y + (row.h - 16) / 2, row.right() - kPadX - meterX, 16}, 20,
+                 filled, 2);
+  } else if (!right.empty()) {
+    drawText(c, row.right() - kPadX - textWidth(style::kReading, right), base, right,
+             style::kReading);
+  }
 }
 
-void commsTalkStop() { comms::talkStop(); }
+int drawNameBlock(ui::Canvas &c, const ui::Rect &r, const std::string &label,
+                  const std::string &name, const std::string &line, const std::string &line2) {
+  using namespace ui;
+  const int x = r.x + kPadX, w = r.w - 2 * kPadX;
+  int y = r.y + 14;
+  drawText(c, {x, y, w, 17}, label, style::kKey);
+  y += 17 + 6;
+  drawText(c, {x, y, w, 38}, name, style::kTitle);
+  y += 38 + 6;
+  drawText(c, {x, y, w, 17}, line, style::kLabel);
+  y += 17;
+  if (!line2.empty()) {
+    y += 4;
+    drawText(c, {x, y, w, 17}, line2, style::kLabel);
+    y += 17;
+  }
+  return y + 12;
+}
+
+void drawEarlier(ui::Canvas &c, ui::Rect r, const std::vector<comms::Call> &calls,
+                 const std::string &foot) {
+  using namespace ui;
+  constexpr int kEarlierRowH = 30;
+  hrule(c, r.x, r.y, r.w);
+  r.takeTop(kRule);
+  drawSectionHeader(c, r.takeTop(kSectionH), "EARLIER", calls.empty() ? "NONE" : countText(calls));
+  const Rect f = r.takeBottom(8 + 17);
+  for (const comms::Call &k : calls) {
+    if (r.h < kEarlierRowH + 6) break;  // a gap over the foot
+    drawCallRow(c, r.takeTop(kEarlierRowH), k, false);
+  }
+  drawText(c, {f.x + kPadX, f.y, f.w - 2 * kPadX, 17}, foot, style::kLabel);
+}
+
+}  // namespace commsui
+
+namespace {
+// What the last HOLD BOOT began, so its release ends that: a talk, or a message (the ringing
+// sheet). The input timer calls both ends; the UI task may undo a hold (hold_boot.cpp).
+enum class Held : uint8_t { None, Talk, Message };
+std::atomic<Held> held{Held::None};
+}  // namespace
+
+void commsTalk(const ui::TalkTo &to) {
+  commsui::noteAttempt();
+  if (to.message) {  // the ring nobody answered: the message goes to whom it rang
+    held = Held::Message;
+    comms::messageStart();
+    return;
+  }
+  if (to.answer) comms::answer();  // the ring sheet: answered, then the talk goes into it
+  held = Held::Talk;
+  comms::talkStart(to.group, to.board);
+}
+
+void commsTalkStop() {
+  switch (held.exchange(Held::None)) {
+    case Held::Message: comms::messageSend(); break;
+    case Held::Talk: comms::talkStop(); break;
+    case Held::None: break;
+  }
+}
 
 namespace {
 
@@ -198,10 +329,11 @@ std::string routeLine(const comms::Board &b) {
   return s;
 }
 
-// "7F3A · 3 ON AIR · 1 THROUGH INKHARNESS", with "1 NEW CALL" when it has calls not heard.
+// "7F3A · 3 ON AIR · 1 THROUGH INKHARNESS", with "1 NEW" when it has calls, missed rings or
+// messages not heard.
 std::string groupLine(const comms::Group &g) {
   std::string s = g.tag;
-  if (g.unheard > 0) s += kDot + plural(g.unheard, "NEW CALL", "NEW CALLS");
+  if (g.unheard > 0) s += kDot + std::to_string(g.unheard) + " NEW";
   if (g.via != comms::Via::Net) {
     s += kDot + (g.onAir ? std::to_string(g.onAir) : "NONE") + " ON AIR";
   }
@@ -446,7 +578,144 @@ class GroupsSheet : public ui::Screen {
   uint32_t gen_ = 0;
 };
 
+// --- The Messages sheet -------------------------------------------------------------------------
+
+// The group's messages, newest first: ● plays one (or stops the one playing), BOOT closes (or
+// stops). Over the talk screen, grown to fit like the Groups sheet.
+class MessagesSheet : public ui::Screen {
+ public:
+  explicit MessagesSheet(int group) : group_(group) {
+    load();
+    cursor_.reset(static_cast<int>(msgs_.size()));
+  }
+
+  std::string tag() const override { return {}; }  // the Comms screen's chrome
+  bool overlay() const override { return true; }
+  int hints(ui::Hint *out) const override {
+    int n = 0;
+    if (!msgs_.empty()) {
+      out[n++] = {ui::glyph::kDial, "MOVE"};
+      const comms::Message &m = msgs_[cursor_.cursor()];
+      if (!m.receiving) out[n++] = {ui::glyph::kPress, m.id == playingId_ ? "STOP" : "PLAY"};
+    }
+    out[n++] = {"BOOT", playingId_ ? "STOP" : "CLOSE"};
+    return n;
+  }
+
+  bool onKey(Key key) override {
+    switch (key) {
+      case Key::Up: return cursor_.move(-1, true);
+      case Key::Down: return cursor_.move(+1, true);
+      case Key::Select: {
+        if (msgs_.empty()) return false;
+        const comms::Message &m = msgs_[cursor_.cursor()];
+        if (m.receiving) return true;  // still coming
+        if (m.id == playingId_) {
+          comms::stopPlaying();
+          return true;
+        }
+        if (playing()) comms::stopPlaying();  // the task stops it before it plays this one
+        noteAttempt();
+        comms::playMessage(m.id);
+        return true;
+      }
+      case Key::Back: return stopIfPlaying();  // else it closes
+      default: return false;
+    }
+  }
+
+  bool onTick() override {
+    if (comms::generation() == gen_ && attemptError() == drawnError_) return false;
+    load();
+    return true;
+  }
+
+  void draw(ui::Canvas &c, const Rect &body) override {
+    using namespace ui;
+    drawnError_ = attemptError();
+    constexpr int kFootH = 2 * 20 + 9 + 6;
+    const int count = static_cast<int>(msgs_.size());
+    const int fit = std::max(1, (body.h - kRule - kSectionH - kFootH) / kRowTallH);
+    const int rows = std::max(1, std::min(count, fit));
+    Rect sheet{body.x, body.bottom() - (kRule + kSectionH + rows * kRowTallH + kFootH), body.w, 0};
+    sheet.h = body.bottom() - sheet.y;
+    fill(c, sheet, kPaper);
+    hrule(c, sheet.x, sheet.y, sheet.w);
+    Rect r = sheet;
+    r.takeTop(kRule);
+    const Rect head = r.takeTop(kSectionH);
+    if (!drawnError_.empty()) {
+      drawNotice(c, head, drawnError_);
+    } else {
+      drawSectionHeader(c, head, "MESSAGES" + kDot + groupName(group_),
+                        count ? cursor_.label() : "");
+    }
+    const Rect foot = r.takeBottom(kFootH);
+    if (msgs_.empty()) {
+      drawText(c, {r.x + kPadX, r.y, r.w - 2 * kPadX, r.h}, "NO MESSAGES YET", style::kLabel,
+               Align::Center);
+    } else {
+      drawList(c, r, kRowTallH, cursor_, [this](int i) { return messageRow(msgs_[i]); });
+    }
+    bool inRam = false;
+    for (const comms::Message &m : msgs_) inRam = inRam || !m.onCard;
+    int y = foot.y + 6 + capHeight(style::kLabel) + 4;
+    drawText(c, foot.x + kPadX, y,
+             inRam ? "KEPT IN MEMORY: A POWER-OFF LOSES THEM" : "KEPT UNTIL PLAYED, AND A DAY AFTER",
+             style::kLabel);
+    y += 20;
+    drawText(c, foot.x + kPadX, y, "LEFT FROM 5 S INTO A RING NOBODY ANSWERS", style::kLabel);
+  }
+
+ private:
+  void load() {
+    gen_ = comms::generation();
+    const uint32_t was = msgs_.empty() ? 0 : msgs_[cursor_.cursor()].id;
+    msgs_ = comms::messages(group_);
+    const comms::Status s = comms::status();
+    playingId_ = s.playingMessage;
+    // The cursor stays on its message as new ones come in on top.
+    int at = 0;
+    for (size_t i = 0; i < msgs_.size(); ++i) {
+      if (msgs_[i].id == was) at = static_cast<int>(i);
+    }
+    cursor_.reset(static_cast<int>(msgs_.size()), at);
+  }
+
+  // KITCHEN · 14:08 over 0:12 · TO ALL, its state boxed: NEW (inverted), PLAYED, COMING,
+  // PLAYING (inverted).
+  ui::Row messageRow(const comms::Message &m) const {
+    ui::Row row;
+    row.title = boardName(m.fromName, m.from) + kDot + whenText(m.at, m.agoS);
+    row.subtitle = lengthText(m.ms) + kDot + (m.to ? "TO YOU" : "TO ALL");
+    if (!m.complete && !m.receiving) row.subtitle += kDot + "PART: SOME OF IT LOST";
+    if (m.receiving) {
+      row.tag = "COMING";
+    } else if (m.id == playingId_) {
+      row.tag = "PLAYING";
+      row.tagInverted = true;
+      row.subtitle = lengthText(m.ms) + kDot + "PLAYING";
+    } else if (!m.played) {
+      row.tag = "NEW";
+      row.tagInverted = true;
+    } else {
+      row.tag = "PLAYED";
+    }
+    return row;
+  }
+
+  int group_;
+  std::vector<comms::Message> msgs_;
+  ui::ListCursor cursor_;
+  uint32_t playingId_ = 0;
+  uint32_t gen_ = 0;
+  std::string drawnError_;
+};
+
 // --- The talk screen ----------------------------------------------------------------------------
+
+// CONVERSATION fits beside the map at 28 px; 38 px (the state words' size) doesn't.
+constexpr ui::TextStyle kConversationWord{&ui::fonts::kMono28ExtraBold, 0};
 
 class CommsScreen : public ui::Screen {
  public:
@@ -471,22 +740,26 @@ class CommsScreen : public ui::Screen {
       return 1;
     }
     out[0] = {"HOLD BOOT", "TALK"};
-    out[1] = {ui::glyph::kHoldPress, "GROUP"};
-    out[2] = {ui::glyph::kPress, "MENU"};
-    out[3] = {"BOOT", "BACK"};
+    out[1] = {ui::glyph::kPress, !conv_.on ? "RING" : conv_.in ? "LEAVE" : "JOIN"};
+    out[2] = {ui::glyph::kHoldPress, "MENU"};
+    out[3] = {"BOOT", playing() ? "STOP" : "BACK"};
     return 4;
   }
-  // HOLD BOOT talks to the row selected in TALK TO.
+  // HOLD BOOT talks to the row selected in TALK TO, or to the conversation this board is in.
   ui::TalkTo talkTo() const override {
     ui::TalkTo to;
     to.comms = true;
     to.group = group_;
-    to.board = selected_;
+    to.board = talkBoard();
     return to;
   }
 
   // Back from a sheet: the Groups sheet may have switched the group.
-  void onEnter() override { load(); }
+  void onEnter() override {
+    const uint32_t was = talkBoard();
+    load();
+    if (talkBoard() != was) ui::nav::talkChanged();
+  }
 
   bool onKey(Key key) override {
     if (!comms::configured()) return false;
@@ -499,17 +772,18 @@ class CommsScreen : public ui::Screen {
         ui::nav::talkChanged();
         return true;
       }
-      case Key::Select: openMenu(); return true;
-      case Key::SelectLong: ui::nav::push(std::make_unique<GroupsSheet>()); return true;
+      case Key::Select: mainAction(); return true;
+      case Key::SelectLong: openMenu(); return true;
+      case Key::Back: return stopIfPlaying();  // else back
       default: return false;
     }
   }
 
   bool onTick() override {
     if (comms::generation() == gen_ && extra() == drawnExtra_) return false;
-    const uint32_t was = selected_;
+    const uint32_t was = talkBoard();
     load();
-    if (selected_ != was) ui::nav::talkChanged();
+    if (talkBoard() != was) ui::nav::talkChanged();
     return true;
   }
 
@@ -546,11 +820,34 @@ class CommsScreen : public ui::Screen {
   }
 
  private:
-  // What changes the screen besides comms::generation(): a talk's error notice, and the radio
-  // still starting.
+  // In the group's conversation, HOLD BOOT talks to all of it.
+  uint32_t talkBoard() const { return conv_.on && conv_.in ? 0 : selected_; }
+
+  // A failed attempt's notice, in place of CHANNEL's header; a sheet over the screen (the
+  // ringing sheet, Messages) shows its own.
+  std::string notice() const { return ui::nav::top() == this ? attemptError() : std::string(); }
+
+  // ●: rings the row selected while the group has no conversation, else joins it or leaves it.
+  void mainAction() {
+    if (conv_.on && conv_.in) {
+      comms::leave(group_);
+    } else if (conv_.on) {
+      if (!comms::join(group_)) noteAttempt();  // a join doesn't clear an older error
+    } else if (comms::ringStart(group_, selected_)) {
+      ui::nav::push(makeRingingSheet(group_, selected_));  // it says if the ring won't start
+    } else {
+      noteAttempt();
+    }
+  }
+
+  // What changes the screen besides comms::generation(): a talk's error notice, the radio still
+  // starting, the conversation's minutes, PLAY LAST or a message playing (BOOT's verb).
   std::string extra() const {
     const bool starting = status_.state == comms::State::Off && millis() - openedMs_ < kStartingMs;
-    return attemptError() + (starting ? "\x01" : "");
+    std::string e = notice() + (starting ? "\x01" : "");
+    if (conv_.on) e += forText(comms::conversation(group_).ms);
+    if (playing()) e += "\x02";
+    return e;
   }
 
   void load() {
@@ -560,6 +857,7 @@ class CommsScreen : public ui::Screen {
     if (groups_.empty()) {
       boards_.clear();
       calls_.clear();
+      conv_ = comms::Conversation();
       cursor_.reset(1);
       selected_ = 0;
       return;
@@ -571,6 +869,7 @@ class CommsScreen : public ui::Screen {
     }
     boards_ = comms::boards(group_);
     calls_ = comms::calls(group_, kMaxLog);
+    conv_ = comms::conversation(group_);
     // The cursor stays on its board as the list reorders; ALL if it has gone.
     int at = 0;
     for (size_t i = 0; i < boards_.size(); ++i) {
@@ -578,12 +877,8 @@ class CommsScreen : public ui::Screen {
     }
     if (at == 0) selected_ = 0;
     cursor_.reset(static_cast<int>(boards_.size()) + 1, at);
-    // On screen, the group's calls count as heard.
+    // On screen, the group's calls and rings count as heard (a message once it has played).
     if (groups_[group_].unheard > 0) comms::markHeard(group_);
-  }
-
-  std::string groupName(int i) const {
-    return i >= 0 && i < static_cast<int>(groups_.size()) ? groups_[i].name : std::string();
   }
 
   ui::Row talkRow(int i) const {
@@ -609,6 +904,7 @@ class CommsScreen : public ui::Screen {
   }
 
   void openMenu() {
+    const int group = group_;
     std::vector<ui::MenuItem> items;
     items.push_back({"PLAY LAST",
                      []() -> std::string {
@@ -621,6 +917,15 @@ class CommsScreen : public ui::Screen {
                        noteAttempt();
                        comms::playLast();
                      }});
+    items.push_back({"MESSAGES",
+                     [group]() -> std::string {
+                       const std::vector<comms::Message> ms = comms::messages(group);
+                       int fresh = 0;
+                       for (const comms::Message &m : ms) fresh += !m.played && !m.receiving;
+                       if (fresh) return std::to_string(fresh) + " NEW";
+                       return ms.empty() ? "NONE" : std::to_string(ms.size()) + " KEPT";
+                     },
+                     [group] { ui::nav::replace(makeMessagesSheet(group)); }});
     items.push_back({"RELAY FOR OTHERS",
                      []() -> std::string { return comms::relayForOthers() ? "ON" : "OFF"; },
                      [] { comms::setRelayForOthers(!comms::relayForOthers()); }});
@@ -686,11 +991,12 @@ class CommsScreen : public ui::Screen {
     }
   }
 
-  // CHANNEL: the state, a line under it, the meter and the legend on the left; the map right.
+  // CHANNEL: the state (or CONVERSATION while the group has one and nobody speaks), a line or
+  // two under it, the meter and the legend on the left; the map right.
   void drawChannel(ui::Canvas &c, Rect r) const {
     using namespace ui;
     const comms::Status &s = status_;
-    const std::string error = attemptError();
+    const std::string error = notice();
     const Rect head = r.takeTop(kSectionH);
     if (!error.empty()) {
       drawNotice(c, head, error);
@@ -702,15 +1008,28 @@ class CommsScreen : public ui::Screen {
     const int x = r.x + kPadX;
     const int w = r.w - 2 * kPadX - kGap - kMapW;
     const int base = top + 33;
-    drawText(c, x, base, stateWord(s.state), style::kTitle);
-    drawText(c, {x, top + 46, w, 17}, stateLine(s), style::kLabel);
     const bool live = s.state == comms::State::Talking || s.state == comms::State::Hearing;
-    drawMeter(c, {x, top + 75, w, 14}, live ? meterFill(s.levelDb) : 0);
+    std::string line1 = stateLine(s), line2;
+    if (conv_.on && !live) {
+      // Capitals at the same height as the 38 px words'.
+      const int capTop = base - capHeight(style::kTitle);
+      drawText(c, x, capTop + capHeight(kConversationWord), "CONVERSATION", kConversationWord);
+      line1 = membersText(conv_);
+      line2 = forText(conv_.ms) + kDot +
+              (conv_.in ? "YOU'RE IN IT" : conv_.left ? "YOU LEFT IT" : "NOT IN IT");
+    } else {
+      drawText(c, x, base, stateWord(s.state), style::kTitle);
+      if (conv_.on) line2 = "CONVERSATION" + kDot + membersText(conv_);
+    }
+    drawText(c, {x, top + 44, w, 17}, line1, style::kLabel);
+    if (!line2.empty()) drawText(c, {x, top + 64, w, 17}, line2, style::kLabel);
+    drawMeter(c, {x, top + 91, w, 14}, live ? meterFill(s.levelDb) : 0);
     drawLegend(c, x, r.bottom() - 16);
     drawMap(c, {r.right() - kPadX - kMapW, top, kMapW, kMapH}, boards_);
   }
 
-  // The line under the state: the last call; who is heard or talked to, and for how long.
+  // The line under the state: the last call, ring or message; who is heard or talked to, and for
+  // how long.
   std::string stateLine(const comms::Status &s) const {
     const std::string len = lengthText(s.ms);
     const std::string inGroup =
@@ -725,6 +1044,7 @@ class CommsScreen : public ui::Screen {
                (s.toAll ? std::string("ALL") : boardName(s.peerName, s.peer)) + kDot + len +
                inGroup;
       case comms::State::Hearing:
+        if (s.playingMessage) return "MESSAGE" + kDot + boardName(s.peerName, s.peer) + kDot + len;
         if (s.replay) return "REPLAY" + kDot + boardName(s.peerName, s.peer) + kDot + len;
         return boardName(s.peerName, s.peer) + " \xE2\x86\x92 " + (s.toAll ? "ALL" : "YOU") + kDot +
                len + inGroup;
@@ -733,7 +1053,10 @@ class CommsScreen : public ui::Screen {
     }
     for (const comms::Call &c : calls_) {
       if (c.live) continue;
-      return "LAST" + kDot + (c.outgoing ? std::string("YOU") : boardName(c.fromName, c.from)) +
+      const char *what = c.kind == comms::Kind::Ring      ? "RING"
+                         : c.kind == comms::Kind::Message ? "MSG"
+                                                          : "LAST";
+      return what + kDot + (c.outgoing ? std::string("YOU") : boardName(c.fromName, c.from)) +
              kDot + whenText(c.at, c.agoS);
     }
     return "NO CALLS YET";
@@ -769,12 +1092,17 @@ class CommsScreen : public ui::Screen {
   std::vector<comms::Board> boards_;
   std::vector<comms::Call> calls_;
   comms::Status status_;
+  comms::Conversation conv_;
   int group_ = -1;        // the group on screen
   uint32_t selected_ = 0;  // TALK TO's row: a board's id, 0 for all
   ui::ListCursor cursor_;
 };
 
 }  // namespace
+
+std::unique_ptr<ui::Screen> commsui::makeMessagesSheet(int group) {
+  return std::make_unique<MessagesSheet>(group);
+}
 
 std::unique_ptr<ui::Screen> makeComms() { return std::make_unique<CommsScreen>(); }
 

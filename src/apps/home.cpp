@@ -406,14 +406,22 @@ int statsFor(const Module &m, Stat out[4]) {
         reached += (reached.empty() ? "" : dot) + std::to_string(g.onNet) + " net";
       }
       out[1] = {"REACHED", reached};
+      // The last call, ring or message: what it was in the key (MISSED RING, NEW MESSAGE),
+      // who and when in the value.
       const std::vector<comms::Call> last = comms::calls(-1, 1);
       if (last.empty()) {
         out[2] = {"LAST", ui::glyph::kEmDash};
       } else {
         const comms::Call &c = last[0];
-        out[2] = {"LAST", (c.outgoing ? std::string("YOU")
-                                      : commsui::boardName(c.fromName, c.from)) +
-                              dot + commsui::whenText(c.at, c.agoS)};
+        std::string key = "LAST CALL";
+        if (c.kind == comms::Kind::Ring) {
+          key = !c.outgoing && c.missed ? "MISSED RING" : "LAST RING";
+        } else if (c.kind == comms::Kind::Message) {
+          key = !c.outgoing && !c.played && !c.live ? "NEW MESSAGE" : "LAST MESSAGE";
+        }
+        out[2] = {key, (c.outgoing ? std::string("YOU")
+                                   : commsui::boardName(c.fromName, c.from)) +
+                           dot + commsui::whenText(c.at, c.agoS)};
       }
       const comms::Status st = comms::status();
       std::string state = commsui::stateWord(st.state);
@@ -430,8 +438,17 @@ int statsFor(const Module &m, Stat out[4]) {
   return 0;
 }
 
+#if INKDECK_COMMS
+// Calls, missed rings and messages not heard, over all groups: COMMS's "1 NEW".
+int commsUnheard() {
+  int n = 0;
+  for (const comms::Group &g : comms::groups()) n += g.unheard;
+  return n;
+}
+#endif
+
 // The list's row for module i: its bus tag, or for the Agent while questions wait, an inverted
-// "1 ASK".
+// "1 ASK"; for Comms with calls, rings or messages not heard, an inverted "1 NEW".
 ui::Row moduleRow(int i) {
   ui::Row row;
   row.index = twoDigits(i + 1);
@@ -442,6 +459,15 @@ ui::Row moduleRow(int i) {
     const agent::Glance g = agent::glance();
     if (g.known && g.asks > 0) {
       row.tag = std::to_string(g.asks) + " ASK";
+      row.tagInverted = true;
+    }
+  }
+#endif
+#if INKDECK_COMMS
+  if (kModules[i].kind == Kind::Comms) {
+    const int n = commsUnheard();
+    if (n > 0) {
+      row.tag = std::to_string(std::min(n, 99)) + " NEW";
       row.tagInverted = true;
     }
   }
@@ -508,9 +534,13 @@ class HomeScreen : public ui::Screen {
     drawnAgent_ = sig;
 #endif
 #if INKDECK_COMMS
-    // The COMMS preview: calls, the state, who is reached.
+    // The COMMS preview: calls, the state, who is reached; its row's "1 NEW" wherever the cursor.
     const uint32_t cg = comms::generation();
-    changed |= cg != drawnComms_ && kind == Kind::Comms;
+    if (cg != drawnComms_) {
+      const int unheard = commsUnheard();
+      changed |= kind == Kind::Comms || unheard != drawnCommsNew_;
+      drawnCommsNew_ = unheard;
+    }
     drawnComms_ = cg;
 #endif
     return changed;
@@ -657,6 +687,7 @@ class HomeScreen : public ui::Screen {
 #endif
 #if INKDECK_COMMS
   uint32_t drawnComms_ = 0;
+  int drawnCommsNew_ = 0;
 #endif
 };
 

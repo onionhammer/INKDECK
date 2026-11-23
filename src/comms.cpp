@@ -186,6 +186,7 @@ struct CallRec {
   std::vector<uint32_t> heardBy;
   uint32_t conv = 0;      // Voice: its conversation
   bool answered = false;  // Ring
+  bool missed = false;    // Ring, incoming: it rang out here, nobody answering or ignoring it
   bool complete = true;   // Message
   uint32_t message = 0;   // Message: its id in messages()
 };
@@ -1899,7 +1900,8 @@ void ringingOver(RingEnd why) {
       c->live = false;
       c->answered = why == RingEnd::Answered || why == RingEnd::AnsweredThere;
       // Missed (not heard) only if nobody did anything with it here or anywhere.
-      c->heard = why != RingEnd::GaveUp && why != RingEnd::NoAnswer && why != RingEnd::Lost;
+      c->missed = why == RingEnd::GaveUp || why == RingEnd::NoAnswer || why == RingEnd::Lost;
+      c->heard = !c->missed;
     }
   }
   static const char *const kWhy[] = {"",       "answered here", "answered there", "ignored",
@@ -3546,6 +3548,7 @@ std::vector<Call> calls(int group, int max) {
     x.lost = c.lost;
     x.conversation = c.conv;
     x.answered = c.answered;
+    x.missed = c.missed;
     x.complete = c.complete;
     x.message = c.message;
     if (c.kind == Kind::Message && !c.live) x.ms = c.ms;
