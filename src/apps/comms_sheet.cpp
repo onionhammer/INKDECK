@@ -35,9 +35,9 @@ constexpr int kStateH = 52;  // the state word beside the meter
 constexpr uint32_t kCloseMs = 10000;       // after the last word, and as long since a key
 constexpr uint32_t kFirstWordMs = 20000;   // answered or joined: for the first word
 constexpr uint32_t kRingEndShowMs = 6000;  // how a ring ended, shown this long (and since a key)
-constexpr uint32_t kMessageShowMs = 10000;  // a message left, once it's all here
+constexpr uint32_t kMessageShowMs = 30000;  // a message left, once it's all here
 constexpr uint32_t kMessageWaitMs = 15000;  // the dialer said a message comes: if none does
-constexpr uint32_t kConvSheetMs = 10000;    // the conversation sheet, untouched
+constexpr uint32_t kConvSheetMs = 30000;    // the conversation sheet, untouched
 constexpr uint32_t kQuietKeyMs = 3000;      // the conversation sheet waits this long after a key
 
 // Which of these sheets is on top, if any.
@@ -165,8 +165,10 @@ class CallSheet : public ui::Screen {
     const bool in = conv_.on && conv_.in;
     out[0] = {"HOLD BOOT", in ? "TALK" : "REPLY"};
     out[1] = {ui::glyph::kDial, "VOL"};
-    out[2] = {"BOOT", playing() ? "STOP" : in ? "LEAVE" : "CLOSE"};
-    return 3;
+    int n = 2;
+    if (in) out[n++] = {ui::glyph::kPress, "LEAVE"};
+    out[n++] = {"BOOT", playing() ? "STOP" : "CLOSE"};  // closing leaves this board in it
+    return n;
   }
 
   void onEnter() override { entered(this, Kind::Call); }
@@ -176,14 +178,13 @@ class CallSheet : public ui::Screen {
     switch (key) {
       case Key::Up: audio::changeVolume(+5); return true;
       case Key::Down: audio::changeVolume(-5); return true;
-      case Key::Back:
-        if (stopIfPlaying()) return true;
-        if (conv_.on && conv_.in) {  // BOOT leaves the conversation: its voice stops here
+      case Key::Select:
+        if (conv_.on && conv_.in) {  // leaves the conversation: its voice stops here
           comms::leave(group_);
           ui::nav::pop();
-          return true;
         }
-        return false;  // closes (the navigator pops)
+        return true;
+      case Key::Back: return stopIfPlaying();  // else it closes, and this board stays in
       default: return false;
     }
   }
@@ -443,7 +444,7 @@ class ConversationSheet : public ui::Screen {
     const std::string line = conv_.left ? "YOU LEFT IT: ITS VOICE DOESN'T PLAY HERE"
                                         : "ITS VOICE PLAYS HERE ONCE YOU JOIN";
     r.takeTop(drawNameBlock(c, r, "IN IT", othersText(conv_), line) - r.y);
-    drawEarlier(c, r, earlierCalls(comms::calls(group_, 12)), "CLOSES BY ITSELF IN 10 S");
+    drawEarlier(c, r, earlierCalls(comms::calls(group_, 12)), "CLOSES BY ITSELF IN 30 S");
   }
 
  private:
