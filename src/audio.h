@@ -73,6 +73,13 @@ void beep(uint32_t ms = 80, uint32_t hz = 2000);
 // (issue #52). Like beep(): ignored while anything plays, is paused, records, rings or listens,
 // silent at volume 0. About half a second in the audio task.
 void chirp(bool rising);
+// Comms (issue #66): a ring, a phone's double trill (two 200 ms bursts of pips a third apart,
+// about half a second), every few seconds while a board rings; and a message that came, three
+// pips (high, low, high). Like chirp(), silent at volume 0 and ignored while anything records,
+// rings, listens or streams; but a ring also plays over music, paused or playing: the music
+// holds for the trill and plays on.
+void ringChirp();
+void messageChirp();
 
 // --- Recording: 16 kHz, mono, 16-bit WAV. record() stops playback first. The file is
 // finished (its header's sizes filled in) by stopRecording(), or by stop(), which power-off

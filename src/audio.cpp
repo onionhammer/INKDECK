@@ -497,10 +497,12 @@ struct Tone {
 };
 
 void tonesNow(const Tone *tones, int count, float level, uint32_t rampMs) {
-  constexpr uint32_t kRate = 16000;
   constexpr float kTwoPi = 2 * static_cast<float>(M_PI);
   if (volume.load() == 0) return;
-  if (!outputStart(kRate)) return;
+  // Over music that plays, into its output at its rate, which then plays on; else on their own.
+  const bool over = tx != nullptr;
+  const uint32_t kRate = over ? txRate : 16000;
+  if (!over && !outputStart(kRate)) return;
   const uint32_t ramp = std::max<uint32_t>(1, rampMs * kRate / 1000);
   constexpr int kFrames = 256;
   int n = 0;
@@ -535,7 +537,7 @@ void tonesNow(const Tone *tones, int count, float level, uint32_t rampMs) {
     size_t written = 0;
     i2s_channel_write(tx, p.pcm, n * 2 * sizeof(int16_t), &written, portMAX_DELAY);
   }
-  outputStop();
+  if (!over) outputStop();
 }
 
 // audio::beep(): one tone.
@@ -558,6 +560,17 @@ constexpr uint32_t kCueRampMs = 3;  // crisp pips, still without clicks
 // a question, falling for a session that finished.
 constexpr Tone kRise[] = {{45, 1125, 1125}, {35, 0, 0}, {70, 1500, 1500}};
 constexpr Tone kFall[] = {{45, 1500, 1500}, {35, 0, 0}, {70, 1125, 1125}};
+
+// Comms's ring (audio::ringChirp()): a phone's trill, two bursts of 25 ms pips alternating a
+// major third apart (1400 and 1120 Hz), 120 ms between them. Nothing like the cue's three pips
+// or the agent's two.
+#define RING_BURST {25, 1400, 1400}, {25, 1120, 1120}, {25, 1400, 1400}, {25, 1120, 1120}, \
+                   {25, 1400, 1400}, {25, 1120, 1120}, {25, 1400, 1400}, {25, 1120, 1120}
+constexpr Tone kRingTrill[] = {RING_BURST, {120, 0, 0}, RING_BURST};
+#undef RING_BURST
+// A comms message that came (audio::messageChirp()): high, low, high.
+constexpr Tone kMessageChirp[] = {{50, 1500, 1500}, {30, 0, 0}, {50, 1125, 1125},
+                                  {30, 0, 0}, {80, 1500, 1500}};
 
 // ---------------------------------------------------------------------------------------------
 // WAV playback (audio task only): 16-bit PCM read straight into the output.
@@ -987,7 +1000,13 @@ void handle(const Command &c) {
       if (!recOn && !ring.on && !strm.on && state == State::Stopped) beepNow(c.arg, c.arg2, c.arg2);
       break;
     case Cmd::Chirp:
-      if (!recOn && !ring.on && !strm.on && !rec.capture && state == State::Stopped) {
+      if (recOn || ring.on || strm.on || rec.capture) break;
+      if (c.arg == 2) {  // comms's ring: over music too (tonesNow() plays into its output)
+        tonesNow(kRingTrill, sizeof kRingTrill / sizeof kRingTrill[0], kCueLevel, kCueRampMs);
+      } else if (state == State::Stopped && c.arg == 3) {
+        tonesNow(kMessageChirp, sizeof kMessageChirp / sizeof kMessageChirp[0], kCueLevel,
+                 kCueRampMs);
+      } else if (state == State::Stopped) {
         tonesNow(c.arg ? kRise : kFall, 3, kCueLevel, kCueRampMs);
       }
       break;
@@ -1307,6 +1326,10 @@ bool ringing() { return ringOn.load(); }
 void beep(uint32_t ms, uint32_t hz) { send(Cmd::Beep, static_cast<int>(ms), static_cast<int>(hz)); }
 
 void chirp(bool rising) { send(Cmd::Chirp, rising ? 1 : 0); }
+
+void ringChirp() { send(Cmd::Chirp, 2); }
+
+void messageChirp() { send(Cmd::Chirp, 3); }
 
 void record(const std::string &path) {
   if (!lock) return;

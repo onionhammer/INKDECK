@@ -70,7 +70,8 @@ std::string whenText(time_t at, uint32_t agoS);
 std::string boardName(const std::string &name, uint32_t id);
 // "KITCHEN → ALL", "YOU → KITCHEN", "KITCHEN → YOU".
 std::string whoText(const comms::Call &c);
-// A note for the log: "VIA KITCHEN", "2 HEARD", "NOT PLAYED", "LIVE"; "" for none.
+// A note for the log: "VIA KITCHEN", "2 HEARD", "NOT PLAYED", "LIVE"; for a ring "RANG",
+// "MISSED", "NO ANSWER"; for a message "MSG NEW", "MSG"; "" for none.
 std::string noteText(const comms::Call &c);
 
 // "TODAY · 6" when every call listed is from today, else "6 CALLS"; "" for none.

@@ -269,6 +269,124 @@ void lineCommand(const String &line) {
     Serial.println("commsresend: sent; look at the other board's dropped counters (!comms)");
     return;
   }
+  if (line == "commsring" || line.startsWith("commsring ")) {
+    // Rings all of the active group, or one board of it by its id (hex, as !comms lists it).
+    String rest = line.substring(9);
+    rest.trim();
+    const uint32_t target = rest.isEmpty() ? 0 : strtoul(rest.c_str(), nullptr, 16);
+    const int group = comms::activeGroup();
+    if (!comms::ringStart(group, target)) {
+      Serial.printf("commsring: %s\n", comms::status().error.c_str());
+    } else {
+      Serial.printf("commsring: ringing %s in group %d (60 s at most; !comms shows it, "
+                    "!commsringstop gives up)\n",
+                    target ? rest.c_str() : "all", group);
+    }
+    return;
+  }
+  if (line == "commsringstop") {
+    comms::ringStop();
+    Serial.println("commsringstop: given up (or a finished ring cleared)");
+    return;
+  }
+  if (line == "commsringvanish") {
+    // Testing: the ring going stops sending ring packets, with no cancel, as if this board had
+    // gone out of range; the boards it rang stop after 5 s.
+    comms::ringVanish();
+    Serial.println("commsringvanish: ring packets stop now, no cancel");
+    return;
+  }
+  if (line == "commsanswer") {
+    Serial.println(comms::answer() ? "commsanswer: answered" : "commsanswer: nothing rings");
+    return;
+  }
+  if (line == "commsignore") {
+    comms::ignoreRing();
+    Serial.println("commsignore: it stops ringing here");
+    return;
+  }
+  if (line == "commsjoin" || line == "commsleave") {
+    const int group = comms::activeGroup();
+    if (line == "commsleave") {
+      comms::leave(group);
+      Serial.printf("commsleave: out of group %d's conversation (its voice won't play here)\n",
+                    group);
+    } else if (!comms::join(group)) {
+      Serial.printf("commsjoin: %s\n", comms::status().error.c_str());
+    } else {
+      Serial.printf("commsjoin: in group %d's conversation\n", group);
+    }
+    return;
+  }
+  if (line.startsWith("commsdropmsg")) {
+    // Testing: every nth message frame that comes is dropped as if lost (0: none).
+    const int n = std::max(0, static_cast<int>(line.substring(12).toInt()));
+    comms::dropMessageFrames(n);
+    Serial.printf("commsdropmsg: %s\n",
+                  n ? ("every " + String(n) + "th message frame that comes is dropped").c_str()
+                    : "none dropped");
+    return;
+  }
+  if (line == "commsplaymsg" || line.startsWith("commsplaymsg ")) {
+    // Plays a message kept: the newest, or #id as !comms lists them.
+    const std::vector<comms::Message> ms = comms::messages(-1);
+    String rest = line.substring(12);
+    rest.trim();
+    rest.replace("#", "");
+    uint32_t id = rest.isEmpty() ? 0 : static_cast<uint32_t>(rest.toInt());
+    if (!id) {
+      for (const comms::Message &m : ms) {
+        if (!m.receiving) {
+          id = m.id;
+          break;
+        }
+      }
+    }
+    if (!id || !comms::playMessage(id)) {
+      Serial.printf("commsplaymsg: %s\n", id ? comms::status().error.c_str() : "no message kept");
+    } else {
+      for (const comms::Message &m : ms) {
+        if (m.id != id) continue;
+        Serial.printf("commsplaymsg: playing #%lu from %s, %lu ms, %s\n",
+                      static_cast<unsigned long>(id), m.fromName.c_str(),
+                      static_cast<unsigned long>(m.ms), m.complete ? "complete" : "INCOMPLETE");
+      }
+    }
+    return;
+  }
+  if (line.startsWith("commsmsg")) {
+    // Records N seconds and sends them as a message: for the ring going unanswered (5 s in, or
+    // after NO ANSWER), else (testing) to all of the active group directly.
+    const int seconds = std::max(1, std::min(60, static_cast<int>(line.substring(8).toInt())));
+    comms::hold();
+    for (int i = 0; i < 60 && !comms::listening(); ++i) delay(50);
+    const comms::Dial d = comms::dial();
+    const bool forRing = d.canLeaveMessage;
+    if (!(forRing ? comms::messageStart() : comms::messageStart(comms::activeGroup(), 0))) {
+      Serial.printf("commsmsg: %s\n", comms::status().error.c_str());
+      comms::release();
+      return;
+    }
+    // The mic opens in the comms task, after the cue: wait for it.
+    for (int i = 0; i < 40 && comms::dial().state != comms::DialState::Recording; ++i) delay(50);
+    if (comms::dial().state != comms::DialState::Recording) {
+      Serial.printf("commsmsg: %s\n", comms::status().error.c_str());
+      comms::release();
+      return;
+    }
+    Serial.printf("commsmsg: recording %d s %s\n", seconds,
+                  forRing ? "for the ring (it has stopped on the others)"
+                          : "for all of the active group (no ring)");
+    delay(seconds * 1000);
+    comms::messageSend();
+    delay(300);
+    const comms::Dial after = comms::dial();
+    Serial.printf("commsmsg: sent, %lu ms; !comms shows its checksum and the boards that have it "
+                  "whole\n",
+                  static_cast<unsigned long>(after.messageMs));
+    comms::release();
+    return;
+  }
   if (line == "commsping" || line.startsWith("commstalk")) {
     if (!comms::configured()) {
       Serial.println("comms: no group (a mesh_group line, an agent_token or !commsgroup)");
@@ -297,8 +415,14 @@ void lineCommand(const String &line) {
         Serial.printf("commsping: %u answers\n", static_cast<unsigned>(answers.size()));
       }
     } else {
-      const int seconds = std::max(1, std::min(60, static_cast<int>(line.substring(9).toInt())));
-      if (!comms::talkStart(group, 0)) {
+      // "!commstalk N [board-id]": to all of the group, or to one board (hex, as !comms lists it).
+      String rest = line.substring(9);
+      rest.trim();
+      const int space = rest.indexOf(' ');
+      const int seconds = std::max(1, std::min(60, static_cast<int>(rest.toInt())));
+      const uint32_t board =
+          space < 0 ? 0 : strtoul(rest.substring(space + 1).c_str(), nullptr, 16);
+      if (!comms::talkStart(group, board)) {
         Serial.printf("commstalk: %s\n", comms::status().error.c_str());
       } else {
         Serial.printf("commstalk: talking to group %d for %d s\n", group, seconds);

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "adpcm.h"
+#include "comms_calls.h"
 #include "comms_crypto.h"
 #include "comms_wire.h"
 
@@ -221,6 +222,223 @@ void testSeen(Checker &c) {
   c.check(ok, "seen-cache: the last 256 kept, by group, sender, boot and seq");
 }
 
+void testCallPackets(Checker &c) {
+  const crypto::GroupKeys k = crypto::derive(kSecret, false);
+  std::unique_ptr<crypto::Sealer> s(new crypto::Sealer());
+  s->setKey(k.key);
+  // A ring from sender 11223344, boot 7, seq 2: to all, ring 9, conversation A1B2C3D4, rung
+  // 4200 ms (docs/comms-protocol.md has these bytes).
+  uint8_t f[kMaxFrame];
+  Header h;
+  h.type = kRing;
+  h.ttl = 3;
+  h.group = k.id;
+  h.sender = 0x11223344;
+  h.boot = 7;
+  h.seq = 2;
+  putHeader(h, f);
+  Writer w(f + kHeader, kMaxBody);
+  w.u32(0);
+  w.u32(0);
+  w.u16(9);
+  w.u32(0xA1B2C3D4);
+  w.u32(4200);
+  const size_t n = s->seal(f, w.size());
+  const std::vector<uint8_t> want = unhex(
+      "c7180300e13e368e44332211070000000200000095184362b8f980d1bcabd37b688b9e0f2160c1a57c8f182d6ad"
+      "d0b5f6239176f7ac4");
+  c.check(n == want.size() && memcmp(f, want.data(), n) == 0,
+          "a sealed ring matches the reference bytes");
+  Header p;
+  size_t body = 0;
+  bool ok = parseHeader(f, n, p) && p.type == kRing && s->open(f, n, body);
+  Reader r(f + kHeader, body);
+  r.u32();
+  ok = ok && r.u32() == 0 && r.u16() == 9 && r.u32() == 0xA1B2C3D4 && r.u32() == 4200 && r.ok();
+  c.check(ok, "the ring opens and reads back field by field");
+
+  ok = true;
+  for (uint8_t t = kRing; t <= kMessageAsk; ++t) {
+    h.type = t;
+    putHeader(h, f);
+    ok = ok && parseHeader(f, kHeader + kTag + 8, p) && p.type == t && knownType(t);
+  }
+  h.type = 15;
+  putHeader(h, f);
+  ok = ok && parseHeader(f, kHeader + kTag + 8, p) && !knownType(15);
+  f[1] = static_cast<uint8_t>(kVersion << 4);  // type 0
+  ok = ok && !parseHeader(f, kHeader + kTag + 8, p);
+  c.check(ok, "the new types parse; a later one parses (to be relayed), type 0 doesn't");
+
+  // A presence with the conversation after the name, and one from before conversations.
+  uint8_t b[96];
+  Writer pw(b, sizeof b);
+  pw.u32(0);
+  pw.u8(3);
+  pw.u8(87);
+  pw.u8(7);
+  pw.bytes("KITCHEN", 7);
+  const size_t old = pw.size();
+  pw.u32(0xA1B2C3D4);
+  pw.u16(75);
+  pw.u16(4);
+  pw.u8(2);
+  pw.u32(0x55667788);
+  pw.u32(0x99AABBCC);
+  Reader pr(b, pw.size());
+  pr.u32();
+  pr.u8();
+  pr.u8();
+  const uint8_t len = pr.u8();
+  pr.bytes(len);
+  ok = pr.left() >= 4 && pr.u32() == 0xA1B2C3D4 && pr.u16() == 75 && pr.u16() == 4 &&
+       pr.u8() == 2 && pr.u32() == 0x55667788 && pr.u32() == 0x99AABBCC && pr.ok() &&
+       pr.left() == 0;
+  Reader po(b, old);
+  po.u32();
+  po.u8();
+  po.u8();
+  po.bytes(po.u8());
+  c.check(ok && po.ok() && po.left() == 0,
+          "presence: the conversation follows the name; an older board's ends there");
+  c.check(kHeader + 4 + 4 + 4 + 2 + 2 + 1 + 1 + kFrameBytes + kTag == 214 &&
+              kHeader + 4 + 4 + 4 + 1 + 2 + 2 + 2 + 195 + kTag == 250 &&
+              kHeader + 4 + 4 + 2 + 2 + 2 + 1 + 1 + kFrameBytes + 5 + kTag == 217,
+          "a message frame is 214 bytes, an ask mapping 1560 frames 250, voice 217");
+}
+
+void testMessages(Checker &c) {
+  // A message of 100 frames, the last one short; every 7th lost on the air, some twice.
+  constexpr uint16_t kN = 100;
+  std::unique_ptr<MessageAssembly> a(new MessageAssembly());
+  std::vector<uint8_t> sent(kN * kStoredFrame, 0);
+  uint8_t data[kFrameBytes];
+  auto frameOf = [&](uint16_t f, uint8_t &bytes) {
+    bytes = f == kN - 1 ? 37 : kFrameBytes;
+    for (size_t i = 0; i < kFrameBytes; ++i) data[i] = static_cast<uint8_t>(f * 31 + i * 7);
+  };
+  for (uint16_t f = 0; f < kN; ++f) {
+    uint8_t bytes;
+    frameOf(f, bytes);
+    uint8_t *st = &sent[f * kStoredFrame];
+    st[0] = static_cast<uint8_t>(f);
+    st[1] = static_cast<uint8_t>(f >> 8);
+    st[2] = static_cast<uint8_t>(f % 89);
+    st[3] = bytes;
+    memcpy(st + 4, data, bytes);
+  }
+  const uint32_t sum = messageSum(sent.data(), kN);
+  auto add = [&](uint16_t f) {
+    uint8_t bytes;
+    frameOf(f, bytes);
+    return a->add(f, static_cast<int16_t>(f), static_cast<uint8_t>(f % 89), data, bytes);
+  };
+  bool dupes = true;
+  for (int f = kN - 1; f >= 0; --f) {  // backwards: out of order
+    if (f % 7 == 3) continue;
+    add(static_cast<uint16_t>(f));
+    if (f % 10 == 0) dupes = dupes && !add(static_cast<uint16_t>(f));
+  }
+  c.check(dupes && a->have() == kN - 14, "message: copies of a frame are taken once");
+  uint16_t starts[48], counts[48];
+  size_t n = a->missing(starts, counts, 48);
+  bool ok = n == 14 && !a->allIn();
+  for (size_t i = 0; i < n; ++i) ok = ok && starts[i] % 7 == 3 && counts[i] == 1;
+  c.check(ok, "message: the 14 frames missing are listed before the end comes");
+  a->end(kN, sum);
+  ok = a->ended() && a->total() == kN && !a->allIn() && a->missing(starts, counts, 48) == 14 &&
+       a->missing(starts, counts, 5) == 5 && starts[0] == 3 && starts[4] == 31;
+  c.check(ok, "message: after the end, the same 14, and an ask holds what fits");
+  uint8_t map[195];
+  uint16_t from = 0;
+  size_t lost = 0;
+  const size_t span = a->missingMap(from, map, 1560, lost);
+  // Frames 3 (bit 0) and 10 (bit 7) missing, 4 to 9 and 11 (bit 8) in.
+  ok = from == 3 && span == kN - 3 && lost == 14 && map[0] == 0x81 && (map[1] & 0x01) == 0;
+  const size_t part = a->missingMap(from, map, 16, lost);
+  c.check(ok && part == 16 && lost == 3, "message: the map of what's missing, from the first gap");
+  ok = !add(0);  // a copy of a frame that's in, sent again for another board
+  for (uint16_t f = 3; f < kN; f += 7) add(f);
+  ok = ok && a->allIn() && a->sumOk() && a->audio().size() == sent.size() &&
+       memcmp(a->audio().data(), sent.data(), sent.size()) == 0;
+  c.check(ok, "message: asked for again, it's whole, byte for byte, checksum and all");
+
+  std::unique_ptr<MessageAssembly> b(new MessageAssembly());
+  b->end(kN, sum ^ 1);  // the end first, every frame missed
+  n = b->missing(starts, counts, 48);
+  ok = n == 1 && starts[0] == 0 && counts[0] == kN;
+  for (uint16_t f = 0; f < kN; ++f) {
+    uint8_t bytes;
+    frameOf(f, bytes);
+    b->add(f, static_cast<int16_t>(f), static_cast<uint8_t>(f % 89), data, bytes);
+  }
+  ok = ok && b->allIn() && !b->sumOk() && !b->add(kN, 0, 0, data, 1);
+  c.check(ok, "message: all of it asked for from the end alone; a wrong checksum shows");
+}
+
+void testConversations(Checker &c) {
+  using C = ConvState;
+  constexpr uint32_t kSelf = 1, kA = 2, kB = 3;
+  std::unique_ptr<C> v(new C());
+  // A talks (its first call opens 500); this board played it, so it's in.
+  bool ok = v->spoke(0, 500, kA, kSelf) && v->on() && !v->mine() && v->count() == 1;
+  ok = ok && v->join(100, 0) && v->mine() && v->id() == 500;
+  v->spoke(10000, 500, kA, kSelf);  // the last word at 10 s
+  v->report(19000, kA, 500, 19, 9, nullptr, 0, kSelf);
+  v->expire(69999);
+  ok = ok && v->on();
+  v->expire(70000);
+  c.check(ok && !v->on() && !v->mine(), "conversation: over 60 s after the last word");
+  v->report(70500, kA, 500, 70, 59, nullptr, 0, kSelf);  // A's clock a little behind: old news
+  ok = !v->on();
+  v->spoke(71000, 500, kA, kSelf);  // but A spoke in it before it ended there
+  c.check(ok && v->on() && v->mine() && v->id() == 500,
+          "conversation: a late report doesn't bring it back; a late word does");
+
+  v.reset(new C());
+  v->join(0, 600);
+  const uint32_t listed[] = {kB, kSelf};
+  v->report(1000, kA, 600, 1, 1, listed, 2, kSelf);
+  ok = v->count() == 2 && v->isMember(kB) && v->member(0).id == kA && !v->member(0).listed;
+  v->report(5000, kA, 600, 5, 1, nullptr, 0, kSelf);
+  v->expire(13999);
+  ok = ok && v->isMember(kB);
+  v->expire(14000);  // B never said so itself: 13 s after A listed it, it's out
+  ok = ok && !v->isMember(kB) && v->isMember(kA);
+  v->expire(18000);
+  c.check(ok && v->on() && v->count() == 0 && v->mine(),
+          "conversation: members that stop saying so go after 13 s; this board alone keeps it");
+
+  v.reset(new C());
+  v->report(0, kA, 700, 0, 0, nullptr, 0, kSelf);  // seen, not in it
+  ok = v->on() && !v->mine() && !v->left() && v->join(10, 0) && v->mine();
+  ok = ok && v->leave(20) && !v->mine() && v->left() && v->on();
+  v->report(4000, kA, 700, 4, 0, nullptr, 0, kSelf);
+  ok = ok && v->left() && !v->mine();  // still out: its voice doesn't play here
+  ok = ok && v->join(5000, 0) && v->mine() && !v->left();
+  c.check(ok, "conversation: left stays out (still seen on) until joined again");
+
+  v.reset(new C());
+  v->report(0, kA, 800, 0, 0, nullptr, 0, kSelf);
+  ok = v->reportNone(100, kA) && v->count() == 0;
+  v->report(200, kB, 800, 0, 0, listed + 0, 0, kSelf);
+  const uint32_t backA[] = {kA};
+  v->report(300, kB, 800, 0, 0, backA, 1, kSelf);  // B still lists A: A said it's out
+  ok = ok && !v->isMember(kA) && v->isMember(kB);
+  v->reportNone(400, kB);
+  v->expire(500);
+  c.check(ok && !v->on(), "conversation: a board that says it's out isn't listed back in; "
+                          "nobody in it: over");
+
+  v.reset(new C());
+  v->join(0, 900);
+  v->report(1000, kA, 800, 30, 2, nullptr, 0, kSelf);  // another one, begun earlier, lower id
+  ok = v->id() == 800 && v->mine() && v->isMember(kA) && 1000 - v->startMs() == 30000;
+  v->report(2000, kB, 950, 1, 0, nullptr, 0, kSelf);  // a higher id: it merges into 800
+  c.check(ok && v->id() == 800 && v->isMember(kB),
+          "conversation: two that meet become the one with the lower id");
+}
+
 }  // namespace
 
 bool selfTest(Print &out) {
@@ -232,6 +450,9 @@ bool selfTest(Print &out) {
   testAdpcm(c);
   testPacket(c);
   testSeen(c);
+  testCallPackets(c);
+  testMessages(c);
+  testConversations(c);
   out.printf("commstest: %s (%d failed) in %lu ms\n", c.failed ? "FAILED" : "all passed",
              c.failed, static_cast<unsigned long>(millis() - t0));
   return c.failed == 0;

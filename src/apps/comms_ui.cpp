@@ -80,6 +80,15 @@ std::string whoText(const comms::Call &c) {
 }
 
 std::string noteText(const comms::Call &c) {
+  // Rings and messages share the log with calls (comms.h, Kind).
+  if (c.kind == comms::Kind::Ring) {
+    if (c.live) return "RINGING";
+    return c.answered ? "RANG" : c.outgoing ? "NO ANSWER" : "MISSED";
+  }
+  if (c.kind == comms::Kind::Message) {
+    if (c.live) return "MSG COMING";
+    return c.outgoing || c.played ? "MSG" : c.complete ? "MSG NEW" : "MSG PART";
+  }
   if (c.live) return "LIVE";
   if (c.outgoing) return c.heardBy > 0 ? std::to_string(c.heardBy) + " HEARD" : "";
   if (!c.played) return "NOT PLAYED";

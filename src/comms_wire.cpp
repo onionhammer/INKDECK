@@ -40,7 +40,7 @@ bool parseHeader(const uint8_t *f, size_t len, Header &out) {
   if (len < kHeader + kTag || len > kMaxFrame) return false;
   if (f[0] != kMagic || f[1] >> 4 != kVersion || f[3] != 0) return false;
   out.type = f[1] & 0x0F;
-  if (out.type < kPresence || out.type > kHeard) return false;
+  if (out.type == 0) return false;
   out.ttl = f[2] & 0x0F;
   out.hops = f[2] >> 4;
   out.group = get32(f + 4);

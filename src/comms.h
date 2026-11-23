@@ -25,6 +25,23 @@
 // agent listening or speaking, or a call already playing; it does stop music, which plays on
 // afterwards. The last call heard is kept (PLAY LAST), and a log of calls in RAM.
 //
+// Conversations: a group has at most one, on from an answered ring or the first voice until 60 s
+// after the last word, or until the last board leaves. Voice plays only on the boards in it: the
+// ones that answered, joined, talked in it, or were listening and played its first call (the
+// walkie-talkie: HOLD BOOT with no conversation on starts one, and every board that plays it is
+// in), plus a call to one board alone, which puts that board in. leave() takes this board out
+// until join(). Its boards say so every few seconds, so every board of the group sees it's on,
+// and who is in it, even one that came late, was busy or left.
+//
+// Ringing: ringStart() rings all of a group or one board of it, once a second, until someone
+// answers, the dialer gives up or 60 s pass (NO ANSWER). Every board of the target that isn't in
+// the conversation already rings: a ring chirp every few seconds (not over the Recorder, an
+// alarm, the agent or a call; over music, which plays on) and incomingRing() for the screens.
+// One answer stops it everywhere. 5 s into a ring with no answer the dialer may leave a message
+// instead (up to 60 s): it's sent to arrive complete (every board asks again for the frames it
+// missed) and kept on the card (SD:/.inkdeck/comms/), in RAM without one, until played and for
+// a day after. It never plays by itself.
+//
 // When it listens: on USB power, or while something holds it (hold(); the Comms screens and the
 // call sheet), and for 10 s after; never without a group. On battery with nothing holding it the
 // radio is off, and no calls come in.
@@ -72,8 +89,9 @@ void hold();
 void release();
 
 // Changes whenever anything below that a screen shows has changed: a group, a board's route,
-// signal (in steps of 4 dB), name or flags, the call log, a setting, the state; and while a call
-// is on, at most 4 times a second, for the meter and the seconds.
+// signal (in steps of 4 dB), name or flags, the call log, a setting, the state, a ring, a
+// conversation, a message; and while a call, a ring or a message is on, at most 4 times a
+// second, for the meter and the seconds.
 uint32_t generation();
 
 // --- Groups --------------------------------------------------------------------------------
@@ -91,7 +109,7 @@ struct Group {
   int onAir = 0;    // of them, reached over the air now, directly or through relays
   int onNet = 0;    // reached through inkharness now (0 until that link is built)
   int unheard = 0;  // calls to the group or this board that played while no screen was up, or
-                    // didn't play
+                    // didn't play; rings missed; messages not played
   bool active = false;  // the one on screen
 };
 std::vector<Group> groups();  // in the card's order
@@ -162,13 +180,28 @@ struct Status {
   // Changes each time a live call starts playing here: the UI raises the call sheet over any
   // screen when it does (unless the Recorder or an alarm is up, which no call plays over).
   uint32_t incoming = 0;
-  std::string error;     // why the last talkStart() or playLast() didn't happen, "" otherwise
+  uint32_t ringsSeen = 0;  // changes each time a ring starts on this board (incomingRing())
+  // Changes when a conversation this board isn't in comes on (once each), in this group: the
+  // screens offer to join it.
+  uint32_t conversationsSeen = 0;
+  int conversationGroup = 0;
+  uint32_t messagesIn = 0;      // changes each time a message arrives here (messages())
+  uint32_t playingMessage = 0;  // hearing a message (replay is true too): its id; 0 otherwise
+  std::string error;  // why the last talkStart(), playLast(), ringStart() and so on didn't
+                      // happen, "" otherwise
 };
 Status status();
 
 // --- Calls -----------------------------------------------------------------------------------
 
+enum class Kind : uint8_t {
+  Voice,    // a call: push-to-talk
+  Ring,     // a ring, answered or not
+  Message,  // a message left (messages() has more)
+};
+
 struct Call {
+  Kind kind = Kind::Voice;
   time_t at = 0;         // when it began, UTC; 0 while the clock isn't set
   uint32_t agoS = 0;     // seconds ago it began
   int group = 0;
@@ -187,10 +220,16 @@ struct Call {
   bool played = false;  // incoming: it came out of the speaker (else the board was busy)
   bool heard = false;   // incoming: it played while a Comms screen or the call sheet was up, or
                         // markHeard() since
-  int heardBy = 0;      // outgoing: boards that said it played there
+  int heardBy = 0;      // outgoing: boards that said it played there (a message: that have it
+                        // whole)
   uint32_t lost = 0;    // incoming: 20 ms frames that never came (played as silence)
+  uint32_t conversation = 0;  // Voice: the conversation it was in (0: none, an older board's)
+  bool answered = false;  // Ring: someone answered (incoming: this board, or another)
+  bool complete = true;   // Message: every frame came
+  uint32_t message = 0;   // Message: its id, for playMessage()
 };
-// Newest first; group -1 for every group.
+// Newest first; group -1 for every group. Ms of a ring is how long it rang. A ring missed here
+// isn't heard; a message is heard once played (markHeard() leaves messages as they are).
 std::vector<Call> calls(int group, int max = kMaxCalls);
 void markHeard(int group);  // the group's calls count as heard (-1: every group's)
 
@@ -201,6 +240,9 @@ void markHeard(int group);  // the group's calls count as heard (-1: every group
 // reason in status().error, if it can't start now: no such group, a net-only group (the link isn't
 // there yet), the Recorder or an alarm, the agent listening. The mic itself opens in the comms
 // task; if it won't, status().error says so too.
+// In a conversation: this board joins the group's conversation if one is on (else the call
+// starts one, and the boards that play it are in it) and talks in it: to all of it (target 0, or
+// a board in it), or to one board alone.
 bool talkStart(int group, uint32_t target);
 void talkStop();
 bool talking();
@@ -217,7 +259,126 @@ LastCall lastCall();
 // Plays the last call heard again. False (status().error says why) if there's none, or the board
 // is talking, hearing or busy as for a call.
 bool playLast();
-void stopPlaying();  // what's playing stops (a live call goes on in the log, unheard)
+void stopPlaying();  // what's playing stops (a live call goes on in the log, unheard; a message)
+
+// --- Conversations -------------------------------------------------------------------------------
+
+struct Conversation {
+  bool on = false;
+  uint32_t id = 0;
+  bool in = false;    // this board is in it: its voice plays here
+  bool left = false;  // this board left it: its voice doesn't play here until join()
+  std::vector<uint32_t> members;  // the other boards in it, as they say
+  std::vector<std::string> names; // theirs, upper case ("" for a board not heard from yet)
+  uint32_t ms = 0;       // on for this long
+  uint32_t quietMs = 0;  // since the last word
+  time_t since = 0;      // when it began, UTC; 0 while the clock isn't set
+};
+Conversation conversation(int group);
+// This board is in the group's conversation from now on (its voice plays here, HOLD BOOT talks
+// to it). False if none is on.
+bool join(int group);
+// Out of it: its voice stops playing here (a call of it playing stops) until join().
+void leave(int group);
+
+// --- Ringing -------------------------------------------------------------------------------------
+
+constexpr uint32_t kRingMs = 60000;        // a ring gives up after this long: NO ANSWER
+constexpr uint32_t kMessageAfterMs = 5000;  // a message may be left from this far into a ring
+constexpr uint32_t kMaxMessageMs = 60000;   // a message stops (and goes) after this long
+
+enum class DialState : uint8_t {
+  None,       // not ringing
+  Ringing,    // ringing the target
+  Answered,   // someone answered: the conversation is on (conversation(group))
+  NoAnswer,   // rang kRingMs with no answer; a message may still be left
+  Recording,  // recording a message (the ring has stopped: the others stopped ringing)
+  Sent,       // the message went (it's kept a few minutes for boards that missed frames)
+};
+
+// This board's ring.
+struct Dial {
+  DialState state = DialState::None;
+  int group = 0;
+  uint32_t target = 0;     // 0: all of the group, else that board
+  std::string targetName;  // "" for all, or a board not heard from yet
+  uint32_t ms = 0;         // rung so far, or how long it rang
+  int ringing = 0;         // boards that say they're ringing for it now
+  uint32_t answeredBy = 0;
+  std::string answeredByName;
+  bool canLeaveMessage = false;  // kMessageAfterMs into a ring with no answer, or NO ANSWER
+  uint32_t messageMs = 0;  // Recording: so far; Sent: its length
+  int delivered = 0;       // Sent: boards that say they have every frame of it
+  uint32_t count = 0;      // changes each time a ring starts
+};
+Dial dial();
+// Rings all of a group (target 0) or one board of it. False (status().error) if it can't: no
+// such group, net only, a ring or a message already going.
+bool ringStart(int group, uint32_t target);
+// A ring going: gives up (a cancel packet stops it on the other boards). One over (answered, NO
+// ANSWER, a message sent): dial() goes back to None.
+void ringStop();
+
+// A ring on this board.
+enum class RingEnd : uint8_t {
+  None,          // ringing, or never rang
+  Answered,      // answered here
+  AnsweredThere, // another board answered it
+  Ignored,       // ignoreRing() here
+  GaveUp,        // the dialer gave up
+  NoAnswer,      // the dialer rang kRingMs
+  Lost,          // no ring packet for 5 s: the dialer went out of range or off
+  Message,       // the dialer is leaving a message (messages() shows it coming)
+};
+struct Ring {
+  bool on = false;
+  int group = 0;
+  uint32_t from = 0;
+  std::string fromName;
+  bool toAll = true;  // to all of the group; else to this board alone
+  uint32_t ms = 0;    // ringing for this long (as the dialer counts)
+  time_t since = 0;   // when it began, UTC; 0 while the clock isn't set
+  uint32_t count = 0; // changes each time a ring starts here (status().ringsSeen too)
+  RingEnd ended = RingEnd::None;  // how the last one ended, once it isn't on
+};
+Ring incomingRing();
+// Answers the ring: the conversation is on, with this board and the dialer in it, and the ring
+// stops on every board. False if nothing rings.
+bool answer();
+void ignoreRing();  // stops it ringing here only
+
+// --- Messages ------------------------------------------------------------------------------------
+
+constexpr int kMaxMessages = 12;  // kept, all groups; the oldest played one goes first
+
+// Records a message for the ring that wasn't answered (group -1: canLeaveMessage), or, for
+// testing, for all of a group or one board of it directly. The ring stops (the boards it rang
+// stop ringing), and the mic opens with the cue. Frames go out as they're recorded, numbered.
+// False (status().error) if it can't.
+bool messageStart(int group = -1, uint32_t target = 0);
+void messageSend();    // the mic stops; the end goes out; dial() says Sent
+void messageCancel();  // dropped: the others drop what came of it
+
+struct Message {
+  uint32_t id = 0;  // for playMessage()
+  int group = 0;
+  uint32_t from = 0;
+  std::string fromName;
+  uint32_t to = 0;   // 0: all of the group, else this board
+  time_t at = 0;     // when it began, UTC; 0 if the clock wasn't set
+  uint32_t agoS = 0;
+  uint32_t ms = 0;
+  bool receiving = false;  // still coming
+  bool complete = false;   // every frame came (else the missing ones play as silence)
+  bool played = false;
+  bool onCard = false;     // on the card (else in RAM, gone at a power-off)
+  uint32_t frames = 0;     // 20 ms each
+  uint32_t sum = 0;        // the checksum of its frames (comms_calls.h)
+};
+std::vector<Message> messages(int group = -1);  // newest first
+// Plays a message (status(): Hearing, replay, playingMessage); it counts as played. False
+// (status().error) if there's no such message, or the board is busy as for PLAY LAST.
+bool playMessage(uint32_t id);
 
 // --- Settings (NVS) ----------------------------------------------------------------------------
 
@@ -248,10 +409,12 @@ struct Pong {
 };
 std::vector<Pong> pongs();  // answers to the last ping, in the order they came
 
-// Groups, boards, state, channel and counters: sent, received, dropped by reason, relayed.
+// Groups, boards, state, channel, conversations, rings, messages and counters: sent, received,
+// dropped by reason, relayed.
 void dump(Print &out);
 // A test of the parts that need no radio: HKDF and AES-GCM, the replay window, ADPCM, the
-// packet format, the seen-cache. Prints PASS or FAIL a check; true if all passed.
+// packet format (the new types too), the seen-cache, a message's reassembly with frames lost and
+// doubled, and conversations on a made-up clock. Prints PASS or FAIL a check; true if all passed.
 bool selfTest(Print &out);
 
 // Dev overrides (devtools.cpp's !commsgroup and !commschannel), kept in NVS: a test group from a
@@ -263,6 +426,11 @@ void setTestChannel(int channel);
 // as a duplicate) or the first voice frame of its last call (true: dropped as replayed, once the
 // seen-cache has forgotten it). For showing those drops in !comms.
 void resend(bool firstVoice);
+// Testing (!commsringvanish, !commsdropmsg): the ring going stops sending ring packets, with no
+// cancel, as if the dialer had gone out of range; and every nth message frame that comes is
+// dropped as if lost (0: none), so the asking again shows.
+void ringVanish();
+void dropMessageFrames(int nth);
 
 // The board is powering off: the radio's ESP-NOW side stops now, for good (power.cpp, before
 // Wi-Fi goes).

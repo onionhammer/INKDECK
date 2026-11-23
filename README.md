@@ -174,6 +174,17 @@ paste it on every board of the group. Without a line, a board with an `agent_tok
 group, HOME, with the other boards of that token. Voice goes as IMA ADPCM, 16 kHz (64 kbps), 20 ms
 a packet; a call doesn't play over the Recorder, an alarm, the agent or another call, and stops
 music, which plays on afterwards. The last call heard is kept to play again, with a log of calls.
+**Conversations:** a group has one at a time, from an answered ring or the first call until 60 s
+after the last word; the voice plays only on the boards in it (the ones that answered, joined,
+talked, or were listening when it began), every board of the group sees it's on and who is in
+it, and a board can leave it (its voice stops playing there) and join again. **Ringing:** a board
+rings all of a group or one board; the others ring (a phone's trill every few seconds) until one
+answers, the dialer gives up, or 60 s pass, and the dialer sees how many are ringing. From 5 s into
+a ring nobody answers, the dialer can **leave a message** instead (up to 60 s): the boards ask
+again for every frame they missed until it's whole (a checksum says so), keep it on the card
+(`SD:/.inkdeck/comms/`, in RAM without one) until played and for a day after, and play it only
+when asked. The engine has all of this; the screens don't show rings, conversations or messages
+yet, beyond rings and messages in the log.
 Boards pass each other's packets on (a **mesh**: flooding, up to three relays), also for groups
 they aren't in, unread, and each board knows how the others are reached: over the air with their
 signal, through which relay, or away. A board listens on USB power, or while a Comms screen holds
@@ -183,13 +194,20 @@ else `mesh_channel` (6): set that to your Wi-Fi's channel so boards on and off i
 built: `net` sends nothing yet. Packet format and keys:
 [`docs/comms-protocol.md`](docs/comms-protocol.md). On USB with the tailnet up, listening costs
 about 8.5 KB of internal RAM (80 KB free instead of 89 KB) and a call playing about 19 KB more;
-the image grows by about 71 KB with the screens (`INKDECK_COMMS=0` leaves it out). Tested 2026-11-22 with two boards
+ringing costs none, and receiving a message none (it's in PSRAM); the image grows by about 109 KB
+with the screens (`INKDECK_COMMS=0` leaves it out). Tested 2026-11-22 with two boards
 in one room (−76 dBm): ping (about 14 ms there and back over the air), calls both ways with the
 heard receipt, about 4% of frames lost on the air (each covered by the one before), PLAY LAST, and
-the duplicate and replay drops. Not tested: relaying through a third board, a board off Wi-Fi,
-range and current. Dev commands over USB: `!comms`, `!commstest`, `!commsping`, `!commstalk N`,
-`!commsplay`, `!commsgroup` (a test group without the card), `!commschannel`, `!commsrelay`,
-`!commsresend`.
+the duplicate and replay drops; rings answered, given up, unanswered for 60 s and with the dialer
+gone silent (stopped 5 s after its last ring packet), ringing one board, conversations (a talk each
+way, leave and join, the end 60 s after the last word), and messages arriving whole with every 5th
+or 7th frame dropped on purpose, one kept on the card through a restart. Not tested: relaying
+through a third board, a conversation of three boards, a board off Wi-Fi, range and current. Dev
+commands over USB: `!comms`, `!commstest`, `!commsping`, `!commstalk N [board]`, `!commsplay`,
+`!commsring [board]`, `!commsringstop`, `!commsanswer`, `!commsignore`, `!commsjoin`,
+`!commsleave`, `!commsmsg N`, `!commsplaymsg`, `!commsgroup` (a test group without the card),
+`!commschannel`, `!commsrelay`, `!commsresend`, and the test switches `!commsringvanish` and
+`!commsdropmsg N`.
 
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
@@ -207,7 +225,7 @@ cable can read them, as they can the `.env` values built into the firmware.
 US and metric units, and `INKDECK_AGENT` builds the agent in (`1`, as set) or leaves
 it out (`0`): no AGENT on Home, and HOLD BOOT only raises the player sheet. `INKDECK_TAILNET`
 does the same for the tailnet: `0` saves about 123 KB of flash and 7 KB of internal RAM, and
-`INKDECK_COMMS` for comms (about 71 KB of flash).
+`INKDECK_COMMS` for comms (about 109 KB of flash).
 
 ```ini
 [wifi]

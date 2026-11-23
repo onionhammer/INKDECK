@@ -1,6 +1,6 @@
 // The comms packet format (docs/comms-protocol.md has it byte by byte), and the two tables that
 // decide whether a packet is new: the seen-cache, which the mesh relays by, and the replay
-// window, which the board trusts by.
+// window, which the board trusts by. Conversations and message transfers are in comms_calls.h.
 //
 // Plain C++ with no Arduino or ESP-IDF calls, so the self-test (comms::selfTest()) checks it on
 // the board and it builds on a computer too. Not thread-safe: comms.cpp's task owns the tables.
@@ -21,14 +21,25 @@ constexpr size_t kNonce = 12;
 constexpr uint8_t kTtl = 3;  // relays a packet may pass through (so 4 hops over the air)
 
 enum Type : uint8_t {
-  kPresence = 1,    // "here": name, flags, battery; a hello asks the others to answer
+  kPresence = 1,    // "here": name, flags, battery; a hello asks the others to answer; the
+                    // conversation the board is in
   kVoiceStart = 2,  // a call begins (the voice packets carry the same, so it may be lost)
   kVoice = 3,       // 20 ms of IMA ADPCM, self-contained
   kVoiceEnd = 4,    // a call ended, with how many frames it had
   kPing = 5,        // !commsping
   kPong = 6,        // the answer, to the pinger
   kHeard = 7,       // a call played here: the caller counts who heard it
+  kRing = 8,        // a dialer rings all of a group or one board of it, about once a second
+  kRinging = 9,     // a board rings for it (or has stopped: ignored): the dialer counts them
+  kAnswer = 10,     // a ring answered: it floods, so every board it rang stops
+  kRingEnd = 11,    // the dialer gave up, rang 60 s with no answer, or leaves a message
+  kMessage = 12,    // a numbered 20 ms frame of a message (not live: it's sent to be complete)
+  kMessageEnd = 13, // a message's frame count and checksum, or that it was dropped
+  kMessageAsk = 14, // a board asks for the frames of a message it missed, or has them all
 };
+constexpr uint8_t kLastType = kMessageAsk;  // the types this firmware handles
+// A type this firmware handles. Others (a later version's) still parse, open and are relayed.
+inline bool knownType(uint8_t t) { return t >= kPresence && t <= kLastType; }
 
 // The cleartext header. Everything but ttl and hops is authenticated (it's the AES-GCM
 // associated data), so a relay can count down ttl and count up hops without the key.
@@ -49,7 +60,7 @@ uint32_t get32(const uint8_t *p);
 
 void putHeader(const Header &h, uint8_t *frame);
 // False if it isn't a comms frame this firmware reads: too short or long, another magic or
-// version, a type it doesn't know.
+// version, type 0. A type it doesn't handle (knownType()) still parses, so it can be relayed.
 bool parseHeader(const uint8_t *frame, size_t len, Header &out);
 // The associated data: the header as sent, with the ttl/hops byte zeroed.
 void associatedData(const uint8_t *frame, uint8_t out[kHeader]);
@@ -141,6 +152,9 @@ constexpr uint32_t kVoiceRate = 16000;
 constexpr size_t kFrameSamples = 320;
 constexpr size_t kFrameBytes = kFrameSamples / 2;
 constexpr uint32_t kFrameMs = 20;
+// A frame as boards keep it (PLAY LAST, messages): predictor (2, little-endian), step index,
+// byte count, then the bytes, zero-filled to kFrameBytes. All zeros is a lost frame: silence.
+constexpr size_t kStoredFrame = 4 + kFrameBytes;
 
 }  // namespace wire
 }  // namespace comms
