@@ -186,6 +186,11 @@ pub struct Claude {
     /// Passed as --max-turns.
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
+    /// New sessions start as Claude Code in a herdr terminal, where it can be watched and
+    /// taken over, instead of a print-mode run nobody sees. It needs a [herdr] table with
+    /// `run = "allow"`; without one, or when herdr can't start it, the run is the hidden one.
+    #[serde(default)]
+    pub herdr: bool,
 }
 
 impl Default for Claude {
@@ -198,6 +203,7 @@ impl Default for Claude {
             disallowed_tools: Vec::new(),
             dir: default_claude_dir(),
             max_turns: default_max_turns(),
+            herdr: false,
         }
     }
 }
@@ -972,6 +978,13 @@ mod tests {
             claude.allowed_tools,
             ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]
         );
+        // Out of sight unless it says so.
+        assert!(!claude.herdr);
+        let shown: super::Config = toml::from_str(
+            "[llm]\nbackend = \"mock\"\n[agent]\nbackend = \"claude\"\n[agent.claude]\nherdr = true\n[herdr]\n",
+        )
+        .unwrap();
+        assert!(shown.agent.unwrap().claude.unwrap().herdr);
         let herdr = cfg.herdr.unwrap();
         assert_eq!(herdr.command, ["hc"]);
         assert_eq!(herdr.machines, ["desktop"]);

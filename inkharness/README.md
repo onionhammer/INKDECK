@@ -278,6 +278,7 @@ allowed_tools = ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]   # --allowedT
 disallowed_tools = []         # --disallowedTools
 dir = "work"                  # each session works in <dir>/<id>, relative to this file
 max_turns = 40                # --max-turns
+herdr = false                 # true: new sessions start in a herdr terminal instead (below)
 ```
 
 - It runs `claude -p` with stream-json both ways: the prompt, and later words said into the
@@ -298,6 +299,22 @@ max_turns = 40                # --max-turns
 - Claude Code's session id is kept: a daemon restart resumes a working session with `--resume`,
   and so does talking into a finished one. Stop ends its process (SIGTERM, then SIGKILL after
   5 s).
+- **In herdr instead of out of sight** (`herdr = true`, with a `[herdr]` table whose `run` is
+  `"allow"`): a new session, or a job talk filed, starts as Claude Code itself in a new herdr
+  terminal on this machine, where it can be watched, typed into and taken over from any herdr
+  machine. It gets the same `command`, `model`, `permission_mode`, `allowed_tools` and
+  `disallowed_tools`, a new folder of its own under `dir`, and the words as its first prompt.
+  From there it is a herdr session like any other (below): the board shows its screen and puts
+  its questions and permission prompts, and words said into it are drafts. So it has no plan,
+  log of tool calls or cost on the board, no `max_turns`, and none of inkharness's tools
+  (`ask_choice`, `schedule`, `watch`, `show_panel`, `herdr_run`): for a schedule or a watch,
+  start the session with `herdr = false`. It runs in herdr's environment, not the daemon's, so
+  it pays with what Claude Code finds there. If herdr can't start it (it is down, `run` is
+  `"deny"`, `machines` leaves this machine out), the session runs hidden as above, and the log
+  says why. Sessions that already run hidden, and every schedule's and watch's runs, stay
+  hidden. Claude Code asks whether it trusts a folder it hasn't seen, and a folder under a
+  trusted one counts: run `claude` once in `dir` and say yes, or each session starts with that
+  question.
 
 **herdr**: programs in herdr terminals, here or on other herdr machines, are sessions of their
 own: Claude Code, Codex, a shell. inkharness follows them through `hc connect` and doesn't need
@@ -308,7 +325,7 @@ to have started them.
 command = ["hc"]          # spoken to as `<command> connect`; or ["ssh", "box", "hc"]
 machines = []             # whose terminals count; empty: all
 programs = []             # which programs count (foreground name, status app or label); empty: any that reports a status
-run = "allow"             # herdr_run, and new sessions with [agent] backend = "herdr"
+run = "allow"             # herdr_run, and new sessions with [agent] backend = "herdr" or [agent.claude] herdr = true
 answer = "allow"          # press the keys a question's choice stands for
 send = "allow"            # type words into it
 interrupt = "deny"        # press its stop key (the board's STOP)

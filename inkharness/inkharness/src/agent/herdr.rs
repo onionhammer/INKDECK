@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 use voice_proto::{AskOption, Backend, State};
 
 use super::store::{self, HerdrSide, Question, Session};
-use super::{Agent, Live, Refusal, Said};
+use super::{Agent, Claude, Live, Refusal, Said};
 use crate::config::{self, Policy};
 use crate::hc::{Connector, Hc, HcError};
 use crate::llm::{self, Piece};
@@ -134,18 +134,21 @@ impl Herdr {
         }
     }
 
-    /// Whether a terminal is a session: on a machine that counts, running a program that does
-    /// (or started by inkharness).
-    fn counts(&self, t: &Value, core: &str) -> bool {
-        let address = t["address"].as_str().unwrap_or_default();
-        let machine = self.machine_name(address, core);
-        if !self.cfg.machines.is_empty()
-            && !self
+    /// Whether `[herdr] machines` takes this machine's terminals.
+    fn machine_counts(&self, machine: &str) -> bool {
+        self.cfg.machines.is_empty()
+            || self
                 .cfg
                 .machines
                 .iter()
                 .any(|m| m.eq_ignore_ascii_case(machine))
-        {
+    }
+
+    /// Whether a terminal is a session: on a machine that counts, running a program that does
+    /// (or started by inkharness).
+    fn counts(&self, t: &Value, core: &str) -> bool {
+        let address = t["address"].as_str().unwrap_or_default();
+        if !self.machine_counts(self.machine_name(address, core)) {
             return false;
         }
         if t["labels"].get(LABEL).is_some() {
@@ -363,6 +366,73 @@ impl Herdr {
             params["line"] = json!(program);
             true
         };
+        self.launch(agent, params, program, task, typed_later).await
+    }
+
+    /// A new claude session as Claude Code in a terminal on this machine (`[agent.claude]
+    /// herdr`): the command line the hidden run's settings make, in a work folder of its own
+    /// under the same `dir`, with the words as its first prompt. If it can't start, nothing is
+    /// left behind, and the caller runs it hidden.
+    pub async fn start_claude(
+        &self,
+        agent: &Arc<Agent>,
+        claude: &Claude,
+        task: &str,
+    ) -> Result<String, Refusal> {
+        self.check(self.cfg.run)?;
+        // A terminal here has to count as a session, or the board would never see it.
+        let core = self.core().await;
+        if core.is_empty() {
+            return Err(Refusal::Unreachable);
+        }
+        if !self.machine_counts(&core) {
+            return Err(Refusal::Other(format!(
+                "[herdr] machines leaves out this one ({core})"
+            )));
+        }
+        // The session's id comes from its terminal's address, so the folder gets a name of
+        // its own.
+        let dir = std::path::absolute(&claude.dir).unwrap_or_else(|_| claude.dir.clone());
+        let work = dir.join(store::new_id(|name| dir.join(name).exists()));
+        std::fs::create_dir_all(&work)
+            .map_err(|e| Refusal::Other(format!("making {}: {e}", work.display())))?;
+        let argv = claude.terminal_argv(&super::claude::terminal_prompt(), task);
+        let mut params = json!({
+            // Its title is the task's, as a hidden session's is, whatever the program calls
+            // its terminal later.
+            "labels": {LABEL: "board", "title": store::title_from(task)},
+            "no_parent": true,
+            "cwd": work,
+        });
+        // hc reads an argv whose first word names one of its templates as that template and
+        // its task: the options would be typed into it as words. A shell line is never one.
+        let command = argv.first().cloned().unwrap_or_default();
+        if self.hc_templates().await.contains(&command) {
+            params["line"] = json!(shell_line(&argv));
+        } else {
+            params["argv"] = json!(argv);
+        }
+        let started = self
+            .launch(agent, params, &command, task, false)
+            .await
+            .map(|(id, _)| id);
+        if started.is_err() {
+            let _ = std::fs::remove_dir(&work); // it is empty: nothing ran in it
+        }
+        started
+    }
+
+    /// Starts a terminal as `params` say and makes its session, which is given `task`. With
+    /// `typed_later`, the task is typed in once the program is ready; else the program has it
+    /// already. The session's id, and where it runs.
+    async fn launch(
+        &self,
+        agent: &Arc<Agent>,
+        params: Value,
+        program: &str,
+        task: &str,
+        typed_later: bool,
+    ) -> Result<(String, String), Refusal> {
         let t = self
             .hc
             .call("terminal.run", params)
@@ -654,6 +724,14 @@ impl Herdr {
             }
         }
     }
+}
+
+/// `argv` as one line for `sh -c`: every word in single quotes.
+fn shell_line(argv: &[String]) -> String {
+    argv.iter()
+        .map(|word| format!("'{}'", word.replace('\'', r"'\''")))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// A herdr session's id: the same for a terminal every time ("h" and seven letters and digits
@@ -1798,6 +1876,184 @@ mod tests {
             (Backend::Herdr, "tidy the repo")
         );
         assert_eq!(core.calls("terminal.run")[0]["argv"], json!(["claude"]));
+    }
+
+    /// An agent whose new sessions are claude's and start in herdr (`[agent.claude] herdr`),
+    /// with herdr from `core` as `[herdr]` in `toml` says. `command` is never a real Claude
+    /// Code: a run that ends up hidden fails to start.
+    fn with_claude_in_herdr(
+        name: &str,
+        core: &Arc<FakeCore>,
+        command: &str,
+        toml: &str,
+    ) -> (Arc<Agent>, PathBuf) {
+        let dir = crate::skills::tests::scratch(name);
+        let claude = Claude {
+            command: vec![command.into()],
+            model: "haiku".into(),
+            permission_mode: "default".into(),
+            allowed_tools: vec!["Read".into()],
+            disallowed_tools: vec![],
+            dir: dir.join("work"),
+            max_turns: 40,
+            herdr: true,
+            env: vec![],
+            mcp: None,
+        };
+        let agent = Agent::open(
+            &cfg(&dir),
+            Box::new(crate::agent::mock::MockAgent),
+            tools(),
+            prompt(),
+            "test",
+            Backends {
+                default: Backend::Claude,
+                claude: Some(claude),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        agent.attach_herdr(Herdr::new(
+            toml::from_str(toml).unwrap(),
+            core.connector(),
+            &dir,
+            false,
+            Duration::from_millis(20),
+        ));
+        (agent, dir)
+    }
+
+    #[tokio::test]
+    async fn claude_sessions_start_in_herdr() {
+        let core = FakeCore::new("testbox", vec![]);
+        let (agent, dir) = with_claude_in_herdr("herdr-claude", &core, "/no/such/claude", "");
+        let id = agent.start("tidy the repo").await.unwrap();
+        assert_eq!(id, session_id("t50"));
+        let view = agent.view(&id).unwrap();
+        assert_eq!(
+            (view.backend, view.via, view.prompt.as_str()),
+            (Backend::Herdr, Via::Herdr, "tidy the repo")
+        );
+        // Claude Code as the hidden run is set up, with the task as its prompt: nothing is
+        // typed in afterwards.
+        let run = &core.calls("terminal.run")[0];
+        let argv: Vec<&str> = run["argv"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert_eq!(
+            argv[..7],
+            [
+                "/no/such/claude",
+                "--model",
+                "haiku",
+                "--allowedTools",
+                "Read",
+                "--permission-mode",
+                "default"
+            ]
+        );
+        assert_eq!(argv[argv.len() - 2..], ["--", "tidy the repo"]);
+        assert!(core.calls("terminal.send").is_empty());
+        // On this machine, in a new folder of its own under [agent.claude] dir.
+        assert!(run["on"].is_null());
+        let work = PathBuf::from(run["cwd"].as_str().unwrap());
+        assert!(work.is_dir() && work.parent() == Some(dir.join("work").as_path()));
+        // Its title is the task's, and stays: a label, which wins over the terminal's own.
+        assert_eq!(
+            (
+                run["labels"][LABEL].as_str(),
+                run["labels"]["title"].as_str()
+            ),
+            (Some("board"), Some("Tidy the repo"))
+        );
+        core.event("title", "t50", json!({"title": "✳ Claude Code"}));
+        core.set_status("t50", json!({"state": "working", "app": "claude-code"}));
+        assert_eq!(
+            until(&agent, &id, State::Working).await.title,
+            "Tidy the repo"
+        );
+
+        // A job talk filed starts the same way, and its placeholder goes.
+        let job = agent.propose("compare plumbers", None);
+        let started = agent.approve(&job, Some("this week")).await.unwrap();
+        assert_eq!(started, session_id("t51"));
+        assert!(!agent.exists(&job));
+        let argv = core.calls("terminal.run")[1]["argv"].clone();
+        assert_eq!(
+            argv.as_array().unwrap().last().unwrap(),
+            "compare plumbers\n\nthis week"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_claude_command_named_like_an_hc_template() {
+        // hc would start its template "reviewer" and type the options into it: a shell line
+        // is never read as a template.
+        let core = FakeCore::new("testbox", vec![]);
+        let (agent, _) = with_claude_in_herdr("herdr-claude-line", &core, "reviewer", "");
+        agent.start("what's new").await.unwrap();
+        let run = &core.calls("terminal.run")[0];
+        assert!(run["argv"].is_null());
+        let line = run["line"].as_str().unwrap();
+        assert!(
+            line.starts_with("'reviewer' '--model' 'haiku' ")
+                && line.ends_with(r" '--' 'what'\''s new'"),
+            "{line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_sessions_run_hidden_when_herdr_cannot_start_them() {
+        let hidden = |agent: &Arc<Agent>, id: &str| {
+            let view = agent.view(id).unwrap();
+            (view.backend, view.via)
+        };
+        // herdr is down.
+        let core = FakeCore::new("testbox", vec![]);
+        core.set_up(false);
+        let (agent, dir) = with_claude_in_herdr("herdr-claude-down", &core, "/no/such/claude", "");
+        let id = agent.start("tidy the repo").await.unwrap();
+        assert_eq!(hidden(&agent, &id), (Backend::Claude, Via::Inkharness));
+        // A filed job stays the session it is.
+        let job = agent.propose("compare plumbers", None);
+        assert_eq!(agent.approve(&job, None).await.unwrap(), job);
+        assert_eq!(hidden(&agent, &job), (Backend::Claude, Via::Inkharness));
+        // It comes back: the next one starts there.
+        core.set_up(true);
+        soon(|| core.connects.load(Ordering::Relaxed) > 0, "connected").await;
+        let mut shown = None;
+        for _ in 0..100 {
+            let id = agent.start("and the docs").await.unwrap();
+            if agent.view(&id).unwrap().backend == Backend::Herdr {
+                shown = Some(id);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(shown, Some(session_id("t50")));
+        // Only the hidden runs' folders and the shown one's: a failed start leaves none.
+        let folders = std::fs::read_dir(dir.join("work")).map_or(0, |d| d.count());
+        let started = agent.list(false).sessions.len();
+        assert!(folders <= started, "{folders} folders, {started} sessions");
+
+        // [herdr] doesn't let it run programs, or leaves this machine's terminals out.
+        for (name, toml) in [
+            ("herdr-claude-deny", "run = \"deny\"\n"),
+            ("herdr-claude-elsewhere", "machines = [\"desktop\"]\n"),
+        ] {
+            let core = FakeCore::new("testbox", vec![]);
+            let (agent, _) = with_claude_in_herdr(name, &core, "/no/such/claude", toml);
+            let id = agent.start("tidy the repo").await.unwrap();
+            assert_eq!(
+                hidden(&agent, &id),
+                (Backend::Claude, Via::Inkharness),
+                "{name}"
+            );
+            assert!(core.calls("terminal.run").is_empty(), "{name}");
+        }
     }
 
     #[tokio::test]

@@ -265,7 +265,7 @@ The daemon's `hello` gains `agent` when it has sessions:
 | `run` | `session` | A schedule: runs now. A watch: looks now |
 | `panel_choice` | `session`, `block` (a `choice` block's `id`), `choice` (an index into its `options`) | Answers a choice on the session's panel ([Panels](#panels)): the session hears it as the user's words |
 | `speak` | `session` | Says the session's last result (a schedule with `speak`, on a board on USB): answered like a turn's reply, `text`, `reply_start`, audio and `reply_end`, with no `stt`; `refused` (`nothing to say`) when it has no result |
-| `approve` | `session` | Starts a job talk filed (a `proposed` session). With `[agent] backend = "herdr"`, it starts as a program of its own, under a new id, and the job goes |
+| `approve` | `session` | Starts a job talk filed (a `proposed` session). With `[agent] backend = "herdr"`, or `"claude"` with `[agent.claude] herdr = true`, it starts as a program of its own in herdr, under a new id, and the job goes |
 | `delete` | `session` | Deletes a session for good |
 | `send_draft` | `session`, `draft` (the `draft` message's `id`) | Types a herdr session's draft into its program ([Drafts](#drafts)) |
 | `drop_draft` | `session`, `draft` | Throws a draft away |
@@ -556,6 +556,9 @@ A session runs one of three ways, its `backend`. New sessions (from the board or
   result, and its `ask_choice` and `plan` are inkharness's own, so its questions reach the board
   as above. It works in a folder of its own; stopped, its process ends. `program` is
   `"claude code"`.
+- With `[agent.claude] herdr = true` (and herdr able to start it), a new session on the claude
+  backend is Claude Code in a herdr terminal instead: the board gets a herdr session (`backend`
+  and `via` `"herdr"`, an `h…` id, drafts for its words), whose `title` stays the task's.
 - Messages, states and answers are the same for every backend; herdr sessions differ in what
   is described below.
 

@@ -16,7 +16,8 @@
 //! That is the `api` backend. Two more run sessions elsewhere: `claude` runs headless Claude
 //! Code per session (claude.rs), which reaches ask_choice and plan through an MCP server that
 //! calls back into the daemon (bridge.rs); `herdr` follows programs in herdr terminals, here or
-//! on other machines, as sessions of their own (herdr.rs, over hc.rs).
+//! on other machines, as sessions of their own (herdr.rs, over hc.rs). With `[agent.claude]
+//! herdr`, a new claude session is Claude Code in a herdr terminal, a herdr session from then on.
 
 pub mod bridge;
 mod claude;
@@ -305,6 +306,25 @@ pub async fn start(cfg: &config::Config, harness: &Harness) -> Result<Option<Arc
     }
     if backends.default == Backend::Herdr && cfg.herdr.is_none() {
         anyhow::bail!("[agent] backend = \"herdr\" needs a [herdr] table");
+    }
+    if let Some(claude) = backends.claude.as_ref().filter(|c| c.herdr) {
+        let hidden = "new claude sessions run hidden";
+        match &cfg.herdr {
+            _ if backends.default != Backend::Claude => tracing::warn!(
+                "[agent.claude] herdr = true does nothing without [agent] backend = \"claude\""
+            ),
+            None => {
+                tracing::warn!("[agent.claude] herdr = true needs a [herdr] table: {hidden}")
+            }
+            Some(herdr) if herdr.run != config::Policy::Allow => tracing::warn!(
+                "[agent.claude] herdr = true needs [herdr] run = \"allow\": {hidden}"
+            ),
+            Some(_) => tracing::info!(
+                "new claude sessions start in herdr terminals, in {} (trust that folder in \
+                 Claude Code once, or each one first asks whether to)",
+                claude.dir.display()
+            ),
+        }
     }
     let agent = Agent::open(
         agent_cfg,
@@ -606,14 +626,45 @@ impl Agent {
     }
 
     /// Starts a session for `text` on the backend new sessions run on; its id. With herdr,
-    /// that is a program in a new terminal, given `text` as its task.
+    /// that is a program in a new terminal, given `text` as its task; so is a claude session
+    /// that `[agent.claude] herdr` shows there.
     pub async fn start(self: &Arc<Self>, text: &str) -> Result<String, Refusal> {
         match self.backend {
             Backend::Herdr => {
                 let herdr = self.herdr.get().ok_or_else(no_herdr)?;
                 herdr.start_default(self, text).await
             }
-            backend => Ok(self.start_here(text, backend)),
+            backend => match self.claude_in_herdr(text).await {
+                Some(id) => Ok(id),
+                None => Ok(self.start_here(text, backend)),
+            },
+        }
+    }
+
+    /// Whether new claude sessions start in herdr terminals: `[agent.claude] herdr`, with a
+    /// herdr that may run programs.
+    fn claude_shows_in_herdr(&self) -> bool {
+        self.backend == Backend::Claude
+            && self.claude.as_ref().is_some_and(|c| c.herdr)
+            && self.herdr.get().is_some_and(|h| h.runs())
+    }
+
+    /// A new claude session as Claude Code in a herdr terminal, if they start there
+    /// (claude_shows_in_herdr): its id. None: it runs hidden, which is also what a herdr that
+    /// can't start it leaves.
+    async fn claude_in_herdr(self: &Arc<Self>, text: &str) -> Option<String> {
+        if !self.claude_shows_in_herdr() {
+            return None;
+        }
+        let (claude, herdr) = (self.claude.as_ref()?, self.herdr.get()?);
+        match herdr.start_claude(self, claude, text).await {
+            Ok(id) => Some(id),
+            Err(why) => {
+                tracing::warn!(
+                    "Claude Code didn't start in herdr ({why}): this session runs hidden"
+                );
+                None
+            }
         }
     }
 
@@ -1073,49 +1124,66 @@ impl Agent {
     }
 
     /// Starts a job talk filed, with more words if there are any: on the backend new sessions
-    /// run on (with herdr, a program of its own, and the job's placeholder goes). Its id.
+    /// run on (in herdr, a program of its own, and the job's placeholder goes). Its id.
     pub async fn approve(
         self: &Arc<Self>,
         id: &str,
         more: Option<&str>,
     ) -> Result<String, Refusal> {
+        let more = more.map(str::trim).filter(|m| !m.is_empty());
+        if self.backend != Backend::Herdr && !self.claude_shows_in_herdr() {
+            return self.approve_here(id, more);
+        }
         let prompt = {
-            let mut sessions = self.sessions.lock().unwrap();
-            let live = sessions.get_mut(id).ok_or(Refusal::NoSuchSession)?;
+            let sessions = self.sessions.lock().unwrap();
+            let live = sessions.get(id).ok_or(Refusal::NoSuchSession)?;
             if live.session.state != State::Proposed {
                 return Err(Refusal::Other("not a job waiting to be started".into()));
-            }
-            let more = more.map(str::trim).filter(|m| !m.is_empty());
-            if self.backend != Backend::Herdr {
-                let now = store::now();
-                let s = &mut live.session;
-                s.state = State::Working;
-                s.backend = self.backend;
-                if self.backend == Backend::Claude {
-                    s.program = Some(claude::PROGRAM.into());
-                }
-                if let Some(more) = more {
-                    s.inbox.push(more.to_string());
-                    s.add_log(&format!("you: {more}"), now);
-                }
-                s.add_log("started", now);
-                s.unread = false;
-                s.updated = now;
-                self.spawn_run(live);
-                tracing::info!(session = %id, "a filed job started");
-                self.save(&live.session);
-                self.notify(id, false);
-                return Ok(id.to_string());
             }
             match more {
                 Some(more) => format!("{}\n\n{more}", live.session.prompt),
                 None => live.session.prompt.clone(),
             }
         };
-        let herdr = self.herdr.get().ok_or_else(no_herdr)?;
-        let started = herdr.start_default(self, &prompt).await?;
+        let started = if self.backend == Backend::Herdr {
+            let herdr = self.herdr.get().ok_or_else(no_herdr)?;
+            herdr.start_default(self, &prompt).await?
+        } else {
+            match self.claude_in_herdr(&prompt).await {
+                Some(started) => started,
+                None => return self.approve_here(id, more),
+            }
+        };
         let _ = self.delete(id).await;
         Ok(started)
+    }
+
+    /// Starts a filed job as the session it is (api or claude).
+    fn approve_here(self: &Arc<Self>, id: &str, more: Option<&str>) -> Result<String, Refusal> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let live = sessions.get_mut(id).ok_or(Refusal::NoSuchSession)?;
+        if live.session.state != State::Proposed {
+            return Err(Refusal::Other("not a job waiting to be started".into()));
+        }
+        let now = store::now();
+        let s = &mut live.session;
+        s.state = State::Working;
+        s.backend = self.backend;
+        if self.backend == Backend::Claude {
+            s.program = Some(claude::PROGRAM.into());
+        }
+        if let Some(more) = more {
+            s.inbox.push(more.to_string());
+            s.add_log(&format!("you: {more}"), now);
+        }
+        s.add_log("started", now);
+        s.unread = false;
+        s.updated = now;
+        self.spawn_run(live);
+        tracing::info!(session = %id, "a filed job started");
+        self.save(&live.session);
+        self.notify(id, false);
+        Ok(id.to_string())
     }
 
     /// Runs a schedule now, or has a watch look now.
