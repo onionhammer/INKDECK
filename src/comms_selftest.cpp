@@ -10,12 +10,15 @@
 #include <math.h>
 #include <string.h>
 
+#include <initializer_list>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "adpcm.h"
 #include "comms_calls.h"
 #include "comms_crypto.h"
+#include "comms_mesh.h"
 #include "comms_mic.h"
 #include "comms_wire.h"
 
@@ -905,6 +908,144 @@ __attribute__((noinline)) void testMixer(Checker &c) {
           "mixer: two at once in one pull; three near full scale held under it; gone after 2 s");
 }
 
+void testLinks(Checker &c) {
+  // The link group: its key and id, and a links packet, as Python's cryptography makes them.
+  const crypto::GroupKeys k = crypto::linkKeys();
+  std::unique_ptr<crypto::Sealer> s(new crypto::Sealer());
+  s->setKey(k.key);
+  bool ok = memcmp(k.key, unhex("25f4f013d525701f32742171b454d3ecbd8786bb6da2a59ebc0b37be22b1576b")
+                              .data(),
+                   32) == 0 &&
+            k.id == 0x57c9ed26u;
+  uint8_t f[kMaxFrame];
+  Header h;
+  h.type = kExt;
+  h.ttl = 0;
+  h.group = k.id;
+  h.sender = 0x11223344;
+  h.boot = 7;
+  h.seq = 6;
+  putHeader(h, f);
+  std::unique_ptr<Links> l(new Links());
+  l->flags = kLinksRelays;
+  l->count = 2;
+  l->heard[0].id = 0x55667788;
+  l->heard[0].pct = 97;
+  l->heard[1].id = 0x99aabbcc;
+  l->heard[1].pct = 64;
+  const size_t body = putLinks(f + kHeader, kMaxBody, 0, *l);
+  const size_t n = s->seal(f, body);
+  const std::vector<uint8_t> want = unhex(
+      "c71f000026edc957443322110700000006000000bf4af235269e1c3c6f1fb0bde60c7219243837f43cb76b8bd8"
+      "c0fffdffd68006b1");
+  ok = ok && n == want.size() && memcmp(f, want.data(), n) == 0;
+  size_t bl = 0;
+  std::unique_ptr<Links> back(new Links());
+  ok = ok && s->open(f, n, bl);
+  Reader r(f + kHeader, bl);
+  r.u32();
+  ok = ok && r.u8() == kExtLinks && readLinks(r, *back) && back->flags == kLinksRelays &&
+       back->count == 2 && back->heard[0].id == 0x55667788 && back->heard[0].pct == 97 &&
+       back->heard[1].id == 0x99aabbcc && back->heard[1].pct == 64;
+  c.check(ok, "links: the link group's key and id; a sealed links packet (ext 3) matches the "
+              "reference bytes and reads back");
+  l->count = kMaxLinks;
+  uint8_t big[kMaxBody];
+  c.check(putLinks(big, sizeof big, 0, *l) == 7 + kMaxLinks * 5 &&
+              kHeader + 7 + kMaxLinks * 5 + kTag == 203,
+          "links: 32 boards listed is 203 bytes on the air");
+}
+
+void testRelayRule(Checker &c) {
+  using N = Neighbours;
+  constexpr uint32_t kMe = 0x01, kA = 0x0A, kB = 0x0B, kC = 0x0C;
+  std::unique_ptr<N> nb(new N());
+  std::unique_ptr<Links> l(new Links());
+  auto say = [&](uint32_t who, std::initializer_list<std::pair<uint32_t, uint8_t>> heard,
+                 uint32_t at) {
+    l->count = 0;
+    for (const auto &p : heard) {
+      l->heard[l->count].id = p.first;
+      l->heard[l->count].pct = p.second;
+      ++l->count;
+    }
+    nb->links(who, *l, at);
+  };
+  uint32_t t = 1000, who = 0;
+  // This board and A hear each other; nobody else is about.
+  nb->heard(kA, 1, 1, -60, t);
+  bool ok = !nb->needed(kA, kA, t);  // A's voice, straight from A: links or none, nobody needs it
+  say(kA, {{kMe, 100}}, t);
+  ok = ok && !nb->needed(kA, kA, t);
+  c.check(ok, "relay: two boards that hear each other don't relay each other's voice");
+
+  // C comes: heard here, no links from it yet: A's voice is relayed for it (today's flooding).
+  nb->heard(kC, 1, 1, -70, t);
+  ok = nb->needed(kA, kA, t, &who) && who == kC;
+  // Its links list this board, not A: still relayed for it; and C's voice for A, which lists
+  // only this board.
+  say(kC, {{kMe, 95}}, t);
+  ok = ok && nb->needed(kA, kA, t, &who) && who == kC && nb->needed(kC, kC, t, &who) && who == kA;
+  c.check(ok, "relay: no links means relay; a third board one of them doesn't hear gets it "
+              "relayed, both ways");
+
+  // C hears A at 90%: not relayed; at 60% (under kGoodPct): relayed.
+  say(kC, {{kMe, 95}, {kA, 90}}, t);
+  ok = !nb->needed(kA, kA, t);
+  say(kC, {{kMe, 95}, {kA, 60}}, t);
+  ok = ok && nb->needed(kA, kA, t);
+  c.check(ok, "relay: a board that hears the sender well isn't relayed for; one that hears it "
+              "under 80% is");
+
+  // A copy relayed by B (origin A, out of this board's range): C, heard here, needs it only if
+  // it hears neither B (that copy) nor A (the first).
+  std::unique_ptr<N> keep(nb.release());
+  nb.reset(new N());
+  nb->heard(kB, 1, 1, -60, t);
+  nb->heard(kC, 1, 1, -60, t);
+  say(kB, {{kMe, 100}, {kC, 100}}, t);
+  say(kC, {{kMe, 100}, {kB, 100}}, t);
+  ok = !nb->needed(kA, kB, t);
+  say(kC, {{kMe, 100}, {kA, 100}}, t);
+  ok = ok && !nb->needed(kA, kB, t);
+  say(kC, {{kMe, 100}}, t);
+  ok = ok && nb->needed(kA, kB, t, &who) && who == kC && nb->needed(kA, 0, t);
+  c.check(ok, "relay: a relayed copy goes on only for a board that hears neither that relay nor "
+              "the origin (an unknown relay: the origin alone)");
+
+  // Lists expire: C's links older than kListMs count as none (relayed for); C not heard for
+  // kHeardMs isn't a neighbour (not relayed for).
+  say(kC, {{kMe, 100}, {kB, 100}}, t);
+  ok = !nb->needed(kA, kB, t + N::kListMs - 1);
+  nb->heard(kB, 1, 2, -60, t + N::kListMs);
+  nb->heard(kC, 1, 2, -60, t + N::kListMs);
+  say(kB, {{kMe, 100}, {kC, 100}}, t + N::kListMs);
+  ok = ok && nb->needed(kA, kB, t + N::kListMs, &who) && who == kC;
+  const uint32_t later = t + N::kListMs + N::kHeardMs;
+  nb->heard(kB, 1, 3, -60, later);
+  say(kB, {{kMe, 100}}, later);
+  ok = ok && !nb->needed(kA, kB, later);
+  c.check(ok, "relay: links older than 16 s count as none; a board not heard for 20 s isn't "
+              "relayed for");
+
+  // The share heard: of 64 packets, every 4th lost: 75%; a new boot counts afresh; mine() lists
+  // the boards heard within kHeardMs, with theirs.
+  nb.reset(new N());
+  for (uint32_t q = 1; q <= 65; ++q) {  // the window: 2 to 65, 16 of them lost
+    if (q % 4) nb->heard(kA, 3, q, -60, t + q);
+  }
+  for (uint32_t q = 10; q <= 20; ++q) nb->heard(kB, 5, q, -60, t + 100);
+  ok = nb->size() == 2 && nb->at(0).pct() == 75 && nb->at(1).pct() == 100;
+  nb->heard(kA, 4, 1, -60, t + 200);
+  ok = ok && nb->at(0).pct() == 100;
+  nb->mine(*l, t + 100 + N::kHeardMs - 1);
+  ok = ok && l->count == 2;
+  nb->mine(*l, t + 100 + N::kHeardMs);
+  ok = ok && l->count == 1 && l->heard[0].id == kA;
+  c.check(ok, "links: the share of a board's packets heard straight (75% with every 4th lost), "
+              "afresh at its next boot; this board's links list who it heard in the last 20 s");
+}
+
 }  // namespace
 
 bool selfTest(Print &out) {
@@ -926,6 +1067,8 @@ bool selfTest(Print &out) {
   testHistory(c);
   testHeard(c);
   testMixer(c);
+  testLinks(c);
+  testRelayRule(c);
   out.printf("commstest: %s (%d failed) in %lu ms\n", c.failed ? "FAILED" : "all passed",
              c.failed, static_cast<unsigned long>(millis() - t0));
   return c.failed == 0;

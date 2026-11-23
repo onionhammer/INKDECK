@@ -575,10 +575,12 @@ std::string groupLine(const comms::Group &g) {
   return s;
 }
 
-// "AIR CH 6 · NET UP", "AIR CH 6", "NET DOWN", "OFF".
+// "AIR CH 6 · NET UP", "AIR CH 6", "AIR CH 6 · LONG RANGE" (this board sends at the long-range
+// rate), "NET DOWN", "OFF".
 std::string channelText(const comms::Status &s, comms::Via via) {
   if (s.state == comms::State::Off || s.channel == 0) return "OFF";
-  const std::string air = "AIR CH " + std::to_string(s.channel);
+  const std::string air =
+      "AIR CH " + std::to_string(s.channel) + (s.longRange ? kDot + "LONG RANGE" : "");
   switch (via) {
     case comms::Via::Air: return air;
     case comms::Via::Net: return s.netUp ? "NET UP" : "NET DOWN";

@@ -31,6 +31,7 @@
 //   mesh_name = KITCHEN                  ; this board's name on the others
 //   mesh_channel = 6                     ; the radio's Wi-Fi channel off Wi-Fi
 //   mesh_mic = push                      ; the mic keyed by HOLD BOOT, not switched by ● (apps/comms_ui.h)
+//   mesh_range = long                    ; send at the long-range rate, 500 kbps (comms.h)
 //
 // and lists the network shares Files browses (shares.h has the syntax), one line each:
 //
@@ -161,6 +162,12 @@ int meshChannel();       // mesh_channel: 1 to 13, 6 without a line
 // The screens ask comms::micMode(), which a dev override can change.
 enum class MeshMic : unsigned char { Sticky, Push };
 MeshMic meshMic();
+// mesh_range: the rate this board's comms packets go out at (comms.h). Normal (the default, and
+// any value but long): 1 Mbps. Long: Espressif's long-range rate, 500 kbps, which reaches
+// further. Every board hears both. The engine asks comms::range(), which a dev override can
+// change.
+enum class MeshRange : unsigned char { Normal, Long };
+MeshRange meshRange();
 
 // The lock. hasPin(): the board locks at boot, on waking the desk face and after lockMinutes()
 // without a key (0: never for that).

@@ -34,6 +34,9 @@ bool hkdf(const uint8_t *salt, size_t saltLen, const uint8_t *ikm, size_t ikmLen
 
 // A group's keys from its secret: a mesh_group line's (fromToken false) or agent_token's.
 GroupKeys derive(const std::string &secret, bool fromToken);
+// The link group's (comms_mesh.h: the links packets every board reads): from a public secret
+// under a salt of its own, so no mesh_group line or agent_token gives it.
+GroupKeys linkKeys();
 
 // "7F3A": the group id's first 4 hex digits, as the screens show it.
 void tag(uint32_t groupId, char out[5]);

@@ -41,6 +41,7 @@ struct Values {
   std::string meshName;
   int meshChannel = 6;
   bool meshMicPush = false;  // mesh_mic = push
+  bool meshRangeLong = false;  // mesh_range = long
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
@@ -49,7 +50,7 @@ struct Values {
            tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode &&
            agentFaceDetails == o.agentFaceDetails && newsFaceEvery == o.newsFaceEvery &&
            meshGroups == o.meshGroups && meshName == o.meshName && meshChannel == o.meshChannel &&
-           meshMicPush == o.meshMicPush;
+           meshMicPush == o.meshMicPush && meshRangeLong == o.meshRangeLong;
   }
 };
 
@@ -212,7 +213,11 @@ constexpr const char *kTemplate =
     "; How this board's mic is keyed on the COMMS screens: sticky (the default: a press of the\n"
     "; wheel switches it on, and it stays on until the next) or push (on only while BOOT is held:\n"
     "; push to talk; the menu's KEEP MIC ON leaves it on, to hear a room).\n"
-    "; mesh_mic = push\n";
+    "; mesh_mic = push\n"
+    "; The rate this board sends at: normal (the default: 1 Mbps) or long (Espressif's long-range\n"
+    "; rate, 500 kbps: further, through more walls, but each packet takes twice the air). Every\n"
+    "; board hears both, so boards on either setting talk to each other.\n"
+    "; mesh_range = long\n";
 
 // The share lines and SMB passwords go in NVS as one string each, a line apiece.
 std::vector<std::string> splitLines(const std::string &text) {
@@ -290,6 +295,7 @@ void loadNvs() {
   card.meshName = nvsString(prefs, "mname");
   card.meshChannel = prefs.getInt("mchan", 6);
   card.meshMicPush = prefs.getBool("mmic", false);
+  card.meshRangeLong = prefs.getBool("mrange", false);
   tailscaleKeySet = prefs.isKey("tskey");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
@@ -317,6 +323,7 @@ void saveNvs() {
   prefs.putString("mname", card.meshName.c_str());
   prefs.putInt("mchan", card.meshChannel);
   prefs.putBool("mmic", card.meshMicPush);
+  prefs.putBool("mrange", card.meshRangeLong);
   prefs.end();
 }
 
@@ -763,6 +770,13 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
       if (!v.meshMicPush && mode != "sticky") {
         log_w("settings: %s: mesh_mic must be sticky or push; sticky it is", kFile);
       }
+    } else if (key == "mesh_range") {
+      // normal or long; anything else is normal.
+      const std::string range = text::lower(value);
+      v.meshRangeLong = range == "long";
+      if (!v.meshRangeLong && range != "normal") {
+        log_w("settings: %s: mesh_range must be normal or long; normal it is", kFile);
+      }
     } else {
       log_w("settings: %s: unknown setting \"%s\"", kFile, key.c_str());
     }
@@ -1201,6 +1215,11 @@ int meshChannel() {
 MeshMic meshMic() {
   loadNvs();
   return card.meshMicPush ? MeshMic::Push : MeshMic::Sticky;
+}
+
+MeshRange meshRange() {
+  loadNvs();
+  return card.meshRangeLong ? MeshRange::Long : MeshRange::Normal;
 }
 
 PinChange pendingPin() { return pending; }

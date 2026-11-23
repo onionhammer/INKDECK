@@ -133,3 +133,7 @@ nfs = nfs://nas.local/volume1/books
 ; wheel switches it on, and it stays on until the next) or push (on only while BOOT is held:
 ; push to talk; the menu's KEEP MIC ON leaves it on, to hear a room).
 ; mesh_mic = push
+; The rate this board sends at: normal (the default: 1 Mbps) or long (Espressif's long-range
+; rate, 500 kbps: further, through more walls, but each packet takes twice the air). Every
+; board hears both, so boards on either setting talk to each other.
+; mesh_range = long

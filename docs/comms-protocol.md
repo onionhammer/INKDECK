@@ -5,10 +5,11 @@ rings, conversations, messages, and relaying for each other as a mesh. The board
 `src/comms.h` and `src/comms.cpp`; the packet format is `src/comms_wire.h`, conversations and the
 message reassembly `src/comms_calls.h`, the mic's packets, gate, history and mixer
 `src/comms_mic.h`, the keys `src/comms_crypto.h`, the codec `src/adpcm.h`, messages on the card
-`src/comms_store.h`. Keep this file and those in step. Version 1, written 2026-11-22; rings,
-conversations and messages added the same day; on 2026-11-23 the open mic replaced push-to-talk
-(types 2, 3, 4 and 15's bodies changed, type 7 retired), all without a new version number
-([Versions](#versions)).
+`src/comms_store.h`, the links packet and the relay rule `src/comms_mesh.h`. Keep this file and
+those in step. Version 1, written 2026-11-22; rings, conversations and messages added the same
+day; on 2026-11-23 the open mic replaced push-to-talk (types 2, 3, 4 and 15's bodies changed, type
+7 retired), and later that day the long-range rate and relaying only when needed (the link group,
+ext type 3) came, all without a new version number ([Versions](#versions)).
 
 Nothing else speaks it yet. The link through inkharness (phases 5 and 6 of the issue) will carry
 these same packets, still sealed with the group's key, so a daemon or a hub passes them on
@@ -26,6 +27,24 @@ channel, measured 2026-11-22).
 The radio is on one Wi-Fi channel at a time: the network's while the board is joined to one, else
 `mesh_channel` (`SD:/inkdeck.ini`, 6 by default). Boards on different channels don't hear each
 other. Receiving needs Wi-Fi's modem sleep off.
+
+**The rate.** A board sends at 1 Mbps (802.11b, long preamble), or with `mesh_range = long` at
+Espressif's long-range rate, 500 kbps (`esp_now_set_peer_rate_config()` on the broadcast peer,
+`WIFI_PHY_MODE_LR`, `WIFI_PHY_RATE_LORA_500K`): further and through more walls, each packet twice
+as long on the air. Measured 2026-11-23: a 220-byte voice frame is 2.25 ms on the air at 1 Mbps (an
+air survey: 50 a second took 11.3% of the time); at long range its send callback comes about
+2.1 ms later (5.9 to 6.4 ms after `esp_now_send()`, against 3.3 to 4.4 at 1 Mbps, the rest being
+the wait for a clear channel), its 263 bytes at half the rate. The 250 kbps rate isn't
+used: a voice frame every 20 ms would fill the air. Every board hears both: the station takes the
+long-range protocol on top of 802.11b/g/n (`WIFI_PROTOCOL_LR`), set before every join, since
+changing the protocols while joined drops the connection; an ordinary access point is joined and
+talked to as before. Verified on the boards 2026-11-23: frames sent at the long-range rate come
+with rx_ctrl's rate 26 (1 Mbps ones with 0), and the sender's send callback says
+`WIFI_PHY_RATE_LORA_500K`; a board without the long-range protocol hears none of them (and can't
+set the rate: `ESP_ERR_ESPNOW_ARG`), while one with it still hears 1 Mbps frames; with it the
+board joins the home network, the agent and the tailnet connect, and the network's signal is the
+same (−55 to −58 dBm with it and without). A board's presence says which rate it sends at
+(`0x08`).
 
 ## Frame
 
@@ -82,7 +101,7 @@ Every body starts with **sentAt** (4 bytes): the sender's clock, UTC seconds, or
 set. Then, by type:
 
 **Presence** (1): flags (1: `0x01` on USB power, `0x02` relays for others, `0x04` its mic is on,
-`0x80` hello: answer with your presence), battery (1: percent, `0xFF` none), name length
+`0x08` it sends at the long-range rate, `0x80` hello: answer with your presence), battery (1: percent, `0xFF` none), name length
 (1, up to 16), name (ASCII, upper case), then the conversation the board is in: its id (4, `0` for
 none), and only if it isn't 0: on for (2, seconds), quiet for (2, seconds since its last word),
 member count (1, up to 8), members (4 each: the other boards in it that this one has heard say so
@@ -174,6 +193,9 @@ as it does any packet ([Taking a packet](#taking-a-packet)).
 | --- | --- | --- |
 | `1` | history ask | a board asks a mic's board for its 2 hours of levels |
 | `2` | history | the levels, to the board that asked |
+| `3` | links | the boards a board hears straight over the air, and how well; only in the link group ([Relaying](#relaying)) |
+
+Ext types 3 to 7 are for relaying, 8 and up for later features.
 
 **History ask** (1): board (4: the mic's). Sent by a board that hears a mic which has been on more
 than 2 minutes (its still-here's bar isn't 0), once it hears it, again 2 s apart until the history
@@ -182,6 +204,13 @@ comes (three at most). Only a board whose mic is on, in that group, answers.
 **History** (2): to (4: the board that asked), session (2), first bar (2), count (1, up to 60), then
 that many levels, the bars first to first + count - 1, the last the bar now. 110 bytes on the air
 with 60 bars.
+
+**Links** (3), in the link group only: flags (1: `0x01` the board relays for others, `0x02` it
+sends at the long-range rate), count (1, up to 32), then for each board it heard straight in the
+last 20 s: its id (4), and the share (1, a percent) of that board's last 64 sequence numbers (fewer
+while fewer have gone) that came straight from it. Sent with ttl 0 (never relayed), every 5 s plus
+up to 1 s while the board listens, and 0.3 to 1 s after it starts. 53 bytes on the air with two
+boards listed, 203 with 32.
 
 ## Keys
 
@@ -207,6 +236,12 @@ secret for every other one. Outsiders see that encrypted ESP-NOW traffic flows, 
 address, of what type and size; not what it says or which board of the group sent it, beyond the
 id.
 
+**The link group** carries the links packets every board reads, whatever its groups: HKDF as
+above with the secret `inkdeck links` and the salt `inkdeck comms 1 links`, so its key is public
+and no `mesh_group` line or token gives it. Its key is
+`25f4f013d525701f32742171b454d3ecbd8786bb6da2a59ebc0b37be22b1576b` and its id `57c9ed26`. Sealing
+it keeps the frame format the same as every other packet's; it hides nothing.
+
 Reference values (`!commstest` checks them):
 
 - secret `correct horse battery staple`: key `304cb698315df95320f1c497cdc6a392940c46af8009bb2883438fa2568baf2f`,
@@ -231,6 +266,10 @@ Reference values (`!commstest` checks them):
 - In that group, a mic off (type 4) from sender `11223344`, boot 7, seq 5, ttl 3, sentAt 0: session 5,
   switched off, on for 600 s (body `0000000005000158020000`), is the 47-byte frame
   `c7140300e13e368e4433221107000000050000003ddb4c9843cacf766c0a6f4f4f5c99a236200cdcbdbf1bb3fd7296`.
+- In the link group, links (type 15, ext 3) from sender `11223344`, boot 7, seq 6, ttl 0, sentAt 0:
+  flags 1 (relays), board `55667788` at 97% and `99aabbcc` at 64% (body
+  `000000000301028877665561ccbbaa9940`), is the 53-byte frame
+  `c71f000026edc957443322110700000006000000bf4af235269e1c3c6f1fb0bde60c7219243837f43cb76b8bd8c0fffdffd68006b1`.
 
 ## Taking a packet
 
@@ -238,31 +277,74 @@ In this order:
 
 1. **The header.** A frame that doesn't parse, or from this board's own id (its own packet, relayed
    back), is dropped.
-2. **Another group's.** A board passes on a packet whose group it isn't in by the header alone,
-   unread: once (by the seen-cache below), if ttl isn't 0 and RELAY FOR OTHERS is on.
-3. **Seen before.** The seen-cache holds the last 256 packets taken, by group, sender, boot and seq.
+2. **Straight from its board** (hops 0), whatever its group: its MAC address is learnt as that
+   board's (a relay's copies name it), and its sequence number counts toward the share of that
+   board's packets heard straight ([Relaying](#relaying)). A packet in the link group then goes to
+   [Relaying](#relaying) and no further: it's never relayed, and needs no replay window (a spoofed
+   one can only make a board relay more or less).
+3. **Another group's.** A board passes on a packet whose group it isn't in by the header alone,
+   unread: once (by the seen-cache below), if ttl isn't 0 and RELAY FOR OTHERS is on, and for voice
+   and message frames by the relay rule (the type is in the header).
+4. **Seen before.** The seen-cache holds the last 256 packets taken, by group, sender, boot and seq.
    The mesh floods, so a packet comes once from each relay in range: only the first is handled.
-4. **It opens** with the group's key, or is dropped (and not relayed).
-5. **The replay window**, per sender: the boot it's on and which of its last 64 sequence numbers
+5. **It opens** with the group's key, or is dropped (and not relayed).
+6. **The replay window**, per sender: the boot it's on and which of its last 64 sequence numbers
    have been taken. Dropped: a copy, one older than the window, one from an earlier boot. The
    first packet from a sender, or from a later boot of it, must be fresh: its sentAt within 30
    minutes of this board's clock, when both clocks are set. Only then does it go into the
    seen-cache.
-6. **Handled**, by type, and how the sender is reached is noted: hops 0 is straight over the air
+7. **Handled**, by type, and how the sender is reached is noted: hops 0 is straight over the air
    (its RSSI, and its MAC address is learnt as that board's), more is through relays (the MAC it
    came from names the last relay, if that board's own packets have been heard).
-7. **Relayed**, if ttl isn't 0 and RELAY FOR OTHERS is on, 1 to 6 ms later, unchanged but for
+8. **Relayed**, if ttl isn't 0 and RELAY FOR OTHERS is on, 1 to 6 ms later, unchanged but for
    hops and ttl, unless it was for this board alone: the first field after sentAt names it (voice,
    a pong, a ring, ringing, a ring end or a message ask to this board), or for a message or message
    end the second (`to`); for type 15 the first field after the ext type (a history ask's mic, a
    history's asker). Presence, a mic's still-here and off, a ping and an answer are never for one
    board alone: every board of the group follows whose mic is on, and an answer floods so every
    board the ring rang stops. A type (or ext type) this board doesn't know is relayed unread. A
-   packet starts with ttl 3: three relays, four hops over the air at most.
+   packet starts with ttl 3: three relays, four hops over the air at most. Voice (3) and message
+   (12) frames go on only by the relay rule ([Relaying](#relaying)).
 
-Every board in range of a sender relays each of its packets once, so with n boards in range the
-air carries a voice packet up to n times. With two boards each relays the other's packets back
-to it, where they're dropped as its own.
+Every board in range of a sender relays each of its other packets once, so with n boards in range
+the air carries such a packet up to n times. Voice and message frames, nearly all of the air a
+board uses, go on only where they're needed.
+
+## Relaying
+
+Before 2026-11-23 every board relayed every packet it hadn't seen, so two boards in one room
+doubled each other's voice on the air: each relayed the other's frames back to it, where they were
+dropped as its own. Now a voice or message frame is relayed only when a board that this one hears
+straight would otherwise miss it (`Neighbours` in `src/comms_mesh.h`):
+
+- **Neighbours.** A board heard straight (any packet at hops 0, any group's, links included) in the
+  last 20 s. For each, the share of its last 64 sequence numbers that came straight: a board's
+  sequence numbers run across all its groups, so the gaps are its packets this board missed.
+- **Links.** Every board sends its neighbours and their shares every 5 to 6 s (ext type 3 in the link
+  group, never relayed): readable by boards of every group, since RELAY FOR OTHERS relays for groups a
+  board isn't in. A neighbour's links count for 16 s (about three).
+- **The rule.** A frame from origin O, as this board got it from P (the board whose radio sent that
+  copy: O itself at hops 0, else the relay its MAC address names; unknown if that board's own
+  packets haven't been heard), goes on if some neighbour X, not O and not P, has no links that
+  count, or lists neither P nor O at 80% or more. Otherwise it isn't relayed (`!comms` counts both).
+  So two boards that hear each other never relay each other's voice; a third that one of them
+  doesn't hear (or hears under 80%) gets it relayed; a board with no links (an older board, or its
+  links lost) counts as needing everything, which is the flooding from before.
+- **Spoofing.** The link group's key is public, so anyone can send links in any board's name. That
+  can only make boards relay more (claiming not to hear) or less (claiming to hear boards it
+  doesn't): the same as jamming or flooding the channel, which anyone can do anyway.
+- Two relays that both hear a board that needs a frame both relay it (no counting of copies yet);
+  a weak link heard at 80% or more isn't helped.
+- **Measured** 2026-11-23 with two boards on USB in different rooms (−69 to −75 dBm, home Wi-Fi
+  channel 6, which carried frames 29 to 50% of the time before any comms traffic), 20 s runs of a
+  mic held open by a test tone, loss from the gaps in sequence numbers (`!commsloss`): with the rule
+  neither board relayed a voice frame (`!comms`: 1,232 not relayed in a one-mic run); flooding,
+  the other board relayed every one. At 1 Mbps the rule made little difference (one mic: 2.2% lost
+  against 2.0% flooding; both mics: 1.7 to 2.8% and 4.3 to 9.9% each way, against 2.6 to 2.8% and 5.4
+  to 6.9%). At long range with both mics, flooding lost 11.2 to 17.4%, the rule 1.4 to 6.0%: four
+  4-ms packets every 20 ms on top of the channel's own traffic swamp it. Not tested on the air: a
+  third board, so no frame was ever needed (the rule's third-board cases are in `!commstest`).
+
 
 ## Voice
 
@@ -433,7 +515,7 @@ the mic at once: audio's duplex path).
   with `!commstone` adding a 1 kHz tone to the mic: nobody was in either room): a mic to all and to
   one board; a tone over the threshold with its pre-roll and hang (2 s at -20 dBFS: a 4,160 ms
   sound), nothing under it; 1.5 to 11% of frames lost as the signal moved, 5.6 and 8.6% while both
-  boards sent (each relays the other's back: four packets each 20 ms); both mics on with tones on
+  boards sent (each relayed the other's back: four packets each 20 ms, before the relay rule); both mics on with tones on
   both, each board's echo held back (no sound opened from echo on either), a -10 dBFS tone through a
   -14 dBFS echo gate; live voice and PLAY LAST mixed; LOST 20 s after a vanish, its alarm until
   silenced, the link back; a clean off, the chirp after a long session and none after a short one;
@@ -442,6 +524,12 @@ the mic at once: audio's duplex path).
   boards at once on the air, on battery, a power-off's off, more than one hop.
 
 ## Versions
+
+The long-range rate and the link group (2026-11-23) kept version 1. A board from before them
+ignores links packets (another group's, ttl 0: dropped, not relayed) and floods as before; the
+newer boards see it as a neighbour without links and relay for it. A board from before doesn't
+take the long-range protocol, so it hears nothing from a board with `mesh_range = long`; the newer
+one hears it.
 
 Rings, conversations and messages kept version 1: their packets are new types, and what they add to
 presence and voice comes after the fields a board from before reads, which ignores it. A board from

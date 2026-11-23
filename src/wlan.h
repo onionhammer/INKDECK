@@ -50,4 +50,13 @@ bool joining();
 void holdRadio();
 void releaseRadio();
 
+// The station takes Espressif's long-range protocol on top of 802.11b/g/n while comms is built in
+// (INKDECK_COMMS), so comms hears boards that send at the long-range rate (comms.h). Set each
+// time the station comes up and before each join, never while joined: changing the protocols
+// drops the connection. Ordinary access points are joined and talked to as before.
+uint8_t stationProtocols();  // the bitmap wlan sets (WIFI_PROTOCOL_*)
+// Testing (comms' !commslrrx): false leaves the long-range protocol out from the next join, to
+// compare; true (the default) puts it back.
+void setLongRangeProtocol(bool on);
+
 }  // namespace wlan

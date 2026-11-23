@@ -269,6 +269,102 @@ void lineCommand(const String &line) {
                                        : " (the card's mesh_mic line)");
     return;
   }
+  if (line.startsWith("commsrange")) {
+    // The rate this board sends at, in place of the card's mesh_range line (the card is the real
+    // way): kept in NVS. "!commsrange -" removes it.
+    String rest = line.substring(10);
+    rest.trim();
+    if (rest == "normal" || rest == "long") {
+      comms::setTestRange(true, rest == "long" ? comms::Range::Long : comms::Range::Normal);
+    } else if (rest == "-") {
+      comms::setTestRange(false);
+    } else if (!rest.isEmpty()) {
+      Serial.println("commsrange: normal, long, or - (the card's mesh_range line again)");
+      return;
+    }
+    Serial.printf("commsrange: %s%s\n",
+                  comms::range() == comms::Range::Long ? "long (500 kbps)" : "normal (1 Mbps)",
+                  comms::testRange() ? " (dev override; !commsrange - removes it)"
+                                     : " (the card's mesh_range line)");
+    return;
+  }
+  if (line.startsWith("commsdeaf")) {
+    // "!commsdeaf ID": what this board's radio gets from that board is dropped, as if out of range
+    // ("!commsdeaf off": none).
+    String rest = line.substring(9);
+    rest.trim();
+    if (!rest.isEmpty()) comms::setDeaf(rest == "off" ? 0 : strtoul(rest.c_str(), nullptr, 16));
+    if (comms::deaf()) {
+      Serial.printf("commsdeaf: deaf to %08lX (!commsdeaf off ends it)\n",
+                    static_cast<unsigned long>(comms::deaf()));
+    } else {
+      Serial.println("commsdeaf: deaf to nobody (!commsdeaf ID: as if that board were out of range)");
+    }
+    return;
+  }
+  if (line == "commsflood on" || line == "commsflood off") {
+    comms::setFlood(line.endsWith("on"));
+    Serial.printf("commsflood: %s\n", comms::flood()
+                                          ? "every voice and message frame relayed, as before the rule"
+                                          : "voice and message frames relayed only when needed");
+    return;
+  }
+  if (line.startsWith("commsloss")) {
+    // "!commsloss S": for S s (10), each board heard straight: its packets that came and that
+    // didn't (gaps in its sequence numbers), and the gaps by length.
+    const int sec = std::max(1, std::min(120, line.length() > 9 ? static_cast<int>(line.substring(9).toInt()) : 10));
+    const std::vector<comms::LinkStat> a = comms::linkStats();
+    delay(sec * 1000);
+    const std::vector<comms::LinkStat> b = comms::linkStats();
+    for (const comms::LinkStat &y : b) {
+      comms::LinkStat x;
+      for (const comms::LinkStat &z : a) {
+        if (z.id == y.id && z.got <= y.got) x = z;
+      }
+      const uint32_t got = y.got - x.got, missed = y.missed >= x.missed ? y.missed - x.missed : 0;
+      const uint32_t all = got + missed;
+      Serial.printf("commsloss: %08lX in %d s: %lu came, %lu didn't: %lu.%lu%% lost (gaps 1: %lu, "
+                    "2-3: %lu, 4-15: %lu, 16+: %lu), %d dBm\n",
+                    static_cast<unsigned long>(y.id), sec, static_cast<unsigned long>(got),
+                    static_cast<unsigned long>(missed),
+                    static_cast<unsigned long>(all ? missed * 100 / all : 0),
+                    static_cast<unsigned long>(all ? missed * 1000 / all % 10 : 0),
+                    static_cast<unsigned long>(y.runs[0] - x.runs[0]),
+                    static_cast<unsigned long>(y.runs[1] - x.runs[1]),
+                    static_cast<unsigned long>(y.runs[2] - x.runs[2]),
+                    static_cast<unsigned long>(y.runs[3] - x.runs[3]), y.rssi);
+    }
+    if (b.empty()) Serial.println("commsloss: no board heard straight");
+    return;
+  }
+  if (line == "commsair" || line.startsWith("commsair ")) {
+    // "!commsair [S]": the air survey, S seconds (5): how busy the channel is, by kind of frame.
+    const int sec = line.length() > 8 ? line.substring(8).toInt() : 5;
+    const comms::AirSurvey a = comms::airSurvey(static_cast<uint32_t>(sec > 0 ? sec : 5) * 1000);
+    if (!a.ok) {
+      Serial.printf("commsair: %s\n", a.error.c_str());
+      return;
+    }
+    static const char *const kKinds[] = {"ESP-NOW", "data", "beacons", "other management",
+                                         "control", "no payload (2-stream...)"};
+    Serial.printf("commsair: channel %d, %lu ms: frames on the air %d.%d%% of the time:", a.channel,
+                  static_cast<unsigned long>(a.ms), static_cast<int>(a.total * 100),
+                  static_cast<int>(a.total * 1000) % 10);
+    for (int k = 0; k < comms::AirSurvey::kKinds; ++k) {
+      Serial.printf(" %s %d.%d%% (%lu),", kKinds[k], static_cast<int>(a.share[k] * 100),
+                    static_cast<int>(a.share[k] * 1000) % 10,
+                    static_cast<unsigned long>(a.frames[k]));
+    }
+    Serial.printf(" the strongest data frame %d dBm\n", a.loudestData);
+    return;
+  }
+  if (line == "commslrrx on" || line == "commslrrx off") {
+    // A test: the radio without the long-range protocol (off) hears no long-range packets.
+    comms::longRangeRx(line.endsWith("on"));
+    Serial.printf("commslrrx: the long-range protocol %s until a restart (a join follows)\n",
+                  line.endsWith("on") ? "on" : "OFF");
+    return;
+  }
   if (line == "commsrelay on" || line == "commsrelay off") {
     comms::setRelayForOthers(line.endsWith("on"));
     Serial.printf("commsrelay: relay for others %s\n", comms::relayForOthers() ? "on" : "off");

@@ -19,6 +19,8 @@ namespace {
 // The salts and labels, exactly as docs/comms-protocol.md has them.
 constexpr char kSalt[] = "inkdeck comms 1";
 constexpr char kTokenSalt[] = "inkdeck comms 1 agent_token";
+constexpr char kLinkSalt[] = "inkdeck comms 1 links";
+constexpr char kLinkSecret[] = "inkdeck links";  // public: the link group is for every board
 constexpr char kKeyInfo[] = "key";
 constexpr char kIdInfo[] = "group id";
 constexpr char kRendezvousInfo[] = "rendezvous id";
@@ -32,9 +34,8 @@ bool hkdf(const uint8_t *salt, size_t saltLen, const uint8_t *ikm, size_t ikmLen
                       reinterpret_cast<const uint8_t *>(info), strlen(info), out, len) == 0;
 }
 
-GroupKeys derive(const std::string &secret, bool fromToken) {
+static GroupKeys deriveWith(const char *salt, const std::string &secret) {
   GroupKeys k;
-  const char *salt = fromToken ? kTokenSalt : kSalt;
   const auto *s = reinterpret_cast<const uint8_t *>(salt);
   const size_t sl = strlen(salt);
   const auto *ikm = reinterpret_cast<const uint8_t *>(secret.data());
@@ -47,6 +48,12 @@ GroupKeys derive(const std::string &secret, bool fromToken) {
          static_cast<uint32_t>(id[2]) << 8 | id[3];
   return k;
 }
+
+GroupKeys derive(const std::string &secret, bool fromToken) {
+  return deriveWith(fromToken ? kTokenSalt : kSalt, secret);
+}
+
+GroupKeys linkKeys() { return deriveWith(kLinkSalt, kLinkSecret); }
 
 void tag(uint32_t groupId, char out[5]) {
   snprintf(out, 5, "%04X", static_cast<unsigned>(groupId >> 16));

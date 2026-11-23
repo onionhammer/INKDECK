@@ -200,22 +200,30 @@ into a ring nobody answers, the dialer can **leave a message** instead (up to 60
 ask again for every frame they missed until it's whole (a checksum says so), keep it on the card
 (`SD:/.inkdeck/comms/`, in RAM without one) until played and for a day after, and play it only
 when asked. The screens above show all of this (● switches the mic). Boards pass each other's packets on (a **mesh**: flooding, up to three relays), also for
-groups they aren't in, unread, and each board knows how the others are reached: over the air with
-their signal, through which relay, or away. A board listens on USB power, while a Comms screen
+groups they aren't in, unread; voice and message frames only where a board would otherwise miss
+them (each board says every few seconds which boards it hears straight, and how well), so boards
+in one room don't double each other's voice on the air. Each board knows how the others are
+reached: over the air with their signal, through which relay, or away. With **`mesh_range =
+long`** a board sends at Espressif's long-range rate, 500 kbps instead of 1 Mbps: further, each
+packet twice as long on the air; every board hears both, and the Comms screen shows `LONG RANGE`
+beside the channel. A board listens on USB power, while a Comms screen
 holds it, while its mic is on or it hears another board's; on battery otherwise the radio stays
 off. It uses the Wi-Fi network's channel while joined, else `mesh_channel` (6): set that to your
 Wi-Fi's channel so boards on and off it hear each other. `via` per group (`air`, `net` or `both`)
 is there for the link through inkharness, which isn't built: `net` sends nothing yet. Packet format
 and keys: [`docs/comms-protocol.md`](docs/comms-protocol.md). Measured 2026-11-23 on USB: a mic on,
 or voice playing, costs about 10 KB of internal RAM (the speaker and the mic at once: 67 KB free
-instead of 77 KB with the tailnet up); the image is 2.65 MB with the screens (`INKDECK_COMMS=0` leaves comms out).
+instead of 77 KB with the tailnet up); the image is 2.67 MB with the screens (`INKDECK_COMMS=0` leaves comms out).
 Tested 2026-11-23 between two boards in different rooms (−73 to −79 dBm), both ways, with test
 tones added to the mic (nobody was there to speak or listen): mics to all and to one board, sounds
 with their pre-roll and hang and nothing under the threshold, both mics on at once with each
 board's echo held back and no echo loop, LOST and its alarm, a clean off and the chirp after a long
 session, no ringing on a board with its mic on, ring and answer, a message, leaving, and the alarm,
 the Recorder and the agent pausing an open mic; 1.5 to 11% of frames lost on the air, each covered
-by the one before. Rings, conversations and messages were tested 2026-11-22 the same way. Not
+by the one before. Rings, conversations and messages were tested 2026-11-22 the same way. The
+long-range rate and relaying only when needed were tested 2026-11-23 the same way: a board on long
+and one on normal hear each other; with the rule neither board relayed the other's voice, and at
+long range with both mics on it lost 1.4 to 6% of frames where flooding lost 11 to 17%. Not
 tested: anything by ear, three boards at once, on battery, range and current. Dev commands over
 USB: `!comms`, `!commstest`, `!commsping`, `!commsmic [all|board] [dB]`, `!commsmicoff`,
 `!commsmicthr`, `!commstalk N [board]`, `!commsplay`, `!commsring [board]`, `!commsringstop`,
@@ -223,12 +231,17 @@ USB: `!comms`, `!commstest`, `!commsping`, `!commsmic [all|board] [dB]`, `!comms
 `!commsecho` (how loud the speaker comes back on the mic), `!commsgroup` (a test group without the
 card), `!commschannel`, `!commsmicmode sticky|push|-` (the `mesh_mic` line without the card), `!commsrelay`, `!commsresend`, and the test switches `!commstone S dB`,
 `!commsvanish`, `!commsack`, `!commslong S`, `!commsbusy`, `!commsringvanish` and
-`!commsdropmsg N`; `!quiet` takes 30 dB off every sound for testing next to someone.
+`!commsdropmsg N`; `!commsrange normal|long|-` (the `mesh_range` line without the card),
+`!commsloss S` (each board heard straight: its packets that came and didn't, and the gaps),
+`!commsair S` (how much of the time the channel carries frames, by kind), and the test switches
+`!commsdeaf ID` (as if that board were out of range), `!commsflood on|off` (relay every voice
+frame, as before the rule) and `!commslrrx on|off` (the long-range protocol off); `!quiet` takes
+30 dB off every sound for testing next to someone.
 
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
 Wi-Fi network, time zone and location without a rebuild, sets the lock, lists network shares,
-sets how long News's off face shows each story, puts the board on your tailnet and sets its comms groups and how its mic is keyed (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
+sets how long News's off face shows each story, puts the board on your tailnet and sets its comms groups, how its mic is keyed and the rate it sends at (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
 the card has none, it writes one with every line commented out. It can list up to 8 Wi-Fi
 networks, each `ssid` line with its `password` under it: the board tries the one it last joined
 first, then the others in the file's order, moving on as soon as one is out of range (about
@@ -274,6 +287,7 @@ mesh_group = 3f9c0e1b7a2d4c65?name=Family  ; a group: the secret, then options (
 mesh_name = KITCHEN                   ; this board's name on the others
 mesh_channel = 6                      ; the radio's channel off Wi-Fi
 mesh_mic = push                       ; push to talk (HOLD BOOT); sticky, the default: ● on and off
+mesh_range = long                     ; send at the long-range rate (500 kbps); normal: 1 Mbps
 ```
 
 Each `smb =` or `nfs =` line is a share Files lists:

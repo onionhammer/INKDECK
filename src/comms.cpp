@@ -28,6 +28,7 @@
 #include "audio.h"
 #include "comms_calls.h"
 #include "comms_crypto.h"
+#include "comms_mesh.h"
 #include "comms_mic.h"
 #include "comms_store.h"
 #include "comms_wire.h"
@@ -45,7 +46,8 @@ using namespace wire;
 // NVS ("comms"): id, the board's; boot, the last boot number; active, the active group's id;
 // norelay and nochirp, 1 when those are off; via0..via3, a group's via changed on the board
 // (the card line's hash with the via in its low 2 bits); devgrp and devchan, the dev overrides;
-// micthr, the mic's threshold (dB below full scale, plus 1: 0 is none set).
+// micthr, the mic's threshold (dB below full scale, plus 1: 0 is none set); devmic and devrange,
+// the dev overrides of mesh_mic and mesh_range (0 none, else the setting plus 1).
 constexpr const char *kNs = "comms";
 
 constexpr uint32_t kPresenceMs = 30000;   // each group hears where the board is this often
@@ -57,6 +59,7 @@ constexpr uint32_t kTickMs = 1000;
 constexpr uint32_t kSleepCheckMs = 250;
 constexpr uint32_t kChannelCheckMs = 1000;
 constexpr uint32_t kCallBumpMs = 250;
+constexpr uint32_t kLinksMs = 5000;       // a links packet this often (+ up to 1 s), comms_mesh.h
 constexpr size_t kRxDepth = 96;     // frames from the radio waiting for the task (PSRAM)
 // Relays and delayed packets waiting to go: a mic switched off mid-sound queues its last 8 frames
 // and 3 offs (stopMic()), with room left for relays meanwhile.
@@ -145,6 +148,7 @@ enum Drop : uint8_t {
   kDropUnknownType,
   kDropNoVoiceRoom,
   kDropCantPlay,
+  kDropDeaf,
   kDropCount
 };
 const char *const kDropNames[kDropCount] = {
@@ -152,17 +156,23 @@ const char *const kDropNames[kDropCount] = {
     "bad tag",   "replayed",   "stale",              "via net",   "not for us",
     "while recording a message", "late frame", "relay queue full", "not in the conversation",
     "message frame (dropped to test)", "a later type (relayed only)",
-    "voice: more boards at once than the mixer plays", "voice: the speaker is busy"};
+    "voice: more boards at once than the mixer plays", "voice: the speaker is busy",
+    "deaf to its sender (!commsdeaf)"};
 
 struct Counters {
   std::atomic<uint32_t> sent{0}, sendFailed{0}, txFailed{0}, received{0}, handled{0}, relayed{0};
   std::atomic<uint32_t> relayedUnread{0};  // of relayed: groups this board isn't in
+  // Voice and message frames (comms_mesh.h): relayed, and not relayed since no board this one
+  // hears straight needed them. Links packets sent and taken.
+  std::atomic<uint32_t> relayedAudio{0}, audioNotNeeded{0}, linksSent{0}, linksHeard{0};
   std::atomic<uint32_t> dropped[kDropCount];
 };
 
 struct RxFrame {
   uint8_t mac[6];
   int8_t rssi;
+  int8_t noise;  // the radio's noise floor as it came, dBm
+  uint8_t rate;  // how it came: rx_ctrl's sig_mode in the top 3 bits, its rate in the low 5
   uint8_t len;
   uint8_t data[kMaxFrame];
 };
@@ -176,6 +186,8 @@ struct BoardRec {
   time_t heardAt = 0;
   uint32_t directMs = 0;   // its last packet straight from it
   int rssi = 0;
+  uint8_t rxRate = 0xFF;   // how that packet came (RxFrame::rate); 0xFF none
+  int noise = 0;
   uint32_t relayedMs = 0;  // its last packet through relays
   int hops = 0;
   uint32_t relay = 0;
@@ -244,6 +256,7 @@ struct Pending {
   bool used = false;
   bool relay = false;
   bool unread = false;  // a relay for a group this board isn't in
+  bool audio = false;   // a relayed voice or message frame
   uint32_t due = 0;
   uint8_t len = 0;
   uint8_t data[kMaxFrame];
@@ -424,7 +437,7 @@ struct OpenMicRec {
 enum class Cmd : uint8_t {
   Wake, MicOn, MicOff, MicThreshold, MicVanish, MicTone, AckLost, EchoTest, PlayLast, StopPlay,
   Ping, Reload, Resend, Ring, RingStop, Answer, Ignore, Join, Leave, MessageStart, MessageSend,
-  MessageCancel, PlayMessage, RingVanish, PowerOff,
+  MessageCancel, PlayMessage, RingVanish, PowerOff, Range,
 };
 struct Command {
   Cmd cmd;
@@ -518,6 +531,19 @@ struct Core {
   uint8_t firstVoice[kMaxFrame];
   uint8_t firstVoiceLen = 0;
   bool markFirstVoice = false;
+  // Comms frames received, by how they came (RxFrame::rate): the Wi-Fi task counts, dump() reads.
+  uint32_t rxRates[256] = {};
+  uint32_t txRates[64] = {};  // this board's frames sent, by the rate the driver says (onSent())
+  // Relaying only when needed (comms_mesh.h): the boards heard straight and what they hear
+  // (under mu), the link group's key, and the links packets going and coming.
+  Neighbours links;
+  crypto::Sealer *linkSealer = nullptr;
+  uint32_t linkGroup = 0;
+  uint32_t linksDue = 0;
+  Links linksTx, linksRx;
+  bool rangeLong = false;  // the rate set for this board's packets (applyRadio())
+  bool rangeFailed = false;  // the rate wanted wouldn't take (long range without its protocol)
+  uint32_t sleepFixes = 0; // times modem sleep was found on again (another feature) and put off
 };
 
 Core *core = nullptr;
@@ -535,6 +561,14 @@ std::atomic<int> dropNth{0};  // !commsdropmsg: every nth message frame that com
 std::atomic<bool> awake{false};         // keepAwake()
 std::atomic<bool> powerOffSent{false};  // forceOff(): the mic's off has gone
 std::atomic<bool> echoDone{false};      // echoTest() has its result
+// A full-size frame's time from esp_now_send() to its send callback, when no other frame is in
+// the radio meanwhile: the air time (at the rate) plus waiting for a clear channel.
+std::atomic<int> txInflight{0};
+std::atomic<bool> txTiming{false};
+std::atomic<uint32_t> txStartUs{0}, txUsSum{0}, txTimed{0};
+std::atomic<int> devRangeMode{-1};      // devrange in NVS: -1 not read yet, 0 none, 1 normal, 2 long
+std::atomic<uint32_t> deafTo{0};        // !commsdeaf: what this board's radio gets from it is dropped
+std::atomic<bool> floodAll{false};      // !commsflood: every voice and message frame relayed
 uint32_t dropTick = 0;
 std::mutex radioMu;  // the ESP-NOW calls, against forceOff()
 bool espnowUp = false;
@@ -812,13 +846,23 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
     return;
   }
   memcpy(f.mac, info->src_addr, 6);
-  f.rssi = info->rx_ctrl ? static_cast<int8_t>(info->rx_ctrl->rssi) : 0;
+  const wifi_pkt_rx_ctrl_t *rx = info->rx_ctrl;
+  f.rssi = rx ? static_cast<int8_t>(rx->rssi) : 0;
+  f.noise = rx ? static_cast<int8_t>(rx->noise_floor) : 0;
+  f.rate = rx ? static_cast<uint8_t>((rx->sig_mode & 7) << 5 | (rx->rate & 0x1F)) : 0xFF;
+  if (core) ++core->rxRates[f.rate];
   f.len = static_cast<uint8_t>(len);
   memcpy(f.data, data, len);
   if (!rxQueue || xQueueSend(rxQueue, &f, 0) != pdTRUE) drop(kDropQueueFull);
 }
 
-void onSent(const esp_now_send_info_t *, esp_now_send_status_t status) {
+void onSent(const esp_now_send_info_t *info, esp_now_send_status_t status) {
+  const uint32_t t = micros();
+  if (txInflight.fetch_sub(1) == 1 && txTiming.exchange(false)) {
+    txUsSum.fetch_add(t - txStartUs.load());
+    txTimed.fetch_add(1);
+  }
+  if (core && info) ++core->txRates[static_cast<unsigned>(info->rate) & 63];
   if (status != ESP_NOW_SEND_SUCCESS) counters.txFailed.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -834,7 +878,12 @@ bool radioSend(const uint8_t *frame, size_t len) {
       core->firstVoiceLen = static_cast<uint8_t>(len);
     }
   }
+  const bool alone = txInflight.fetch_add(1) == 0;
+  if (alone && len >= 200) txStartUs = micros();
+  txTiming = alone && len >= 200;  // a frame sent while another is in the radio spoils the timing
   if (esp_now_send(kBroadcast, frame, len) != ESP_OK) {
+    txInflight.fetch_sub(1);
+    txTiming = false;
     counters.sendFailed.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
@@ -863,6 +912,78 @@ void keepChannel() {
   }
 }
 
+// What the radio's rx_ctrl says of how a frame came (RxFrame::rate), as dump() shows it.
+// 26 is how a long-range frame comes (sent at WIFI_PHY_RATE_LORA_500K, seen 2026-11-23).
+const char *rateName(uint8_t r) {
+  static const char *const kLegacy[32] = {
+      "1M",  "2M",  "5.5M", "11M", "?4",  "2M short", "5.5M short", "11M short",
+      "48M", "24M", "12M",  "6M",  "54M", "36M",      "18M",        "9M",
+      "?16", "?17", "?18",  "?19", "?20", "?21",      "?22",        "?23",
+      "?24", "?25", "LR",   "?27", "?28", "?29",      "?30",        "?31"};
+  if (r == 0xFF) return "";
+  if ((r >> 5) == 0) return kLegacy[r & 0x1F];
+  static char other[16];  // dump() only (one task)
+  snprintf(other, sizeof other, "mode%u/%u", static_cast<unsigned>(r >> 5),
+           static_cast<unsigned>(r & 0x1F));
+  return other;
+}
+
+int devRange() {
+  int v = devRangeMode.load();
+  if (v < 0) {
+    v = static_cast<int>(kv::loadU32(kNs, "devrange"));
+    devRangeMode = v;
+  }
+  return v;
+}
+
+bool wantLong() {
+  switch (devRange()) {
+    case 1: return false;
+    case 2: return true;
+    default: break;
+  }
+  return settings::meshRange() == settings::MeshRange::Long;
+}
+
+// This board's packets go at its rate: 1 Mbps, or long range at 500 kbps. The radio takes the
+// long-range protocol on top of 802.11b/g/n, so it hears boards that send at the long-range rate:
+// wlan sets that whenever the station comes up or joins (an ordinary access point is joined and
+// talked to as before); here only while it isn't joined, since changing the protocols drops a
+// connection (but for !commslrrx, which tests it). Called with radioMu held, ESP-NOW up: at the
+// start, every second and when the setting changes (force).
+void applyRadio(bool force, bool protoTest = false) {
+  const uint8_t want = wlan::stationProtocols();
+  uint8_t proto = 0;
+  if (esp_wifi_get_protocol(WIFI_IF_STA, &proto) == ESP_OK && proto != want &&
+      (protoTest || (!WiFi.isConnected() && !wlan::joining()))) {
+    const esp_err_t e = esp_wifi_set_protocol(WIFI_IF_STA, want);
+    log_i("comms: radio protocols %02X -> %02X (%s)", proto, want, esp_err_to_name(e));
+    force = true;
+  }
+  const bool lng = wantLong();
+  if (!force && lng == core->rangeLong && !core->rangeFailed) return;
+  if (!force && core->rangeFailed && proto == want) return;  // tried: it waits for the protocol
+  esp_now_rate_config_t rc = {};
+  rc.phymode = lng ? WIFI_PHY_MODE_LR : WIFI_PHY_MODE_11B;
+  rc.rate = lng ? WIFI_PHY_RATE_LORA_500K : WIFI_PHY_RATE_1M_L;
+  esp_err_t e = esp_now_set_peer_rate_config(kBroadcast, &rc);
+  core->rangeFailed = e != ESP_OK;
+  if (e != ESP_OK && lng) {
+    // The long-range rate takes only with the long-range protocol on (ESP_ERR_ESPNOW_ARG
+    // without it, seen 2026-11-23): 1 Mbps until it is.
+    log_w("comms: can't send at the long-range rate (%s); 1 Mbps for now", esp_err_to_name(e));
+    rc.phymode = WIFI_PHY_MODE_11B;
+    rc.rate = WIFI_PHY_RATE_1M_L;
+    e = esp_now_set_peer_rate_config(kBroadcast, &rc);
+    if (e == ESP_OK) core->rangeLong = false;
+  } else if (e == ESP_OK) {
+    core->rangeLong = lng;
+    log_i("comms: sending at %s", lng ? "the long-range rate, 500 kbps" : "1 Mbps");
+  }
+  if (e != ESP_OK) log_e("comms: can't set the rate (%s)", esp_err_to_name(e));
+}
+
 bool radioStart() {
   wlan::holdRadio();
   {
@@ -878,6 +999,7 @@ bool radioStart() {
       peer.encrypt = false;
       e = esp_now_add_peer(&peer);
     }
+    if (e == ESP_OK) applyRadio(true);
     if (e != ESP_OK) {
       log_e("comms: ESP-NOW won't start (%s)", esp_err_to_name(e));
       esp_now_deinit();
@@ -913,12 +1035,13 @@ void radioStop() {
 }
 
 bool queuePending(const uint8_t *frame, size_t len, uint32_t delayMs, bool relay,
-                  bool unread = false) {
+                  bool unread = false, bool audio = false) {
   for (Pending &p : core->pending) {
     if (p.used) continue;
     p.used = true;
     p.relay = relay;
     p.unread = unread;
+    p.audio = audio;
     p.due = millis() + delayMs;
     p.len = static_cast<uint8_t>(len);
     memcpy(p.data, frame, len);
@@ -940,6 +1063,7 @@ void sendPending(uint32_t now) {
     if (radioSend(next->data, next->len) && next->relay) {
       counters.relayed.fetch_add(1);
       if (next->unread) counters.relayedUnread.fetch_add(1);
+      if (next->audio) counters.relayedAudio.fetch_add(1);
     }
   }
 }
@@ -993,7 +1117,7 @@ void sendPresence(GroupRec &g, bool hello) {
   }
   w.u8(static_cast<uint8_t>((core->onUsb ? kFlagUsb : 0) | (relay ? kFlagRelay : 0) |
                             (core->mic.on || draining() ? kFlagMic : 0) |
-                            (hello ? kFlagHello : 0)));
+                            (core->rangeLong ? kFlagLong : 0) | (hello ? kFlagHello : 0)));
   const pmic::Status p = pmic::status();
   w.u8(p.ok && p.battery && p.percent >= 0 ? static_cast<uint8_t>(p.percent) : 0xFF);
   w.u8(static_cast<uint8_t>(core->name.size()));
@@ -1010,6 +1134,33 @@ void sendPresence(GroupRec &g, bool hello) {
 
 // The group hears this board's presence within a moment (a conversation joined or left).
 void presenceSoon(GroupRec &g) { g.presenceDue = millis() + 20 + esp_random() % 100; }
+
+// The links packet (comms_mesh.h): the boards this one hears straight and how well, in the link
+// group, ttl 0 (never relayed), every kLinksMs while it listens. Every board reads it, whatever
+// its groups: it's how a board knows whether passing a voice frame on helps anyone.
+void sendLinks() {
+  if (!espnowUp || !core->linkSealer) return;
+  Links &l = core->linksTx;
+  {
+    std::lock_guard<std::mutex> lk(core->mu);
+    core->links.mine(l, stamp());
+    l.flags = static_cast<uint8_t>((core->relayOn ? kLinksRelays : 0) |
+                                   (core->rangeLong ? kLinksLong : 0));
+  }
+  uint8_t f[kMaxFrame];
+  Header h;
+  h.type = kExt;
+  h.ttl = 0;
+  h.group = core->linkGroup;
+  h.sender = core->id;
+  h.boot = core->boot;
+  h.seq = ++core->seq;
+  putHeader(h, f);
+  const size_t len = putLinks(f + kHeader, kMaxBody, sentAt(), l);
+  if (!len) return;
+  const size_t n = core->linkSealer->seal(f, len);
+  if (n && radioSend(f, n)) counters.linksSent.fetch_add(1, std::memory_order_relaxed);
+}
 
 // A mic switched off mid-sound still has its last frames and its off queued (stopMic()).
 bool draining() { return static_cast<int32_t>(core->drainUntil - millis()) > 0; }
@@ -3267,17 +3418,58 @@ void leaveConv(int gi) {
 
 // Passes a packet on, unchanged but for its ttl and hops, a few ms later so relays in range of
 // each other don't all send at once.
-void relayFrame(const RxFrame &f, bool unread) {
-  bool on;
+// A voice or message frame goes on only if a board this one hears straight would otherwise miss
+// it (comms_mesh.h: Neighbours::needed()); everything else floods.
+void relayFrame(const RxFrame &f, const Header &hd, bool unread) {
+  const bool audio = hd.type == kVoice || hd.type == kMessage;
   {
     std::lock_guard<std::mutex> l(core->mu);
-    on = core->relayOn;
+    if (!core->relayOn) return;
+    if (audio && !floodAll.load()) {
+      const uint32_t from = hd.hops == 0 ? hd.sender : macToId(f.mac);
+      if (!core->links.needed(hd.sender, from, stamp())) {
+        counters.audioNotNeeded.fetch_add(1, std::memory_order_relaxed);
+        return;
+      }
+    }
   }
-  if (!on) return;
   uint8_t copy[kMaxFrame];
   memcpy(copy, f.data, f.len);
   if (!forward(copy)) return;
-  if (!queuePending(copy, f.len, 1 + esp_random() % 6, true, unread)) drop(kDropRelayFull);
+  if (!queuePending(copy, f.len, 1 + esp_random() % 6, true, unread, audio)) {
+    drop(kDropRelayFull);
+  }
+}
+
+// A links packet: in the link group, straight from its board (never relayed), sealed with the
+// public key. Spoofed, it can only make this board relay more or less.
+void onLinkFrame(const Header &hd, const RxFrame &f) {
+  uint8_t buf[kMaxFrame];
+  memcpy(buf, f.data, f.len);
+  size_t bodyLen = 0;
+  if (!core->linkSealer || !core->linkSealer->open(buf, f.len, bodyLen)) {
+    drop(kDropBadTag);
+    return;
+  }
+  Reader r(buf + kHeader, bodyLen);
+  r.u32();  // sentAt
+  const uint8_t ext = r.u8();
+  if (hd.type != kExt || hd.hops != 0 || !r.ok()) {
+    drop(kDropMalformed);
+    return;
+  }
+  if (ext != kExtLinks) {  // a later version's link packet
+    drop(kDropUnknownType);
+    return;
+  }
+  Links &l = core->linksRx;
+  if (!readLinks(r, l)) {
+    drop(kDropMalformed);
+    return;
+  }
+  counters.linksHeard.fetch_add(1, std::memory_order_relaxed);
+  std::lock_guard<std::mutex> lk(core->mu);
+  core->links.links(hd.sender, l, stamp());
 }
 
 void handleFrame(const RxFrame &f) {
@@ -3290,6 +3482,22 @@ void handleFrame(const RxFrame &f) {
     drop(kDropOwn);
     return;
   }
+  // Every packet straight from a board (hops 0), whatever its group: its MAC is learnt as that
+  // board's (a relay's copies name it), and how well it's heard goes into this board's links.
+  const uint32_t deaf = deafTo.load();
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    if (hd.hops == 0) learnMac(f.mac, hd.sender);
+    if (deaf && (hd.hops == 0 ? hd.sender == deaf : macToId(f.mac) == deaf)) {
+      drop(kDropDeaf);  // as if out of its range
+      return;
+    }
+    if (hd.hops == 0) core->links.heard(hd.sender, hd.boot, hd.seq, f.rssi, stamp());
+  }
+  if (hd.group == core->linkGroup) {
+    onLinkFrame(hd, f);
+    return;
+  }
   const int gi = groupIndex(hd.group);
   if (gi < 0) {  // not ours: passed on unread
     if (core->seen.seen(hd.group, hd.sender, hd.boot, hd.seq)) {
@@ -3298,7 +3506,7 @@ void handleFrame(const RxFrame &f) {
     }
     core->seen.add(hd.group, hd.sender, hd.boot, hd.seq);
     if (hd.ttl > 0) {
-      relayFrame(f, true);
+      relayFrame(f, hd, true);
     } else {
       drop(kDropOtherGroup);
     }
@@ -3341,7 +3549,8 @@ void handleFrame(const RxFrame &f) {
     if (hd.hops == 0) {
       b.directMs = now;
       b.rssi = f.rssi;
-      learnMac(f.mac, hd.sender);
+      b.rxRate = f.rate;
+      b.noise = f.noise;
     } else {
       b.relayedMs = now;
       b.hops = hd.hops;
@@ -3387,7 +3596,7 @@ void handleFrame(const RxFrame &f) {
     case kExt: onExt(gi, hd, r); break;
     default: drop(kDropUnknownType); break;  // a later version's: passed on all the same
   }
-  if (hd.ttl > 0 && !forUsAlone) relayFrame(f, false);
+  if (hd.ttl > 0 && !forUsAlone) relayFrame(f, hd, false);
 }
 
 // --- The task ----------------------------------------------------------------------------------
@@ -3488,6 +3697,7 @@ void publish() {
   s.channel = radioChannel();
   s.onNetwork = WiFi.isConnected();
   s.netUp = false;
+  s.longRange = isListening && core->rangeLong;
   std::lock_guard<std::mutex> l(core->mu);
   // The voices playing now, and the loudest of them.
   const OpenMicRec *loud = nullptr;
@@ -3677,6 +3887,7 @@ void presence(uint32_t now) {
 void startListening() {
   if (!radioStart()) return;
   const uint32_t now = millis();
+  core->linksDue = now + 300 + esp_random() % 700;
   for (GroupRec &g : core->groups) {
     g.hello = true;
     g.presenceDue = now + esp_random() % 300;
@@ -3703,6 +3914,7 @@ void stopListening() {
     }
     core->mics.clear();
     core->alarm = false;
+    core->links.clear();
   }
   radioStop();
   bump();
@@ -3874,6 +4086,15 @@ void handleCommand(const Command &c) {
     case Cmd::MessageCancel: finishMessage(false); break;
     case Cmd::PlayMessage: playMsg(c.arg); break;
     case Cmd::PowerOff: micPowerOff(); break;
+    case Cmd::Range: {
+      {
+        std::lock_guard<std::mutex> g(radioMu);
+        if (espnowUp) applyRadio(true, c.arg == 1);
+      }
+      for (GroupRec &gr : core->groups) presenceSoon(gr);  // the others see the rate at once
+      bump();
+      break;
+    }
     case Cmd::RingVanish:
       if (core->dialing.state == DialState::Ringing) {
         core->dialing.vanished = true;
@@ -3965,13 +4186,22 @@ void task(void *) {
     pumpAlarm(now);
     resumeMusicWhenFree();
     presence(now);
+    if (static_cast<int32_t>(now - core->linksDue) >= 0) {
+      sendLinks();
+      core->linksDue = now + kLinksMs + esp_random() % 1000;
+    }
     if (now - lastSleep >= kSleepCheckMs) {
       lastSleep = now;
-      if (WiFi.getSleep() != WIFI_PS_NONE) WiFi.setSleep(false);  // another feature turned it on
+      if (WiFi.getSleep() != WIFI_PS_NONE) {  // another feature turned it on
+        WiFi.setSleep(false);
+        ++core->sleepFixes;
+      }
     }
     if (now - lastChannel >= kChannelCheckMs) {
       lastChannel = now;
       keepChannel();
+      std::lock_guard<std::mutex> g(radioMu);
+      if (espnowUp) applyRadio(false);
     }
     if (now - lastTick >= kTickMs) {
       lastTick = now;
@@ -4030,6 +4260,11 @@ void ensureCore() {
   const uint32_t thr = kv::loadU32(kNs, "micthr");
   core->thresholdDb = thr ? snapDb(-static_cast<int>(thr - 1)) : kMicDefaultDb;
   commands = xQueueCreate(8, sizeof(Command));
+  crypto::GroupKeys lk = crypto::linkKeys();
+  core->linkGroup = lk.id;
+  core->linkSealer = new crypto::Sealer();
+  core->linkSealer->setKey(lk.key);
+  mbedtls_platform_zeroize(lk.key, sizeof lk.key);
 }
 
 }  // namespace
@@ -4192,6 +4427,8 @@ std::vector<Board> boards(int group) {
       x.relayName = nameOf(b.relay);
     }
     x.rssi = b.directMs ? b.rssi : 0;
+    x.rxRate = b.directMs ? rateName(b.rxRate) : "";
+    x.noise = b.directMs ? b.noise : 0;
     x.heardAt = b.heardAt;
     x.heardAgoS = b.heardMs ? (now - b.heardMs) / 1000 : 0;
     x.talkedAt = b.talkedAt;
@@ -4646,6 +4883,132 @@ EchoTest echoTest(float levelDb, uint32_t ms) {
   return core->echo;
 }
 
+std::vector<LinkStat> linkStats() {
+  std::vector<LinkStat> out;
+  if (!core) return out;
+  const uint32_t now = millis();
+  std::lock_guard<std::mutex> l(core->mu);
+  for (size_t i = 0; i < core->links.size(); ++i) {
+    const Neighbours::Neighbour &n = core->links.at(i);
+    LinkStat x;
+    x.id = n.id;
+    x.got = n.got;
+    x.missed = n.missed;
+    for (int k = 0; k < 4; ++k) x.runs[k] = n.runs[k];
+    x.rssi = n.rssi;
+    x.neighbour = n.heardMs && now - n.heardMs < Neighbours::kHeardMs;
+    out.push_back(x);
+  }
+  return out;
+}
+
+namespace {
+// The air survey's sums, written by the Wi-Fi task's promiscuous callback.
+struct AirSums {
+  uint32_t frames[AirSurvey::kKinds];
+  uint64_t us[AirSurvey::kKinds];
+  int loudestData;
+};
+AirSums *airSums = nullptr;
+
+// How long a frame was on the air, in µs, from its length (FCS included) and how it came:
+// 802.11b with its long (192 µs) or short (96 µs) preamble, OFDM (20 µs, 4 µs symbols), HT
+// (36 µs of preambles, 4 µs symbols; 40 MHz about twice the rate), long range as 1 Mbps at half
+// the rate (its preamble isn't documented). Approximate: enough to tell a busy channel.
+uint32_t airUs(const wifi_pkt_rx_ctrl_t &rx) {
+  const uint32_t len = rx.sig_len;
+  const uint32_t bits = 22 + 8 * len;  // service, the bits, tail (OFDM)
+  if (rx.sig_mode == 0) {
+    static const float kDsss[8] = {1, 2, 5.5f, 11, 1, 2, 5.5f, 11};
+    static const float kOfdm[8] = {48, 24, 12, 6, 54, 36, 18, 9};
+    const unsigned r = rx.rate;
+    if (r < 8) return (r < 4 ? 192 : 96) + static_cast<uint32_t>(8 * len / kDsss[r]);
+    if (r < 16) {
+      const float perSymbol = 4 * kOfdm[r - 8];
+      return 20 + 4 * static_cast<uint32_t>(ceilf(bits / perSymbol));
+    }
+    if (r == 26) return 192 + 16 * len;  // long range, 500 kbps
+    return 192 + 8 * len;
+  }
+  static const float kHt[8] = {6.5f, 13, 19.5f, 26, 39, 52, 58.5f, 65};
+  const unsigned mcs = rx.mcs;
+  float mbps = kHt[mcs % 8] * (1 + mcs / 8);
+  if (rx.cwb) mbps *= 2.08f;
+  return 36 + 4 * (mcs / 8) + 4 * static_cast<uint32_t>(ceilf(bits / (4 * mbps)));
+}
+
+void onAirFrame(void *buf, wifi_promiscuous_pkt_type_t type) {
+  AirSums *a = airSums;
+  if (!a || !buf) return;
+  const auto *p = static_cast<const wifi_promiscuous_pkt_t *>(buf);
+  const wifi_pkt_rx_ctrl_t &rx = p->rx_ctrl;
+  const uint8_t *f = p->payload;
+  int kind = AirSurvey::kOther;
+  if (type == WIFI_PKT_DATA) {
+    kind = AirSurvey::kData;
+    if (rx.rssi > a->loudestData) a->loudestData = rx.rssi;
+  } else if (type == WIFI_PKT_CTRL) {
+    kind = AirSurvey::kCtrl;
+  } else if (type == WIFI_PKT_MGMT) {
+    if (f[0] == 0x80) {
+      kind = AirSurvey::kBeacon;
+    } else if (f[0] == 0xD0 && rx.sig_len >= 28 && f[24] == 0x7F && f[25] == 0x18 &&
+               f[26] == 0xFE && f[27] == 0x34) {  // a vendor action frame: Espressif's, ESP-NOW
+      kind = AirSurvey::kEspNow;
+    } else {
+      kind = AirSurvey::kMgmt;
+    }
+  }
+  ++a->frames[kind];
+  a->us[kind] += airUs(rx);
+}
+}  // namespace
+
+AirSurvey airSurvey(uint32_t ms) {
+  AirSurvey r;
+  ms = std::max<uint32_t>(1000, std::min<uint32_t>(30000, ms));
+  wifi_mode_t mode = WIFI_MODE_NULL;
+  if (esp_wifi_get_mode(&mode) != ESP_OK || mode == WIFI_MODE_NULL) {
+    r.error = "WI-FI IS OFF";
+    return r;
+  }
+  r.channel = radioChannel();
+  if (!r.channel) {
+    uint8_t primary = 0;
+    wifi_second_chan_t second;
+    if (esp_wifi_get_channel(&primary, &second) == ESP_OK) r.channel = primary;
+  }
+  std::unique_ptr<AirSums> sums(new AirSums());
+  memset(sums.get(), 0, sizeof(AirSums));
+  sums->loudestData = -128;
+  wifi_promiscuous_filter_t all = {WIFI_PROMIS_FILTER_MASK_ALL};
+  wifi_promiscuous_filter_t ctrl = {WIFI_PROMIS_CTRL_FILTER_MASK_ALL};
+  airSums = sums.get();
+  esp_err_t e = esp_wifi_set_promiscuous_rx_cb(onAirFrame);
+  if (e == ESP_OK) e = esp_wifi_set_promiscuous_filter(&all);
+  if (e == ESP_OK) e = esp_wifi_set_promiscuous_ctrl_filter(&ctrl);
+  if (e == ESP_OK) e = esp_wifi_set_promiscuous(true);
+  if (e != ESP_OK) {
+    airSums = nullptr;
+    r.error = esp_err_to_name(e);
+    return r;
+  }
+  const uint32_t t0 = millis();
+  delay(ms);
+  esp_wifi_set_promiscuous(false);
+  r.ms = millis() - t0;
+  delay(20);  // a callback still running
+  airSums = nullptr;
+  for (int k = 0; k < AirSurvey::kKinds; ++k) {
+    r.frames[k] = sums->frames[k];
+    r.share[k] = static_cast<float>(sums->us[k]) / (r.ms * 1000.0f);
+    r.total += r.share[k];
+  }
+  r.loudestData = sums->loudestData == -128 ? 0 : sums->loudestData;
+  r.ok = true;
+  return r;
+}
+
 bool relayForOthers() {
   if (!core) return true;
   std::lock_guard<std::mutex> l(core->mu);
@@ -4779,6 +5142,31 @@ void setTestMicMode(bool set, MicMode mode) {
 
 bool testMicMode() { return devMic() != 0; }
 
+Range range() { return wantLong() ? Range::Long : Range::Normal; }
+
+void setDeaf(uint32_t id) {
+  deafTo = id;
+  log_i("comms: %s", id ? "deaf to a board (!commsdeaf)" : "deaf to nobody");
+}
+uint32_t deaf() { return deafTo.load(); }
+void setFlood(bool on) { floodAll = on; }
+bool flood() { return floodAll.load(); }
+
+void setTestRange(bool set, Range r) {
+  ensureCore();
+  const int v = !set ? 0 : r == Range::Long ? 2 : 1;
+  kv::saveU32(kNs, "devrange", static_cast<uint32_t>(v));
+  devRangeMode = v;
+  post(Cmd::Range);
+}
+
+bool testRange() { return devRange() != 0; }
+
+void longRangeRx(bool on) {
+  wlan::setLongRangeProtocol(on);
+  post(Cmd::Range, 0, 1);  // even while joined: the connection drops and joins again
+}
+
 void forceOff() {
   poweringOff = true;
   if (micWanted.load() && taskHandle) {
@@ -4827,6 +5215,73 @@ const char *powerText(bool usb, int battery, char *buf, size_t cap) {
 
 // In its own frame, its views on the heap: the dev tools' task has 4 KB of stack, and dump()
 // uses most of it.
+// The boards heard straight and their links (comms_mesh.h). On the heap: dump() runs in the dev
+// tools' task, 6 KB of stack.
+__attribute__((noinline)) void dumpLinks(Print &out) {
+  struct Row {
+    Neighbours::Neighbour n;
+    std::string name;
+    std::vector<std::string> names;  // of the boards its links list
+  };
+  std::unique_ptr<std::vector<Row>> rows(new std::vector<Row>());
+  const uint32_t now = millis();
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    for (size_t i = 0; i < core->links.size(); ++i) {
+      rows->emplace_back();
+      Row &r = rows->back();
+      r.n = core->links.at(i);
+      r.name = nameOf(r.n.id);
+      for (uint8_t k = 0; k < r.n.count; ++k) r.names.push_back(nameOf(r.n.heard[k].id));
+    }
+  }
+  out.printf("  links: sent %lu, taken %lu; voice and message frames relayed %lu, not relayed "
+             "(nobody needed them) %lu%s",
+             static_cast<unsigned long>(counters.linksSent.load()),
+             static_cast<unsigned long>(counters.linksHeard.load()),
+             static_cast<unsigned long>(counters.relayedAudio.load()),
+             static_cast<unsigned long>(counters.audioNotNeeded.load()),
+             floodAll.load() ? "; FLOODING every one (!commsflood)" : "");
+  if (deafTo.load()) out.printf("; DEAF to %08lX", static_cast<unsigned long>(deafTo.load()));
+  out.println();
+  char id[12];
+  for (const Row &r : *rows) {
+    const Neighbours::Neighbour &n = r.n;
+    const uint32_t ago = now - n.heardMs;
+    out.printf("    %08lX %-16s straight %lu s ago%s, %d dBm, %u%% of its last 64 packets; "
+               "this boot %lu came, %lu didn't (gaps 1: %lu, 2-3: %lu, 4-15: %lu, 16+: %lu)",
+               static_cast<unsigned long>(n.id),
+               r.name.empty() ? "(another group's)" : r.name.c_str(),
+               static_cast<unsigned long>(ago / 1000),
+               ago >= Neighbours::kHeardMs ? " (not a neighbour now)" : "", n.rssi,
+               static_cast<unsigned>(n.pct()), static_cast<unsigned long>(n.got),
+               static_cast<unsigned long>(n.missed), static_cast<unsigned long>(n.runs[0]),
+               static_cast<unsigned long>(n.runs[1]), static_cast<unsigned long>(n.runs[2]),
+               static_cast<unsigned long>(n.runs[3]));
+    if (!n.listMs) {
+      out.println("; no links from it (relayed for)");
+      continue;
+    }
+    out.printf("; its links %lu s ago%s%s%s:", static_cast<unsigned long>((now - n.listMs) / 1000),
+               now - n.listMs >= Neighbours::kListMs ? " (too old: relayed for)" : "",
+               n.flags & kLinksRelays ? " RELAY" : "", n.flags & kLinksLong ? " LONG" : "");
+    if (!n.count) out.print(" hears nobody");
+    for (uint8_t k = 0; k < n.count; ++k) {
+      const char *who;
+      if (n.heard[k].id == core->id) {
+        who = "THIS BOARD";
+      } else if (!r.names[k].empty()) {
+        who = r.names[k].c_str();
+      } else {
+        snprintf(id, sizeof id, "%08lX", static_cast<unsigned long>(n.heard[k].id));
+        who = id;
+      }
+      out.printf(" %s %u%%,", who, static_cast<unsigned>(n.heard[k].pct));
+    }
+    out.println();
+  }
+}
+
 __attribute__((noinline)) void dumpMic(Print &out) {
   struct Views {
     Mic m;
@@ -4941,10 +5396,55 @@ void dump(Print &out) {
              meshChannel(), core->devChannel ? " (dev override)" : "",
              WiFi.getSleep() == WIFI_PS_NONE ? "off" : "ON (deaf to other boards)",
              espnowUp ? "up" : "down");
+  {
+    uint8_t proto = 0;
+    const bool pOk = esp_wifi_get_protocol(WIFI_IF_STA, &proto) == ESP_OK;
+    out.printf("  rate: sending at %s%s (mesh_range %s%s); protocols %s%s%s%s%s; modem sleep put "
+               "off again %lu times\n",
+               core->rangeLong ? "long range, 500 kbps" : "1 Mbps",
+               core->rangeFailed ? " (long range won't take: no LR)"
+               : wantLong() != core->rangeLong ? " (changing)" : "",
+               wantLong() ? "long" : "normal", testRange() ? ", dev override" : "",
+               pOk ? "" : "?", proto & WIFI_PROTOCOL_11B ? "B" : "",
+               proto & WIFI_PROTOCOL_11G ? "G" : "", proto & WIFI_PROTOCOL_11N ? "N" : "",
+               proto & WIFI_PROTOCOL_LR ? "+LR" : " (no LR: deaf to long range)",
+               static_cast<unsigned long>(core->sleepFixes));
+    out.print("  received by rate:");
+    bool anyRate = false;
+    for (int i = 0; i < 256; ++i) {
+      if (!core->rxRates[i]) continue;
+      out.printf(" %s %lu,", rateName(static_cast<uint8_t>(i)),
+                 static_cast<unsigned long>(core->rxRates[i]));
+      anyRate = true;
+    }
+    out.print(anyRate ? "" : " none");
+    out.print("; sent by rate:");
+    anyRate = false;
+    for (int i = 0; i < 64; ++i) {
+      if (!core->txRates[i]) continue;
+      if (i == WIFI_PHY_RATE_LORA_500K) {
+        out.print(" LR 500K");
+      } else if (i == WIFI_PHY_RATE_LORA_250K) {
+        out.print(" LR 250K");
+      } else {
+        out.print(" ");
+        out.print(rateName(static_cast<uint8_t>(i & 0x1F)));
+      }
+      out.printf(" %lu,", static_cast<unsigned long>(core->txRates[i]));
+      anyRate = true;
+    }
+    out.println(anyRate ? "" : " none");
+    const uint32_t timed = txTimed.load();
+    out.printf("  a full frame (200 bytes and up) from send to sent, alone in the radio: %lu us on "
+               "average over %lu; Wi-Fi %d dBm\n",
+               static_cast<unsigned long>(timed ? txUsSum.load() / timed : 0),
+               static_cast<unsigned long>(timed), WiFi.isConnected() ? WiFi.RSSI() : 0);
+  }
   out.printf("  relay for others %s, call chirp %s, net %s, mic keys %s%s\n",
              relayForOthers() ? "on" : "off", callChirp() ? "on" : "off",
              netUp() ? "up" : "down (not built)", micMode() == MicMode::Push ? "push" : "sticky",
              testMicMode() ? " (dev override)" : "");
+  dumpLinks(out);
   out.printf("  counters for the screens: calls played %lu, rings %lu, conversations seen %lu "
              "(the last in group %d), messages in %lu\n",
              static_cast<unsigned long>(s.incoming), static_cast<unsigned long>(s.ringsSeen),
@@ -4971,15 +5471,17 @@ void dump(Print &out) {
       out.printf("    %08lX %-16s %s", static_cast<unsigned long>(b.id),
                  b.name.empty() ? "(no name yet)" : b.name.c_str(),
                  kRoutes[static_cast<int>(b.route)]);
-      if (b.route == Route::Air) out.printf(" %d dBm", b.rssi);
+      if (b.route == Route::Air) {
+        out.printf(" %d dBm (noise %d) at %s", b.rssi, b.noise, b.rxRate.c_str());
+      }
       if (b.route == Route::Relayed) {
         out.printf(" %d hop%s via %s", b.hops, b.hops == 1 ? "" : "s",
                    b.relayName.empty() ? "?" : b.relayName.c_str());
       }
-      out.printf(", heard %lu s ago, flags%s%s%s, battery %d\n",
+      out.printf(", heard %lu s ago, flags%s%s%s%s, battery %d\n",
                  static_cast<unsigned long>(b.heardAgoS), b.flags & kFlagUsb ? " USB" : "",
                  b.flags & kFlagRelay ? " RELAY" : "", b.flags & kFlagMic ? " MIC" : "",
-                 b.battery);
+                 b.flags & kFlagLong ? " LONG" : "", b.battery);
     }
     const Conversation cv = conversation(static_cast<int>(i));
     if (!cv.on) {

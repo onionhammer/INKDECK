@@ -14,10 +14,13 @@
 // agent_token is in one group, HOME, made from the token under another label. Each board has a
 // random id, made once and kept in NVS, and a name (mesh_name).
 //
-// Mesh: flooding. A packet not seen before is handled, then sent on with one hop less (3 relays
-// at most), also for groups this board isn't in (unread: by the hop count alone), while RELAY FOR
-// OTHERS is on. For every board comms keeps how it's reached: straight over the air (with its
-// signal), through relays (how many hops, and the last relay), or not lately (away).
+// Mesh: flooding, but for voice. A packet not seen before is handled, then sent on with one hop
+// less (3 relays at most), also for groups this board isn't in (unread: by the hop count alone),
+// while RELAY FOR OTHERS is on. A voice or message frame goes on only if a board this one hears
+// straight would otherwise miss it: every board says every few seconds which boards it hears
+// straight and how well (comms_mesh.h). For every board comms keeps how it's reached: straight
+// over the air (with its signal), through relays (how many hops, and the last relay), or not
+// lately (away).
 //
 // The mic: a board's mic is on or off, switched on this board only (micOn(), micOff()); no packet
 // switches a mic on, and it doesn't survive a restart. While it's on it captures all the time, and
@@ -145,6 +148,7 @@ enum class Route : uint8_t {
 constexpr uint8_t kFlagUsb = 0x01;    // on USB power: it listens all the time
 constexpr uint8_t kFlagRelay = 0x02;  // it relays for others
 constexpr uint8_t kFlagMic = 0x04;    // its mic is on
+constexpr uint8_t kFlagLong = 0x08;   // it sends at the long-range rate (mesh_range = long)
 
 struct Board {
   uint32_t id = 0;
@@ -159,6 +163,10 @@ struct Board {
   time_t talkedAt = 0;   // its voice last heard here, 0 if none
   uint8_t flags = 0;     // kFlag*
   int battery = -1;      // percent, -1 if it has none or didn't say
+  // The rate its last packet straight from it came at ("1M", "LR 500K"...; "" if none), and the
+  // radio's noise floor then (dBm, 0 if none).
+  std::string rxRate;
+  int noise = 0;
 };
 // The other boards of a group: reached ones first (over the air by signal, then by hops), then
 // the away ones, most recently heard first.
@@ -195,6 +203,7 @@ struct Status {
   int channel = 0;       // the radio's Wi-Fi channel; 0 while off
   bool onNetwork = false;  // on a Wi-Fi network: the channel is the network's, not mesh_channel
   bool netUp = false;    // the inkharness link (always false for now)
+  bool longRange = false;  // this board sends at the long-range rate (range()); false while off
   // Changes each time a mic session starts playing here (once a session, not each sound): the UI
   // raises the call sheet over any screen when it does (unless the Recorder or an alarm is up,
   // which no voice plays over).
@@ -573,6 +582,14 @@ void setCallChirp(bool on);
 enum class MicMode : uint8_t { Sticky, Push };
 MicMode micMode();
 
+// The rate this board sends at: the card's mesh_range line (settings::meshRange()), unless the dev
+// override says otherwise. Normal: 1 Mbps (802.11b). Long: Espressif's long-range rate, 500 kbps,
+// which reaches further (each packet takes twice the air). Every board hears both rates (the
+// radio takes the long-range protocol on top of 802.11b/g/n), so boards on either talk to each
+// other; a board's presence says which it sends at (kFlagLong).
+enum class Range : uint8_t { Normal, Long };
+Range range();
+
 bool netUp();            // the inkharness link: false (not built yet)
 uint32_t boardId();      // this board's, made once and kept in NVS
 std::string boardName(); // upper case: mesh_name, else tailscale_name, else INKDECK-XXXX
@@ -595,8 +612,9 @@ struct Pong {
 };
 std::vector<Pong> pongs();  // answers to the last ping, in the order they came
 
-// Groups, boards, state, channel, conversations, the mic, open mics, rings, messages and
-// counters: sent, received, dropped by reason, relayed; the duplex path's.
+// Groups, boards, state, channel and rate, the boards heard straight and their links,
+// conversations, the mic, open mics, rings, messages and counters: sent, received (by rate),
+// dropped by reason, relayed and not; the duplex path's.
 void dump(Print &out);
 // A test of the parts that need no radio: HKDF and AES-GCM, the replay window, ADPCM, the
 // packet format (the mic's types too), the seen-cache, a message's reassembly with frames lost and
@@ -615,6 +633,22 @@ void setTestChannel(int channel);
 // card's line again). testMicMode() says if one is set.
 void setTestMicMode(bool set, MicMode mode = MicMode::Sticky);
 bool testMicMode();
+// !commsrange: the rate in place of the card's mesh_range line, kept in NVS (set false: the card's
+// line again); it applies at once. testRange() says if one is set.
+void setTestRange(bool set, Range r = Range::Normal);
+bool testRange();
+// Relaying only when needed (comms_mesh.h), for testing with two boards: !commsdeaf drops whatever
+// this board's radio gets from that board (its packets, and those it relays), as if it were out of
+// range, so it's left out of this board's links (0: deaf to none); !commsflood relays every voice
+// and message frame as before the rule (for comparing). Neither is kept.
+void setDeaf(uint32_t id);
+uint32_t deaf();
+void setFlood(bool on);
+bool flood();
+// !commslrrx: the radio takes the long-range protocol (on, the default) or not (off: it no longer
+// hears boards that send at the long-range rate), at once and for every join, until a restart. A
+// change while joined drops the connection, which joins again. For testing what it costs.
+void longRangeRx(bool on);
 // Sends again, byte for byte, the last frame this board sent (firstVoice false: the others drop it
 // as a duplicate) or the first voice frame of its last sound (true: dropped as replayed, once the
 // seen-cache has forgotten it). For showing those drops in !comms.
@@ -644,6 +678,39 @@ struct EchoTest {
   int delayMs = -1;  // from the tone written to the speaker to the mic hearing it
 };
 EchoTest echoTest(float levelDb, uint32_t ms);
+
+// The boards heard straight over the air (comms_mesh.h), for !commsloss: each one's packets since
+// its boot began here, that came and that didn't (gaps in its sequence numbers), the gaps by
+// length (1, 2-3, 4-15, 16 and more), its signal and the rate its last one came at.
+struct LinkStat {
+  uint32_t id = 0;
+  uint32_t got = 0, missed = 0;
+  uint32_t runs[4] = {};
+  int rssi = 0;
+  bool neighbour = false;  // heard straight in the last 20 s
+};
+std::vector<LinkStat> linkStats();
+
+// The air survey (!commsair): for ms (1 to 30 s), the radio also takes every frame on its channel it
+// can decode (promiscuous mode, comms and Wi-Fi going on meanwhile) and adds up how long each was
+// on the air, from its length and rate: the share of the time the channel carried frames, by kind.
+// Frames it can't decode (other channels' overlap, 2-stream frames, noise) aren't in it: the
+// channel is busier than this says. Waits.
+struct AirSurvey {
+  bool ok = false;
+  std::string error;
+  int channel = 0;
+  uint32_t ms = 0;
+  // Frames and the share of the time on the air (0 to 1), by kind: ESP-NOW (this board's and
+  // others'), data, beacons, other management, control, and what came without a payload
+  // (2-stream and the like).
+  enum Kind : uint8_t { kEspNow, kData, kBeacon, kMgmt, kCtrl, kOther, kKinds };
+  uint32_t frames[kKinds] = {};
+  float share[kKinds] = {};
+  float total = 0;
+  int loudestData = 0;  // dBm, the strongest data frame
+};
+AirSurvey airSurvey(uint32_t ms);
 
 // The board is powering off: the mic's off goes first if it's on, then the radio's ESP-NOW side
 // stops, for good (power.cpp, before Wi-Fi goes).
