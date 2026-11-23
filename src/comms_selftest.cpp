@@ -666,6 +666,45 @@ __attribute__((noinline)) void testEchoGate(Checker &c) {
               "echo around it as silence");
 }
 
+__attribute__((noinline)) void testGateDrain(Checker &c) {
+  // Loud frames 100 to 109, the speaker's echo on 110 and 111, the mic off after frame 111: the
+  // 8 frames held back (104 to 111) go, the two the echo explains as silence, none a new sound.
+  const uint32_t P = MicGate::kPreFrames, H = MicGate::kHangFrames;
+  std::unique_ptr<MicGate> g(new MicGate());
+  g->setThreshold(-30);
+  int sent = 0;
+  for (uint32_t i = 0; i < 112; ++i) {
+    const bool echo = i >= 110;
+    sent += g->frame(i >= 100 && i < 110 ? -20.0f : echo ? -40.0f : -50.0f,
+                     echo ? -35.0f : -96.0f).send;
+  }
+  int drained = 0, muted = 0, firsts = 0;
+  for (uint32_t k = 0; k < P; ++k) {
+    const MicGate::Step s = g->drain();
+    if (!s.send) break;
+    ++drained;
+    muted += s.muted;
+    firsts += s.first;
+  }
+  // Sent before the off: frames 100 - P to 103, at frames 100 to 111.
+  bool ok = sent == 12 && drained == static_cast<int>(P) && muted == 2 && firsts == 0;
+  // Nothing going out: nothing to drain.
+  g.reset(new MicGate());
+  g->setThreshold(-30);
+  for (uint32_t i = 0; i < 50; ++i) g->frame(-50.0f);
+  ok = ok && !g->drain().send;
+  // Off near the hang's end (a loud frame at 10, the mic off after frame 12 + H): only the frames
+  // the hang still covers, up to 10 + H.
+  g.reset(new MicGate());
+  g->setThreshold(-30);
+  for (uint32_t i = 0; i < 13 + H; ++i) g->frame(i == 10 ? -20.0f : -50.0f);
+  drained = 0;
+  for (uint32_t k = 0; k < P && g->drain().send; ++k) ++drained;
+  c.check(ok && drained == static_cast<int>(P - 2),
+          "gate drain: a mic off mid-sound sends the 160 ms held back, echo as silence; nothing "
+          "when quiet, only what the hang covers at its end");
+}
+
 __attribute__((noinline)) void testHistory(Checker &c) {
   // A mic on 130 minutes, louder each 2 minutes, paused for bars 20 and 21.
   std::unique_ptr<MicHistory> h(new MicHistory());
@@ -883,6 +922,7 @@ bool selfTest(Print &out) {
   testMicPackets(c);
   testGate(c);
   testEchoGate(c);
+  testGateDrain(c);
   testHistory(c);
   testHeard(c);
   testMixer(c);

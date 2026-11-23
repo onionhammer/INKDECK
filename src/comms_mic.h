@@ -53,6 +53,10 @@ class MicGate {
   // The mic was off: nothing before this is pre-roll for what comes after.
   void reset();
   bool sending() const { return sending_; }
+  // The mic goes off: the next frame still held back (the last kPreFrames captured), as the gate
+  // would let it out if only silence came after, with its echo-muted flag; send is false once the
+  // sound's hang no longer covers it. Only kPreFrames are held: call it that many times at most.
+  Step drain() { return frame(-96, -96); }
 
  private:
   int threshold_ = -30;
@@ -219,6 +223,16 @@ class Mixer {
     return playedAt_;
   }
   bool active() const;  // a source has frames, or plays
+  // A sound that has played out (its frames ran dry, or another sound of its board began), for
+  // the log: its frames that came, the highest numbered (+1: as many as were sent, if the last
+  // came), those that played and those covered as lost. A sound that rests and goes on is
+  // reported again, counted from its start. Takes it, once.
+  struct Ended {
+    uint32_t sender = 0;
+    uint16_t sound = 0;
+    uint16_t came = 0, top = 0, played = 0, lost = 0;
+  };
+  bool ended(Ended &out);
   size_t sources() const;
   bool has(uint32_t sender) const;
   void drop(uint32_t sender);  // its voice stops (a board left, or this board left)
@@ -238,10 +252,16 @@ class Mixer {
     uint16_t next = 0;
     int dry = 0;
     uint32_t firstMs = 0, lastMs = 0;
+    uint16_t got = 0, lost = 0;   // of its sound: frames played, frames covered
+    uint16_t came = 0, top = 0;   // frames taken, the highest frame number + 1
+    bool reported = false;        // noteEnd() since the counts last changed
     Slot slots[kSlots];
     Concealer conceal;
   };
+  void noteEnd(Source &s);
   Source src_[kSources];
+  Ended ended_;
+  bool endedNew_ = false;
   Played playedAt_[kSources];
   size_t played_ = 0;
   int32_t sum_[kFrameSamples] = {};

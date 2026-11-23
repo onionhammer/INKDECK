@@ -250,6 +250,25 @@ void lineCommand(const String &line) {
     Serial.printf("commschannel: %s\n", ch ? ("channel " + String(ch)).c_str() : "mesh_channel");
     return;
   }
+  if (line.startsWith("commsmicmode")) {
+    // How the mic is keyed, in place of the card's mesh_mic line (the card is the real way):
+    // kept in NVS. "!commsmicmode -" removes it.
+    String rest = line.substring(12);
+    rest.trim();
+    if (rest == "sticky" || rest == "push") {
+      comms::setTestMicMode(true, rest == "push" ? comms::MicMode::Push : comms::MicMode::Sticky);
+    } else if (rest == "-") {
+      comms::setTestMicMode(false);
+    } else if (!rest.isEmpty()) {
+      Serial.println("commsmicmode: sticky, push, or - (the card's mesh_mic line again)");
+      return;
+    }
+    Serial.printf("commsmicmode: %s%s\n",
+                  comms::micMode() == comms::MicMode::Push ? "push" : "sticky",
+                  comms::testMicMode() ? " (dev override; !commsmicmode - removes it)"
+                                       : " (the card's mesh_mic line)");
+    return;
+  }
   if (line == "commsrelay on" || line == "commsrelay off") {
     comms::setRelayForOthers(line.endsWith("on"));
     Serial.printf("commsrelay: relay for others %s\n", comms::relayForOthers() ? "on" : "off");

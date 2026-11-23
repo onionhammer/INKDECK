@@ -267,7 +267,10 @@ void markHeard(int group);  // the group's calls count as heard (-1: every group
 // speaker's echo could be (its level, kEchoCouplingDb and kEchoMarginDb) doesn't count, and goes as
 // silence if it goes: a voice over the echo gets through, the echo doesn't. Every kStillHereMs the
 // mic says it's on (still here: its threshold, the loudest frame since, its power, since when);
-// micOff() sends a clear off. The first 200 ms after the mic starts are dropped (its thump).
+// micOff() sends a clear off. Switched off while a sound goes (a push-to-talk release, mid-word),
+// the frames the gate still holds back (kPreRollMs) go first, 20 ms apart, as if silence had come
+// after, and the off 40 ms after the last of them (its presence says the mic is on until then): the
+// end of the word arrives. The first 200 ms after the mic starts are dropped (its thump).
 //
 // Something else may take the mic for a while; it pauses (mic().paused says why) and picks up
 // 0.4 s after by itself: the agent listening or speaking, the Recorder, a ringing alarm, music
@@ -563,6 +566,13 @@ void setRelayForOthers(bool on);
 bool callChirp();       // a chirp as a mic session starts playing here; on by default
 void setCallChirp(bool on);
 
+// How this board's mic is keyed on the screens (apps/comms_ui.h has both key maps): Sticky, ●
+// switches it on and off; Push, it's on while HOLD BOOT is held. The card's mesh_mic line
+// (settings::meshMic()), unless the dev override says otherwise. The engine doesn't use it: a
+// mic is on or off either way, and no packet switches one on.
+enum class MicMode : uint8_t { Sticky, Push };
+MicMode micMode();
+
 bool netUp();            // the inkharness link: false (not built yet)
 uint32_t boardId();      // this board's, made once and kept in NVS
 std::string boardName(); // upper case: mesh_name, else tailscale_name, else INKDECK-XXXX
@@ -590,16 +600,21 @@ std::vector<Pong> pongs();  // answers to the last ping, in the order they came
 void dump(Print &out);
 // A test of the parts that need no radio: HKDF and AES-GCM, the replay window, ADPCM, the
 // packet format (the mic's types too), the seen-cache, a message's reassembly with frames lost and
-// doubled, conversations on a made-up clock, the gate (pre-roll, hang, the echo held back), the
-// history, an open mic heard (QUIET, SOUND, LOST, its sessions) and the mixer. Prints PASS or
-// FAIL a check; true if all passed.
+// doubled, conversations on a made-up clock, the gate (pre-roll, hang, the echo held back, its
+// drain at a mic's off), the history, an open mic heard (QUIET, SOUND, LOST, its sessions) and the
+// mixer. Prints PASS or FAIL a check; true if all passed.
 bool selfTest(Print &out);
 
-// Dev overrides (devtools.cpp's !commsgroup and !commschannel), kept in NVS: a test group from a
-// secret, on top of the card's (the card's mesh_group lines are the real way), and a channel in
-// place of mesh_channel. An empty secret or channel 0 removes them. The group applies at once.
+// Dev overrides (devtools.cpp's !commsgroup, !commschannel and !commsmicmode), kept in NVS: a test
+// group from a secret, on top of the card's (the card's mesh_group lines are the real way), a
+// channel in place of mesh_channel, and the mic's mode in place of mesh_mic. An empty secret or
+// channel 0 removes them. They apply at once.
 void setTestGroup(const std::string &secret, const std::string &name);
 void setTestChannel(int channel);
+// !commsmicmode: the mic's mode in place of the card's mesh_mic line, kept in NVS (set false: the
+// card's line again). testMicMode() says if one is set.
+void setTestMicMode(bool set, MicMode mode = MicMode::Sticky);
+bool testMicMode();
 // Sends again, byte for byte, the last frame this board sent (firstVoice false: the others drop it
 // as a duplicate) or the first voice frame of its last sound (true: dropped as replayed, once the
 // seen-cache has forgotten it). For showing those drops in !comms.

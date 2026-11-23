@@ -22,6 +22,14 @@
 
 namespace apps {
 
+namespace {
+// What the last HOLD BOOT began, so its release ends it: a message (the ringing sheet), or the mic
+// (push to talk). The input timer calls both ends; the UI task may undo a hold (hold_boot.cpp),
+// and KEEP MIC ON may keep a held mic on (heldMic false: the release leaves it).
+std::atomic<bool> heldMessage{false};
+std::atomic<bool> heldMic{false};
+}  // namespace
+
 namespace commsui {
 namespace {
 
@@ -78,6 +86,57 @@ void toggleMic(int group, uint32_t target) {
   }
   noteAttempt();
   comms::micOn(group, target);
+}
+
+bool pushToTalk() { return comms::micMode() == comms::MicMode::Push; }
+
+ui::Hint micHint() {
+  if (pushToTalk()) return {"HOLD BOOT", "TALK"};
+  return {ui::glyph::kPress, comms::micEnabled() ? "MIC OFF" : "MIC ON"};
+}
+
+bool micPress(int group, uint32_t target) {
+  if (pushToTalk()) return false;
+  toggleMic(group, target);
+  return true;
+}
+
+ui::TalkTo micTalkTo(int group, uint32_t target) {
+  ui::TalkTo to;
+  if (!pushToTalk()) return to;  // the agent's
+  to.comms = true;
+  to.group = group;
+  to.board = target;
+  return to;
+}
+
+ui::TalkTo ringTalkTo(int group, uint32_t target) {
+  ui::TalkTo to = micTalkTo(group, target);
+  to.answer = to.comms;
+  return to;
+}
+
+void micAnswered(int group, uint32_t target) {
+  if (!pushToTalk()) comms::micOn(group, target);
+}
+
+bool micKept() { return comms::micEnabled() && !heldMic.load(); }
+
+bool keepMic(int group, uint32_t target, bool on) {
+  if (!on) {
+    heldMic = false;
+    comms::micOff();
+    return true;
+  }
+  if (heldMic.exchange(false)) return true;  // held now: the release leaves it on
+  if (comms::micEnabled()) return true;
+  noteAttempt();
+  return comms::micOn(group, target);
+}
+
+std::string micModeText() {
+  return std::string("MIC: ") + (pushToTalk() ? "PUSH TO TALK" : "STICKY") + " \xC2\xB7 " +
+         (comms::testMicMode() ? "DEV OVERRIDE" : "INKDECK.INI");
 }
 
 ui::MicMark micMark() {
@@ -412,21 +471,26 @@ void drawEarlier(ui::Canvas &c, ui::Rect r, const std::vector<comms::Call> &call
 
 }  // namespace commsui
 
-namespace {
-// What the last HOLD BOOT began, so its release ends it: a message (the ringing sheet). The
-// input timer calls both ends; the UI task may undo a hold (hold_boot.cpp).
-std::atomic<bool> heldMessage{false};
-}  // namespace
-
 void commsTalk(const ui::TalkTo &to) {
-  if (!to.message) return;  // the only comms hold left: HOLD BOOT talks to the agent elsewhere
+  if (to.message) {
+    commsui::noteAttempt();
+    heldMessage = true;
+    comms::messageStart();  // the ring nobody answered: the message goes to whom it rang
+    return;
+  }
+  // Push to talk (the screens say comms for the mic only then): on while it's held, the ring
+  // answered first on the ring sheet (it becomes the call sheet). A mic on already (kept on) is
+  // left as it is, and the release leaves it too.
+  if (to.answer) comms::answer();
+  if (comms::micEnabled()) return;
   commsui::noteAttempt();
-  heldMessage = true;
-  comms::messageStart();  // the ring nobody answered: the message goes to whom it rang
+  heldMic = true;
+  if (!comms::micOn(to.group, to.board)) heldMic = false;  // the screen says why
 }
 
 void commsTalkStop() {
   if (heldMessage.exchange(false)) comms::messageSend();
+  if (heldMic.exchange(false)) comms::micOff();
 }
 
 namespace {
@@ -941,15 +1005,30 @@ class CommsScreen : public ui::Screen {
       out[0] = {"BOOT", "BACK"};
       return 1;
     }
-    out[0] = {ui::glyph::kDial, "MOVE"};
-    out[1] = {ui::glyph::kPress, comms::micEnabled() ? "MIC OFF" : "MIC ON"};
+    // Sticky: MOVE, then ● the mic. Push: HOLD BOOT the mic, then ● rings, joins or leaves (four
+    // hints at most: the dial's goes).
+    if (pushToTalk()) {
+      out[0] = micHint();
+      out[1] = {ui::glyph::kPress, pressWord()};
+    } else {
+      out[0] = {ui::glyph::kDial, "MOVE"};
+      out[1] = micHint();
+    }
     out[2] = {ui::glyph::kHoldPress, "MENU"};
     out[3] = {"BOOT", playing() ? "STOP" : "BACK"};
     return 4;
   }
+  // Push to talk: HOLD BOOT keys the mic to the row selected (to a board in the group's
+  // conversation it goes to all of it: the engine). Sticky: the agent's.
+  ui::TalkTo talkTo() const override {
+    return groups_.empty() ? ui::TalkTo() : micTalkTo(group_, selected_);
+  }
 
   // Back from a sheet: the Groups sheet may have switched the group.
-  void onEnter() override { load(); }
+  void onEnter() override {
+    load();
+    retarget();
+  }
 
   bool onKey(Key key) override {
     if (!comms::configured()) return false;
@@ -959,10 +1038,11 @@ class CommsScreen : public ui::Screen {
         if (!cursor_.move(key == Key::Up ? -1 : 1)) return false;
         const int i = cursor_.cursor();
         selected_ = i == 0 ? 0 : boards_[i - 1].id;
+        retarget();
         return true;
       }
       case Key::Select:
-        toggleMic(group_, selected_);
+        if (!micPress(group_, selected_)) pressPush();
         return true;
       case Key::SelectLong: openMenu(); return true;
       case Key::Back: return stopIfPlaying();  // else back; the mic stays as it is
@@ -974,6 +1054,7 @@ class CommsScreen : public ui::Screen {
   bool onTick() override {
     if (!comms::configured()) return false;
     load();
+    retarget();
     return key() != drawn_;
   }
 
@@ -1000,7 +1081,9 @@ class CommsScreen : public ui::Screen {
     r.takeTop(kRule);
     drawSectionHeader(c, r.takeTop(kSectionH), "HEARD", countText(calls_));
     if (calls_.empty()) {
-      drawText(c, {r.x, r.y + 12, r.w, 24}, "NOTHING YET" + kDot + "\xE2\x97\x8F SWITCHES YOUR MIC ON",
+      drawText(c, {r.x, r.y + 12, r.w, 24},
+               "NOTHING YET" + kDot +
+                   (pushToTalk() ? "HOLD BOOT TO TALK" : "\xE2\x97\x8F SWITCHES YOUR MIC ON"),
                style::kLabel, Align::Center);
       return;
     }
@@ -1013,6 +1096,31 @@ class CommsScreen : public ui::Screen {
   // A failed attempt's notice, in place of CHANNEL's header; a sheet over the screen (the
   // ringing sheet, Messages) shows its own.
   std::string notice() const { return ui::nav::top() == this ? attemptError() : std::string(); }
+
+  // HOLD BOOT's target changed (the row, the group, the mode): the navigator asks talkTo() again.
+  void retarget() {
+    const uint64_t k = pushToTalk() ? (static_cast<uint64_t>(static_cast<uint32_t>(group_)) << 32) |
+                                          selected_
+                                    : ~0ull;
+    if (k == talked_) return;
+    talked_ = k;
+    ui::nav::talkChanged();
+  }
+
+  // ● when push: rings the row selected while the group has no conversation, else joins it or
+  // leaves it (LEAVE also switches this board's mic off).
+  const char *pressWord() const { return !conv_.on ? "RING" : conv_.in ? "LEAVE" : "JOIN"; }
+  void pressPush() {
+    if (conv_.on && conv_.in) {
+      comms::leave(group_);
+    } else if (conv_.on) {
+      if (!comms::join(group_)) noteAttempt();  // over a moment ago
+    } else if (comms::ringStart(group_, selected_)) {
+      ui::nav::push(makeRingingSheet(group_, selected_));  // it says if the ring won't start
+    } else {
+      noteAttempt();
+    }
+  }
 
   void load() {
     groups_ = comms::groups();
@@ -1050,7 +1158,8 @@ class CommsScreen : public ui::Screen {
 
   // Everything the screen draws, in short: it redraws when this changes.
   std::string key() const {
-    std::string k = context() + "\n" + (comms::micEnabled() ? "m" : "") + (playing() ? "p" : "");
+    std::string k = context() + "\n" + (comms::micEnabled() ? "m" : "") + (playing() ? "p" : "") +
+                    (pushToTalk() ? pressWord() : "");
     for (const comms::Group &g : groups_) k += g.name + std::to_string(g.unheard) + ",";
     if (groups_.empty()) return k;
     k += comms::viaName(groups_[group_].via);
@@ -1261,16 +1370,29 @@ class CommsScreen : public ui::Screen {
                        },
                        [group, id] { ui::nav::replace(makeMicScreen(group, id)); }});
     }
-    items.push_back({"RING " + rowName, nullptr, [group, target] {
-                       if (comms::ringStart(group, target)) {
-                         // It says if the ring won't start.
-                         ui::nav::replace(makeRingingSheet(group, target));
-                       } else {
-                         noteAttempt();
-                         ui::nav::pop();
-                       }
-                     }});
-    if (conv_.on) {
+    if (pushToTalk()) {
+      // ● rings, joins and leaves on the screen itself. A mic that stays on without a hold (a
+      // room): on to the row selected until this row, or a leave, switches it off.
+      items.push_back({"KEEP MIC ON", []() -> std::string { return micKept() ? "ON" : "OFF"; },
+                       [group, target] {
+                         if (micKept()) {
+                           keepMic(group, target, false);
+                         } else if (!keepMic(group, target, true)) {
+                           ui::nav::pop();  // the screen says why
+                         }
+                       }});
+    } else {
+      items.push_back({"RING " + rowName, nullptr, [group, target] {
+                         if (comms::ringStart(group, target)) {
+                           // It says if the ring won't start.
+                           ui::nav::replace(makeRingingSheet(group, target));
+                         } else {
+                           noteAttempt();
+                           ui::nav::pop();
+                         }
+                       }});
+    }
+    if (conv_.on && !pushToTalk()) {
       if (conv_.in) {
         items.push_back({"LEAVE",
                          [group]() -> std::string {
@@ -1449,6 +1571,7 @@ class CommsScreen : public ui::Screen {
   int group_ = -1;        // the group on screen
   uint32_t selected_ = 0;  // TALK TO's row: a board's id, 0 for all
   ui::ListCursor cursor_;
+  uint64_t talked_ = ~0ull;  // HOLD BOOT's target as last told to the navigator (retarget())
 };
 
 }  // namespace

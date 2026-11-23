@@ -58,7 +58,9 @@ constexpr uint32_t kSleepCheckMs = 250;
 constexpr uint32_t kChannelCheckMs = 1000;
 constexpr uint32_t kCallBumpMs = 250;
 constexpr size_t kRxDepth = 96;     // frames from the radio waiting for the task (PSRAM)
-constexpr size_t kPending = 16;     // relays and delayed packets waiting to go
+// Relays and delayed packets waiting to go: a mic switched off mid-sound queues its last 8 frames
+// and 3 offs (stopMic()), with room left for relays meanwhile.
+constexpr size_t kPending = 24;
 constexpr size_t kLastFrames = 3000;  // PLAY LAST keeps 60 s
 constexpr uint8_t kFlagHello = 0x80;  // in a presence: answer with yours
 // Conversations, rings and messages (docs/comms-protocol.md).
@@ -470,6 +472,7 @@ struct Core {
   SeenCache seen;
   ReplayGuard guard;
   Pending pending[kPending];
+  uint32_t drainUntil = 0;  // the mic's last frames and its off are queued until about then
   Replay replay;
   std::vector<uint8_t> replayAudio;  // PLAY LAST's copy of heardAudio, as it was
   MacId macs[32];
@@ -924,13 +927,19 @@ bool queuePending(const uint8_t *frame, size_t len, uint32_t delayMs, bool relay
   return false;
 }
 
+// What's due, in the order it's due (not the slots'): a mic's last frames before its off.
 void sendPending(uint32_t now) {
-  for (Pending &p : core->pending) {
-    if (!p.used || static_cast<int32_t>(now - p.due) < 0) continue;
-    p.used = false;
-    if (radioSend(p.data, p.len) && p.relay) {
+  for (;;) {
+    Pending *next = nullptr;
+    for (Pending &p : core->pending) {
+      if (!p.used || static_cast<int32_t>(now - p.due) < 0) continue;
+      if (!next || static_cast<int32_t>(p.due - next->due) < 0) next = &p;
+    }
+    if (!next) return;
+    next->used = false;
+    if (radioSend(next->data, next->len) && next->relay) {
       counters.relayed.fetch_add(1);
-      if (p.unread) counters.relayedUnread.fetch_add(1);
+      if (next->unread) counters.relayedUnread.fetch_add(1);
     }
   }
 }
@@ -955,6 +964,8 @@ bool sendOwn(GroupRec &g, uint8_t type, const uint8_t *body, size_t len, uint32_
   if (delayMs) return queuePending(f, n, delayMs, false);
   return radioSend(f, n);
 }
+
+bool draining();
 
 void sendPresence(GroupRec &g, bool hello) {
   uint8_t body[8 + kMaxNameLen + 9 + 4 * ConvState::kMaxMembers];
@@ -981,7 +992,8 @@ void sendPresence(GroupRec &g, bool hello) {
     }
   }
   w.u8(static_cast<uint8_t>((core->onUsb ? kFlagUsb : 0) | (relay ? kFlagRelay : 0) |
-                            (core->mic.on ? kFlagMic : 0) | (hello ? kFlagHello : 0)));
+                            (core->mic.on || draining() ? kFlagMic : 0) |
+                            (hello ? kFlagHello : 0)));
   const pmic::Status p = pmic::status();
   w.u8(p.ok && p.battery && p.percent >= 0 ? static_cast<uint8_t>(p.percent) : 0xFF);
   w.u8(static_cast<uint8_t>(core->name.size()));
@@ -998,6 +1010,9 @@ void sendPresence(GroupRec &g, bool hello) {
 
 // The group hears this board's presence within a moment (a conversation joined or left).
 void presenceSoon(GroupRec &g) { g.presenceDue = millis() + 20 + esp_random() % 100; }
+
+// A mic switched off mid-sound still has its last frames and its off queued (stopMic()).
+bool draining() { return static_cast<int32_t>(core->drainUntil - millis()) > 0; }
 
 // --- Audio -------------------------------------------------------------------------------------
 
@@ -1236,6 +1251,14 @@ void pumpPlay(uint32_t now) {
   }
   for (int guard = 0; guard < 8 && audio::duplexQueuedMs() < kMixAheadMs; ++guard) {
     const int voices = mx.pull(core->mixPcm, now);
+    Mixer::Ended e;
+    if (mx.ended(e)) {
+      log_i("comms: %08lX's sound %u played out: frames 0 to %u, %u came (%u never did); %u "
+            "played, %u covered (%lu ms)",
+            static_cast<unsigned long>(e.sender), e.sound, e.top ? e.top - 1 : 0, e.came,
+            e.top - e.came, e.played, e.lost,
+            static_cast<unsigned long>((e.played + e.lost) * kFrameMs));
+    }
     const bool replay = replayFrame();
     if (!voices && !replay) break;
     if (voices) {
@@ -1356,7 +1379,9 @@ void micPaused(const char *why, uint32_t now) {
   bump();
 }
 
-void sendMicFrame(const MicFrame &k, bool muted) {
+// delayMs: queued to go then (the frames a mic switched off still held back, at their pace); if
+// the queue is full, now.
+void sendMicFrame(const MicFrame &k, bool muted, uint32_t delayMs = 0) {
   MicRec &m = core->mic;
   Voice v;
   v.target = m.target;
@@ -1375,7 +1400,11 @@ void sendMicFrame(const MicFrame &k, bool muted) {
   uint8_t body[kMaxBody];
   const size_t n = putVoice(body, sizeof body, sentAt(), v);
   core->markFirstVoice = v.frame == 0;
-  if (!m.vanished && n && sendOwn(core->groups[m.group], kVoice, body, n)) ++m.framesSent;
+  GroupRec &g = core->groups[m.group];
+  if (!m.vanished && n &&
+      (sendOwn(g, kVoice, body, n, delayMs) || (delayMs && sendOwn(g, kVoice, body, n)))) {
+    ++m.framesSent;
+  }
   if (muted) ++m.framesMuted;
 }
 
@@ -1482,7 +1511,7 @@ void sendHistory(uint32_t to, uint32_t now) {
   if (n && sendOwn(core->groups[m.group], kExt, body, n)) ++m.histories;
 }
 
-void stopMic(uint8_t reason);
+void stopMic(uint8_t reason, bool drain = true);
 void ignoreRinging();
 
 void startMic(int gi, uint32_t target) {
@@ -1547,10 +1576,45 @@ void startMic(int gi, uint32_t target) {
   bump();
 }
 
-void stopMic(uint8_t reason) {
+// The mic goes off in the middle of a sound (a push-to-talk release, ● as a word ends): the frames
+// the gate still holds back (its pre-roll's 160 ms) go too, as it would let them out if silence
+// came after, each with its echo-muted flag, queued 20 ms apart from now, the pace they'd have
+// gone at: a burst would overrun the other board's jitter buffer (8 frames), which then drops
+// its oldest. Counted in the sound. Returns how many went.
+uint32_t drainMic() {
+  MicRec &m = core->mic;
+  uint32_t k = 0;
+  for (; k < MicGate::kPreFrames; ++k) {
+    const MicGate::Step s = m.gate.drain();
+    if (!s.send) break;
+    const MicFrame &out = m.ring[(m.captured - MicGate::kPreFrames + k) % kMicRing];
+    sendMicFrame(out, s.muted, k * kFrameMs);
+    if (!m.sounds.empty()) {
+      SoundRec &r = m.sounds.back();
+      ++r.frames;
+      if (s.muted) ++r.muted;
+      if (r.peak == kNoLevel || out.level < r.peak) r.peak = out.level;
+    }
+  }
+  if (k) log_i("comms: the mic's last %lu frames go after it (the word's end)",
+               static_cast<unsigned long>(k));
+  return k;
+}
+
+// drain false: the radio goes too (stopListening()), so nothing waits to be sent.
+void stopMic(uint8_t reason, bool drain) {
   MicRec &m = core->mic;
   if (!m.on) return;
   const uint32_t now = millis();
+  // Its off goes after the last of them, 40 ms clear: a frame that came after the off would
+  // start the mic again on the other board (and go LOST there 20 s later).
+  uint32_t offAfter = 0;
+  if (drain && reason != kOffPowerOff && !m.vanished && m.capturing && m.gate.sending()) {
+    if (const uint32_t k = drainMic()) {
+      offAfter = (k - 1) * kFrameMs + 40;
+      core->drainUntil = now + offAfter + 100;
+    }
+  }
   if (m.capturing) audio::duplexMic(false);
   m.capturing = false;
   m.level = -96;
@@ -1566,7 +1630,10 @@ void stopMic(uint8_t reason) {
     if (reason == kOffPowerOff) {  // the radio goes in a moment: now, not from the queue
       for (int i = 0; i < 3; ++i) sendOwn(g, kMicOff, body, n);
     } else {
-      for (const uint32_t after : {0u, 40u, 80u}) sendOwn(g, kMicOff, body, n, after);
+      for (const uint32_t after : {0u, 40u, 80u}) {
+        const uint32_t d = offAfter + after;
+        if (!sendOwn(g, kMicOff, body, n, d) && d) sendOwn(g, kMicOff, body, n);  // queue full
+      }
     }
   }
   {
@@ -1582,7 +1649,13 @@ void stopMic(uint8_t reason) {
   m.vanished = false;
   m.toneUntilMs = 0;
   micWanted = false;
-  presenceSoon(g);
+  // Its presence says the mic is off once the last frames and the off have gone: one before them
+  // would end the mic on the other boards early, and its last frames would start it again there.
+  if (offAfter) {
+    g.presenceDue = core->drainUntil + esp_random() % 100;
+  } else {
+    presenceSoon(g);
+  }
   log_i("comms: the mic is off (%s) after %lu s: %lu sounds, %lu frames sent (%lu as echo)",
         reason == kOffPowerOff ? "power-off" : "switched", static_cast<unsigned long>(o.onS),
         static_cast<unsigned long>(m.soundsSent), static_cast<unsigned long>(m.framesSent),
@@ -3612,7 +3685,7 @@ void startListening() {
 }
 
 void stopListening() {
-  stopMic(kOffSwitched);  // the radio goes (groups changed): the mic with it
+  stopMic(kOffSwitched, false);  // the radio goes (groups changed): the mic with it
   if (core->out.recording) finishMessage(true);
   stopReplay();
   core->mixer.clear();
@@ -3872,7 +3945,7 @@ void task(void *) {
     // Frames from the radio: quick turns while the mic captures or voice plays, so the mic and
     // the speaker keep up, and while a message is recorded or frames of one go again.
     const bool quick = core->mic.capturing || core->mixer.active() || core->replay.on ||
-                       core->out.recording || core->out.resending;
+                       core->out.recording || core->out.resending || draining();
     RxFrame &frame = core->rx;
     if (xQueueReceive(rxQueue, &frame, pdMS_TO_TICKS(quick ? 4 : 20)) == pdTRUE) {
       int n = 0;
@@ -4673,6 +4746,39 @@ void setTestChannel(int channel) {
   core->devChannel = channel;
 }
 
+namespace {
+// The dev override of the card's mesh_mic line: 0 none, 1 sticky, 2 push. In NVS ("devmic"), read
+// once: the screens ask every second.
+std::atomic<int> devMicMode{-1};  // -1: not read yet
+
+int devMic() {
+  int v = devMicMode.load();
+  if (v < 0) {
+    v = static_cast<int>(kv::loadU32(kNs, "devmic"));
+    devMicMode = v;
+  }
+  return v;
+}
+}  // namespace
+
+MicMode micMode() {
+  switch (devMic()) {
+    case 1: return MicMode::Sticky;
+    case 2: return MicMode::Push;
+    default: break;
+  }
+  return settings::meshMic() == settings::MeshMic::Push ? MicMode::Push : MicMode::Sticky;
+}
+
+void setTestMicMode(bool set, MicMode mode) {
+  const int v = !set ? 0 : mode == MicMode::Push ? 2 : 1;
+  kv::saveU32(kNs, "devmic", static_cast<uint32_t>(v));
+  devMicMode = v;
+  bump();
+}
+
+bool testMicMode() { return devMic() != 0; }
+
 void forceOff() {
   poweringOff = true;
   if (micWanted.load() && taskHandle) {
@@ -4835,8 +4941,10 @@ void dump(Print &out) {
              meshChannel(), core->devChannel ? " (dev override)" : "",
              WiFi.getSleep() == WIFI_PS_NONE ? "off" : "ON (deaf to other boards)",
              espnowUp ? "up" : "down");
-  out.printf("  relay for others %s, call chirp %s, net %s\n", relayForOthers() ? "on" : "off",
-             callChirp() ? "on" : "off", netUp() ? "up" : "down (not built)");
+  out.printf("  relay for others %s, call chirp %s, net %s, mic keys %s%s\n",
+             relayForOthers() ? "on" : "off", callChirp() ? "on" : "off",
+             netUp() ? "up" : "down (not built)", micMode() == MicMode::Push ? "push" : "sticky",
+             testMicMode() ? " (dev override)" : "");
   out.printf("  counters for the screens: calls played %lu, rings %lu, conversations seen %lu "
              "(the last in group %d), messages in %lu\n",
              static_cast<unsigned long>(s.incoming), static_cast<unsigned long>(s.ringsSeen),

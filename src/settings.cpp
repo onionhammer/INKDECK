@@ -40,6 +40,7 @@ struct Values {
   std::vector<std::string> meshGroups;  // the mesh_group lines' values, checked, in order
   std::string meshName;
   int meshChannel = 6;
+  bool meshMicPush = false;  // mesh_mic = push
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
@@ -47,7 +48,8 @@ struct Values {
            agentHost == o.agentHost && agentPort == o.agentPort && agentToken == o.agentToken &&
            tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode &&
            agentFaceDetails == o.agentFaceDetails && newsFaceEvery == o.newsFaceEvery &&
-           meshGroups == o.meshGroups && meshName == o.meshName && meshChannel == o.meshChannel;
+           meshGroups == o.meshGroups && meshName == o.meshName && meshChannel == o.meshChannel &&
+           meshMicPush == o.meshMicPush;
   }
 };
 
@@ -206,7 +208,11 @@ constexpr const char *kTemplate =
     "; The Wi-Fi channel the radio uses while the board isn't on a Wi-Fi network: 1 to 13, the\n"
     "; same on every board. On a network it uses the network's channel, so set this to your\n"
     "; Wi-Fi's channel and boards on and off the Wi-Fi still hear each other.\n"
-    "; mesh_channel = 6\n";
+    "; mesh_channel = 6\n"
+    "; How this board's mic is keyed on the COMMS screens: sticky (the default: a press of the\n"
+    "; wheel switches it on, and it stays on until the next) or push (on only while BOOT is held:\n"
+    "; push to talk; the menu's KEEP MIC ON leaves it on, to hear a room).\n"
+    "; mesh_mic = push\n";
 
 // The share lines and SMB passwords go in NVS as one string each, a line apiece.
 std::vector<std::string> splitLines(const std::string &text) {
@@ -283,6 +289,7 @@ void loadNvs() {
   card.meshGroups = splitLines(nvsString(prefs, "mgroups"));
   card.meshName = nvsString(prefs, "mname");
   card.meshChannel = prefs.getInt("mchan", 6);
+  card.meshMicPush = prefs.getBool("mmic", false);
   tailscaleKeySet = prefs.isKey("tskey");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
@@ -309,6 +316,7 @@ void saveNvs() {
   prefs.putString("mgroups", joinLines(card.meshGroups).c_str());
   prefs.putString("mname", card.meshName.c_str());
   prefs.putInt("mchan", card.meshChannel);
+  prefs.putBool("mmic", card.meshMicPush);
   prefs.end();
 }
 
@@ -748,6 +756,13 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
       } else {
         log_w("settings: %s: mesh_channel must be 1 to 13", kFile);
       }
+    } else if (key == "mesh_mic") {
+      // sticky or push; anything else is sticky.
+      const std::string mode = text::lower(value);
+      v.meshMicPush = mode == "push";
+      if (!v.meshMicPush && mode != "sticky") {
+        log_w("settings: %s: mesh_mic must be sticky or push; sticky it is", kFile);
+      }
     } else {
       log_w("settings: %s: unknown setting \"%s\"", kFile, key.c_str());
     }
@@ -1181,6 +1196,11 @@ std::string meshName() {
 int meshChannel() {
   loadNvs();
   return card.meshChannel >= 1 && card.meshChannel <= 13 ? card.meshChannel : 6;
+}
+
+MeshMic meshMic() {
+  loadNvs();
+  return card.meshMicPush ? MeshMic::Push : MeshMic::Sticky;
 }
 
 PinChange pendingPin() { return pending; }

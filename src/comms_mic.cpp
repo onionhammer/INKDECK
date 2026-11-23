@@ -246,6 +246,9 @@ Mixer::Took Mixer::add(uint32_t sender, uint16_t sound, const Frame &f, uint32_t
     s->sound = sound;
   }
   if (s->started && s->sound != sound) {  // another sound: its buffer starts afresh
+    noteEnd(*s);
+    s->got = s->lost = s->came = s->top = 0;
+    s->reported = false;
     for (Slot &x : s->slots) x.full = false;
     s->started = s->primed = s->played = false;
     s->dry = 0;
@@ -272,6 +275,9 @@ Mixer::Took Mixer::add(uint32_t sender, uint16_t sound, const Frame &f, uint32_t
   }
   Slot &slot = s->slots[f.frame % kSlots];
   if (slot.full && slot.f.frame == f.frame) return Took::Copy;
+  ++s->came;
+  if (static_cast<uint16_t>(f.frame + 1) > s->top) s->top = static_cast<uint16_t>(f.frame + 1);
+  s->reported = false;
   slot.full = true;
   slot.atMs = now;
   slot.f = f;
@@ -324,12 +330,17 @@ int Mixer::pull(int16_t *out, uint32_t now) {
       s.conceal.apply(pcm_, kFrameSamples, false);
       x.full = false;
       s.dry = 0;
+      ++s.got;
+      s.reported = false;
     } else if (buffered) {  // a later frame is in: this one is lost
       memset(pcm_, 0, sizeof pcm_);
       s.conceal.apply(pcm_, kFrameSamples, true);
       p.lost = true;
+      ++s.lost;
+      s.reported = false;
     } else if (++s.dry > kDryFrames) {  // nothing more: it rests until frames come
       s.primed = false;
+      noteEnd(s);
       continue;
     } else {  // late, or the sound's end
       memset(pcm_, 0, sizeof pcm_);
@@ -380,6 +391,25 @@ bool Mixer::has(uint32_t sender) const {
     if (s.used && s.sender == sender) return true;
   }
   return false;
+}
+
+void Mixer::noteEnd(Source &s) {
+  if (s.reported || (!s.got && !s.lost)) return;
+  ended_.sender = s.sender;
+  ended_.sound = s.sound;
+  ended_.came = s.came;
+  ended_.top = s.top;
+  ended_.played = s.got;
+  ended_.lost = s.lost;
+  endedNew_ = true;
+  s.reported = true;
+}
+
+bool Mixer::ended(Ended &out) {
+  if (!endedNew_) return false;
+  endedNew_ = false;
+  out = ended_;
+  return true;
 }
 
 void Mixer::drop(uint32_t sender) {

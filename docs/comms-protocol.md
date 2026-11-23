@@ -115,10 +115,15 @@ byte, the first in the low nibble, the standard IMA step and index tables; 160 b
 decodes on its own: a lost frame is a 20 ms gap. A byte count of 0 is 20 ms of silence sent on
 purpose: a frame the gate sends while it's open that the board's own speaker could explain (its
 echo, [The mic](#the-mic)); such a frame is 60 bytes on the air, a full one 220. Each frame is sent
-160 ms after it was captured (the pre-roll).
+160 ms after it was captured (the pre-roll). A mic switched off while a sound goes out sends the
+frames it still holds back first (up to 8, those the sound's hang covers, each as the gate would
+have sent it), 20 ms apart, at the pace they'd have gone at: a burst would overrun a receiver's
+8-frame jitter buffer.
 
 **Mic off** (4): session (2), reason (1: `1` switched off, `2` the board is powering off), on for (4:
-seconds). Sent three times, 40 ms apart (at once, back to back, for a power-off).
+seconds). Sent three times, 40 ms apart (at once, back to back, for a power-off). After a sound's
+last frames (above), the first goes 40 ms after the last of them: a voice frame of the session
+that came after its off would start the mic again on the receiver, and it would go LOST there.
 
 **Ping** (5): ping id (4), the pinger's millisecond clock (4). Every board that opens it answers.
 
@@ -391,8 +396,9 @@ the mic at once: audio's duplex path).
   mic has to be louder than that to get through over it.
 - **Still here** every 2 s while it's on, with the threshold, the loudest frame since the last one
   (so a meter elsewhere moves when nothing is sent), the session, power, the bar now, whom it's to,
-  the conversation and whether it's paused; three off packets when it goes off. Its presence carries
-  `0x04` while it's on. A board whose presence lacks `0x04` (newer than the mic's last packet, or
+  the conversation and whether it's paused; three off packets when it goes off, after the last
+  frames of a sound it was sending. Its presence carries `0x04` while it's on, and until those have
+  gone. A board whose presence lacks `0x04` (newer than the mic's last packet, or
   from another boot) has its mic off: its off was missed.
 - **Paused.** Something else on the board may take the mic for a while: the agent listening or
   speaking, the Recorder, a ringing alarm, music started there, a message it records. The mic then

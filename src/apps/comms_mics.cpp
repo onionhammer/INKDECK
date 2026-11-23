@@ -32,9 +32,10 @@ std::string dbfs(int db) { return ui::signedNumber(static_cast<float>(db), 0) + 
 // --- MIC LEVEL ----------------------------------------------------------------------------------
 
 // The threshold: this board's mic meter with the ▲ where it is, ▲▼ moving it 3 dB a step. The
-// meter moves while the mic is on (● switches it, to the talk screen's row); it follows the mic
-// for 30 s after a key, then only while a sound goes, so a sheet left up doesn't refresh the panel
-// every second.
+// meter moves while the mic is on (● switches it, to the talk screen's row; HOLD BOOT keys it when
+// push); it follows the mic for 30 s after a key, then only while a sound goes, so a sheet left up
+// doesn't refresh the panel every second. Its foot says how the mic is keyed, and where that's
+// set.
 class MicLevelSheet : public ui::Screen {
  public:
   MicLevelSheet(int group, uint32_t target) : group_(group), target_(target) {}
@@ -43,10 +44,11 @@ class MicLevelSheet : public ui::Screen {
   bool overlay() const override { return true; }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kDial, "LEVEL"};
-    out[1] = {ui::glyph::kPress, comms::micEnabled() ? "MIC OFF" : "MIC ON"};
+    out[1] = micHint();
     out[2] = {"BOOT", "DONE"};
     return 3;
   }
+  ui::TalkTo talkTo() const override { return micTalkTo(group_, target_); }  // push
 
   bool onKey(Key key) override {
     switch (key) {
@@ -58,7 +60,7 @@ class MicLevelSheet : public ui::Screen {
         shownDb_ = db;  // the engine keeps it from its task: shown at once
         return true;
       }
-      case Key::Select: toggleMic(group_, target_); return true;
+      case Key::Select: return micPress(group_, target_);  // sticky
       default: return false;  // BOOT: done
     }
   }
@@ -70,7 +72,7 @@ class MicLevelSheet : public ui::Screen {
     drawn_ = key();
     const comms::Mic m = comms::mic();
     const int db = threshold();
-    constexpr int kH = kRule + kSectionH + 132;
+    constexpr int kH = kRule + kSectionH + 154;
     Rect r{body.x, body.bottom() - kH, body.w, kH};
     fill(c, {r.x, r.y - 6, r.w, 6}, kPaper);
     dither50(c, {r.x, r.y - 6, r.w, 6});
@@ -92,7 +94,8 @@ class MicLevelSheet : public ui::Screen {
     y += 22;
     std::string now;
     if (!comms::micEnabled()) {
-      now = "YOUR MIC IS OFF: \xE2\x97\x8F SWITCHES IT ON TO SEE IT";
+      now = pushToTalk() ? "YOUR MIC IS OFF: HOLD BOOT TO SEE IT"
+                         : "YOUR MIC IS OFF: \xE2\x97\x8F SWITCHES IT ON TO SEE IT";
     } else if (!m.paused.empty() && m.paused != "STARTING") {
       now = "PAUSED" + kDot + pausedText(m.paused);
     } else if (m.sending) {
@@ -103,6 +106,8 @@ class MicLevelSheet : public ui::Screen {
     drawText(c, {x, y, w, 17}, now, style::kLabel);
     y += 22;
     drawText(c, {x, y, w, 17}, "HIGHER SENDS LESS OF THE ROOM; 3 dB A STEP", style::kLabel);
+    y += 22;
+    drawText(c, {x, y, w, 17}, micModeText(), style::kLabel);
   }
 
  private:
@@ -114,7 +119,7 @@ class MicLevelSheet : public ui::Screen {
     const comms::Mic m = comms::mic();
     return std::to_string(threshold()) + "|" + std::to_string(meter(m)) + "|" +
            (comms::micEnabled() ? "m" : "") + (m.sending ? "s" : "") + m.paused + "|" +
-           attemptError();
+           attemptError() + "|" + micModeText();
   }
 
   int group_;
@@ -147,16 +152,18 @@ class MicScreen : public ui::Screen {
   std::string context() const override { return groupName(group_); }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kDial, "VOL"};
-    out[1] = {ui::glyph::kPress, comms::micEnabled() ? "MIC OFF" : "MIC ON"};
+    out[1] = micHint();
     out[2] = {"BOOT", playing() ? "STOP" : "BACK"};
     return 3;
   }
+  // Push to talk: HOLD BOOT keys the mic to that board (talks into the room), as ● when sticky.
+  ui::TalkTo talkTo() const override { return micTalkTo(group_, id_); }
 
   bool onKey(Key key) override {
     switch (key) {
       case Key::Up: audio::changeVolume(+5); return true;
       case Key::Down: audio::changeVolume(-5); return true;
-      case Key::Select: toggleMic(group_, id_); return true;  // to it: talks into the room
+      case Key::Select: return micPress(group_, id_);  // to it: talks into the room (sticky)
       case Key::Back: return stopIfPlaying();
       default: return false;
     }
@@ -384,6 +391,7 @@ class MicScreen : public ui::Screen {
 
   std::string key() const {
     std::string k = context() + "|" + (comms::micEnabled() ? "m" : "") + (playing() ? "p" : "") +
+                    (pushToTalk() ? "t" : "") +
                     "|" + stateWord() + "|" + stateLength() + "|" + stateLine() + "|" +
                     std::to_string(meter()) + "|" + std::to_string(mic_.thresholdDb) + "|" +
                     powerText() + "|" + reached() + "|" + hereText() + "|" + barsKey() + "\n";

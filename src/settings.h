@@ -30,6 +30,7 @@
 //   mesh_group = <secret>?name=Family&via=air   ; up to 4; stays on the card: it keys the group (comms.h)
 //   mesh_name = KITCHEN                  ; this board's name on the others
 //   mesh_channel = 6                     ; the radio's Wi-Fi channel off Wi-Fi
+//   mesh_mic = push                      ; the mic keyed by HOLD BOOT, not switched by ● (apps/comms_ui.h)
 //
 // and lists the network shares Files browses (shares.h has the syntax), one line each:
 //
@@ -154,6 +155,12 @@ struct MeshGroup {
 std::vector<MeshGroup> meshGroups();  // in the file's order
 std::string meshName();  // mesh_name, "" if the card sets none
 int meshChannel();       // mesh_channel: 1 to 13, 6 without a line
+// mesh_mic: how this board's comms mic is keyed on the screens (apps/comms_ui.h). Sticky (the
+// default, and any value but push): ● switches it on and off. Push: it's on while HOLD BOOT is
+// held.
+// The screens ask comms::micMode(), which a dev override can change.
+enum class MeshMic : unsigned char { Sticky, Push };
+MeshMic meshMic();
 
 // The lock. hasPin(): the board locks at boot, on waking the desk face and after lockMinutes()
 // without a key (0: never for that).

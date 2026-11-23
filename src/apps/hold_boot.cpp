@@ -24,16 +24,17 @@ namespace apps {
 namespace {
 
 #if INKDECK_AGENT || INKDECK_COMMS
-// What the last hold's edge chose: the agent, a message to the boards (the dialer's ringing sheet
-// says so in its talkTo()), or neither (music or a podcast playing, or talking not allowed).
+// What the last hold's edge chose: the agent, the boards (a message from the dialer's ringing
+// sheet, or the mic when push: the screens say so in their talkTo()), or neither (music or a
+// podcast playing, or talking not allowed).
 // key() follows it, so the two can't disagree if playback ends in between.
 enum class Hold : uint8_t { None, Agent, Comms };
 std::atomic<Hold> holdTalks{Hold::None};
 
 // HOLD BOOT's two ends, from the input timer: straight to the agent's task or comms', so the mic
-// opens on time even while the panel is refreshing. Over the ringing sheet the message comes
-// first; elsewhere playback does: while it plays, HOLD BOOT is the player's. The release always
-// goes (a stray one does nothing).
+// opens on time even while the panel is refreshing. Where a screen says comms (the message, the
+// mic) that comes first; elsewhere playback does: while it plays, HOLD BOOT is the player's. The
+// release always goes (a stray one does nothing).
 void edge(bool down) {
   if (!down) {
 #if INKDECK_AGENT
@@ -55,7 +56,7 @@ void edge(bool down) {
 #endif
   holdTalks = hold;
 #if INKDECK_COMMS
-  if (hold == Hold::Comms) commsTalk(to);  // the message
+  if (hold == Hold::Comms) commsTalk(to);  // the message, or the mic (push)
 #endif
 #if INKDECK_AGENT
   if (hold == Hold::Agent) agent::talkStart();  // with no session, opens one
@@ -64,8 +65,8 @@ void edge(bool down) {
 #endif
 
 // HOLD BOOT in the UI task, after edge(): the agent sheet if the hold talks to the agent (unless
-// it is on top already); nothing more for a message (the ringing sheet shows it); otherwise the
-// player sheet.
+// it is on top already); nothing more for the boards (the screen on top shows the message or the
+// mic); otherwise the player sheet.
 void key(bool held) {
   if (!held) return;  // the release went to the agent or comms already; the navigator redraws
 #if INKDECK_COMMS

@@ -129,3 +129,7 @@ nfs = nfs://nas.local/volume1/books
 ; same on every board. On a network it uses the network's channel, so set this to your
 ; Wi-Fi's channel and boards on and off the Wi-Fi still hear each other.
 ; mesh_channel = 6
+; How this board's mic is keyed on the COMMS screens: sticky (the default: a press of the
+; wheel switches it on, and it stays on until the next) or push (on only while BOOT is held:
+; push to talk; the menu's KEEP MIC ON leaves it on, to hear a room).
+; mesh_mic = push

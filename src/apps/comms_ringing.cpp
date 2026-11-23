@@ -3,8 +3,8 @@
 // the 60 s; from 5 s HOLD BOOT records a message instead (RECORDING, the meter), letting go sends
 // it (SENT, how many have it whole, then it closes); NO ANSWER at 60 s stays up for a message or
 // ● RING AGAIN. BOOT gives up (or closes). When someone answers it becomes the call sheet for the
-// conversation, with ● MIC ON: the answer doesn't switch this board's mic on (no packet does; the
-// dialer may have walked away).
+// conversation, with ● MIC ON (HOLD BOOT TALK when push): the answer doesn't switch this board's
+// mic on (no packet does; the dialer may have walked away).
 #include "features.h"
 
 #if INKDECK_COMMS  // the whole file (features.h)
@@ -104,8 +104,9 @@ class RingingSheet : public ui::Screen {
       case comms::DialState::Answered: {
         const uint32_t by = dial_.answeredBy;
         comms::ringStop();  // dial() back to None; the conversation is on
-        ui::nav::replace(makeConversationCallSheet(group_, by, target_ == 0, "ANSWERED BY",
-                                                   "\xE2\x97\x8F MIC ON TO TALK"));
+        ui::nav::replace(makeConversationCallSheet(
+            group_, by, target_ == 0, "ANSWERED BY",
+            pushToTalk() ? "HOLD BOOT TO TALK" : "\xE2\x97\x8F MIC ON TO TALK"));
         return false;
       }
       case comms::DialState::Sent:

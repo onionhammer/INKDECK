@@ -173,12 +173,16 @@ class CallSheet : public ui::Screen {
   bool overlay() const override { return true; }
   int hints(ui::Hint *out) const override {
     int n = 0;
-    out[n++] = {ui::glyph::kPress, comms::micEnabled() ? "MIC OFF" : "MIC ON"};
+    out[n++] = micHint();  // ● MIC ON (sticky), HOLD BOOT TALK (push)
     out[n++] = {ui::glyph::kDial, "VOL"};
     if (conv_.on && conv_.in) out[n++] = {ui::glyph::kHoldPress, "LEAVE"};
     out[n++] = {"BOOT", playing() ? "STOP" : "CLOSE"};  // closing leaves this board in it
     return n;
   }
+
+  // Push to talk: HOLD BOOT keys the mic to the conversation the session is in, as ● would when
+  // sticky.
+  ui::TalkTo talkTo() const override { return micTalkTo(group_, micTarget()); }
 
   void onEnter() override { entered(this, Kind::Call); }
   void onLeave() override { left(this); }
@@ -188,11 +192,10 @@ class CallSheet : public ui::Screen {
       case Key::Up: audio::changeVolume(+5); return true;
       case Key::Down: audio::changeVolume(-5); return true;
       case Key::Select:
-        // To the conversation the session is in: all of the group, or the board it came from
-        // for a mic to this board alone. Not in its first second, unless it's to go off.
-        if (!comms::micEnabled() && millis() - rose_ < kRiseGuardMs) return true;
-        toggleMic(group_, toAll_ ? 0 : peer_);
-        return true;
+        // Sticky: the mic, to the conversation the session is in. Not in the sheet's first second,
+        // unless it's to go off. Push: nothing (HOLD BOOT talks).
+        if (!pushToTalk() && !comms::micEnabled() && millis() - rose_ < kRiseGuardMs) return true;
+        return micPress(group_, micTarget());
       case Key::SelectLong:
         if (conv_.on && conv_.in) {  // out of the conversation: its voice stops here
           comms::leave(group_);
@@ -214,6 +217,7 @@ class CallSheet : public ui::Screen {
       if (const comms::OpenMic *m = newestPlaying(mics_)) {
         follow(*m);
         rose_ = now;  // another board under the same finger
+        ui::nav::talkChanged();  // HOLD BOOT's target with it (push)
       }
     }
     // A sound, theirs or this board's, keeps it up.
@@ -254,6 +258,10 @@ class CallSheet : public ui::Screen {
   }
 
  private:
+  // Where the mic goes from here: all of the group, or the board the session came from for a mic
+  // to this board alone (to a board in the conversation is to all of it: the engine).
+  uint32_t micTarget() const { return toAll_ ? 0 : peer_; }
+
   void follow(const comms::OpenMic &m) {
     group_ = m.group;
     peer_ = m.id;
@@ -355,7 +363,8 @@ class CallSheet : public ui::Screen {
   std::string key() const {
     return headText() + "|" + attemptError() + "|" + std::to_string(audio::status().volume) +
            "|" + word() + std::to_string(meter()) + "|" + label() + name() + "|" + line() + "|" +
-           line2() + "|" + (playing() ? "p" : "") + (conv_.on && conv_.in ? "c" : "") + "\n" +
+           line2() + "|" + (playing() ? "p" : "") + (conv_.on && conv_.in ? "c" : "") +
+           (pushToTalk() ? "t" : "") + "\n" +
            earlierKey(earlier());
   }
 
@@ -490,6 +499,7 @@ class RingSheet : public ui::Screen {
   int hints(ui::Hint *out) const override {
     int n = 0;
     if (ringing_) {
+      if (pushToTalk()) out[n++] = micHint();  // HOLD BOOT TALK: answers, and talks while held
       out[n++] = {ui::glyph::kPress, "ANSWER"};
       out[n++] = {"BOOT", "IGNORE"};
       return n;
@@ -501,6 +511,13 @@ class RingSheet : public ui::Screen {
     return n;
   }
 
+  // Push to talk, while it rings: HOLD BOOT answers and keys the mic while held (to the dialer
+  // alone for a ring to this board alone), wherever the sheet rose; then it's the call sheet.
+  // Sticky, or once the ring is over: the default (the agent's).
+  ui::TalkTo talkTo() const override {
+    return ringing_ ? ringTalkTo(group_, toAll_ ? 0 : from_) : ui::TalkTo();
+  }
+
   void onEnter() override { entered(this, Kind::Ring); }
   void onLeave() override { left(this); }
 
@@ -509,13 +526,14 @@ class RingSheet : public ui::Screen {
     switch (key) {
       case Key::Select:
         if (ringing_) {
-          // Answered to talk: this board's mic goes on in the conversation the answer opens (to
-          // the dialer alone for a ring to this board alone). The MIC mark shows it. Not in the
-          // sheet's first second (a press meant for the screen under it).
+          // Sticky: answered to talk, this board's mic goes on in the conversation the answer
+          // opens (to the dialer alone for a ring to this board alone; the MIC mark shows it).
+          // Push: it stays off, and HOLD BOOT talks on the call sheet. Not in the sheet's first
+          // second (a press meant for the screen under it).
           if (millis() - rose_ < kRiseGuardMs) return true;
           if (comms::answer()) {
             noteAttempt();
-            comms::micOn(group_, toAll_ ? 0 : from_);
+            micAnswered(group_, toAll_ ? 0 : from_);
             toConversation(group_, from_, toAll_, "FROM", "ANSWERED");
           }
           return true;
@@ -544,12 +562,14 @@ class RingSheet : public ui::Screen {
     if (rg.on && rg.count != count_) {  // another ring: it follows that one
       follow(rg);
       rose_ = now;
+      ui::nav::talkChanged();  // HOLD BOOT's target with it (push)
       return true;
     }
     ring_ = rg;
     if (ringing_ && !rg.on) {
       ringing_ = false;
       endedMs_ = now;
+      ui::nav::talkChanged();  // HOLD BOOT is the agent's again
     }
     if (!ringing_) {
       switch (rg.ended) {
@@ -683,6 +703,7 @@ class RingSheet : public ui::Screen {
     stateTexts(word, right, line);
     return attemptError() + "|" + word + "|" + right + "|" + line + "|" +
            boardName(ring_.fromName, from_) + (ringing_ ? "r" : "") + (playing() ? "p" : "") +
+           (pushToTalk() ? "t" : "") +
            (msg_.id && !msg_.receiving ? "m" : "") + "\n" + earlierKey(earlier());
   }
 
@@ -915,6 +936,14 @@ void pollComms() {
     ui::nav::onMic(micMarkNow);
     ui::nav::onKeyFirst(lostKeyFirst);
     return;
+  }
+
+  // The mic's mode changed (the dev override, at run time): HOLD BOOT's targets change with it.
+  static bool pushWas = pushToTalk();
+  if (pushToTalk() != pushWas) {
+    pushWas = !pushWas;
+    ui::nav::talkChanged();
+    ui::nav::invalidate();  // the hints
   }
 
   // LOST's alarm starts: its sheet, over the Comms screen too, at once or as soon as it may.

@@ -77,6 +77,9 @@
 //   !commstalk N [ID]   the mic on for N seconds, then off
 //   !commsbusy alarm|rec|stop   the alarm or a recording takes the audio (what an open mic does
 //               meanwhile); stop: neither
+//   !commsmicmode [sticky|push|-]   how the screens key the mic, in place of the card's
+//               mesh_mic line (sticky: ● on and off; push: HOLD BOOT while held), kept in NVS until
+//               "-" removes it; without a word, shows the mode in use
 //               !comms shows this board's mic, the mics on that it hears, and the duplex path
 #pragma once
 
