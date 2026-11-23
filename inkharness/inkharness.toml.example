@@ -197,6 +197,11 @@ api_key_env = "OPENAI_API_KEY"
 # disallowed_tools = []
 # dir = "work"                # each session works in <dir>/<id>, relative to this file
 # max_turns = 40
+# herdr = false               # true, with [herdr] below: a new session starts as Claude Code in a
+#                             # herdr terminal (same model, permission mode and tools, a new folder
+#                             # under dir), where it can be watched and taken over; the board
+#                             # follows it as a herdr session. Hidden as before when herdr can't
+#                             # start it. Trust dir in Claude Code once (run claude there)
 #
 # The api backend's own tools (Claude Code has its own). Files live in <[agent] dir>/work/<id>
 # and go with the session.
@@ -214,7 +219,7 @@ api_key_env = "OPENAI_API_KEY"
 # command = ["hc"]            # or ["ssh", "box", "hc"]
 # machines = []               # whose terminals count; empty: all
 # programs = []               # which programs count; empty: any that reports a status
-# run = "allow"               # herdr_run, and [agent] backend = "herdr"
+# run = "allow"               # herdr_run, [agent] backend = "herdr", [agent.claude] herdr = true
 # answer = "allow"            # press the keys of a question's choice
 # send = "allow"              # type words into it
 # interrupt = "deny"          # press its stop key

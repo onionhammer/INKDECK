@@ -10,6 +10,9 @@
 //!
 //! Claude Code's own session id is kept, so a run cut off by a daemon restart, or a finished
 //! session talked into, carries on with `--resume`.
+//!
+//! With `[agent.claude] herdr`, a new session is none of that: Claude Code itself in a herdr
+//! terminal, set up alike (terminal_argv), which herdr.rs starts and follows as a herdr session.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -48,6 +51,8 @@ pub struct Claude {
     /// Each session works in `<dir>/<id>`.
     pub dir: PathBuf,
     pub max_turns: u32,
+    /// New sessions start in a herdr terminal (terminal_argv) when herdr can start them.
+    pub herdr: bool,
     /// The run's whole environment (child_env).
     pub env: Vec<(OsString, OsString)>,
     /// This binary, which serves the MCP bridge (None: the run gets no inkharness tools).
@@ -83,6 +88,7 @@ impl Claude {
             disallowed_tools: cfg.disallowed_tools.clone(),
             dir: PathBuf::from(&cfg.dir),
             max_turns: cfg.max_turns,
+            herdr: cfg.herdr,
             env: child_env(
                 std::env::vars_os(),
                 config::lookup("ANTHROPIC_API_KEY")
@@ -178,6 +184,42 @@ impl Claude {
         }
         args
     }
+
+    /// The whole command line of a session that runs in a herdr terminal: Claude Code as
+    /// someone at a terminal starts it, with the same model, tools and permission mode, and
+    /// `task` as its first prompt. No --max-turns (print mode's) and none of inkharness's
+    /// tools: whoever opens the terminal can stop it, and it asks on its own screen.
+    pub fn terminal_argv(&self, prompt: &str, task: &str) -> Vec<String> {
+        let mut argv = self.command.clone();
+        if !self.model.is_empty() {
+            argv.extend(["--model".into(), self.model.clone()]);
+        }
+        if !self.allowed_tools.is_empty() {
+            argv.push("--allowedTools".into());
+            argv.extend(self.allowed_tools.iter().cloned());
+        }
+        if !self.disallowed_tools.is_empty() {
+            argv.push("--disallowedTools".into());
+            argv.extend(self.disallowed_tools.iter().cloned());
+        }
+        // After the tool lists, which take every word up to the next option.
+        argv.extend(["--permission-mode".into(), self.permission_mode.clone()]);
+        argv.extend(["--append-system-prompt".into(), prompt.to_string()]);
+        if !task.trim().is_empty() {
+            // `--`: a task may start with a dash.
+            argv.extend(["--".into(), task.trim().to_string()]);
+        }
+        argv
+    }
+}
+
+/// What Claude Code in a herdr terminal is told on top of its own prompt.
+pub fn terminal_prompt() -> String {
+    "This task was spoken to a small black-and-white e-paper board. The board shows the last \
+     lines of this terminal and puts your questions and permission prompts to the person, who \
+     may also open this terminal. Keep what you write short, and end with the result, short \
+     and to the point as it should read on that screen."
+        .into()
 }
 
 /// What a claude run is told on top of Claude Code's own prompt.
@@ -685,6 +727,7 @@ while read -r line; do result "heard: $(text_of "$line")"; done
             disallowed_tools: vec![],
             dir: dir.join("work"),
             max_turns: 40,
+            herdr: false,
             env,
             mcp: Some(PathBuf::from("/unused/inkharness")),
         }
@@ -766,6 +809,50 @@ while read -r line; do result "heard: $(text_of "$line")"; done
         let args = claude.args(None, None, "x");
         assert!(
             !args.contains(&"--resume".to_string()) && !args.contains(&"--mcp-config".to_string())
+        );
+    }
+
+    #[test]
+    fn the_command_line_in_a_terminal() {
+        let mut claude = fake(std::path::Path::new("/tmp"), vec![]);
+        claude.command = vec!["claude".into()];
+        claude.model = "haiku".into();
+        claude.allowed_tools = vec!["Read".into(), "Grep".into()];
+        claude.disallowed_tools = vec!["Bash".into()];
+        // The task comes last, after `--` and an option that takes one word: neither tool
+        // list swallows it, and a dash at its start isn't read as an option.
+        assert_eq!(
+            claude.terminal_argv("be brief", " -v is which flag? "),
+            [
+                "claude",
+                "--model",
+                "haiku",
+                "--allowedTools",
+                "Read",
+                "Grep",
+                "--disallowedTools",
+                "Bash",
+                "--permission-mode",
+                "default",
+                "--append-system-prompt",
+                "be brief",
+                "--",
+                "-v is which flag?",
+            ]
+        );
+        // Nothing of print mode, and no task: Claude Code waits at its prompt.
+        claude.model.clear();
+        claude.allowed_tools.clear();
+        claude.disallowed_tools.clear();
+        assert_eq!(
+            claude.terminal_argv("be brief", " "),
+            [
+                "claude",
+                "--permission-mode",
+                "default",
+                "--append-system-prompt",
+                "be brief"
+            ]
         );
     }
 
