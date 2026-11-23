@@ -10,11 +10,13 @@
 #include "apps/agent_face.h"
 #include "apps/clock.h"
 #include "apps/closed_book.h"
+#include "apps/comms_ui.h"
 #include "apps/lock.h"
 #include "apps/news_edition.h"
 #include "apps/sleep.h"
 #include "agent_client.h"
 #include "audio.h"
+#include "comms.h"
 #include "features.h"
 #include "file_copy.h"
 #include "input.h"
@@ -113,12 +115,38 @@ void restartIfUsbStuck() {
   esp_restart();
 }
 
+// A key on a board woken for comms made it an ordinary board that's on (power.h, reachable on
+// battery): its face goes, with the sheets over it. If the key answered (the board is in a
+// conversation, or its mic is on) the Comms screen opens, the place to talk from; else what a
+// start shows. While it still rings the ring sheet stays, over the face.
+bool wokenOnPending = false;
+void wokenOn() {
+  const ui::Screen *b = ui::nav::base();
+  if (!b || !b->offFace()) {
+    wokenOnPending = false;
+    return;
+  }
+#if INKDECK_COMMS
+  if (comms::incomingRing().on) return;
+#endif
+  wokenOnPending = false;
+  while (ui::nav::top() != b) ui::nav::pop();
+  ui::nav::pop();
+#if INKDECK_COMMS
+  if (comms::mic().on || comms::conversation(comms::status().group).in) ui::nav::push(makeComms());
+#endif
+}
+
 }  // namespace
 
 void pollPower() {
   // Up after a Comms wake (power.h, reachable on battery): the face holds, no idle rules; once
   // it's over, the sheets over the face go, and its tick powers it off again.
+  const power::Held before = power::reachHold();
   power::reachStep();
+  if (before == power::Held::Stay && power::reachHold() == power::Held::None) wokenOnPending = true;
+  if (power::reachHold() != power::Held::None) wokenOnPending = false;
+  if (wokenOnPending) wokenOn();
   switch (power::reachHold()) {
     case power::Held::Stay: return;
     case power::Held::Sleep: {

@@ -164,7 +164,11 @@ void sleepReachable() {
       restartFor(kMarkAlarm);
     case comms::ReachEnd::Usb: restartFor(kMarkUsb);
     case comms::ReachEnd::Woken:
-      if (test == ReachTest::Sleep) {  // the console, for the test's logs (on battery nobody's there)
+      // The console after light sleep: the boot goes on without a restart, so the controller is
+      // reset here, or USB plugged in later finds it off the bus for good (found 2026-11-23: a
+      // board woken on battery, answered and plugged in had no port). Not while pretending: there
+      // was no light sleep, and it would drop the console.
+      if (test != ReachTest::Pretend) {
         usbControllerReset();
         Serial.end();
         Serial.begin(115200);

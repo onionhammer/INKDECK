@@ -32,6 +32,9 @@ class OffFaceScreen : public ui::Screen {
       case power::Held::Sleep: break;
       case power::Held::None:
         if (held_) {
+          // With a sheet over it, apps::pollPower() takes both away (and opens Comms if the key
+          // answered); alone, it goes here.
+          if (ui::nav::top() != this) return false;
           ui::nav::pop();
           return true;
         }
