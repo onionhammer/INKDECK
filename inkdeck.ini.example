@@ -137,3 +137,8 @@ nfs = nfs://nas.local/volume1/books
 ; rate, 500 kbps: further, through more walls, but each packet takes twice the air). Every
 ; board hears both, so boards on either setting talk to each other.
 ; mesh_range = long
+; On battery, instead of powering off, stay reachable: light sleep with the radio off,
+; waking every few seconds to ask the boards in range whether a ring, voice or a message
+; waits. off (the default), on (every 5 s) or the seconds between those checks, 2 to 30:
+; sooner answers, more battery. A sleeping board doesn't sound LOST's alarm.
+; mesh_reachable = 10

@@ -8,6 +8,7 @@
 #include <algorithm>
 
 #include "epd.h"
+#include "pmic.h"
 #include "typeset.h"
 
 namespace screen {
@@ -128,7 +129,9 @@ void presentOver(bool landscape, bool full, const std::function<void()> &drawOld
   unlock();
 }
 
-void sleepWhileBusy(bool on) { epd.setSleepWhileBusy(on); }
+// Not while the board only pretends to be on battery (!reachtest): it's on USB, and light sleep
+// takes the USB console away.
+void sleepWhileBusy(bool on) { epd.setSleepWhileBusy(on && !pmic::pretendingBattery()); }
 
 void setLandscape(bool landscape) { fb->setRotation(landscape ? kLandscapeRotation : kRotation); }
 

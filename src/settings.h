@@ -32,6 +32,7 @@
 //   mesh_channel = 6                     ; the radio's Wi-Fi channel off Wi-Fi
 //   mesh_mic = push                      ; the mic keyed by HOLD BOOT, not switched by ● (apps/comms_ui.h)
 //   mesh_range = long                    ; send at the long-range rate, 500 kbps (comms.h)
+//   mesh_reachable = 10                  ; on battery, sleep polling every 10 s instead of powering off (comms.h)
 //
 // and lists the network shares Files browses (shares.h has the syntax), one line each:
 //
@@ -168,6 +169,9 @@ MeshMic meshMic();
 // change.
 enum class MeshRange : unsigned char { Normal, Long };
 MeshRange meshRange();
+// mesh_reachable: on battery, the seconds between a sleeping board's polls instead of a power-off
+// (comms.h, power.h): 2 to 30, on meaning 5; 0 for off (the default).
+int meshReachable();
 
 // The lock. hasPin(): the board locks at boot, on waking the desk face and after lockMinutes()
 // without a key (0: never for that).

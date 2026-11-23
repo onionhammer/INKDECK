@@ -41,6 +41,11 @@ bool setPanelRail(bool on);
 // Cached: reads the PMIC at most every few seconds. Begin Wire first.
 Status status();
 
+// Dev tool (!reachtest, power.h): status() and detail() report USB power absent, so the board
+// behaves as on battery while it charges on USB. The charger itself carries on.
+void pretendBattery(bool on);
+bool pretendingBattery();
+
 // Battery current direction, register 0x01 bits 6:5.
 enum class Flow : uint8_t { Standby, Charging, Discharging };
 // Charger state, register 0x01 bits 2:0.

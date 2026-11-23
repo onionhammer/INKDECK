@@ -21,10 +21,19 @@
 #pragma once
 #include <stdint.h>
 
+#include "power.h"
+
 namespace apps {
 
-// Call from loop(): powers off when power::idle() says so (or when requested).
+// Call from loop(): powers off when power::idle() says so (or when requested). Up after a Comms
+// wake (power.h, reachable on battery), steps that instead: the face holds, then powers off
+// again.
 void pollPower();
+
+// A Comms wake (power.h): the face of the mode the board slept in comes back, holding while the
+// board is up for the ring or the voice. Sleep, Standby, a closed book (the Reader under it, as
+// main.cpp opens it), the Agent and News faces.
+void reachFace(power::Mode mode);
 
 // The PWR key (the navigator's handler): on USB the desk face; on battery Sleep, or with a book
 // open in the Reader its cover (closed_book.h). On News its off face (news_edition.h),

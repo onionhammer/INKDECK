@@ -15,6 +15,7 @@
 #include "board_pins.h"
 #include "pin_places.h"
 #include "ota.h"
+#include "comms.h"
 #include "pmic.h"
 #include "power.h"
 #include "rtc.h"
@@ -123,7 +124,23 @@ std::string chargeConfig(const pmic::Detail &d) {
 }
 
 // The idle rule, or once the Reader has light-slept, how much: "napped 41 min · 63 naps".
+// Reachable on battery (mesh_reachable), that and its log: "reachable 10 s · 7.5 h 92→81%".
 std::string sleepState() {
+#if INKDECK_COMMS
+  if (const int every = comms::reachInterval()) {
+    const comms::ReachLog lg = comms::reachLog();
+    char buf[64];
+    if (lg.since && lg.lastAt > lg.since && lg.startPct >= 0 && lg.lastPct >= 0) {
+      const uint32_t h10 = (lg.lastAt - lg.since) / 360;
+      snprintf(buf, sizeof buf, "reachable %d s \xC2\xB7 %lu.%lu h %d\xE2\x86\x92%d%%", every,
+               static_cast<unsigned long>(h10 / 10), static_cast<unsigned long>(h10 % 10),
+               lg.startPct, lg.lastPct);
+    } else {
+      snprintf(buf, sizeof buf, "reachable, a poll every %d s", every);
+    }
+    return buf;
+  }
+#endif
   const apps::NapStats n = apps::napStats();
   if (!n.naps) return "off after 10 min idle on battery";
   char buf[48];

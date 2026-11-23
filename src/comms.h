@@ -57,7 +57,7 @@
 // When it listens: on USB power, or while something holds it (hold(); the Comms screens and the
 // call sheet), and for 10 s after; while this board's mic is on, or it's in a conversation where
 // another board's mic is on; never without a group. On battery with none of that the radio is off,
-// and nothing comes in.
+// and nothing comes in, unless the board sleeps reachable (mesh_reachable, below): then it polls.
 //
 // Threading: one task ("comms") owns the radio, the keys and the audio paths. Every call below is
 // safe from any task (the UI's included) and returns at once: the ones that act post a command to
@@ -167,6 +167,10 @@ struct Board {
   // radio's noise floor then (dBm, 0 if none).
   std::string rxRate;
   int noise = 0;
+  // Asleep and reachable on battery (mesh_reachable): its last packet was a poll, not a presence.
+  // It wakes for a ring, voice it would hear or a message within pollS seconds.
+  bool asleep = false;
+  int pollS = 0;
 };
 // The other boards of a group: reached ones first (over the air by signal, then by hops), then
 // the away ones, most recently heard first.
@@ -595,6 +599,83 @@ uint32_t boardId();      // this board's, made once and kept in NVS
 std::string boardName(); // upper case: mesh_name, else tailscale_name, else INKDECK-XXXX
 bool listening();        // the radio is up and receiving
 
+// --- Reachable on battery (comms_reach.h; power.h decides when) ---------------------------------
+//
+// A board on battery that would power off can stay in light sleep with its radio off instead,
+// waking every mesh_reachable seconds to ask the boards in range whether anything is waiting for
+// it (a poll, on the channel the boards were last heard on). An awake board that knows of a ring
+// that includes it, voice it would hear sounding now, or a message for it answers, and the
+// sleeper stays up for it. Every board that listens answers for what it knows, so a ring needn't
+// come from a board in range at that moment: rings flood. A poll that asks for it (every 3
+// minutes) gets an answer from the boards on USB even with nothing, and three unanswered in a row
+// sweep the channels.
+
+// Seconds between a sleeping board's polls: mesh_reachable (settings::meshReachable()), or the dev
+// override (!commsreach); 0 when off, or when no group is configured. Works before begin().
+int reachInterval();
+// !commsreach: seconds (2 to 30) in place of mesh_reachable, 0 for off, -1 to remove the override
+// (kept in NVS). testReach() says if one is set.
+void setTestReach(int seconds);
+bool testReach();
+
+enum class ReachEnd : uint8_t {
+  PowerKey,    // PWR (or the dev tools' 'o' while pretending)
+  Due,         // the off face's next wake (its RTC alarm time) came
+  Woken,       // an answer said something is waiting: the board goes on booting and listens
+  Usb,         // USB power came
+  LowBattery,  // under power::kLowBatteryPercent: the PMIC's power-off instead
+  TestOver,    // !reachtest's stretch of real light sleep is over
+  Failed,      // no group, or the radio wouldn't start
+};
+struct ReachArgs {
+  time_t wakeAt = 0;      // UTC: the off face's next wake (0: none)
+  int intervalS = 5;
+  bool pretend = false;   // a delay for each light sleep: radio off, CPU waiting, console alive
+  bool ignoreUsb = false; // !reachtest: on USB, behaving as on battery
+  time_t testEnd = 0;     // UTC: TestOver then (0: none)
+};
+// power.cpp, early in setup() (nothing else started), in place of the PMIC's power-off: polls
+// every intervalS with light sleep between, until one of ReachEnd. After Woken, begin() makes the
+// board listen for what was waiting, as if held.
+ReachEnd reachSleep(const ReachArgs &a);
+
+// The board woke for comms (reachSleep() returned Woken): it listens and rings or plays through
+// the usual paths. power.cpp asks each turn, saying whether a key has been pressed since: Stay;
+// Sleep (30 s after the ring, sound or transfer is over, 60 s after a sound while that mic stays
+// on, 15 s if nothing came: the off face powers off again); On (a key: an ordinary board).
+enum class Woken : uint8_t { None, Stay, Sleep, On };
+Woken reachWokenStep(bool keyed);
+
+// The battery log, for a board left unplugged (!reachlog, System): kept in RTC memory while it
+// sleeps and in NVS every 10 minutes and at each restart. It starts again at the first sleep
+// after the board was on USB (or with reachLogReset()).
+struct ReachLog {
+  uint32_t since = 0;      // UTC it began; 0: never
+  int8_t startPct = -1;    // battery then
+  int8_t lastPct = -1;     // battery at lastAt
+  uint32_t lastAt = 0;     // UTC
+  uint32_t polls = 0;      // sent (one a wake, whatever the groups)
+  uint32_t answered = 0;   // polls that got an answer
+  uint32_t echoes = 0;     // polls asking boards on USB to answer anyway (the channel check)
+  uint32_t echoAnswered = 0;
+  uint32_t sweeps = 0;     // channel sweeps, and those that found the boards
+  uint32_t sweepFound = 0;
+  uint32_t woken = 0;      // answers with something waiting
+  uint32_t restarts = 0;   // for the off face's wakes (the clock's minute, check-ins, alarms)
+  uint32_t pwr = 0;        // PWR woke it
+  uint32_t radioMs = 0;    // the radio up for polls, summed
+  uint32_t asleepMs = 0;   // in light sleep (or pretending), summed
+  uint32_t awakeMs = 0;    // up after an answer woke it, summed
+  uint8_t channel = 0;     // the channel it polls on
+};
+ReachLog reachLog();
+void reachLogReset();
+// !reachchan: the channel the next sleep polls on (as if the boards were last heard there), and
+// the channel check's misses it starts with (3: the first echo unanswered sweeps). For testing.
+void setReachChannel(int channel, int misses);
+void reachLogFlush();      // to NVS (power.cpp, before a restart)
+void dumpReach(Print &out);  // !reachlog: the log, the setting, the channel, the plan
+
 // --- Diagnostics (devtools.cpp) ------------------------------------------------------------------
 
 // Pings a group: every board that hears it answers. 0 if comms isn't listening or the group
@@ -611,6 +692,16 @@ struct Pong {
   uint32_t heldMs = 0;  // how long the other board held its answer back (a random 5 to 155 ms)
 };
 std::vector<Pong> pongs();  // answers to the last ping, in the order they came
+
+// !reachbench MODE N SLEEPMS LISTENMS: N light sleeps of SLEEPMS, each followed by a poll with
+// the echo flag and up to LISTENMS for an answer, timed (docs/comms-protocol.md). Modes: a stops
+// Wi-Fi before each sleep and starts it after; A also takes ESP-NOW down and up; b leaves Wi-Fi
+// started across the sleep; c leaves it started in modem sleep and holds the radio awake around
+// each poll (esp_wifi_force_wakeup_acquire()); p is a, with a delay for the light sleep; x runs
+// a, A, b and c one after another. The report is kept in NVS ("reach"/"bench") for
+// reachBenchShow(); after light sleep it ends in power::consoleRecover() (a power cycle).
+void reachBench(char mode, int cycles, uint32_t sleepMs, uint32_t listenMs, Print &out);
+void reachBenchShow(Print &out);
 
 // Groups, boards, state, channel and rate, the boards heard straight and their links,
 // conversations, the mic, open mics, rings, messages and counters: sent, received (by rate),

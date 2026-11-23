@@ -42,6 +42,7 @@ struct Values {
   int meshChannel = 6;
   bool meshMicPush = false;  // mesh_mic = push
   bool meshRangeLong = false;  // mesh_range = long
+  int meshReachable = 0;     // mesh_reachable: seconds between polls, 0 off
 
   bool operator==(const Values &o) const {
     return tz == o.tz && location == o.location && lat == o.lat && lon == o.lon &&
@@ -50,7 +51,8 @@ struct Values {
            tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode &&
            agentFaceDetails == o.agentFaceDetails && newsFaceEvery == o.newsFaceEvery &&
            meshGroups == o.meshGroups && meshName == o.meshName && meshChannel == o.meshChannel &&
-           meshMicPush == o.meshMicPush && meshRangeLong == o.meshRangeLong;
+           meshMicPush == o.meshMicPush && meshRangeLong == o.meshRangeLong &&
+           meshReachable == o.meshReachable;
   }
 };
 
@@ -217,7 +219,12 @@ constexpr const char *kTemplate =
     "; The rate this board sends at: normal (the default: 1 Mbps) or long (Espressif's long-range\n"
     "; rate, 500 kbps: further, through more walls, but each packet takes twice the air). Every\n"
     "; board hears both, so boards on either setting talk to each other.\n"
-    "; mesh_range = long\n";
+    "; mesh_range = long\n"
+    "; On battery, instead of powering off, stay reachable: light sleep with the radio off,\n"
+    "; waking every few seconds to ask the boards in range whether a ring, voice or a message\n"
+    "; waits. off (the default), on (every 5 s) or the seconds between those checks, 2 to 30:\n"
+    "; sooner answers, more battery. A sleeping board doesn't sound LOST's alarm.\n"
+    "; mesh_reachable = 10\n";
 
 // The share lines and SMB passwords go in NVS as one string each, a line apiece.
 std::vector<std::string> splitLines(const std::string &text) {
@@ -296,6 +303,7 @@ void loadNvs() {
   card.meshChannel = prefs.getInt("mchan", 6);
   card.meshMicPush = prefs.getBool("mmic", false);
   card.meshRangeLong = prefs.getBool("mrange", false);
+  card.meshReachable = prefs.getInt("mreach", 0);
   tailscaleKeySet = prefs.isKey("tskey");
   // Asked first: getString() logs an error for a missing key, and most boards have no PIN.
   if (prefs.isKey("pin")) pin = prefs.getString("pin", "").c_str();
@@ -324,6 +332,7 @@ void saveNvs() {
   prefs.putInt("mchan", card.meshChannel);
   prefs.putBool("mmic", card.meshMicPush);
   prefs.putBool("mrange", card.meshRangeLong);
+  prefs.putInt("mreach", card.meshReachable);
   prefs.end();
 }
 
@@ -777,6 +786,21 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
       if (!v.meshRangeLong && range != "normal") {
         log_w("settings: %s: mesh_range must be normal or long; normal it is", kFile);
       }
+    } else if (key == "mesh_reachable") {
+      // off, on (5 s) or the seconds between polls, 2 to 30.
+      const std::string v2 = text::lower(value);
+      int n = 0, used = 0;
+      if (v2 == "off") {
+        v.meshReachable = 0;
+      } else if (v2 == "on") {
+        v.meshReachable = 5;
+      } else if (siscanf(v2.c_str(), "%d%n", &n, &used) == 1 &&
+                 used == static_cast<int>(v2.size()) && n >= 2 && n <= 30) {
+        v.meshReachable = n;
+      } else {
+        log_w("settings: %s: mesh_reachable must be off, on or 2 to 30 (seconds); off it is",
+              kFile);
+      }
     } else {
       log_w("settings: %s: unknown setting \"%s\"", kFile, key.c_str());
     }
@@ -1220,6 +1244,11 @@ MeshMic meshMic() {
 MeshRange meshRange() {
   loadNvs();
   return card.meshRangeLong ? MeshRange::Long : MeshRange::Normal;
+}
+
+int meshReachable() {
+  loadNvs();
+  return card.meshReachable >= 2 && card.meshReachable <= 30 ? card.meshReachable : 0;
 }
 
 PinChange pendingPin() { return pending; }

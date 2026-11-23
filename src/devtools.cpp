@@ -25,6 +25,7 @@
 #include "input.h"
 #include "news_library.h"
 #include "pmic.h"
+#include "power.h"
 #include "podcast_library.h"
 #include "qmi8658.h"
 #include "rtc.h"
@@ -248,6 +249,82 @@ void lineCommand(const String &line) {
     }
     comms::setTestChannel(ch);
     Serial.printf("commschannel: %s\n", ch ? ("channel " + String(ch)).c_str() : "mesh_channel");
+    return;
+  }
+  if (line.startsWith("commsreach")) {
+    // "!commsreach N|on|off|-": the seconds between a sleeping board's polls in place of the
+    // card's mesh_reachable line (the card is the real way), kept in NVS; "-" removes it.
+    String rest = line.substring(10);
+    rest.trim();
+    if (rest == "-") {
+      comms::setTestReach(-1);
+    } else if (rest == "off") {
+      comms::setTestReach(0);
+    } else if (rest == "on") {
+      comms::setTestReach(5);
+    } else if (!rest.isEmpty()) {
+      const int n = rest.toInt();
+      if (n < 2 || n > 30) {
+        Serial.println("commsreach: 2 to 30 (seconds), on, off, or - (the card's mesh_reachable)");
+        return;
+      }
+      comms::setTestReach(n);
+    }
+    const int s = comms::reachInterval();
+    Serial.printf("commsreach: %s%s\n", s ? ("every " + String(s) + " s").c_str() : "off",
+                  comms::testReach() ? " (dev override; !commsreach - removes it)"
+                                     : " (the card's mesh_reachable line)");
+    return;
+  }
+  if (line.startsWith("reachtest")) {
+    // "!reachtest pretend|sleep M|off": on USB, behave as on battery and, when the board would
+    // power off, sleep reachable with a delay for the light sleep (pretend), or with real light
+    // sleep for M minutes (sleep; the console goes meanwhile), then come on as after PWR.
+    String rest = line.substring(9);
+    rest.trim();
+    if (rest == "pretend") {
+      power::setReachTest(power::ReachTest::Pretend);
+    } else if (rest.startsWith("sleep")) {
+      const int m = rest.substring(5).toInt();
+      power::setReachTest(power::ReachTest::Sleep, m > 0 ? m : 2);
+    } else if (rest == "off") {
+      power::setReachTest(power::ReachTest::Off);
+    } else if (!rest.isEmpty()) {
+      Serial.println("reachtest: pretend, sleep M (minutes), or off");
+      return;
+    }
+    const power::ReachTest t = power::reachTest();
+    Serial.printf("reachtest: %s\n", t == power::ReachTest::Pretend ? "pretend (on battery, the sleep a delay)"
+                                     : t == power::ReachTest::Sleep  ? "sleep (on battery, real light sleep)"
+                                                                     : "off");
+    return;
+  }
+  if (line.startsWith("reachchan")) {
+    // "!reachchan N [MISSES]": the next sleep polls on channel N, its channel check starting with
+    // MISSES unanswered echoes (2: the next unanswered one sweeps).
+    int ch = 0, misses = 0;
+    siscanf(line.c_str(), "reachchan %d %d", &ch, &misses);
+    comms::setReachChannel(ch, misses);
+    Serial.printf("reachchan: the next sleep polls on channel %d, %d misses so far\n", ch, misses);
+    return;
+  }
+  if (line == "reachlog" || line == "reachlog reset") {
+    if (line.endsWith("reset")) comms::reachLogReset();
+    comms::dumpReach(Serial);
+    const pmic::Status p = pmic::status();
+    Serial.printf("  battery now %d %%%s\n", p.percent, p.vbus ? ", on USB" : "");
+    return;
+  }
+  if (line.startsWith("reachbench")) {
+    // "!reachbench MODE N SLEEPMS LISTENMS" (comms.h), or "!reachbench" for the last report.
+    char mode = 0;
+    int n = 0;
+    unsigned sleepMs = 0, listenMs = 0;
+    if (siscanf(line.c_str(), "reachbench %c %d %u %u", &mode, &n, &sleepMs, &listenMs) == 4) {
+      comms::reachBench(mode, n, sleepMs, listenMs, Serial);
+    } else {
+      comms::reachBenchShow(Serial);
+    }
     return;
   }
   if (line.startsWith("commsmicmode")) {

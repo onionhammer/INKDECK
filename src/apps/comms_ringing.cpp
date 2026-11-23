@@ -162,6 +162,19 @@ class RingingSheet : public ui::Screen {
         word = "RINGING";
         right = lengthText(dial_.ms);
         line = dial_.ringing ? boardsText(dial_.ringing) + " RINGING" : "NOBODY RINGING YET";
+        if (!dial_.ringing) {
+          // Boards asleep on battery (reachable) ring at their next poll.
+          int asleep = 0, within = 0;
+          for (const comms::Board &b : comms::boards(group_)) {
+            if (!b.asleep || (target_ && b.id != target_)) continue;
+            ++asleep;
+            within = std::max(within, b.pollS);
+          }
+          if (asleep) {
+            line = (target_ ? std::string("ASLEEP") : std::to_string(asleep) + " ASLEEP") + kDot +
+                   "WAKES WITHIN " + std::to_string(within) + " S";
+          }
+        }
         bar = static_cast<float>(dial_.ms) / comms::kRingMs;
         foot = dial_.canLeaveMessage ? "NOBODY YET: HOLD BOOT TO LEAVE A MESSAGE"
                                      : "NO ANSWER AT 1:00";

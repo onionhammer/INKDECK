@@ -25,6 +25,7 @@
 #include "apps/home.h"
 #include "audio.h"
 #include "input.h"
+#include "power.h"
 #if INKDECK_AGENT
 #include "agent_client.h"
 #include "apps/agent_sheet.h"
@@ -872,13 +873,15 @@ bool agentTalking() {
 }
 #endif
 
-// Not over the lock, an off face or the desk face, the Recorder or a ringing alarm, the agent
+// Not over the lock, an off face (but one woken for comms) or the desk face, the Recorder or a ringing alarm, the agent
 // sheet while it's busy; nor, unless overComms, over the Comms screen (it shows calls and
 // conversations in place).
 bool mayRise(bool overComms) {
   const ui::Screen *top = ui::nav::top();
   const ui::Screen *base = ui::nav::base();
-  if (!top || !base || ui::nav::locked() || top->offFace()) return false;
+  if (!top || !base || ui::nav::locked()) return false;
+  // Over an off face only while it holds for a Comms wake (power.h, reachable on battery).
+  if (top->offFace() && power::reachHold() != power::Held::Stay) return false;
   if (!top->allowsTalk() || !base->allowsTalk()) return false;  // the Recorder, a ringing alarm
   if (deskShowing()) return false;
   if (!overComms && base->tag() == moduleTag("COMMS")) return false;

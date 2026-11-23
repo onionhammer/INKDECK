@@ -520,6 +520,7 @@ std::string dbm(int rssi) { return ui::signedNumber(static_cast<float>(rssi), 0)
 
 std::string routeTag(const comms::Board &b) {
   if (b.route == comms::Route::Away) return "AWAY";
+  if (b.asleep) return "ASLEEP";  // reachable on battery: it polls
   if (b.flags & comms::kFlagMic) return "MIC";
   switch (b.route) {
     case comms::Route::Air: return "AIR";
@@ -533,6 +534,13 @@ std::string routeTag(const comms::Board &b) {
 // How a board is reached, for its row's second line.
 std::string routeLine(const comms::Board &b) {
   std::string s;
+  if (b.asleep && b.route != comms::Route::Away) {
+    // Asleep on battery, reachable: a ring, voice it would hear or a message wakes it at its next
+    // poll.
+    s = "ASLEEP" + kDot + "WAKES WITHIN " + std::to_string(b.pollS) + " S";
+    if (b.battery >= 0) s += kDot + std::to_string(b.battery) + "%";
+    return s;
+  }
   switch (b.route) {
     case comms::Route::Air: {
       const int r = steadyRssi(b.id, b.rssi);

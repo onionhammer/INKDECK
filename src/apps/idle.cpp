@@ -82,7 +82,7 @@ bool mayNap() {
   // On USB the power doesn't matter, and light sleep would drop the console. Plugging USB into
   // a napping board ends the naps at the next wake (a key, or the minute).
   const pmic::Status p = pmic::status();
-  return p.ok && p.battery && !p.vbus;
+  return p.ok && p.battery && !p.vbus && !pmic::pretendingBattery();  // !reachtest: still on USB
 }
 
 void stopNapping() {
@@ -116,6 +116,22 @@ void restartIfUsbStuck() {
 }  // namespace
 
 void pollPower() {
+  // Up after a Comms wake (power.h, reachable on battery): the face holds, no idle rules; once
+  // it's over, the sheets over the face go, and its tick powers it off again.
+  power::reachStep();
+  switch (power::reachHold()) {
+    case power::Held::Stay: return;
+    case power::Held::Sleep: {
+      const ui::Screen *b = ui::nav::base();
+      if (b && b->offFace()) {
+        while (ui::nav::top() != b) ui::nav::pop();
+        return;
+      }
+      reachFace(power::reachMode());  // the face went some other way: it comes again
+      return;
+    }
+    case power::Held::None: break;
+  }
   pollAgentFace();  // the dev tools'
   pollEdition();
   const int request = standbyRequest.exchange(-1);
@@ -167,13 +183,15 @@ void pollPower() {
 }
 
 void powerKey() {
+  // Up after a Comms wake: PWR is a key like the others (it makes the board an ordinary one).
+  if (power::reachHold() == power::Held::Stay) return;
   if (wakeDesk() || reopenBook() || wakeAgentFace() || wakeEdition()) return;
   // On News, its edition; whether the Agent's face is wanted, worked out before the PIN is
   // forgotten.
   const bool edition = editionWanted();
   const bool agentFace = !edition && agentFaceWanted();
   forgetGuard(Guarded::Agent);  // back from the desk face, the Agent asks for the PIN again
-  const pmic::Status p = pmic::status();
+  const pmic::Status p = pmic::status();  // pretends to be on battery under !reachtest
   const ui::Screen *base = ui::nav::base();
   if (p.ok && p.vbus) {
     if (edition) {
@@ -229,6 +247,17 @@ bool napIfIdle() {
 }
 
 bool isNapping() { return napping; }
+
+void reachFace(power::Mode mode) {
+  switch (mode) {
+    case power::Mode::Standby: enterStandby(0); break;
+    case power::Mode::Book: closeBook(); break;
+    case power::Mode::Agent: showAgentFace(false); break;
+    case power::Mode::Edition: showEdition(false); break;
+    case power::Mode::Sleep:
+    case power::Mode::On: sleepNow(); break;
+  }
+}
 
 NapStats napStats() {
   NapStats s;

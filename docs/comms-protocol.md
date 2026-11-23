@@ -196,6 +196,8 @@ as it does any packet ([Taking a packet](#taking-a-packet)).
 | `3` | links | the boards a board hears straight over the air, and how well; only in the link group ([Relaying](#relaying)) |
 
 Ext types 3 to 7 are for relaying, 8 and up for later features.
+| `8` | poll | a sleeping board asks whether anything waits for it ([Reachable on battery](#reachable-on-battery)) |
+| `9` | answer | an awake board says what does, to the sleeper |
 
 **History ask** (1): board (4: the mic's). Sent by a board that hears a mic which has been on more
 than 2 minutes (its still-here's bar isn't 0), once it hears it, again 2 s apart until the history
@@ -211,6 +213,17 @@ last 20 s: its id (4), and the share (1, a percent) of that board's last 64 sequ
 while fewer have gone) that came straight from it. Sent with ttl 0 (never relayed), every 5 s plus
 up to 1 s while the board listens, and 0.3 to 1 s after it starts. 53 bytes on the air with two
 boards listed, 203 with 32.
+**Poll** (8): to (4: always 0, for all), flags (1: `0x01` echo: boards on USB answer even with
+nothing, `0x02` one of a sweep of the channels), battery (1: percent, `0xFF` none), interval (2:
+seconds between its polls), name length (1, up to 16), name. Sent with ttl 0 (never relayed), one
+in each of the sleeper's groups, every interval. 57 bytes on the air with a 7-letter name.
+
+**Answer** (9): to (4: the sleeper), what (1: `0x01` a ring that includes it is on, `0x02` voice it
+would hear sounds now, `0x04` a message for it is kept to be asked for; 0 for nothing, an echo's
+answer), channel (1: the answering board's), flags (1: its presence flags), dialer (4) and ring (2)
+for a ring, then message sender (4), message (4), to (4) and frames (2) for a message (zeros when
+not). Sent with ttl 0, at once, by every board that hears the poll and has something to say. 68
+bytes on the air.
 
 ## Keys
 
@@ -270,6 +283,14 @@ Reference values (`!commstest` checks them):
   flags 1 (relays), board `55667788` at 97% and `99aabbcc` at 64% (body
   `000000000301028877665561ccbbaa9940`), is the 53-byte frame
   `c71f000026edc957443322110700000006000000bf4af235269e1c3c6f1fb0bde60c7219243837f43cb76b8bd8c0fffdffd68006b1`.
+- In that group, a poll (type 15, ext 8) from sender `11223344`, boot 7, seq 6, ttl 0, sentAt 0:
+  echo, battery 87, interval 5 s, name `KITCHEN` (body `00000000080000000001570500074b49544348454e`),
+  is the 57-byte frame
+  `c71f0000e13e368e443322110700000006000000ba7508f5bb634115d8976b9dfb518dfe82b0aa36a4596ae029c81bbf82a42dd2dc4ad8cd21`.
+- In that group, an answer (type 15, ext 9) from sender `11223344`, boot 7, seq 7, ttl 0, sentAt 0: to
+  `99aabbcc`, a ring, channel 6, flags 1 (USB), dialer `11223344`, ring 9 (body
+  `0000000009ccbbaa990106014433221109000000000000000000000000000000`), is the 68-byte frame
+  `c71f0000e13e368e443322110700000007000000de01bdf96a08528e1d7874d08729caf35fc9bb4e4dbf3a72b58a79b6b9fe7ee7a37fade383044b5b2c494fa1d1a7841f`.
 
 ## Taking a packet
 
@@ -300,7 +321,7 @@ In this order:
    hops and ttl, unless it was for this board alone: the first field after sentAt names it (voice,
    a pong, a ring, ringing, a ring end or a message ask to this board), or for a message or message
    end the second (`to`); for type 15 the first field after the ext type (a history ask's mic, a
-   history's asker). Presence, a mic's still-here and off, a ping and an answer are never for one
+   history's asker, an answer's sleeper; a poll's is 0, for all, and both go with ttl 0 anyway). Presence, a mic's still-here and off, a ping and an answer are never for one
    board alone: every board of the group follows whose mic is on, and an answer floods so every
    board the ring rang stops. A type (or ext type) this board doesn't know is relayed unread. A
    packet starts with ttl 3: three relays, four hops over the air at most. Voice (3) and message
@@ -523,6 +544,65 @@ the mic at once: audio's duplex path).
   alarm, the Recorder and the agent pausing a mic, each left whole. Not tested: by ear, three
   boards at once on the air, on battery, a power-off's off, more than one hop.
 
+## Reachable on battery
+
+A board on battery that would power off (`mesh_reachable` set, a group, the battery at 15% or
+more) sleeps instead: light sleep with Wi-Fi stopped, the off face on the panel as before
+(`src/power.h`). The state behind it is plain C++ in `src/comms_reach.h`, which `!commstest`
+drives with a made-up clock.
+
+- **The poll.** Every `mesh_reachable` seconds (2 to 30, `on` is 5) the sleeper starts Wi-Fi,
+  sends a poll in each of its groups (at its `mesh_range` rate), listens 12 ms after the send has
+  gone (20 ms for an echo poll; to the first answer with something waiting), and stops Wi-Fi again. The first poll goes as it falls asleep, so the
+  boards know at once. It wakes for nothing else but PWR (BOOT and the dial don't wake it) and for
+  what its off face needs (the clock's minute, a check-in, an alarm: the board restarts for those as
+  the RTC alarm would boot it, and goes back to sleep after).
+- **The answer.** Every board that listens and hears the poll answers at once, if it knows of:
+  a **ring** that includes the sleeper (its own, or one whose packets go by: rings flood, so every
+  listening board of the group knows, and the dialer needn't be in range then; a ring is known for
+  3.5 s after its last packet, and is over at its answer or end, or 60 s after it began); **voice**
+  it would hear (a mic on in the group, to the sleeper alone, or to all of the group with the
+  session that opened the conversation, which every board that hears joins) that made a sound
+  within the sleeper's interval plus 2 s; a **message** for it (to all, or to it) that this board
+  sent and keeps for asks (5 minutes), unless the sleeper has said it has it whole. A board on USB
+  answers a poll with the echo flag even with nothing (what 0).
+- **Asleep, reachable.** A board whose last packet was a poll, within three of its intervals (plus
+  5 s), shows as asleep in the boards list, with its interval and battery from the poll. A presence
+  (it woke) ends that.
+- **Woken.** An answer with something waiting ends the sleep: the board goes on booting, listens
+  as if a screen held it, and the ring, the voice or the message comes the usual way (a ring packet
+  within a second; the still-here or the voice of a mic that opened its conversation, which it then
+  joins; for a message, it begins it as one whose every frame it missed, and asks for the end, then
+  the frames). The face comes back, holds, and the sheets rise over it. With no key it goes back to
+  sleep 30 s after the ring, the sound or the transfer ends, 60 s after a sound while the mic that
+  made it stays on (an open mic in a quiet room doesn't keep a sleeping board up all night), and
+  15 s after the wake if nothing came. A key makes it an ordinary board that's on.
+- **LOST doesn't alarm on a sleeping board.** A sleeping board isn't listening: it forgets the mics
+  it heard, without an alarm, each time it goes back to sleep. A board that must sound LOST's alarm
+  stays on USB.
+- **The channel.** A sleeping board isn't on a network. It polls on the channel it last heard the
+  boards on straight over the air (kept in NVS as it listens; `mesh_channel` before it ever has). The
+  first poll and one every 3 minutes carry the echo flag; three unanswered in a row (and no other
+  answer meanwhile), and it sweeps: a poll with the echo and sweep flags on each of channels 1 to 13,
+  20 ms each, and it moves to the first that answers. A sweep that finds nobody (no board on USB in
+  range) keeps the channel, and the next waits 30 minutes. Counted in polls, not milliseconds: the
+  restarts for the off face's wakes keep the plan in RTC memory.
+- **Neighbours.** A sleeping board sends no links packets ([Relaying](#relaying)), so a board in
+  range that last heard its links long ago relays voice for it, as for a board it can't vouch for;
+  a woken board sends its links within a second of listening again.
+- **Timing** (2026-11-23, real light sleep, `!reachbench`): from the wake, Wi-Fi up in about 2 ms,
+  the poll's send done at 4.5 ms, the answer at 7.8 ms on average (6.9 to 11), so a poll with an
+  answer keeps the board awake about 8 ms; without one, the 12 ms window and Wi-Fi's stop make it
+  19 ms.
+- **Tested** (2026-11-23, two boards on USB, the sleeper pretending to be on battery with a delay
+  for each light sleep): a ring, a mic's voice and a message each woke it at its next poll and it
+  went back to sleep after; PWR; the Clock face's minute wakes; a sweep from the wrong channel. Not
+  tested: the loop in real light sleep, on battery, three boards.
+- **The battery log** (`!reachlog`, System's SLEEP row): polls, answers, echoes, sweeps, wakes,
+  restarts, PWR, the time the radio was up, asleep and up after a wake, the battery at the start and
+  at the last look. In RTC memory while it sleeps, in NVS every 10 minutes and at each restart; it
+  starts again at the first sleep after the board was on USB.
+
 ## Versions
 
 The long-range rate and the link group (2026-11-23) kept version 1. A board from before them
@@ -548,9 +628,12 @@ it, and they were flashed together.
   link (and the hub, the rendezvous id's use) is a later phase.
 - **ESP-NOW power save** for open mics (a board on battery with its mic on, or hearing one, waking
   in windows instead of keeping its radio on), keys per board, and mics over inkharness.
-- **Reachable on battery** (a sleeping board polling), boards on USB holding rings or messages for
-  sleeping boards, and inkharness holding them: a board that isn't listening when a ring or a
-  message goes gets nothing.
+- **Holding messages for a sleeping board**: a board on USB keeping a message it received and
+  serving a sleeper's asks once the sender's 5 minutes are over (it would need packets that carry
+  the message's sender, since a message's frames are known by the board that sends them), and
+  inkharness holding rings and messages. A sleeping board gets a message only while its sender
+  keeps it ([Reachable on battery](#reachable-on-battery)); rings need no holding, since every
+  listening board knows of a ring that's on.
 - **Tested** with two boards (2026-11-22, push-to-talk, before the open mic): presence, ping, calls
   both ways, the heard receipt, PLAY LAST, the duplicate and replay drops, and relaying a group a
   board isn't in; then rings to

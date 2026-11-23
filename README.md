@@ -213,7 +213,7 @@ Wi-Fi's channel so boards on and off it hear each other. `via` per group (`air`,
 is there for the link through inkharness, which isn't built: `net` sends nothing yet. Packet format
 and keys: [`docs/comms-protocol.md`](docs/comms-protocol.md). Measured 2026-11-23 on USB: a mic on,
 or voice playing, costs about 10 KB of internal RAM (the speaker and the mic at once: 67 KB free
-instead of 77 KB with the tailnet up); the image is 2.67 MB with the screens (`INKDECK_COMMS=0` leaves comms out).
+instead of 77 KB with the tailnet up); the image is 2.70 MB with the screens (`INKDECK_COMMS=0` leaves comms out).
 Tested 2026-11-23 between two boards in different rooms (−73 to −79 dBm), both ways, with test
 tones added to the mic (nobody was there to speak or listen): mics to all and to one board, sounds
 with their pre-roll and hang and nothing under the threshold, both mics on at once with each
@@ -238,10 +238,38 @@ card), `!commschannel`, `!commsmicmode sticky|push|-` (the `mesh_mic` line witho
 frame, as before the rule) and `!commslrrx on|off` (the long-range protocol off); `!quiet` takes
 30 dB off every sound for testing next to someone.
 
+**Reachable on battery** (issue #66, phase 7; `mesh_reachable` in `inkdeck.ini`, off by default):
+a board on battery that would power off (Sleep, the Clock face, a closed book, the Agent and News
+faces, by itself or by PWR) keeps its face on the panel but stays in light sleep with the radio
+off instead, waking every `mesh_reachable` seconds (2 to 30, `on` is 5) to ask the boards in range
+whether anything waits for it, and listening 12 ms. A board that's awake answers if it knows of a
+ring that includes it (rings flood, so any board on USB knows), voice it would hear sounding now, or
+a message it sent for it in the last 5 minutes; the sleeper then comes up with its face, rings or
+plays as usual (the sheets rise over the face), and goes back to sleep 30 s after it's over (60 s
+after a sound while that mic stays on), unless a key makes it an ordinary board that's on. Only PWR
+wakes it otherwise (as a power-on), and what its face needs (the clock's minute, check-ins, News's
+laps, alarms) works as before: the board restarts for those as the RTC alarm would boot it. Boards
+that are awake show a sleeping one as `ASLEEP · WAKES WITHIN 10 S`, and ring it as any board. Below
+15 % battery, or with the setting off, the board powers off as before. A sleeping board doesn't
+sound LOST's alarm (it isn't listening): a board that must stays on USB. A board keeps the channel
+it last heard the others on, checks it every 3 minutes with a poll the boards on USB answer even
+with nothing, and sweeps the channels after three unanswered. `!reachlog` (and System's SLEEP row)
+is a battery log for a night unplugged: polls, answers, wakes, time the radio was up, battery at the
+start and now. Not built: boards on USB keeping a message for a sleeper after its sender's 5
+minutes. Packets and rules: [`docs/comms-protocol.md`](docs/comms-protocol.md#reachable-on-battery).
+Dev commands: `!commsreach N|on|off|-` (the `mesh_reachable` line without the card), `!reachtest
+pretend|sleep M|off` (on USB, behave as on battery; the sleep a delay with the console alive, or M
+minutes of real light sleep), `!reachlog [reset]`, `!reachchan N [misses]`, `!reachbench MODE N
+SLEEPMS LISTENMS` (the radio around light sleep, timed). Measured 2026-11-23: a poll keeps the
+board awake about 8 ms when an answer comes (Wi-Fi up in 2 ms, the answer 3 ms after the send) and
+19 ms when none does. Tested on USB with `!reachtest pretend` (rings, voice and a message waking it,
+PWR, the Clock face's minute, a channel sweep, a key making it an ordinary board); not on battery,
+and its battery life is unmeasured: leave a board unplugged overnight and read `!reachlog`.
+
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
 Wi-Fi network, time zone and location without a rebuild, sets the lock, lists network shares,
-sets how long News's off face shows each story, puts the board on your tailnet and sets its comms groups, how its mic is keyed and the rate it sends at (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
+sets how long News's off face shows each story, puts the board on your tailnet and sets its comms groups, how its mic is keyed, the rate it sends at and whether it stays reachable on battery (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
 the card has none, it writes one with every line commented out. It can list up to 8 Wi-Fi
 networks, each `ssid` line with its `password` under it: the board tries the one it last joined
 first, then the others in the file's order, moving on as soon as one is out of range (about
@@ -288,6 +316,7 @@ mesh_name = KITCHEN                   ; this board's name on the others
 mesh_channel = 6                      ; the radio's channel off Wi-Fi
 mesh_mic = push                       ; push to talk (HOLD BOOT); sticky, the default: ● on and off
 mesh_range = long                     ; send at the long-range rate (500 kbps); normal: 1 Mbps
+mesh_reachable = 10                   ; on battery, sleep polling every 10 s instead of powering off
 ```
 
 Each `smb =` or `nfs =` line is a share Files lists:

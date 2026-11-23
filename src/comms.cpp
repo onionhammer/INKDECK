@@ -8,7 +8,12 @@
 #include <esp_mac.h>
 #include <esp_now.h>
 #include <esp_random.h>
+#include <esp_sleep.h>
+#include <esp_timer.h>
 #include <esp_wifi.h>
+#include <driver/gpio.h>
+#include <stddef.h>
+#include <sys/time.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/idf_additions.h>
 #include <freertos/queue.h>
@@ -26,14 +31,17 @@
 
 #include "adpcm.h"
 #include "audio.h"
+#include "board_pins.h"
 #include "comms_calls.h"
 #include "comms_crypto.h"
 #include "comms_mesh.h"
 #include "comms_mic.h"
+#include "comms_reach.h"
 #include "comms_store.h"
 #include "comms_wire.h"
 #include "kv_store.h"
 #include "pmic.h"
+#include "power.h"
 #include "rtc.h"
 #include "text.h"
 #include "wlan.h"
@@ -195,6 +203,8 @@ struct BoardRec {
   Route shown = Route::Away;  // as the last generation had it
   int shownRssi = 0;
   int shownHops = 0;
+  uint32_t pollMs = 0;  // asleep: its last poll (a presence since clears it); 0 none
+  int pollS = 0;        // the seconds between its polls
 };
 
 struct GroupRec {
@@ -437,7 +447,7 @@ struct OpenMicRec {
 enum class Cmd : uint8_t {
   Wake, MicOn, MicOff, MicThreshold, MicVanish, MicTone, AckLost, EchoTest, PlayLast, StopPlay,
   Ping, Reload, Resend, Ring, RingStop, Answer, Ignore, Join, Leave, MessageStart, MessageSend,
-  MessageCancel, PlayMessage, RingVanish, PowerOff, Range,
+  MessageCancel, PlayMessage, RingVanish, PowerOff, Range, Fetch,
 };
 struct Command {
   Cmd cmd;
@@ -476,6 +486,11 @@ struct Core {
   uint32_t dialCount = 0;
   Ringing ringing;
   uint32_t ringsSeen = 0;
+  RingWatch rings;    // rings on in the groups, for sleeping boards' polls
+  WokenHold woken;    // this board woke for comms (reachSleep()): how long it stays up
+  uint32_t fetchSender = 0, fetchMsg = 0, fetchTo = 0;  // the message it woke for
+  int fetchGroup = -1;  // asked for once listening; -1 none
+  uint8_t homeChannel = 0;  // the channel boards were last heard on directly, as kept in NVS
   uint32_t conversationsSeen = 0;
   int conversationGroup = 0;
   uint32_t messagesIn = 0;
@@ -572,6 +587,9 @@ std::atomic<bool> floodAll{false};      // !commsflood: every voice and message 
 uint32_t dropTick = 0;
 std::mutex radioMu;  // the ESP-NOW calls, against forceOff()
 bool espnowUp = false;
+// Reachable on battery: the sleeping loop (or !reachbench) has the radio; the task keeps off it.
+std::atomic<bool> radioLent{false};
+std::atomic<uint32_t> rxAtUs{0}, sentAtUs{0};  // the last frame received, the last send done
 
 void bump() { gen.fetch_add(1, std::memory_order_relaxed); }
 
@@ -840,6 +858,7 @@ CallRec *findLogged(Kind kind, uint32_t from, uint32_t key, bool outgoing) {
 void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   static RxFrame f;  // only the Wi-Fi task calls this, one frame at a time
   counters.received.fetch_add(1, std::memory_order_relaxed);
+  rxAtUs.store(static_cast<uint32_t>(esp_timer_get_time()), std::memory_order_relaxed);
   if (len < static_cast<int>(kHeader + kTag) || len > static_cast<int>(kMaxFrame) ||
       data[0] != kMagic) {
     drop(kDropMalformed);
@@ -863,6 +882,7 @@ void onSent(const esp_now_send_info_t *info, esp_now_send_status_t status) {
     txTimed.fetch_add(1);
   }
   if (core && info) ++core->txRates[static_cast<unsigned>(info->rate) & 63];
+  sentAtUs.store(static_cast<uint32_t>(esp_timer_get_time()) | 1, std::memory_order_relaxed);
   if (status != ESP_NOW_SEND_SUCCESS) counters.txFailed.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -1929,6 +1949,10 @@ void onPresence(int gi, const Header &hd, Reader &r) {
     BoardRec &b = board(g, hd.sender);
     const uint8_t keep = flags & static_cast<uint8_t>(~kFlagHello);
     const int pct = battery <= 100 ? battery : -1;
+    if (b.pollMs) {  // awake again
+      b.pollMs = 0;
+      bump();
+    }
     if (b.name != n || b.flags != keep || b.battery != pct) {
       b.name = n;
       b.flags = keep;
@@ -2169,6 +2193,7 @@ void onRing(int gi, const Header &hd, Reader &r) {
     drop(kDropMalformed);
     return;
   }
+  core->rings.heard(gi, hd.sender, ring, target, elapsed, millis());  // for sleepers' polls
   if (target && target != core->id) return;  // for another board (relayed all the same)
   if (core->mic.on) return;  // an open mic doesn't ring: it's in the conversation, and quiet
   Ringing &rg = core->ringing;
@@ -2264,6 +2289,7 @@ void onAnswer(int gi, const Header &hd, Reader &r) {
   const uint16_t ring = r.u16();
   const uint32_t conv = r.u32();
   if (!r.ok() || !conv) return;
+  core->rings.over(dialer, ring);
   GroupRec &g = core->groups[gi];
   Dialing &d = core->dialing;
   const uint32_t now = millis();
@@ -2293,6 +2319,7 @@ void onRingEnd(const Header &hd, Reader &r) {
   r.u32();  // the target
   const uint16_t ring = r.u16();
   const uint8_t reason = r.u8();
+  if (r.ok()) core->rings.over(hd.sender, ring);
   Ringing &rg = core->ringing;
   if (!r.ok() || !rg.on || rg.from != hd.sender || rg.ring != ring) return;
   ringingOver(reason == kEndNoAnswer ? RingEnd::NoAnswer
@@ -3318,8 +3345,171 @@ void onHistory(int gi, const Header &hd, Reader &r) {
   bump();
 }
 
+// --- Reachable on battery: the awake side ----------------------------------------------------
+
+void sendReachAnswer(GroupRec &g, const Answer &a) {
+  uint8_t body[48];
+  const size_t n = putAnswer(body, sizeof body, sentAt(), a);
+  if (!n || g.via == Via::Net || !espnowUp) return;
+  // ttl 0: the sleeper listens a few milliseconds, for the boards in range; nothing is relayed.
+  uint8_t f[kMaxFrame];
+  Header h;
+  h.type = kExt;
+  h.ttl = 0;
+  h.group = g.id;
+  h.sender = core->id;
+  h.boot = core->boot;
+  h.seq = ++core->seq;
+  putHeader(h, f);
+  memcpy(f + kHeader, body, n);
+  const size_t len = g.sealer->seal(f, n);
+  if (len) radioSend(f, len);
+}
+
+// What this board knows that a poll from group gi could want (the task's state, now).
+void gatherWaiting(int gi, uint32_t sleeper, uint32_t now, WaitingNow &w) {
+  // A ring: this board's own, or one going by.
+  const Dialing &d = core->dialing;
+  RingWatch::Seen seen;
+  if (d.state == DialState::Ringing && d.group == gi && (d.target == 0 || d.target == sleeper)) {
+    w.ringOn = true;
+    w.dialer = core->id;
+    w.ringNo = d.ring;
+  } else if (core->rings.ringFor(gi, sleeper, now, seen)) {
+    w.ringOn = true;
+    w.dialer = seen.dialer;
+    w.ringNo = seen.ring;
+  }
+  // Voice: this board's mic, and the mics it hears.
+  const MicRec &m = core->mic;
+  if (m.on && w.micCount < WaitingNow::kMics) {
+    WaitingNow::MicNow &x = w.mics[w.micCount++];
+    x.group = m.group;
+    x.target = m.target;
+    x.board = core->id;
+    x.opened = m.opened;
+    if (!m.sounds.empty()) {
+      const SoundRec &sr = m.sounds.back();
+      x.soundMs = sr.live ? now : sr.startMs + sr.frames * kFrameMs;
+    }
+  }
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    for (const OpenMicRec &o : core->mics) {
+      if (w.micCount >= WaitingNow::kMics) break;
+      if (!o.st.on()) continue;
+      WaitingNow::MicNow &x = w.mics[w.micCount++];
+      x.group = o.group;
+      x.target = o.target;
+      x.board = o.id;
+      x.opened = o.opened;
+      if (const HeardMic::Event *e = o.st.lastSound()) x.soundMs = e->open ? now : e->endMs;
+    }
+  }
+  // A message: this board's own, while it keeps it for asks.
+  const Outbound &o = core->out;
+  if (o.sent && o.group == gi && now - o.sentMs < kMessageKeepMs) {
+    w.messageOn = true;
+    w.msgGroup = gi;
+    w.msgSender = core->id;
+    w.msg = o.msg;
+    w.msgTo = o.to;
+    w.frames = o.frames;
+    std::lock_guard<std::mutex> l(core->mu);
+    for (const uint32_t b : o.delivered) {
+      if (w.delivered < 8) w.deliveredTo[w.delivered++] = b;
+    }
+  }
+}
+
+// This board woke for a message (reachSleep()'s answer): it asks for it as for one whose every
+// frame it missed (pumpInbound() asks for the end, then the frames).
+void fetchWokeMessage(int gi) {
+  const uint32_t sender = core->fetchSender, msg = core->fetchMsg;
+  if (!sender || findInbound(sender, msg)) return;
+  bool kept = false, whole = false;
+  uint32_t frames = 0;
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    if (const MsgRec *m = findMsg(sender, msg)) {
+      kept = true;
+      whole = m->e.complete;
+      frames = m->e.frames;
+    }
+  }
+  if (!kept) {
+    beginInbound(gi, sender, msg, core->fetchTo);
+    return;
+  }
+  // Kept already: its "I have it all" was lost on the way. Said again, so the sender stops
+  // answering this board's polls with it (and it doesn't wake for it at every poll).
+  if (!whole) return;
+  uint8_t body[24];
+  Writer w(body, sizeof body);
+  w.u32(sentAt());
+  w.u32(sender);
+  w.u32(msg);
+  w.u8(kAskComplete);
+  w.u16(static_cast<uint16_t>(frames));
+  w.u16(0);
+  w.u16(0);
+  sendOwn(core->groups[gi], kMessageAsk, body, w.size(), 50);
+  log_i("comms: woke for a message kept already; told %08lX so",
+        static_cast<unsigned long>(sender));
+}
+
+// A sleeping board asks whether anything waits for it: it shows as asleep and reachable, and gets
+// an answer if anything does (or, on USB, if it asks for one anyway: the channel check).
+void onReachPoll(int gi, const Header &hd, const RxFrame &f, Reader &r) {
+  Poll p;
+  if (!readPoll(r, p)) {
+    drop(kDropMalformed);
+    return;
+  }
+  GroupRec &g = core->groups[gi];
+  const uint32_t now = stamp();
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    BoardRec &b = board(g, hd.sender);
+    const std::string n = upperName(std::string(p.name, p.nameLen));
+    const int pct = p.battery <= 100 ? p.battery : -1;
+    if (!b.pollMs || b.pollS != p.intervalS || b.battery != pct || (!n.empty() && b.name != n)) {
+      bump();
+    }
+    b.pollMs = now;
+    b.pollS = p.intervalS;
+    b.battery = pct;
+    if (!n.empty()) b.name = n;
+  }
+  WaitingNow w;
+  gatherWaiting(gi, hd.sender, now, w);
+  Answer a;
+  a.to = hd.sender;
+  a.what = waitingFor(w, gi, hd.sender, p.intervalS, now);
+  a.channel = static_cast<uint8_t>(radioChannel());
+  a.flags = core->onUsb ? kFlagUsb : 0;
+  if (a.what & kWaitRing) {
+    a.dialer = w.dialer;
+    a.ring = w.ringNo;
+  }
+  if (a.what & kWaitMessage) {
+    a.msgSender = w.msgSender;
+    a.msg = w.msg;
+    a.msgTo = w.msgTo;
+    a.frames = w.frames;
+  }
+  if (a.what || ((p.flags & kPollEcho) && core->onUsb)) {
+    sendReachAnswer(g, a);
+    if (a.what) {
+      log_i("comms: %08lX polled (asleep, %d dBm): told it %s%s%s",
+            static_cast<unsigned long>(hd.sender), f.rssi, a.what & kWaitRing ? "a ring " : "",
+            a.what & kWaitVoice ? "voice " : "", a.what & kWaitMessage ? "a message" : "");
+    }
+  }
+}
+
 // Type 15: the byte after sentAt says which.
-void onExt(int gi, const Header &hd, Reader &r) {
+void onExt(int gi, const Header &hd, const RxFrame &f, Reader &r) {
   const uint8_t ext = r.u8();
   if (!r.ok()) {
     drop(kDropMalformed);
@@ -3328,6 +3518,8 @@ void onExt(int gi, const Header &hd, Reader &r) {
   switch (ext) {
     case kHistoryAsk: onHistoryAsk(gi, hd, r); break;
     case kHistory: onHistory(gi, hd, r); break;
+    case kExtPoll: onReachPoll(gi, hd, f, r); break;
+    case kExtAnswer: break;  // for a sleeping board's loop (reachPoll()), not the task
     default: drop(kDropUnknownType); break;  // a later version's: passed on all the same
   }
 }
@@ -3576,7 +3768,10 @@ void handleFrame(const RxFrame &f) {
       break;
     case kMessage:
     case kMessageEnd: forUsAlone = bodyLen >= 12 && get32(buf + kHeader + 8) == core->id; break;
-    case kExt: forUsAlone = extFor(buf + kHeader, bodyLen) == core->id; break;
+    case kExt:
+      forUsAlone = extFor(buf + kHeader, bodyLen) == core->id ||
+                   reachExtFor(buf + kHeader, bodyLen) == core->id;
+      break;
     default: break;
   }
   switch (hd.type) {
@@ -3593,11 +3788,16 @@ void handleFrame(const RxFrame &f) {
     case kMessage: onMessage(gi, hd, r); break;
     case kMessageEnd: onMessageEnd(gi, hd, r); break;
     case kMessageAsk: onMessageAsk(hd, r); break;
-    case kExt: onExt(gi, hd, r); break;
+    case kExt: onExt(gi, hd, f, r); break;
     default: drop(kDropUnknownType); break;  // a later version's: passed on all the same
   }
   if (hd.ttl > 0 && !forUsAlone) relayFrame(f, hd, false);
 }
+
+// Reachable on battery (below, with the public functions).
+void stepWoken(uint32_t now);
+void noteHomeChannel(uint32_t now);
+void takeWoke();
 
 // --- The task ----------------------------------------------------------------------------------
 
@@ -3806,6 +4006,7 @@ void publish() {
 }
 
 void tick(uint32_t now) {
+  noteHomeChannel(now);  // for this board's polls when it sleeps reachable
   // Boards that went away.
   {
     std::lock_guard<std::mutex> l(core->mu);
@@ -4095,6 +4296,7 @@ void handleCommand(const Command &c) {
       bump();
       break;
     }
+    case Cmd::Fetch: core->fetchGroup = c.group; break;  // once listening (below)
     case Cmd::RingVanish:
       if (core->dialing.state == DialState::Ringing) {
         core->dialing.vanished = true;
@@ -4121,10 +4323,18 @@ void task(void *) {
     uint32_t now = millis();
     if (!usbKnown || now - lastUsb >= kUsbPollMs) {
       const pmic::Status p = pmic::status();
+      const bool wasUsb = core->onUsb;
       core->onUsb = p.ok && p.vbus;
+      // USB power: the reachable log starts again at the next sleep (it stays to be read till then).
+      if (core->onUsb && (!wasUsb || !usbKnown)) kv::saveU32("reach", "usb", 1);
       core->battery = p.ok && p.battery ? p.percent : -1;
       lastUsb = now;
       usbKnown = true;
+    }
+    static uint32_t lastWoken = 0;
+    if (now - lastWoken >= 1000) {  // up after a wake (reachSleep()): how long yet
+      lastWoken = now;
+      stepWoken(now);
     }
     if (now - lastAwake >= 250) {
       lastAwake = now;
@@ -4138,7 +4348,9 @@ void task(void *) {
     const bool voice = micWanted || core->mic.on || core->mixer.active() || core->replay.on ||
                        core->duplexOurs;
     const bool busy = voice || ringOn || msgOn || awakeWas;  // on battery too
-    const bool want = hasGroups && !poweringOff && (holders.load() > 0 || core->onUsb || busy);
+    const bool want =
+        hasGroups && !poweringOff && !radioLent && (holders.load() > 0 || core->onUsb || busy);
+    if (radioLent && isListening) stopListening();  // at once: the sleeping loop takes the radio
     if (want) lingerFrom = now;
     if (want && !isListening) {
       static uint32_t lastTry = 0;
@@ -4175,6 +4387,10 @@ void task(void *) {
       } while (++n < 16 && xQueueReceive(rxQueue, &frame, 0) == pdTRUE);
     }
     now = millis();
+    if (core->fetchGroup >= 0) {  // the message a poll's answer woke this board for
+      fetchWokeMessage(core->fetchGroup);
+      core->fetchGroup = -1;
+    }
     sendPending(now);
     pumpMic(now);
     pumpPlay(now);
@@ -4236,7 +4452,9 @@ constexpr uint32_t kStack = 7168;
 
 bool startTask() {
   if (taskHandle) return true;
-  rxQueue = xQueueCreateWithCaps(kRxDepth, sizeof(RxFrame), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!rxQueue) {  // reachSleep() may have made it
+    rxQueue = xQueueCreateWithCaps(kRxDepth, sizeof(RxFrame), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
   if (!rxQueue) {
     log_e("comms: no memory for the receive queue");
     return false;
@@ -4306,6 +4524,7 @@ void begin() {
   log_i("comms: %u groups, board %s (%08lX), boot %lu", static_cast<unsigned>(core->groups.size()),
         core->name.c_str(), static_cast<unsigned long>(core->id),
         static_cast<unsigned long>(core->boot));
+  takeWoke();  // woke for comms (reachSleep()): the hold, and a message to ask for (before the task)
   startTask();
 }
 
@@ -4434,6 +4653,9 @@ std::vector<Board> boards(int group) {
     x.talkedAt = b.talkedAt;
     x.flags = b.flags;
     x.battery = b.battery;
+    // Asleep while its polls come: three missed and it's no longer said to be.
+    x.asleep = b.pollMs && now - b.pollMs < static_cast<uint32_t>(b.pollS) * 3000 + 5000;
+    x.pollS = x.asleep ? b.pollS : 0;
     out.push_back(std::move(x));
   }
   std::stable_sort(out.begin(), out.end(), [](const Board &a, const Board &b) {
@@ -5186,6 +5408,862 @@ void forceOff() {
   isListening = false;
 }
 
+// --- Reachable on battery: the sleeping board ---------------------------------------------------
+
+namespace {
+
+constexpr const char *kNsReach = "reach";  // NVS: chan (the channel boards were last heard on),
+                                           // usb (1: USB power seen since the log began), log,
+                                           // dev (!commsreach: seconds, 0xFFFF off; none: the card)
+constexpr uint32_t kReachMagic = 0x52434831;   // "RCH1"
+// After a poll's send, for an answer: one comes 2.5 to 7 ms after the send is done (!reachbench,
+// 2026-11-23); an echo poll, which decides the channel, waits longer.
+constexpr uint32_t kReachListenMs = 12;
+constexpr uint32_t kReachEchoListenMs = 20;
+constexpr uint32_t kReachSendMs = 30;          // a send that hasn't finished by then didn't go
+constexpr uint32_t kReachStatusMs = 60000;     // the battery and USB looked at this often
+constexpr uint32_t kReachFlushMs = 10 * 60000; // the log to NVS this often (and at each restart)
+constexpr uint32_t kReachWokeFreshS = 120;     // the answer that woke the board, for begin()
+
+// What a sleeping board keeps across the restarts it makes for its off face's wakes, in RTC
+// memory (a software restart keeps it; a power loss doesn't, and NVS has the log then).
+struct ReachRtc {
+  uint32_t magic;
+  uint32_t board;
+  uint16_t intervalS;
+  SleepPlan plan;
+  ReachLog log;
+  Answer woke;       // the answer that woke it
+  uint32_t wokeAt;   // UTC; 0 none
+  int32_t wokeGroup;
+  uint32_t sum;      // FNV-1a of the bytes before it
+};
+RTC_NOINIT_ATTR uint8_t reachRaw[sizeof(ReachRtc)] __attribute__((aligned(4)));
+ReachRtc reachRtc;         // the working copy
+bool reachLoaded = false;
+std::mutex reachMu;        // reachRtc.log, between the task, the loop and the dev tools
+std::atomic<uint8_t> wokenVerdict{0};  // Woken, as the task last stepped it
+std::atomic<bool> wokenKeyed{false};
+std::atomic<int> devReach{-2};  // !commsreach as read from NVS (-2: not read yet; -1: none)
+
+uint32_t reachSum(const ReachRtc &r) {
+  const uint8_t *p = reinterpret_cast<const uint8_t *>(&r);
+  uint32_t h = 2166136261u;
+  for (size_t i = 0; i < offsetof(ReachRtc, sum); ++i) h = (h ^ p[i]) * 16777619u;
+  return h;
+}
+
+void reachKeep() {  // under reachMu
+  reachRtc.magic = kReachMagic;
+  reachRtc.sum = reachSum(reachRtc);
+  memcpy(reachRaw, &reachRtc, sizeof reachRtc);
+}
+
+void reachLoad() {  // under reachMu
+  if (reachLoaded) return;
+  reachLoaded = true;
+  ReachRtc r;
+  memcpy(&r, reachRaw, sizeof r);
+  if (r.magic == kReachMagic && r.sum == reachSum(r)) {
+    reachRtc = r;
+    return;
+  }
+  reachRtc = ReachRtc();
+  reachRtc.magic = 0;
+  reachRtc.board = 0;
+  reachRtc.intervalS = 0;
+  reachRtc.wokeAt = 0;
+  reachRtc.wokeGroup = -1;
+  kv::load(kNsReach, "log", reachRtc.log);  // as last flushed
+}
+
+void reachFlush() {  // under reachMu
+  kv::save(kNsReach, "log", reachRtc.log);
+}
+
+int8_t batteryNow(bool &usb, bool &low) {
+  const pmic::Status p = pmic::status();
+  usb = p.ok && p.vbus;
+  low = p.ok && !p.vbus && p.percent >= 0 && p.percent < 15;  // power::kLowBatteryPercent
+  return p.ok && p.battery && p.percent >= 0 ? static_cast<int8_t>(p.percent) : -1;
+}
+
+// The channel the boards were last heard on directly: kept in NVS as the task hears them.
+uint8_t homeChannel() {
+  const uint32_t c = kv::loadU32(kNsReach, "chan");
+  return c >= 1 && c <= 13 ? static_cast<uint8_t>(c) : static_cast<uint8_t>(meshChannel());
+}
+
+// Each second, listening: the channel the boards are on (any heard straight from them lately).
+void noteHomeChannel(uint32_t now) {
+  const int ch = radioChannel();
+  if (ch < 1 || ch > 13 || core->homeChannel == ch) return;
+  bool heard = false;
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    for (const GroupRec &g : core->groups) {
+      for (const BoardRec &b : g.boards) heard = heard || within(b.directMs, now, 10000);
+    }
+  }
+  if (!heard) return;
+  core->homeChannel = static_cast<uint8_t>(ch);
+  kv::saveU32(kNsReach, "chan", static_cast<uint32_t>(ch));
+}
+
+// --- The sleeper's radio: Wi-Fi stopped while it sleeps, started for each poll (step 1 of the
+// issue's phase 7 measured esp_wifi_start() plus the channel at about 1.8 ms) ---------------------
+
+esp_now_peer_info_t reachPeer() {
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, kBroadcast, 6);
+  peer.channel = 0;
+  peer.ifidx = WIFI_IF_STA;
+  peer.encrypt = false;
+  return peer;
+}
+
+bool reachRadioOpen(uint8_t channel) {
+  wlan::forceOff();  // a sleeping board isn't on a network
+  wlan::holdRadio();
+  WiFi.setSleep(false);
+  std::lock_guard<std::mutex> g(radioMu);
+  esp_err_t e = esp_now_init();
+  if (e == ESP_OK) e = esp_now_register_recv_cb(onRecv);
+  if (e == ESP_OK) e = esp_now_register_send_cb(onSent);
+  const esp_now_peer_info_t peer = reachPeer();
+  if (e == ESP_OK) e = esp_now_add_peer(&peer);
+  // The protocols (long range heard too) and the rate (mesh_range), as radioStart() sets them;
+  // both stay across the esp_wifi_stop() and esp_wifi_start() of each poll.
+  if (e == ESP_OK) applyRadio(true);
+  if (e == ESP_OK) e = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+  if (e != ESP_OK) {
+    log_e("comms: the sleeping board's radio won't start (%s)", esp_err_to_name(e));
+    esp_now_deinit();
+    wlan::releaseRadio();
+    return false;
+  }
+  espnowUp = true;
+  return true;
+}
+
+void reachRadioUp(uint8_t channel) {
+  esp_wifi_start();
+  esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+}
+
+void reachRadioDown() { esp_wifi_stop(); }
+
+void reachRadioClose() {
+  {
+    std::lock_guard<std::mutex> g(radioMu);
+    if (espnowUp) {
+      esp_now_unregister_recv_cb();
+      esp_now_unregister_send_cb();
+      esp_now_deinit();
+      espnowUp = false;
+    }
+  }
+  esp_wifi_start();  // as wlan left it; releaseRadio() switches it off
+  wlan::releaseRadio();
+  if (rxQueue) xQueueReset(rxQueue);
+}
+
+// A frame from the radio: an answer to this board? Its group too.
+bool openAnswer(const RxFrame &f, int &gi, Answer &a) {
+  Header hd;
+  if (!parseHeader(f.data, f.len, hd) || hd.type != kExt || hd.sender == core->id) return false;
+  gi = groupIndex(hd.group);
+  if (gi < 0) return false;
+  uint8_t buf[kMaxFrame];
+  memcpy(buf, f.data, f.len);
+  size_t bodyLen = 0;
+  if (!core->groups[gi].sealer->open(buf, f.len, bodyLen)) return false;
+  Reader r(buf + kHeader, bodyLen);
+  const uint32_t at = r.u32();
+  if (r.u8() != kExtAnswer || !readAnswer(r, a) || a.to != core->id) return false;
+  return core->guard.accept(hd.sender, hd.boot, hd.seq, fresh(at)) == ReplayGuard::Verdict::Ok;
+}
+
+struct PollOutcome {
+  bool sent = false;
+  bool answered = false;  // an answer to this board came (an echo's included)
+  int answers = 0;
+  Answer best;            // what's waiting, from all the answers together
+  int group = -1;
+};
+
+// One poll in each group that goes over the air, on the radio's channel now, then up to
+// kReachListenMs for answers: to the first with something waiting, the whole window for an echo.
+PollOutcome reachPollNow(uint8_t flags, uint16_t intervalS, int8_t battery) {
+  PollOutcome out;
+  Poll p;
+  p.flags = flags;
+  p.battery = battery >= 0 ? static_cast<uint8_t>(battery) : 0xFF;
+  p.intervalS = intervalS;
+  p.nameLen = static_cast<uint8_t>(std::min<size_t>(core->name.size(), sizeof p.name));
+  memcpy(p.name, core->name.data(), p.nameLen);
+  uint8_t body[48];
+  const size_t n = putPoll(body, sizeof body, sentAt(), p);
+  if (rxQueue) xQueueReset(rxQueue);
+  sentAtUs = 0;
+  for (GroupRec &g : core->groups) {
+    if (g.via == Via::Net || !n) continue;
+    uint8_t f[kMaxFrame];
+    Header h;
+    h.type = kExt;
+    h.ttl = 0;
+    h.group = g.id;
+    h.sender = core->id;
+    h.boot = core->boot;
+    h.seq = ++core->seq;
+    putHeader(h, f);
+    memcpy(f + kHeader, body, n);
+    const size_t len = g.sealer->seal(f, n);
+    if (len && esp_now_send(kBroadcast, f, len) == ESP_OK) out.sent = true;
+  }
+  if (!out.sent) return out;
+  const uint32_t t0 = millis();
+  while (!sentAtUs.load() && millis() - t0 < kReachSendMs) vTaskDelay(1);
+  const uint32_t from = millis();
+  for (;;) {
+    RxFrame &f = core->rx;
+    while (rxQueue && xQueueReceive(rxQueue, &f, 0) == pdTRUE) {
+      int gi = -1;
+      Answer a;
+      if (!openAnswer(f, gi, a)) continue;
+      out.answered = true;
+      ++out.answers;
+      if (a.what & kWaitRing && !(out.best.what & kWaitRing)) {
+        out.best.dialer = a.dialer;
+        out.best.ring = a.ring;
+      }
+      if (a.what & kWaitMessage && !(out.best.what & kWaitMessage)) {
+        out.best.msgSender = a.msgSender;
+        out.best.msg = a.msg;
+        out.best.msgTo = a.msgTo;
+        out.best.frames = a.frames;
+      }
+      if (a.what && out.group < 0) out.group = gi;
+      out.best.what |= a.what;
+      out.best.to = a.to;
+    }
+    if (out.best.what && !(flags & kPollEcho)) break;
+    if (millis() - from >= ((flags & kPollEcho) ? kReachEchoListenMs : kReachListenMs)) break;
+    vTaskDelay(1);
+  }
+  return out;
+}
+
+// Asleep for ms: light sleep (timer, and PWR: BOOT and the dial don't wake it), or pretending
+// (the console alive: 'o' on it counts as PWR). True if PWR ended it.
+bool reachNap(uint32_t ms, bool pretend) {
+  const gpio_num_t pwr = static_cast<gpio_num_t>(board::PWR_KEY_SENSE);
+  if (pretend) {
+    const uint32_t t0 = millis();
+    while (millis() - t0 < ms) {
+      if (gpio_get_level(pwr)) return true;
+      while (Serial.available() > 0) {
+        if (Serial.read() == 'o') return true;
+      }
+      delay(std::min<uint32_t>(20, ms - (millis() - t0)));
+    }
+    return false;
+  }
+  gpio_sleep_sel_dis(pwr);
+  gpio_wakeup_enable(pwr, GPIO_INTR_HIGH_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+  esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(ms) * 1000);
+  esp_light_sleep_start();
+  const esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  gpio_wakeup_disable(pwr);
+  return cause == ESP_SLEEP_WAKEUP_GPIO && gpio_get_level(pwr);
+}
+
+// Milliseconds until UTC time t (0 if it's now or past).
+uint32_t msUntil(time_t t) {
+  timeval tv;
+  gettimeofday(&tv, nullptr);
+  const int64_t ms = (static_cast<int64_t>(t) - tv.tv_sec) * 1000 - tv.tv_usec / 1000;
+  return ms > 0 ? static_cast<uint32_t>(std::min<int64_t>(ms, 0x7FFFFFFF)) : 0;
+}
+
+// Each turn of the task while the board is up after a wake: steps the hold (WokenHold).
+void stepWoken(uint32_t now) {
+  if (!core->woken.active()) return;
+  WokenHold::Seen s;
+  s.ringing = core->ringing.on;
+  s.sound = core->mixer.active() || core->replay.on;
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    for (const OpenMicRec &o : core->mics) s.micOn = s.micOn || (o.st.on() && heardHere(o));
+  }
+  for (const Inbound &in : core->inbound) s.transfer = s.transfer || in.used;
+  s.keyed = wokenKeyed.load();
+  const uint32_t since = core->woken.since();
+  switch (core->woken.step(now, s)) {
+    case WokenHold::Verdict::Stay: wokenVerdict = static_cast<uint8_t>(Woken::Stay); return;
+    case WokenHold::Verdict::Sleep: wokenVerdict = static_cast<uint8_t>(Woken::Sleep); break;
+    case WokenHold::Verdict::On: wokenVerdict = static_cast<uint8_t>(Woken::On); break;
+  }
+  log_i("comms: up %lu s after the wake: %s", static_cast<unsigned long>((now - since) / 1000),
+        wokenVerdict == static_cast<uint8_t>(Woken::On) ? "a key, the board stays on"
+                                                        : "back to sleep");
+  std::lock_guard<std::mutex> l(reachMu);
+  reachLoad();
+  reachRtc.log.awakeMs += now - since;
+  reachKeep();
+  reachFlush();
+}
+
+// begin(): the board woke for comms (reachSleep(), this boot): the hold, and a message to ask for.
+void takeWoke() {
+  std::lock_guard<std::mutex> l(reachMu);
+  reachLoad();
+  const uint32_t at = reachRtc.wokeAt;
+  const time_t now = utcNow();
+  if (!at || (now && (now < at || now - at > kReachWokeFreshS))) return;
+  const Answer a = reachRtc.woke;
+  const int gi = reachRtc.wokeGroup;
+  reachRtc.wokeAt = 0;
+  reachKeep();
+  core->woken.begin(millis(), a.what);
+  wokenVerdict = static_cast<uint8_t>(Woken::Stay);
+  wokenKeyed = false;
+  log_i("comms: woke for %s%s%s", a.what & kWaitRing ? "a ring " : "",
+        a.what & kWaitVoice ? "voice " : "", a.what & kWaitMessage ? "a message" : "");
+  if ((a.what & kWaitMessage) && gi >= 0 && gi < static_cast<int>(core->groups.size())) {
+    core->fetchSender = a.msgSender;
+    core->fetchMsg = a.msg;
+    core->fetchTo = a.msgTo;
+    post(Cmd::Fetch, gi, 0, 0);
+  }
+}
+
+}  // namespace
+
+int reachInterval() {
+  int dev = devReach.load();
+  if (dev == -2) {
+    Preferences prefs;
+    dev = -1;
+    if (prefs.begin(kNsReach, true)) {
+      if (prefs.isKey("dev")) dev = static_cast<int>(prefs.getUInt("dev", 0));
+      prefs.end();
+    }
+    devReach = dev;
+  }
+  int s = dev >= 0 ? (dev == 0xFFFF ? 0 : dev) : settings::meshReachable();
+  if (s <= 0) return 0;
+  s = std::max(2, std::min(s, 30));
+  // A group: a mesh_group line, the agent token's, or the dev one.
+  if (settings::meshGroups().empty() && settings::agentToken().empty() &&
+      devGroupRecord().empty()) {
+    return 0;
+  }
+  return s;
+}
+
+void setTestReach(int seconds) {
+  Preferences prefs;
+  if (!prefs.begin(kNsReach, false)) return;
+  if (seconds < 0) {
+    prefs.remove("dev");
+    devReach = -1;
+  } else {
+    const uint32_t v = seconds == 0 ? 0xFFFF : static_cast<uint32_t>(std::max(2, std::min(seconds, 30)));
+    prefs.putUInt("dev", v);
+    devReach = static_cast<int>(v);
+  }
+  prefs.end();
+}
+
+bool testReach() {
+  reachInterval();
+  return devReach.load() >= 0;
+}
+
+ReachEnd reachSleep(const ReachArgs &a) {
+  ensureCore();
+  if (core->groups.empty()) {
+    std::vector<GroupRec> g = loadGroups();
+    std::lock_guard<std::mutex> l(core->mu);
+    core->groups = std::move(g);
+  }
+  if (core->groups.empty()) return ReachEnd::Failed;
+  if (!core->boot) core->boot = nextBoot();
+  if (!rxQueue) {
+    rxQueue = xQueueCreateWithCaps(kRxDepth, sizeof(RxFrame), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rxQueue) return ReachEnd::Failed;
+  }
+  const uint16_t interval = static_cast<uint16_t>(std::max(2, std::min(a.intervalS, 30)));
+  bool usb = false, low = false;
+  int8_t battery = batteryNow(usb, low);
+  {
+    std::lock_guard<std::mutex> l(reachMu);
+    reachLoad();
+    if (reachRtc.board != core->id || reachRtc.intervalS != interval) {
+      const uint8_t misses = reachRtc.board == 0 ? reachRtc.plan.misses : 0;  // !reachchan's
+      Sleeper::begin(reachRtc.plan, homeChannel(), interval);
+      reachRtc.plan.misses = misses;
+      reachRtc.board = core->id;
+      reachRtc.intervalS = interval;
+    }
+    ReachLog &lg = reachRtc.log;
+    if (!lg.since || kv::loadU32(kNsReach, "usb")) {  // the first sleep since USB: a new log
+      lg = ReachLog();
+      lg.since = static_cast<uint32_t>(utcNow());
+      lg.startPct = battery;
+      kv::saveU32(kNsReach, "usb", 0);
+    }
+    lg.lastPct = battery;
+    lg.lastAt = static_cast<uint32_t>(utcNow());
+    lg.channel = reachRtc.plan.channel;
+    reachKeep();
+  }
+  // PWR still down from the press that sent the board off: wait for it to go up.
+  const gpio_num_t pwr = static_cast<gpio_num_t>(board::PWR_KEY_SENSE);
+  pinMode(board::PWR_KEY_SENSE, INPUT);
+  for (uint32_t t0 = millis(); gpio_get_level(pwr) && millis() - t0 < 5000;) delay(20);
+  if (!reachRadioOpen(reachRtc.plan.channel)) return ReachEnd::Failed;
+  reachRadioDown();
+  log_i("comms: asleep, reachable: a poll every %u s on channel %u", interval,
+        reachRtc.plan.channel);
+
+  uint32_t nextPoll = millis();  // the first at once: the boards learn it's asleep
+  uint32_t statusAt = millis();
+  uint32_t flushAt = millis();
+  ReachEnd end = ReachEnd::Failed;
+  for (;;) {
+    const time_t utc = utcNow();
+    if (a.wakeAt && utc && utc >= a.wakeAt) {
+      end = ReachEnd::Due;
+      break;
+    }
+    if (a.testEnd && utc && utc >= a.testEnd) {
+      end = ReachEnd::TestOver;
+      break;
+    }
+    uint32_t now = millis();
+    if (now - statusAt >= kReachStatusMs) {
+      statusAt = now;
+      battery = batteryNow(usb, low);
+      if (usb && !a.ignoreUsb) {
+        end = ReachEnd::Usb;
+        break;
+      }
+      if (low) {
+        end = ReachEnd::LowBattery;
+        break;
+      }
+      std::lock_guard<std::mutex> l(reachMu);
+      reachRtc.log.lastPct = battery;
+      reachRtc.log.lastAt = static_cast<uint32_t>(utc);
+    }
+    if (now - flushAt >= kReachFlushMs) {
+      flushAt = now;
+      std::lock_guard<std::mutex> l(reachMu);
+      reachFlush();
+    }
+    if (static_cast<int32_t>(now - nextPoll) >= 0) {
+      nextPoll += interval * 1000u;
+      if (static_cast<int32_t>(nextPoll - now) <= 0) nextPoll = now + interval * 1000u;
+      SleepPlan &plan = reachRtc.plan;
+      const Sleeper::Next n = Sleeper::next(plan, interval);
+      const uint32_t up = millis();
+      PollOutcome o;
+      if (n.sweep) {
+        uint8_t found = 0;
+        esp_wifi_start();
+        for (uint8_t ch = 1; ch <= 13 && !found; ++ch) {
+          esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+          o = reachPollNow(n.flags, interval, battery);
+          if (o.answered) found = ch;
+        }
+        reachRadioDown();
+        Sleeper::sweepResult(plan, interval, found);
+        if (found) kv::saveU32(kNsReach, "chan", found);
+        log_i("comms: swept the channels: %s %u", found ? "boards on" : "nobody; staying on",
+              found ? found : plan.channel);
+      } else {
+        reachRadioUp(plan.channel);
+        o = reachPollNow(n.flags, interval, battery);
+        reachRadioDown();
+        Sleeper::result(plan, interval, n, o.answered);
+      }
+      const uint32_t radioMs = millis() - up;
+      if (a.pretend) {  // the console is alive: each poll, for the tests
+        log_i("comms: poll %lu on channel %u%s%s: %d answers, waiting %02X, radio %lu ms",
+              static_cast<unsigned long>(plan.polls), plan.channel,
+              n.flags & kPollEcho ? " (echo)" : "", n.sweep ? " (sweep)" : "", o.answers,
+              o.best.what, static_cast<unsigned long>(radioMs));
+      }
+      {
+        std::lock_guard<std::mutex> l(reachMu);
+        ReachLog &lg = reachRtc.log;
+        lg.radioMs += radioMs;
+        lg.channel = plan.channel;
+        if (n.sweep) {
+          ++lg.sweeps;
+          if (o.answered) ++lg.sweepFound;
+        } else {
+          ++lg.polls;
+          if (o.answered) ++lg.answered;
+          if (n.flags & kPollEcho) {
+            ++lg.echoes;
+            if (o.answered) ++lg.echoAnswered;
+          }
+        }
+        if (o.best.what) {
+          ++lg.woken;
+          reachRtc.woke = o.best;
+          reachRtc.wokeAt = static_cast<uint32_t>(utcNow());
+          reachRtc.wokeGroup = o.group;
+        }
+        reachKeep();
+      }
+      if (o.best.what) {
+        log_i("comms: a poll's answer woke the board (%s%s%s)",
+              o.best.what & kWaitRing ? "ring " : "", o.best.what & kWaitVoice ? "voice " : "",
+              o.best.what & kWaitMessage ? "message" : "");
+        end = ReachEnd::Woken;
+        break;
+      }
+    }
+    // Asleep until the next poll or the wake, whichever is first.
+    now = millis();
+    uint32_t ms = static_cast<int32_t>(nextPoll - now) > 0 ? nextPoll - now : 0;
+    if (a.wakeAt) ms = std::min(ms, msUntil(a.wakeAt));
+    if (a.testEnd) ms = std::min(ms, msUntil(a.testEnd));
+    if (ms == 0) continue;
+    const bool pressed = reachNap(ms, a.pretend);
+    {
+      std::lock_guard<std::mutex> l(reachMu);
+      reachRtc.log.asleepMs += millis() - now;
+    }
+    if (pressed) {
+      end = ReachEnd::PowerKey;
+      break;
+    }
+  }
+  reachRadioClose();
+  std::lock_guard<std::mutex> l(reachMu);
+  if (end == ReachEnd::Due) ++reachRtc.log.restarts;
+  if (end == ReachEnd::PowerKey) ++reachRtc.log.pwr;
+  reachKeep();
+  reachFlush();
+  return end;
+}
+
+Woken reachWokenStep(bool keyed) {
+  if (keyed) wokenKeyed = true;
+  return static_cast<Woken>(wokenVerdict.load());
+}
+
+ReachLog reachLog() {
+  std::lock_guard<std::mutex> l(reachMu);
+  reachLoad();
+  return reachRtc.log;
+}
+
+void reachLogReset() {
+  std::lock_guard<std::mutex> l(reachMu);
+  reachLoad();
+  reachRtc.log = ReachLog();
+  reachKeep();
+  reachFlush();
+}
+
+void setReachChannel(int channel, int misses) {
+  if (channel >= 1 && channel <= 13) kv::saveU32(kNsReach, "chan", static_cast<uint32_t>(channel));
+  std::lock_guard<std::mutex> l(reachMu);
+  reachLoad();
+  reachRtc.board = 0;  // the next sleep plans afresh, on that channel
+  reachRtc.plan.misses = static_cast<uint8_t>(std::max(0, std::min(misses, 255)));
+  reachKeep();
+}
+
+void reachLogFlush() {
+  std::lock_guard<std::mutex> l(reachMu);
+  reachLoad();
+  reachKeep();
+  reachFlush();
+}
+
+void dumpReach(Print &out) {
+  const ReachLog lg = reachLog();
+  const int interval = reachInterval();
+  out.printf("reach: %s%s; polls on channel %u (boards last heard on %u)\n",
+             interval ? ("every " + std::to_string(interval) + " s").c_str() : "off",
+             testReach() ? " (dev override; !commsreach - removes it)" : " (mesh_reachable)",
+             lg.channel, homeChannel());
+  if (!lg.since) {
+    out.println("  log: empty (no sleep since it began)");
+    return;
+  }
+  const time_t since = lg.since;
+  tm t;
+  localtime_r(&since, &t);
+  const uint32_t hours10 = lg.lastAt > lg.since ? (lg.lastAt - lg.since) / 360 : 0;
+  out.printf("  log since %04d-%02d-%02d %02d:%02d (%lu.%lu h): battery %d %% then, %d %% at the "
+             "last look\n",
+             t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min,
+             static_cast<unsigned long>(hours10 / 10), static_cast<unsigned long>(hours10 % 10),
+             lg.startPct, lg.lastPct);
+  out.printf("  polls %lu (answered %lu), echo polls %lu (answered %lu), sweeps %lu (found %lu)\n",
+             static_cast<unsigned long>(lg.polls), static_cast<unsigned long>(lg.answered),
+             static_cast<unsigned long>(lg.echoes), static_cast<unsigned long>(lg.echoAnswered),
+             static_cast<unsigned long>(lg.sweeps), static_cast<unsigned long>(lg.sweepFound));
+  out.printf("  woken %lu, restarts for the off face %lu, PWR %lu\n",
+             static_cast<unsigned long>(lg.woken), static_cast<unsigned long>(lg.restarts),
+             static_cast<unsigned long>(lg.pwr));
+  const uint32_t polls = lg.polls + lg.sweeps * 13;
+  out.printf("  radio up %lu ms (%lu ms a poll), asleep %lu s, up after a wake %lu s\n",
+             static_cast<unsigned long>(lg.radioMs),
+             static_cast<unsigned long>(polls ? lg.radioMs / polls : 0),
+             static_cast<unsigned long>(lg.asleepMs / 1000),
+             static_cast<unsigned long>(lg.awakeMs / 1000));
+}
+
+// --- !reachbench: the radio around light sleep, measured ---------------------------------------
+
+namespace {
+
+struct BenchCycle {
+  int16_t sleepErr = 0;
+  uint32_t sleptUs = 0;  // in esp_light_sleep_start() (or the delay)
+  uint32_t upUs = 0;     // wake to the radio up
+  uint32_t sentUs = 0;   // wake to the poll's send done
+  uint32_t answerUs = 0; // wake to the first answer (0: none)
+  uint32_t awakeUs = 0;  // wake to the radio down again
+  int answers = 0;
+  bool sendOk = false;
+};
+
+// One sealed poll with the echo flag (boards on USB answer at once) into f; its length.
+size_t benchPoll(GroupRec &g, uint8_t *f) {
+  Poll p;
+  p.flags = kPollEcho;
+  p.battery = 0xFF;
+  p.intervalS = 0;
+  uint8_t body[48];
+  const size_t n = putPoll(body, sizeof body, sentAt(), p);
+  Header h;
+  h.type = kExt;
+  h.ttl = 0;
+  h.group = g.id;
+  h.sender = core->id;
+  h.boot = core->boot;
+  h.seq = ++core->seq;
+  putHeader(h, f);
+  memcpy(f + kHeader, body, n);
+  return g.sealer->seal(f, n);
+}
+
+// Frames waiting in rxQueue: answers to this board.
+int benchAnswers(GroupRec &g) {
+  int n = 0;
+  RxFrame &f = core->rx;
+  while (xQueueReceive(rxQueue, &f, 0) == pdTRUE) {
+    Header hd;
+    if (!parseHeader(f.data, f.len, hd) || hd.group != g.id || hd.type != kExt) continue;
+    uint8_t buf[kMaxFrame];
+    memcpy(buf, f.data, f.len);
+    size_t bodyLen = 0;
+    if (!g.sealer->open(buf, f.len, bodyLen)) continue;
+    Reader r(buf + kHeader, bodyLen);
+    r.u32();
+    if (r.u8() != kExtAnswer) continue;
+    Answer a;
+    if (readAnswer(r, a) && a.to == core->id) ++n;
+  }
+  return n;
+}
+
+}  // namespace
+
+namespace {
+
+// One mode's cycles; its report appended to rep.
+void benchMode(char mode, int cycles, uint32_t sleepMs, uint32_t listenMs, int ch, GroupRec &g,
+               std::string &rep) {
+  const esp_now_peer_info_t peer = reachPeer();
+  if (mode == 'c') {
+    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    esp_now_set_wake_window(0);
+  }
+  std::vector<BenchCycle> res(cycles);
+  uint8_t f[kMaxFrame];
+  for (int i = 0; i < cycles; ++i) {
+    BenchCycle &c = res[i];
+    // Down.
+    if (mode == 'a' || mode == 'p') esp_wifi_stop();
+    if (mode == 'A') {
+      esp_now_deinit();
+      esp_wifi_stop();
+    }
+    if (mode == 'c') esp_wifi_force_wakeup_release();
+    // Asleep.
+    const int64_t s0 = esp_timer_get_time();
+    if (mode == 'p') {
+      delay(sleepMs);
+    } else {
+      esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(sleepMs) * 1000);
+      c.sleepErr = static_cast<int16_t>(esp_light_sleep_start());
+      esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    }
+    const int64_t w = esp_timer_get_time();
+    c.sleptUs = static_cast<uint32_t>(w - s0);
+    // Up.
+    if (mode == 'a' || mode == 'p' || mode == 'A') {
+      esp_wifi_start();
+      if (mode == 'A') {
+        esp_now_init();
+        esp_now_register_recv_cb(onRecv);
+        esp_now_register_send_cb(onSent);
+        esp_now_add_peer(&peer);
+      }
+      esp_wifi_set_channel(static_cast<uint8_t>(ch), WIFI_SECOND_CHAN_NONE);
+    }
+    if (mode == 'c') esp_wifi_force_wakeup_acquire();
+    c.upUs = static_cast<uint32_t>(esp_timer_get_time() - w);
+    xQueueReset(rxQueue);
+    sentAtUs = 0;
+    const size_t n = benchPoll(g, f);
+    c.sendOk = n && esp_now_send(kBroadcast, f, n) == ESP_OK;
+    while (c.sendOk && !sentAtUs.load() && esp_timer_get_time() - w < 50000) vTaskDelay(1);
+    if (sentAtUs.load()) c.sentUs = sentAtUs.load() - static_cast<uint32_t>(w);
+    // Listen: until the first answer, or listenMs after the send.
+    const int64_t until = esp_timer_get_time() + static_cast<int64_t>(listenMs) * 1000;
+    while (esp_timer_get_time() < until) {
+      const int a = benchAnswers(g);
+      if (a && !c.answers) c.answerUs = rxAtUs.load() - static_cast<uint32_t>(w);
+      c.answers += a;
+      if (c.answers) break;
+      vTaskDelay(1);
+    }
+    c.awakeUs = static_cast<uint32_t>(esp_timer_get_time() - w);
+  }
+  if (mode == 'c') {
+    esp_wifi_force_wakeup_release();
+    esp_wifi_set_ps(WIFI_PS_NONE);
+  }
+  esp_wifi_start();
+  if (mode == 'A') {  // ESP-NOW as the next mode expects it
+    esp_now_init();
+    esp_now_register_recv_cb(onRecv);
+    esp_now_register_send_cb(onSent);
+    esp_now_add_peer(&peer);
+  }
+  char line[200];
+  uint64_t sumUp = 0, sumSent = 0, sumAns = 0, sumAwake = 0, sumOver = 0;
+  int answered = 0, sent = 0, errs = 0;
+  for (int i = 0; i < cycles; ++i) {
+    const BenchCycle &c = res[i];
+    if (i < 4) {
+      snprintf(line, sizeof line, "%c%d err %d slept %lu up %lu sent %lu answer %lu awake %lu (us)\n",
+               mode, i, c.sleepErr, static_cast<unsigned long>(c.sleptUs),
+               static_cast<unsigned long>(c.upUs), static_cast<unsigned long>(c.sentUs),
+               static_cast<unsigned long>(c.answerUs), static_cast<unsigned long>(c.awakeUs));
+      rep += line;
+    }
+    if (c.sleepErr) ++errs;
+    sumUp += c.upUs;
+    sumAwake += c.awakeUs;
+    sumOver += c.sleptUs > sleepMs * 1000 ? c.sleptUs - sleepMs * 1000 : 0;
+    if (c.sentUs) {
+      ++sent;
+      sumSent += c.sentUs;
+    }
+    if (c.answers) {
+      ++answered;
+      sumAns += c.answerUs;
+    }
+  }
+  snprintf(line, sizeof line,
+           "mode %c: %d cycles, %d sleep errors; avg up %lu us, send done %lu us (%d), answer %lu "
+           "us (%d answered), awake %lu us, sleep overrun %lu us\n",
+           mode, cycles, errs, static_cast<unsigned long>(sumUp / cycles),
+           static_cast<unsigned long>(sent ? sumSent / sent : 0), sent,
+           static_cast<unsigned long>(answered ? sumAns / answered : 0), answered,
+           static_cast<unsigned long>(sumAwake / cycles),
+           static_cast<unsigned long>(sumOver / cycles));
+  rep += line;
+}
+
+}  // namespace
+
+void reachBench(char mode, int cycles, uint32_t sleepMs, uint32_t listenMs, Print &out) {
+  if (!core || core->groups.empty() || !taskHandle) {
+    out.println("reachbench: no group");
+    return;
+  }
+  cycles = std::max(1, std::min(cycles, 40));
+  const int chNow = radioChannel();
+  radioLent = true;
+  for (int i = 0; i < 300 && isListening; ++i) delay(10);
+  if (isListening) {
+    out.println("reachbench: comms won't let go of the radio");
+    radioLent = false;
+    return;
+  }
+  GroupRec &g = core->groups[core->active];
+  const int ch = chNow ? chNow : meshChannel();
+  if (!reachRadioOpen(static_cast<uint8_t>(ch))) {
+    out.println("reachbench: ESP-NOW won't start");
+    radioLent = false;
+    return;
+  }
+  const char *modes = mode == 'x' ? "aAbc" : nullptr;
+  out.printf("reachbench: mode %c, %d cycles a mode, sleep %lu ms, listen %lu ms, channel %d%s\n",
+             mode, cycles, static_cast<unsigned long>(sleepMs),
+             static_cast<unsigned long>(listenMs), ch,
+             mode == 'p' ? "" : "; the console goes for the light sleeps");
+  out.flush();
+  delay(200);
+  std::string rep;
+  auto keep = [&rep](const char *state) {  // after each mode: a reset partway still tells
+    Preferences p;
+    if (p.begin(kNsReach, false)) {
+      p.putString("bench", (rep + state).c_str());
+      p.end();
+    }
+  };
+  keep("(started)\n");
+  if (modes) {
+    for (const char *m = modes; *m; ++m) {
+      benchMode(*m, cycles, sleepMs, listenMs, ch, g, rep);
+      keep("(going on)\n");
+    }
+  } else {
+    benchMode(mode, cycles, sleepMs, listenMs, ch, g, rep);
+  }
+  reachRadioClose();
+  radioLent = false;
+  // The report, kept in NVS too (the console doesn't come back by itself after light sleep).
+  Preferences prefs;
+  if (prefs.begin(kNsReach, false)) {
+    prefs.putString("bench", rep.c_str());
+    prefs.end();
+  }
+  out.print(rep.c_str());
+  if (mode != 'p') {
+    out.println("reachbench: a power cycle to bring the USB console back; !reachbench shows the "
+                "report");
+    delay(200);
+    power::consoleRecover();
+  }
+}
+
+void reachBenchShow(Print &out) {
+  out.printf("reachbench: this boot's reset reason %d\n", static_cast<int>(esp_reset_reason()));
+  Preferences prefs;
+  if (prefs.begin(kNsReach, true)) {
+    if (prefs.isKey("bench")) out.print(prefs.getString("bench", "").c_str());
+    prefs.end();
+  }
+}
+
 namespace {
 
 const char *routeName(Route r) {
@@ -5478,10 +6556,12 @@ void dump(Print &out) {
         out.printf(" %d hop%s via %s", b.hops, b.hops == 1 ? "" : "s",
                    b.relayName.empty() ? "?" : b.relayName.c_str());
       }
-      out.printf(", heard %lu s ago, flags%s%s%s%s, battery %d\n",
+      out.printf(", heard %lu s ago, flags%s%s%s%s, battery %d",
                  static_cast<unsigned long>(b.heardAgoS), b.flags & kFlagUsb ? " USB" : "",
                  b.flags & kFlagRelay ? " RELAY" : "", b.flags & kFlagMic ? " MIC" : "",
                  b.flags & kFlagLong ? " LONG" : "", b.battery);
+      if (b.asleep) out.printf(", ASLEEP (reachable: a poll every %d s)", b.pollS);
+      out.println();
     }
     const Conversation cv = conversation(static_cast<int>(i));
     if (!cv.on) {

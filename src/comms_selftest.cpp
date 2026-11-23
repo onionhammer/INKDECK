@@ -20,6 +20,7 @@
 #include "comms_crypto.h"
 #include "comms_mesh.h"
 #include "comms_mic.h"
+#include "comms_reach.h"
 #include "comms_wire.h"
 
 namespace comms {
@@ -1046,6 +1047,243 @@ void testRelayRule(Checker &c) {
               "afresh at its next boot; this board's links list who it heard in the last 20 s");
 }
 
+// Reachable on battery: the poll and its answer (docs/comms-protocol.md has these bytes), the
+// sleeper's channel check, the hold after a wake, the rings seen and what a poll is told.
+void testReachPackets(Checker &c) {
+  const crypto::GroupKeys k = crypto::derive(kSecret, false);
+  std::unique_ptr<crypto::Sealer> s(new crypto::Sealer());
+  s->setKey(k.key);
+  auto seal = [&](uint32_t seq, const uint8_t *body, size_t n, uint8_t *f) {
+    Header h;
+    h.type = kExt;
+    h.ttl = 0;
+    h.group = k.id;
+    h.sender = 0x11223344;
+    h.boot = 7;
+    h.seq = seq;
+    putHeader(h, f);
+    memcpy(f + kHeader, body, n);
+    return s->seal(f, n);
+  };
+  Poll p;
+  p.flags = kPollEcho;
+  p.battery = 87;
+  p.intervalS = 5;
+  p.nameLen = 7;
+  memcpy(p.name, "KITCHEN", 7);
+  uint8_t body[64], f[kMaxFrame];
+  size_t n = putPoll(body, sizeof body, 0, p);
+  n = seal(6, body, n, f);
+  std::vector<uint8_t> want = unhex(
+      "c71f0000e13e368e443322110700000006000000ba7508f5bb634115d8976b9dfb518dfe82b0aa36a4596ae029c"
+      "81bbf82a42dd2dc4ad8cd21");
+  c.check(n == want.size() && memcmp(f, want.data(), n) == 0,
+          "reach: a sealed poll matches the reference bytes");
+  size_t len = 0;
+  bool ok = s->open(f, n, len);
+  Reader r(f + kHeader, len);
+  r.u32();
+  Poll q;
+  ok = ok && r.u8() == kExtPoll && readPoll(r, q) && q.flags == kPollEcho && q.battery == 87 &&
+       q.intervalS == 5 && q.nameLen == 7 && memcmp(q.name, "KITCHEN", 7) == 0 &&
+       reachExtFor(f + kHeader, len) == 0;
+  c.check(ok, "reach: the poll reads back, for all (not one board's alone)");
+
+  Answer a;
+  a.to = 0x99AABBCC;
+  a.what = kWaitRing;
+  a.channel = 6;
+  a.flags = 0x01;
+  a.dialer = 0x11223344;
+  a.ring = 9;
+  n = putAnswer(body, sizeof body, 0, a);
+  n = seal(7, body, n, f);
+  want = unhex(
+      "c71f0000e13e368e443322110700000007000000de01bdf96a08528e1d7874d08729caf35fc9bb4e4dbf3a72b58"
+      "a79b6b9fe7ee7a37fade383044b5b2c494fa1d1a7841f");
+  c.check(n == want.size() && memcmp(f, want.data(), n) == 0,
+          "reach: a sealed answer matches the reference bytes");
+  ok = s->open(f, n, len);
+  Reader r2(f + kHeader, len);
+  r2.u32();
+  Answer b;
+  ok = ok && r2.u8() == kExtAnswer && readAnswer(r2, b) && b.to == 0x99AABBCC &&
+       b.what == kWaitRing && b.channel == 6 && b.dialer == 0x11223344 && b.ring == 9 &&
+       reachExtFor(f + kHeader, len) == 0x99AABBCC;
+  c.check(ok, "reach: the answer reads back, for the sleeper alone");
+  Reader shortR(body, 12);
+  shortR.u32();
+  shortR.u8();
+  c.check(!readAnswer(shortR, b), "reach: a short answer is refused");
+}
+
+void testSleeper(Checker &c) {
+  SleepPlan p;
+  Sleeper::begin(p, 6, 5);
+  // The first poll checks the channel; then one every 3 minutes (36 polls at 5 s).
+  Sleeper::Next n = Sleeper::next(p, 5);
+  bool ok = n.flags == kPollEcho && !n.sweep && p.channel == 6;
+  Sleeper::result(p, 5, n, true);
+  int echoes = 0;
+  for (int i = 0; i < 72; ++i) {
+    n = Sleeper::next(p, 5);
+    if (n.flags & kPollEcho) ++echoes;
+    Sleeper::result(p, 5, n, (n.flags & kPollEcho) != 0);
+  }
+  ok = ok && echoes == 2 && p.misses == 0;
+  c.check(ok, "reach: the sleeper checks the channel at first, then every 3 minutes");
+  // Three echoes unanswered in a row: a sweep.
+  int polls = 0;
+  bool swept = false;
+  while (polls < 200 && !swept) {
+    n = Sleeper::next(p, 5);
+    ++polls;
+    if (n.sweep) {
+      swept = true;
+      break;
+    }
+    Sleeper::result(p, 5, n, false);
+  }
+  ok = swept && p.misses == 3 && (n.flags & kPollSweep) && polls > 36 * 2 && polls <= 36 * 3 + 1;
+  c.check(ok, "reach: three echoes unanswered in a row sweep the channels");
+  Sleeper::sweepResult(p, 5, 11);
+  n = Sleeper::next(p, 5);
+  c.check(p.channel == 11 && p.misses == 0 && !n.sweep, "reach: a sweep that finds boards moves");
+  // A sweep that finds nobody: the channel stays, the next sweep waits half an hour.
+  for (int i = 0; i < 200 && !Sleeper::next(p, 5).sweep; ++i) {
+    n = Sleeper::next(p, 5);
+    Sleeper::result(p, 5, n, false);
+  }
+  Sleeper::sweepResult(p, 5, 0);
+  int until = 0;
+  for (; until < 1000; ++until) {
+    n = Sleeper::next(p, 5);
+    if (n.sweep) break;
+    Sleeper::result(p, 5, n, false);
+  }
+  c.check(p.channel == 11 && until >= 359 && until <= 361,
+          "reach: a sweep that finds nobody keeps the channel and waits 30 minutes");
+  // Any answer means the boards are on this channel (an answer with something waiting too).
+  p.misses = 2;
+  n = Sleeper::next(p, 5);
+  Sleeper::result(p, 5, n, true);
+  c.check(p.misses == 0, "reach: any answer resets the misses");
+}
+
+void testWoken(Checker &c) {
+  using V = WokenHold::Verdict;
+  WokenHold h;
+  WokenHold::Seen s;
+  // Woken, nothing comes: back to sleep after 15 s.
+  h.begin(1000, kWaitRing);
+  bool ok = h.step(5000, s) == V::Stay && h.step(15999, s) == V::Stay;
+  ok = ok && h.step(16000, s) == V::Sleep && !h.active();
+  c.check(ok, "reach: woken for nothing that comes, back to sleep after 15 s");
+  // A ring for 20 s: 30 s after it ends.
+  h.begin(0, kWaitRing);
+  s.ringing = true;
+  ok = h.step(1000, s) == V::Stay && h.step(20000, s) == V::Stay;
+  s.ringing = false;
+  ok = ok && h.step(49999, s) == V::Stay && h.step(50000, s) == V::Sleep;
+  c.check(ok, "reach: after a ring, back to sleep 30 s after it ends");
+  // A key: on.
+  h.begin(0, kWaitRing);
+  s.ringing = true;
+  h.step(1000, s);
+  s.keyed = true;
+  ok = h.step(2000, s) == V::On && !h.active();
+  s = WokenHold::Seen();
+  c.check(ok, "reach: a key makes it an ordinary board that's on");
+  // Sound from a mic that goes off: 30 s; from a mic that stays on, quiet: 60 s.
+  h.begin(0, kWaitVoice);
+  s.sound = true;
+  s.micOn = true;
+  h.step(3000, s);
+  s.sound = false;
+  s.micOn = false;
+  ok = h.step(32999, s) == V::Stay && h.step(33000, s) == V::Sleep;
+  h.begin(0, kWaitVoice);
+  s.sound = true;
+  s.micOn = true;
+  h.step(3000, s);
+  s.sound = false;
+  ok = ok && h.step(33000, s) == V::Stay && h.step(62999, s) == V::Stay &&
+       h.step(63000, s) == V::Sleep;
+  s = WokenHold::Seen();
+  c.check(ok, "reach: 30 s after a sound, 60 s while its mic stays on (a quiet room)");
+  // A transfer keeps it up until 30 s after it ends.
+  h.begin(0, kWaitMessage);
+  s.transfer = true;
+  ok = h.step(40000, s) == V::Stay;
+  s.transfer = false;
+  ok = ok && h.step(69999, s) == V::Stay && h.step(70000, s) == V::Sleep;
+  c.check(ok, "reach: a message coming in keeps it up, then 30 s");
+}
+
+void testWaiting(Checker &c) {
+  RingWatch w;
+  RingWatch::Seen seen;
+  const uint32_t sleeper = 0xABCD0001, other = 0xABCD0002, dialer = 0xABCD0003;
+  // A ring to all of group 0, 2 s in.
+  w.heard(0, dialer, 9, 0, 2000, 10000);
+  bool ok = w.ringFor(0, sleeper, 10500, seen) && seen.dialer == dialer && seen.ring == 9 &&
+            !w.ringFor(1, sleeper, 10500, seen) && !w.ringFor(0, dialer, 10500, seen);
+  // No packet for 3.5 s: over. Its packets again: on.
+  ok = ok && !w.ringFor(0, sleeper, 13500, seen);
+  w.heard(0, dialer, 9, 0, 6000, 14000);
+  ok = ok && w.ringFor(0, sleeper, 14100, seen);
+  // An answer ends it; a ring to another board isn't for the sleeper.
+  w.over(dialer, 9);
+  ok = ok && !w.ringFor(0, sleeper, 14200, seen);
+  w.heard(0, dialer, 10, other, 0, 15000);
+  ok = ok && !w.ringFor(0, sleeper, 15100, seen) && w.ringFor(0, other, 15100, seen);
+  // 60 s after it began, a ring is over whatever comes.
+  w.heard(0, dialer, 10, other, 59000, 74000);
+  ok = ok && w.ringFor(0, other, 74500, seen) && !w.ringFor(0, other, 75100, seen);
+  c.check(ok, "reach: rings seen go by, end at an answer, 3.5 s silence or 60 s");
+
+  WaitingNow n;
+  ok = waitingFor(n, 0, sleeper, 5, 100000) == 0;
+  n.ringOn = true;
+  ok = ok && waitingFor(n, 0, sleeper, 5, 100000) == kWaitRing;
+  n = WaitingNow();
+  // Voice: a mic to all that opened the conversation, with sound within 5 s + 2 s.
+  WaitingNow::MicNow &m = n.mics[n.micCount++];
+  m.group = 0;
+  m.board = other;
+  m.opened = true;
+  m.soundMs = 100000;
+  ok = ok && waitingFor(n, 0, sleeper, 5, 107000) == kWaitVoice &&
+       waitingFor(n, 0, sleeper, 5, 107001) == 0 && waitingFor(n, 1, sleeper, 5, 101000) == 0;
+  // Not one that joined a conversation already on (the sleeper wouldn't play it), nor the
+  // sleeper's own, nor one to another board; one to the sleeper alone, yes.
+  m.opened = false;
+  ok = ok && waitingFor(n, 0, sleeper, 5, 101000) == 0;
+  m.opened = true;
+  m.board = sleeper;
+  ok = ok && waitingFor(n, 0, sleeper, 5, 101000) == 0;
+  m.board = other;
+  m.target = dialer;
+  ok = ok && waitingFor(n, 0, sleeper, 5, 101000) == 0;
+  m.target = sleeper;
+  m.opened = false;
+  ok = ok && waitingFor(n, 0, sleeper, 5, 101000) == kWaitVoice;
+  c.check(ok, "reach: voice waits for a sleeper that would hear it, sounding within the interval");
+  // A message: to all or to it, until it says it has it whole.
+  n = WaitingNow();
+  n.messageOn = true;
+  n.msgGroup = 0;
+  n.msgSender = other;
+  n.msgTo = 0;
+  ok = waitingFor(n, 0, sleeper, 5, 0) == kWaitMessage;
+  n.msgTo = dialer;
+  ok = ok && waitingFor(n, 0, sleeper, 5, 0) == 0;
+  n.msgTo = sleeper;
+  n.deliveredTo[n.delivered++] = sleeper;
+  ok = ok && waitingFor(n, 0, sleeper, 5, 0) == 0;
+  c.check(ok, "reach: a message waits for a sleeper it's for, until it has it whole");
+}
+
 }  // namespace
 
 bool selfTest(Print &out) {
@@ -1069,6 +1307,10 @@ bool selfTest(Print &out) {
   testMixer(c);
   testLinks(c);
   testRelayRule(c);
+  testReachPackets(c);
+  testSleeper(c);
+  testWoken(c);
+  testWaiting(c);
   out.printf("commstest: %s (%d failed) in %lu ms\n", c.failed ? "FAILED" : "all passed",
              c.failed, static_cast<unsigned long>(millis() - t0));
   return c.failed == 0;
