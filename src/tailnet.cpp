@@ -26,6 +26,7 @@
 #include "microlink.h"
 #include "ml_inkdeck.h"  // lib/microlink/port: wake a peer, ask whether its session is up
 #include "pmic.h"
+#include "sorting.h"
 #include "text.h"
 #include "wlan.h"
 
@@ -181,7 +182,7 @@ void rememberLan(microlink_t *m, const std::string &host, uint32_t vpnIp) {
   const std::string key = lanKey(host);
   if (n == 0 || key.empty()) return;
   const uint32_t own = ntohl(WiFi.localIP());
-  std::stable_sort(found, found + n,
+  sorting::stable(found, found + n,
                    [own](uint32_t a, uint32_t b) { return lanRank(a, own) < lanRank(b, own); });
   std::string addrs;
   for (int i = 0; i < std::min(n, kMaxLanAddresses); ++i) addrs += (i ? "," : "") + ipText(found[i]);
@@ -394,7 +395,6 @@ void leaveUnlessHeld(void *arg) {
     std::lock_guard<std::mutex> g(stateMutex);
     leave = users == 0 && generation == gen;
   }
-  vTaskDelete(nullptr);
   if (leave) stopNow();
 }
 
@@ -408,6 +408,7 @@ void lingerTask(void *arg) {
 // release(false): leaves now, in a task of its own, since stopping MicroLink can take seconds.
 void leaveTask(void *arg) {
   leaveUnlessHeld(arg);
+  vTaskDelete(nullptr);
 }
 
 // join()'s hold, made in a task of its own.

@@ -9,6 +9,7 @@
 
 #include "apps/home.h"
 #include "apps/radio_ui.h"
+#include "sorting.h"
 #include "text.h"
 #include "wifi_survey.h"
 
@@ -53,16 +54,16 @@ using text::lower;
 void sortNetworks(std::vector<Network> &v, Sort s) {
   switch (s) {
     case Sort::Signal:
-      std::stable_sort(v.begin(), v.end(),
+      sorting::stable(v.begin(), v.end(),
                        [](const Network &a, const Network &b) { return a.rssi > b.rssi; });
       break;
     case Sort::Channel:
-      std::stable_sort(v.begin(), v.end(), [](const Network &a, const Network &b) {
+      sorting::stable(v.begin(), v.end(), [](const Network &a, const Network &b) {
         return a.channel != b.channel ? a.channel < b.channel : a.rssi > b.rssi;
       });
       break;
     case Sort::Name:
-      std::stable_sort(v.begin(), v.end(), [](const Network &a, const Network &b) {
+      sorting::stable(v.begin(), v.end(), [](const Network &a, const Network &b) {
         if (a.ssid.empty() != b.ssid.empty()) return b.ssid.empty();  // hidden ones last
         const std::string la = lower(a.ssid), lb = lower(b.ssid);
         return la != lb ? la < lb : a.rssi > b.rssi;
@@ -484,7 +485,7 @@ class WifiList : public ui::Screen {
     // Weakest first, the selected one last, on top.
     std::vector<int> order(nets_.size());
     for (size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
-    std::stable_sort(order.begin(), order.end(),
+    sorting::stable(order.begin(), order.end(),
                      [&](int a, int b) { return nets_[a].rssi < nets_[b].rssi; });
     for (const int i : order) {
       if (i != cursor_.cursor()) chart.drawNetwork(c, nets_[i], false);

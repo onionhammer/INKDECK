@@ -44,6 +44,7 @@
 #include "power.h"
 #include "rtc.h"
 #include "screen.h"
+#include "sorting.h"
 #include "text.h"
 #include "wlan.h"
 
@@ -2401,7 +2402,7 @@ CallRec &logMsg(const MsgRec &m, bool outgoing) {
 // The card's messages, at the start (begin(), before the task) and after a reload.
 void loadMsgs() {
   std::vector<store::Entry> idx = store::load();
-  std::sort(idx.begin(), idx.end(),
+  sorting::stable(idx.begin(), idx.end(),
             [](const store::Entry &a, const store::Entry &b) { return a.at < b.at; });
   std::lock_guard<std::mutex> l(core->mu);
   for (const store::Entry &e : idx) {
@@ -4580,7 +4581,7 @@ std::vector<Board> boards(int group) {
     x.pollS = x.asleep ? b.pollS : 0;
     out.push_back(std::move(x));
   }
-  std::stable_sort(out.begin(), out.end(), [](const Board &a, const Board &b) {
+  sorting::stable(out.begin(), out.end(), [](const Board &a, const Board &b) {
     auto rank = [](const Board &x) {
       switch (x.route) {
         case Route::Air: return 0;
@@ -4964,7 +4965,7 @@ std::vector<OpenMic> openMics(int group) {
     x.histories = o.histories;
     out.push_back(std::move(x));
   }
-  std::stable_sort(out.begin(), out.end(), [](const OpenMic &a, const OpenMic &b) {
+  sorting::stable(out.begin(), out.end(), [](const OpenMic &a, const OpenMic &b) {
     if (a.group != b.group) return a.group < b.group;
     return a.onS > b.onS;
   });

@@ -33,6 +33,7 @@
 #include "screen.h"
 #include "sdcard.h"
 #include "settings.h"
+#include "sorting.h"
 #include "timeutil.h"
 #include "ui/nav.h"
 #include "units.h"
@@ -248,7 +249,7 @@ std::vector<StoryInfo> recent(time_t now) {
   for (StoryInfo &s : news::stories(-1, news::Show::All)) {
     if (s.published >= now - kWindowS && s.published <= now + kAheadS) out.push_back(std::move(s));
   }
-  std::stable_sort(out.begin(), out.end(), [](const StoryInfo &a, const StoryInfo &b) {
+  sorting::stable(out.begin(), out.end(), [](const StoryInfo &a, const StoryInfo &b) {
     return a.published > b.published;
   });
   return out;

@@ -9,6 +9,7 @@
 #include <mutex>
 
 #include "settings.h"
+#include "sorting.h"
 #include "survey_users.h"
 #include "text.h"
 #include "wlan.h"
@@ -110,7 +111,7 @@ void fullScan() {
   std::vector<Network> found;
   found.reserve(records.size());
   for (const wifi_ap_record_t &r : records) found.push_back(fromRecord(r, saved));
-  std::stable_sort(found.begin(), found.end(),
+  sorting::stable(found.begin(), found.end(),
                    [](const Network &a, const Network &b) { return a.rssi > b.rssi; });
   std::lock_guard<std::mutex> lock(mutex);
   lastError = error;
@@ -126,7 +127,7 @@ void fullScan() {
                                    [&](const Network &n) { return sameBssid(n.bssid, old.bssid); });
     if (!again && now - old.heardMs <= kForgetMs) found.push_back(old);
   }
-  std::stable_sort(found.begin(), found.end(),
+  sorting::stable(found.begin(), found.end(),
                    [](const Network &a, const Network &b) { return a.rssi > b.rssi; });
   list = std::move(found);
   scannedAt = millis();

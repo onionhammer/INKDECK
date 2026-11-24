@@ -16,6 +16,7 @@
 #include "epub.h"
 #include "paths.h"
 #include "sdcard.h"
+#include "sorting.h"
 #include "text.h"
 
 namespace booklib {
@@ -264,14 +265,14 @@ std::vector<Author> Shelf::byAuthor() const {
     groups[found.first->second].books.push_back({titleKey(b), &b});
   }
 
-  std::sort(groups.begin(), groups.end(), [](const Group &a, const Group &b) {
+  sorting::stable(groups.begin(), groups.end(), [](const Group &a, const Group &b) {
     if (a.key.empty() != b.key.empty()) return b.key.empty();  // no author: last
     return naturalCompare(a.key, b.key) < 0;
   });
   std::vector<Author> out;
   out.reserve(groups.size());
   for (Group &g : groups) {
-    std::sort(g.books.begin(), g.books.end(), [](const auto &a, const auto &b) {
+    sorting::stable(g.books.begin(), g.books.end(), [](const auto &a, const auto &b) {
       const int c = naturalCompare(a.first, b.first);
       return c != 0 ? c < 0 : a.second->path < b.second->path;
     });

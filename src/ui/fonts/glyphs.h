@@ -7,16 +7,20 @@
 
 namespace ui::fonts {
 
-// A font of 38 px and up keeps its bitmaps deflated in flash. Its GFXfont has no
-// bitmap, so it can't be drawn as it is: ui::fonts::drawable() (ui/packed_fonts.h) inflates
-// the bitmaps into PSRAM the first time and returns a GFXfont that points at them. The glyph
-// table, and so every measurement, works on either.
+// Every font keeps its glyph table and its bitmaps deflated in flash, as one stream: five
+// columns of a byte a glyph (width, height, xAdvance, xOffset, yOffset), then the bitmaps,
+// each glyph's following the one before (so no offsets are stored). Its GFXfont has neither
+// table, so it can't be measured or drawn as it is: ui::fonts::drawable()
+// (ui/packed_fonts.h) unpacks it into PSRAM the first time and returns a GFXfont that has
+// both. first, last and yAdvance read the same on either.
 struct PackedFont {
   GFXfont font;  // first: a pointer to it is a pointer to the PackedFont
-  const uint8_t *deflated;  // raw deflate, no zlib header
-  uint16_t deflatedSize;
-  uint16_t size;  // of the inflated bitmaps
+  const uint8_t *packed;  // raw deflate, no zlib header
+  uint16_t packedSize;
+  uint16_t bitmapSize;  // of the inflated bitmaps; the columns before them are 5 a glyph
+  uint8_t index;        // 0 to kFontCount - 1: its place among drawable()'s unpacked fonts
 };
+constexpr int kFontCount = 42;
 
 // Every generated font indexes glyphs by slot: ASCII 0x20-0x7E, kExtraCodepoints[i] at
 // 0x80 + i, Latin-1 0xA0-0xFF.

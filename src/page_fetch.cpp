@@ -17,6 +17,7 @@
 #include "agent_client.h"
 #endif
 #include "sdcard.h"
+#include "sorting.h"
 #include "text.h"
 #include "wlan.h"
 
@@ -126,7 +127,7 @@ void prune() {
   }
   closedir(d);
   if (static_cast<int>(files.size()) <= kKeepFiles) return;
-  std::sort(files.begin(), files.end());
+  sorting::stable(files.begin(), files.end());
   for (size_t i = 0; i + kKeepFiles < files.size(); ++i) {
     const std::string &md = files[i].second;
     remove(md.c_str());

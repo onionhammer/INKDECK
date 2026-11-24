@@ -212,7 +212,7 @@ Wi-Fi's channel so boards on and off it hear each other. `via` per group (`air`,
 is there for the link through inkharness, which isn't built: `net` sends nothing yet. Packet format
 and keys: [`docs/comms-protocol.md`](docs/comms-protocol.md). Measured 2026-11-23 on USB: a mic on,
 or voice playing, costs about 10 KB of internal RAM (the speaker and the mic at once: 67 KB free
-instead of 77 KB with the tailnet up); the image is 2.69 MB with the screens (`INKDECK_COMMS=0` leaves comms out).
+instead of 77 KB with the tailnet up); the image is 2.43 MB with the screens (`INKDECK_COMMS=0` leaves comms out).
 The walkie-talkie was tested 2026-11-24 between two boards in different rooms (−76 to −78 dBm),
 both ways, with test tones added to the mic (nobody was there to speak or listen): HOLD BOOT to
 all, every frame sent seen on the other board, the end of the press included; 20 s held each way
@@ -360,6 +360,13 @@ port is there but the board doesn't answer (esptool: "No serial data received"),
 `uv run tools/board_usb.py reset` makes the computer re-enumerate it, which brings it back.
 `tools/screenshot.py` drives the UI over USB and saves the screen as a PNG (`--no-reset` to
 leave the board as it is). `src/devtools.h` lists the serial dev commands.
+
+The image has to fit a 3 MB slot, and a good deal of the build is about that: `platformio.ini`
+and `scripts/lto.py` say what each flag saves, and [`AGENTS.md`](AGENTS.md)'s gotchas 9 to 14
+what it asks of the code (fonts go through `ui/packed_fonts.h`, sorting through `sorting.h`).
+Every link ends with `scripts/check_calls.py`, which fails the build if a call in the firmware's
+own code doesn't land on a function: a check on the linker, which shrinks that code after
+laying it out.
 
 ### Updating over Wi-Fi
 

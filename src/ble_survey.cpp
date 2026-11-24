@@ -15,6 +15,7 @@
 #include <atomic>
 #include <mutex>
 
+#include "sorting.h"
 #include "survey_users.h"
 #include "text.h"
 
@@ -234,7 +235,7 @@ std::vector<Device> devices() {
       if (now - d.heardMs <= kForgetMs) out.push_back(d);
     }
   }
-  std::stable_sort(out.begin(), out.end(),
+  sorting::stable(out.begin(), out.end(),
                    [](const Device &a, const Device &b) { return a.rssi > b.rssi; });
   return out;
 }

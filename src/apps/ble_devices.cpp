@@ -14,6 +14,7 @@
 #include "apps/radio_ui.h"
 #include "ble_adv.h"
 #include "ble_survey.h"
+#include "sorting.h"
 #include "text.h"
 
 namespace apps {
@@ -85,7 +86,7 @@ std::string subtitleOf(const Device &d, const bleadv::Info &info) {
 void sortDevices(std::vector<Device> &v, Sort s) {
   switch (s) {
     case Sort::Signal:
-      std::stable_sort(v.begin(), v.end(),
+      sorting::stable(v.begin(), v.end(),
                        [](const Device &a, const Device &b) { return a.rssi > b.rssi; });
       break;
     case Sort::Kind: {
@@ -95,7 +96,7 @@ void sortDevices(std::vector<Device> &v, Sort s) {
         if (k.empty()) k = "\x7F";  // no kind: last
         keyed.emplace_back(k, d);
       }
-      std::stable_sort(keyed.begin(), keyed.end(), [](const auto &a, const auto &b) {
+      sorting::stable(keyed.begin(), keyed.end(), [](const auto &a, const auto &b) {
         return a.first != b.first ? a.first < b.first : a.second.rssi > b.second.rssi;
       });
       for (size_t i = 0; i < v.size(); ++i) v[i] = keyed[i].second;
@@ -107,7 +108,7 @@ void sortDevices(std::vector<Device> &v, Sort s) {
         const std::string name = infoOf(d).name;
         keyed.emplace_back(name.empty() ? "\x7F" + blesurvey::addressText(d) : lower(name), d);
       }
-      std::stable_sort(keyed.begin(), keyed.end(),
+      sorting::stable(keyed.begin(), keyed.end(),
                        [](const auto &a, const auto &b) { return a.first < b.first; });
       for (size_t i = 0; i < v.size(); ++i) v[i] = keyed[i].second;
       break;
