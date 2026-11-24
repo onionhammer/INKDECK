@@ -626,6 +626,45 @@ __attribute__((noinline)) void testHalfDuplex(Checker &c) {
   c.check(ok, "call sheet: once per conversation, not per press; outside one, once a session");
 }
 
+// A 20 ms frame of a 4 kHz tone peaking at `peak`, through the gain; returns its peak after.
+int agcFrame(MicAgc &a, int peak) {
+  int16_t pcm[kFrameSamples];
+  static const int8_t kQuarter[4] = {0, 1, 0, -1};  // 4 kHz: every peak on a sample
+  for (size_t i = 0; i < kFrameSamples; ++i) pcm[i] = static_cast<int16_t>(peak * kQuarter[i % 4]);
+  a.process(pcm, kFrameSamples);
+  int top = 0;
+  for (size_t i = 0; i < kFrameSamples; ++i) top = std::max(top, abs(static_cast<int>(pcm[i])));
+  return top;
+}
+
+__attribute__((noinline)) void testMicAgc(Checker &c) {
+  // -6 dBFS is 16,423; a voice at arm's length peaks near -38 dBFS: 412.
+  MicAgc a;
+  // It starts at 24 dB: the first frame of a quiet voice is up by that and one frame's rise.
+  int top = agcFrame(a, 412);
+  bool ok = top > 6400 && top < 6650 && fabsf(a.gainDb() - 24.12f) < 0.01f;
+  // The room (under -50 dBFS: 60 is -54.7) leaves the gain alone, however long.
+  for (int i = 0; i < 500; ++i) agcFrame(a, 60);
+  ok = ok && fabsf(a.gainDb() - 24.12f) < 0.01f;
+  // The quiet voice goes on: the gain comes up 6 dB a second, to its 30 dB at most.
+  for (int i = 0; i < 25; ++i) agcFrame(a, 412);
+  ok = ok && fabsf(a.gainDb() - 27.12f) < 0.05f;
+  for (int i = 0; i < 100; ++i) top = agcFrame(a, 412);
+  ok = ok && fabsf(a.gainDb() - 30) < 0.01f && top > 12900 && top < 13150;
+  // A loud frame (-3 dBFS: 23,198) brings it down at once: its peak lands on the target, nothing
+  // clips, and no gain is taken off a voice already over the target.
+  top = agcFrame(a, 8000);
+  ok = ok && top > 16300 && top < 16550;
+  top = agcFrame(a, 23198);
+  ok = ok && top == 23198 && a.gainDb() == 0;
+  // Then the quiet voice again: nothing until its followed peak is under the target (half a
+  // second), then 3 dB up in the next half.
+  for (int i = 0; i < 50; ++i) agcFrame(a, 412);
+  ok = ok && fabsf(a.gainDb() - 3) < 0.1f;
+  c.check(ok, "mic gain: a quiet voice comes up to -6 dBFS (30 dB at most), a loud one brings it "
+              "down at once, the room leaves it alone");
+}
+
 __attribute__((noinline)) void testHistory(Checker &c) {
   // A mic on 130 minutes, louder each 2 minutes, paused for bars 20 and 21.
   std::unique_ptr<MicHistory> h(new MicHistory());
@@ -1238,6 +1277,7 @@ bool selfTest(Print &out) {
   testMicPackets(c);
   testTalkLatch(c);
   testHalfDuplex(c);
+  testMicAgc(c);
   testHistory(c);
   testHeard(c);
   testMixer(c);

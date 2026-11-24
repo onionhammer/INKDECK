@@ -239,6 +239,32 @@ struct HalfDuplex {
   }
 };
 
+// The mic's automatic gain, a frame at a time, before a frame is measured and encoded. The mic
+// gives a voice at arm's length peaks of about -35 to -40 dBFS (measured 2026-11-24, the codec's
+// PGA at its 30 dB and 12 dB after it), far too quiet at the other board's speaker. This follows
+// the voice's peaks and puts them at kTargetDb, with up to kMaxGainDb. A louder frame brings the
+// gain down at once (nothing clips); a quieter voice brings it up at kReleaseDbPerS; a frame under
+// kFloorDb is the room, and leaves it alone (silence doesn't pump the gain up). It isn't reset
+// between presses: a press starts with the gain the last one ended with.
+class MicAgc {
+ public:
+  static constexpr float kTargetDb = -6;
+  static constexpr float kMaxGainDb = 30;
+  static constexpr float kStartGainDb = 24;
+  static constexpr float kFloorDb = -50;  // of the mic's own level, before the gain
+  static constexpr float kReleaseDbPerS = 6;
+  // n samples at 16 kHz, in place.
+  void process(int16_t *pcm, size_t n);
+  float gainDb() const { return gainFor(envDb_); }
+
+ private:
+  static float gainFor(float envDb) {
+    const float g = kTargetDb - envDb;
+    return g < 0 ? 0 : g > kMaxGainDb ? kMaxGainDb : g;
+  }
+  float envDb_ = kTargetDb - kStartGainDb;  // the voice's peaks, as followed
+};
+
 // Push to talk, and its latch: HOLD BOOT keys the mic while held; ● while it's held latches it, and
 // then BOOT can go and the mic stays on until the next ● or BOOT press, which only ends it (it isn't
 // also a ring or a BACK). The keys come from the UI (apps/comms_ui.cpp); this says what they do.

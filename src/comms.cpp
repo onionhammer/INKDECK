@@ -488,6 +488,7 @@ struct Core {
   bool duplexOurs = false;
   uint32_t duplexStartMs = 0, duplexRetryMs = 0, lastPlayMs = 0;
   HalfDuplex half;       // nothing plays while this board transmits (comms_mic.h)
+  MicAgc agc;            // the gain on what this board sends: its mic's frames and its messages
   uint32_t talkOverMs = 0, talkOverBy = 0;
   uint32_t halfDueMs = 0;  // transmitting: the mixer's next frame is due (pumpPlay())  // voice came while it transmitted: when, whose
   FirstHeard firstHeard;  // the call sheet and chirp: once a conversation
@@ -1585,6 +1586,7 @@ void micFrame(uint32_t now, size_t samples) {
       log_i("comms: the mic's test tone is over");
     }
   }
+  core->agc.process(m.pcm, samples);  // the level, the meter and the history: what goes out
   const float db = peakDb(m.pcm, samples);
   const uint8_t level = levelByte(db);
   const adpcm::State before = m.enc;
@@ -2466,6 +2468,7 @@ void messageFrame(Outbound &o, size_t samples) {
   s[1] = static_cast<uint8_t>(static_cast<uint16_t>(o.enc.predictor) >> 8);
   s[2] = o.enc.index;
   s[3] = static_cast<uint8_t>(samples / 2);
+  core->agc.process(o.pcm, samples);
   adpcm::encode(o.enc, o.pcm, samples, s + 4);
   sendMessageFrame(o, static_cast<uint16_t>(at / kStoredFrame));
 }
@@ -3821,6 +3824,7 @@ void publishMic(uint32_t now) {
     x.stillHeres = m.stillHeres;
     x.histories = m.histories;
     x.firstFrameMs = m.firstFrameMs;
+    x.gainDb = core->agc.gainDb();
     x.vanished = m.vanished;
   }
   core->pubMic = std::move(x);
@@ -6253,7 +6257,8 @@ __attribute__((noinline)) void dumpMic(Print &out) {
                static_cast<unsigned long>(m.ms / 1000), static_cast<unsigned long>(m.conversation),
                m.opened ? " (opened it)" : "");
     if (m.capturing) {
-      out.printf("TRANSMITTING, level %d dBFS", static_cast<int>(lroundf(m.levelDb)));
+      out.printf("TRANSMITTING, level %d dBFS with the gain at %d dB",
+                 static_cast<int>(lroundf(m.levelDb)), static_cast<int>(lroundf(m.gainDb)));
     } else {
       out.printf("PAUSED (%s)", m.paused.c_str());
     }

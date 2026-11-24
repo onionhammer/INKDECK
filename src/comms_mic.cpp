@@ -12,6 +12,28 @@
 namespace comms {
 namespace wire {
 
+void MicAgc::process(int16_t *pcm, size_t n) {
+  int peak = 0;
+  for (size_t i = 0; i < n; ++i) {
+    const int a = pcm[i] < 0 ? -static_cast<int>(pcm[i]) : pcm[i];
+    if (a > peak) peak = a;
+  }
+  const float db = peak > 0 ? 20 * log10f(peak / 32768.0f) : -96;
+  if (db > envDb_) {
+    envDb_ = db;
+  } else if (db > kFloorDb) {
+    const float down = envDb_ - kReleaseDbPerS * static_cast<float>(n) / 16000.0f;
+    envDb_ = down > db ? down : db;
+  }
+  if (envDb_ < kTargetDb - kMaxGainDb) envDb_ = kTargetDb - kMaxGainDb;
+  const float g = powf(10, gainFor(envDb_) / 20);
+  if (g <= 1) return;
+  for (size_t i = 0; i < n; ++i) {
+    const long v = lroundf(pcm[i] * g);
+    pcm[i] = static_cast<int16_t>(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+  }
+}
+
 uint8_t levelByte(float db) {
   if (!(db > -96)) return 96;  // NaN and silence too
   if (db >= 0) return 0;
