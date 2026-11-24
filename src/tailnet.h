@@ -5,7 +5,9 @@
 //
 // On demand, like Wi-Fi (wlan.h): hold() joins Wi-Fi and the tailnet (the control plane, the
 // list of machines, a relay: a few seconds), release() lets go, and the board leaves kLingerMs
-// after the last user. What joins it:
+// (a minute) after the last user, or at once after release(false): the agent's check-ins on
+// battery, where nobody is about to use it again and the radio's minute would cost more than
+// the check-in did (issue #72). What joins it:
 //   - the agent daemon, when agent_host is on the tailnet (agent_client.h): inkharness on a
 //     machine anywhere, the board on any Wi-Fi;
 //   - a share in Files whose server is (shares.h);
@@ -55,7 +57,10 @@ bool routes(const std::string &host);  // reached through the tailnet (above); f
 // with its address and the list of machines. Each true is matched by a release(). On failure,
 // error says why in a few words (TAILSCALE KEY REFUSED). Blocks: call from a background task.
 bool hold(uint32_t timeoutMs, std::string &error);
-void release();
+// The last user's release leaves the tailnet after its linger, or with linger false straight
+// away (in a task of its own: release() never waits for it). Either way a hold() in between
+// keeps the board on.
+void release(bool linger = true);
 
 // hold() and release() for a server that wants to be reachable on the tailnet but mustn't wait
 // for it (Wi-Fi Drive, the updater): join() starts a hold in a task of its own and returns at

@@ -384,20 +384,30 @@ microlink_state_t settleRegion(microlink_state_t state, uint32_t t0, uint32_t ti
   return waitForJoin(t0, std::max(timeoutMs, millis() - t0 + kRegionRejoinMs));
 }
 
-// The last user's linger: leaves unless someone held the tailnet since.
-void lingerTask(void *arg) {
+// Leaves, unless someone has held the tailnet since the release that asked (`arg`, its
+// generation).
+void leaveUnlessHeld(void *arg) {
   const uint32_t gen = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(arg));
-  vTaskDelay(pdMS_TO_TICKS(kLingerMs));
+  std::lock_guard<std::mutex> join(joinMutex);
+  bool leave;
   {
-    std::lock_guard<std::mutex> join(joinMutex);
-    bool leave;
-    {
-      std::lock_guard<std::mutex> g(stateMutex);
-      leave = users == 0 && generation == gen;
-    }
-    if (leave) stopNow();
+    std::lock_guard<std::mutex> g(stateMutex);
+    leave = users == 0 && generation == gen;
   }
   vTaskDelete(nullptr);
+  if (leave) stopNow();
+}
+
+// The last user's linger: leaves kLingerMs on, unless someone held the tailnet meanwhile.
+void lingerTask(void *arg) {
+  vTaskDelay(pdMS_TO_TICKS(kLingerMs));
+  leaveUnlessHeld(arg);
+  vTaskDelete(nullptr);
+}
+
+// release(false): leaves now, in a task of its own, since stopping MicroLink can take seconds.
+void leaveTask(void *arg) {
+  leaveUnlessHeld(arg);
 }
 
 // join()'s hold, made in a task of its own.
@@ -513,7 +523,7 @@ bool hold(uint32_t timeoutMs, std::string &error) {
   return on;
 }
 
-void release() {
+void release(bool linger) {
   uint32_t gen;
   {
     std::lock_guard<std::mutex> g(stateMutex);
@@ -521,9 +531,9 @@ void release() {
     gen = ++generation;
     if (--users > 0) return;
   }
-  if (xTaskCreate(lingerTask, "tailnet-off", 3072, reinterpret_cast<void *>(gen), 1, nullptr) !=
-      pdPASS) {
-    std::lock_guard<std::mutex> join(joinMutex);  // no task for the linger: leave now
+  if (xTaskCreate(linger ? lingerTask : leaveTask, "tailnet-off", 3072,
+                  reinterpret_cast<void *>(gen), 1, nullptr) != pdPASS) {
+    std::lock_guard<std::mutex> join(joinMutex);  // no task for it: leave now, from this one
     stopNow();
   }
 }
@@ -724,7 +734,7 @@ bool hold(uint32_t, std::string &error) {
   error = "NO TAILNET IN THIS BUILD";
   return false;
 }
-void release() {}
+void release(bool) {}
 void join() {}
 void leave() {}
 bool reach(const std::string &, uint32_t) { return false; }

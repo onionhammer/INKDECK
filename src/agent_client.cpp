@@ -91,6 +91,9 @@ std::atomic<uint32_t> nextPollMs{0};  // millis; 0: none planned
 uint32_t lastPollMs = 0;
 uint8_t ladder = 0;
 uint8_t pollFailures = 0;
+uint32_t plannedMs = 0;       // the poll the next one is counted from ended then (millis | 1)
+bool plannedReading = false;  // that plan is reading on battery's
+std::atomic<bool> readingOnBattery{false};  // setReadingOnBattery()
 uint32_t lastSignature = 0;
 std::atomic<bool> pollActive{false};  // a poll's connection, until its list comes
 uint32_t pollStartMs = 0;
@@ -101,6 +104,7 @@ uint32_t usbCheckedMs = 0;
 uint32_t liveRetryMs = 0;     // a failed live connect waits until then
 uint8_t liveFailures = 0;
 std::atomic<bool> soon{false};
+std::atomic<bool> sendSoon{false};      // request(): something went into the outbox
 std::atomic<bool> talkWanted{false};    // a talk press is queued: a background connect yields
 std::atomic<uint32_t> nextCheckUnix{0};
 SemaphoreHandle_t checkInDone = nullptr;
@@ -152,6 +156,8 @@ struct Link {
   bool wanted = false;     // open() was called and close() wasn't
   bool wifi = false;       // we hold a wlan::connect()
   bool tailnet = false;    // and a tailnet::hold(): agent_host is on the tailnet
+  bool background = false; // only a poll or an RTC check-in on battery has used it: nobody is
+                           // waiting, and the tailnet goes at once with it (closeSession())
   bool hello = false;      // the daemon answered ours
   bool reader = false;     // and it reads pages (`read`)
   bool sealed = false;     // the handshake is done: every frame is sealed both ways
@@ -1213,6 +1219,9 @@ bool connectLink(bool quiet, uint32_t deadline) {
     return false;
   };
   auto yields = [&] { return quiet && talkWanted.load(); };
+  // A poll or an RTC check-in on battery, on a connection nothing else began.
+  s.background = quiet && !readActive.load() && !usbLive &&
+                 (s.background || (!s.wifi && !s.tailnet));
   if (!quiet) {
     {
       Locked l;
@@ -1334,9 +1343,13 @@ void closeSession() {
   forgetAnswers();
   forgetAgentConnection();
   if (s.tailnet) {
-    tailnet::release();
+    // After a check-in on battery the board leaves the tailnet at once. Its minute's linger is
+    // for whoever opens the sheet or a share next, which a poll says nothing about; it would be
+    // most of what the poll costs, and the Reader can't nap while the radio is on (issue #72).
+    tailnet::release(!s.background);
     s.tailnet = false;
   }
+  s.background = false;
   if (s.wifi) {
     WiFi.setSleep(true);
     wlan::disconnect();
@@ -1463,21 +1476,49 @@ uint32_t signature() {
   return h;
 }
 
-// When to poll next, after a poll (or a live connection) that got a list (ok) or didn't: the
-// ladder, failures backing off, sooner at check_at, never on a low battery.
+// Sets the next poll, counted from the one that ended at plannedMs: the ladder's step, failures
+// backing off, sooner at check_at, never on a low battery. While a book is read on battery
+// (setReadingOnBattery()) it's the ladder's last step whatever the list did or the poll came
+// to: the board naps between keys then, and each check-in is its radio on with nobody asking
+// (issue #72).
+void schedulePoll() {
+  uint32_t checkAt;
+  {
+    Locked l;
+    checkAt = agentShared.checkAt;
+  }
+  plannedReading = readingOnBattery.load();
+  uint32_t gap = kMaxPollGapMs;
+  if (!plannedReading) {
+    gap = pollFailures
+              ? std::min<uint32_t>(kMaxPollGapMs, kLadderMin[0] * 60000u << (pollFailures - 1))
+              : kLadderMin[ladder] * 60000u;
+  }
+  // Signed: the | 1 can put plannedMs a millisecond ahead of the clock.
+  const int32_t since = static_cast<int32_t>(millis() - plannedMs);
+  uint32_t wait = since <= 0 ? gap : gap > static_cast<uint32_t>(since) ? gap - since : 0;
+  const uint32_t now = static_cast<uint32_t>(time(nullptr));
+  if (checkAt > now) wait = std::min<uint32_t>(wait, std::max(kFloorS, checkAt - now) * 1000u);
+  const pmic::Status p = pmic::status();
+  if (power::lowBattery(p)) {
+    nextPollMs = 0;  // only when asked (checkSoon)
+    nextCheckUnix = 0;
+    return;
+  }
+  nextPollMs = (millis() + wait) | 1;
+  nextCheckUnix = now + wait / 1000;
+}
+
+// When to poll next, after a poll (or a live connection) that got a list (ok) or didn't.
 void planPoll(bool ok) {
   bool supported, known;
-  uint32_t checkAt;
   {
     Locked l;
     supported = agentShared.supported;
     known = agentShared.known;
-    checkAt = agentShared.checkAt;
   }
-  uint32_t gap;
   if (!ok) {
     pollFailures = std::min<uint8_t>(pollFailures + 1, 4);
-    gap = std::min<uint32_t>(kMaxPollGapMs, kLadderMin[0] * 60000u << (pollFailures - 1));
   } else {
     pollFailures = 0;
     if (known && !supported) {  // no sessions on this daemon: nothing to poll for
@@ -1492,18 +1533,27 @@ void planPoll(bool ok) {
       ++ladder;
     }
     lastSignature = sig;
-    gap = kLadderMin[ladder] * 60000u;
   }
-  const uint32_t now = static_cast<uint32_t>(time(nullptr));
-  if (checkAt > now) gap = std::min<uint32_t>(gap, std::max(kFloorS, checkAt - now) * 1000u);
-  const pmic::Status p = pmic::status();
-  if (power::lowBattery(p)) {
-    nextPollMs = 0;  // only when asked (checkSoon)
-    nextCheckUnix = 0;
+  plannedMs = millis() | 1;
+  schedulePoll();
+}
+
+// A book was opened or closed on battery since the next poll was planned: it moves to the step
+// that goes with that, still counted from the last poll. Out to 30 minutes with the book open;
+// back to the ladder's step once it's closed, which is at once if that has passed.
+void replanForReading() {
+  const bool reading = readingOnBattery.load();
+  if (plannedReading == reading) return;
+  if (plannedMs == 0 || nextPollMs.load() == 0) {  // nothing planned: the next plan sees it
+    plannedReading = reading;
     return;
   }
-  nextPollMs = (millis() + gap) | 1;
-  nextCheckUnix = now + gap / 1000;
+  schedulePoll();
+  const uint32_t at = nextPollMs.load();
+  if (at == 0) return;  // the battery is low now: only when asked
+  const int32_t wait = static_cast<int32_t>(at - millis());
+  log_i("agent: reading on battery %s: the next check-in in %ld min",
+        reading ? "began" : "ended", static_cast<long>(std::max<int32_t>(wait, 0) / 60000));
 }
 
 bool pollIsDue() {
@@ -1539,7 +1589,16 @@ void pollDuties() {
 // With no connection: a key back on an Agent screen, USB, or a poll that's due.
 void idleDuties() {
   refreshUsb();
-  if (!configured()) return;
+  if (!configured()) {
+    // The agent host or the Wi-Fi networks have gone since a check was asked for or planned.
+    // It would never run, and polling() would keep the Reader out of its naps for good.
+    soon = false;
+    sendSoon = false;
+    nextPollMs = 0;
+    nextCheckUnix = 0;
+    return;
+  }
+  replanForReading();
   const uint32_t now = millis();
   if (s.heldIdle && heldActive()) {
     s.heldIdle = false;
@@ -1558,6 +1617,14 @@ void idleDuties() {
   }
   if (soon.exchange(false) && (lastPollMs == 0 || now - lastPollMs >= kSoonGapMs)) {
     nextPollMs = now | 1;
+  }
+  // Something chosen with no connection up (an answer on the ask sheet, over a book) goes out
+  // now, with a check-in of its own: it's the user's doing, so the ladder and checkSoon()'s
+  // minute don't hold it back. One try: a connect that fails drops it with the rest of the
+  // connection's state (forgetAgentConnection()), as a poll's failure always has.
+  if (sendSoon.exchange(false)) {
+    Locked l;
+    if (!outbox.empty()) nextPollMs = now | 1;
   }
   if (pollIsDue()) startPoll();
 }
@@ -1705,6 +1772,9 @@ void task(void *) {
     // Nobody wants it (a release can be lost when the event queue is full, and an Agent screen
     // left alone stops counting): start the linger. Someone wanting it again stops it.
     const bool wanted = wantLink();
+    // Someone took a poll's connection over (the sheet, an Agent screen, a page to read, USB):
+    // it's theirs now, and ends as theirs does.
+    if (heldActive() || s.wanted || usbLive || readActive.load()) s.background = false;
     if (wanted) {
       s.lingerUntilMs = 0;
     } else if (s.lingerUntilMs == 0) {
@@ -1840,6 +1910,7 @@ void request(std::string json) {
     Locked l;
     outbox.push_back(std::move(json));
   }
+  sendSoon = true;  // with no connection up, idleDuties() checks in to send it
   post(Event::Kick);
 }
 }  // namespace
@@ -1980,9 +2051,13 @@ void checkSoon() {
 
 bool polling() {
   if (pollActive.load()) return true;
-  if (!pollIsDue() && !soon.load()) return false;
+  if (!pollIsDue() && !soon.load() && !sendSoon.load()) return false;
   post(Event::Kick);  // the task may be asleep in its wait: it polls now
   return true;
+}
+
+void setReadingOnBattery(bool on) {
+  if (readingOnBattery.exchange(on) != on) post(Event::Kick);  // the planned poll moves now
 }
 
 bool readPage(const std::string &url, uint16_t pictureW, uint16_t pictureH, uint32_t timeoutMs,
