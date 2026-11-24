@@ -318,6 +318,8 @@ struct Mic {
   uint32_t ms = 0;         // on for
   float levelDb = -96;     // the mic now: the loudest frame of the last 200 ms, as it goes out
   float gainDb = 0;        // the automatic gain on it now (comms_mic.h MicAgc)
+  float roomDb = -96;      // the room as the noise gate reckons it (RMS), and whether it's open
+  bool gateOpen = false;   // (comms_mic.h NoiseGate)
   bool capturing = false;  // the mic runs: it transmits (else paused)
   std::string paused;  // why the mic is off now: THE AGENT IS LISTENING (or SPEAKING), THE
                        // RECORDER IS ON, AN ALARM IS RINGING, MUSIC IS PLAYING, A MESSAGE IS

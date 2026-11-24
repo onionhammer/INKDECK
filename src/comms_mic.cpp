@@ -12,6 +12,50 @@
 namespace comms {
 namespace wire {
 
+NoiseGate::NoiseGate() : gain_(powf(10, kClosedDb / 20)) {
+  for (float &b : blocks_) b = kStartRoomDb;
+}
+
+float NoiseGate::roomDb() const {
+  float room = now_ < 0 ? now_ : 0;
+  for (float b : blocks_) {
+    if (b < room) room = b;
+  }
+  return room;
+}
+
+void NoiseGate::process(int16_t *pcm, size_t n) {
+  if (!n) return;
+  float sum = 0;
+  for (size_t i = 0; i < n; ++i) sum += static_cast<float>(pcm[i]) * pcm[i];
+  const float rms = sqrtf(sum / n);
+  float db = rms > 0 ? 20 * log10f(rms / 32768.0f) : -96;
+  if (db < kMinRoomDb) db = kMinRoomDb;
+  // Against the room before this frame: a frame can't be over itself.
+  if (db > roomDb() + kOpenDb) {
+    hold_ = kHoldFrames + 1;
+  }
+  if (now_ == 0 || db < now_) now_ = db;
+  if (++inBlock_ >= kBlockFrames) {
+    blocks_[at_] = now_;
+    at_ = (at_ + 1) % kBlocks;
+    now_ = 0;
+    inBlock_ = 0;
+  }
+  const float closed = powf(10, kClosedDb / 20);
+  const float to = hold_ ? 1 : closed;
+  if (hold_) --hold_;
+  const float up = (1 - closed) / kOpenSamples, down = (1 - closed) / kCloseSamples;
+  for (size_t i = 0; i < n; ++i) {
+    if (gain_ < to) {
+      gain_ = gain_ + up > to ? to : gain_ + up;
+    } else if (gain_ > to) {
+      gain_ = gain_ - down < to ? to : gain_ - down;
+    }
+    if (gain_ < 1) pcm[i] = static_cast<int16_t>(lroundf(pcm[i] * gain_));
+  }
+}
+
 void MicAgc::process(int16_t *pcm, size_t n) {
   int peak = 0;
   for (size_t i = 0; i < n; ++i) {

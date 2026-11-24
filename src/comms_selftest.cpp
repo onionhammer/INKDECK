@@ -637,6 +637,50 @@ int agcFrame(MicAgc &a, int peak) {
   return top;
 }
 
+// A 20 ms frame of noise (uniform, peaking at `peak`) through the gate; returns its peak after.
+int gateFrame(NoiseGate &g, int peak, uint32_t &seed) {
+  int16_t pcm[kFrameSamples];
+  for (size_t i = 0; i < kFrameSamples; ++i) {
+    seed = seed * 1664525u + 1013904223u;
+    pcm[i] = static_cast<int16_t>(static_cast<int>((seed >> 16) % (2 * peak + 1)) - peak);
+  }
+  g.process(pcm, kFrameSamples);
+  int top = 0;
+  for (size_t i = 0; i < kFrameSamples; ++i) top = std::max(top, abs(static_cast<int>(pcm[i])));
+  return top;
+}
+
+__attribute__((noinline)) void testNoiseGate(Checker &c) {
+  std::unique_ptr<NoiseGate> g(new NoiseGate());
+  uint32_t seed = 1;
+  // A room peaking at 30 (RMS -66 dBFS): 3 s of it, and the gate is closed, 24 dB down (to 2).
+  int top = 0;
+  for (int i = 0; i < 150; ++i) top = gateFrame(*g, 30, seed);
+  bool ok = !g->open() && top <= 2 && fabsf(g->roomDb() + 66) < 1.5f;
+  // A voice 20 dB over it opens the gate inside its first frame: whole from 5 ms in.
+  top = gateFrame(*g, 300, seed);
+  ok = ok && g->open() && top > 290;
+  // The voice stops: it stays open 400 ms (the room whole), then closes over 200 ms.
+  for (int i = 0; i < 20; ++i) top = gateFrame(*g, 30, seed);
+  ok = ok && top > 27;
+  for (int i = 0; i < 11; ++i) top = gateFrame(*g, 30, seed);
+  ok = ok && !g->open() && top <= 2;
+  // The room gets 10 dB louder: open at first, and closed again once 2.9 s of it are all the
+  // gate remembers.
+  top = gateFrame(*g, 95, seed);
+  ok = ok && g->open();
+  for (int i = 0; i < 190; ++i) top = gateFrame(*g, 95, seed);
+  ok = ok && !g->open() && top <= 7 && fabsf(g->roomDb() + 56) < 1.5f;
+  // A quieter room is followed at once, and frames of zeros don't count as one.
+  for (int i = 0; i < 13; ++i) gateFrame(*g, 30, seed);
+  ok = ok && fabsf(g->roomDb() + 66) < 1.5f;
+  int16_t zeros[kFrameSamples] = {};
+  for (int i = 0; i < 13; ++i) g->process(zeros, kFrameSamples);
+  ok = ok && g->roomDb() >= NoiseGate::kMinRoomDb;
+  c.check(ok, "noise gate: the room goes out 24 dB down, a voice over it whole from its first "
+              "frame and 400 ms after; a louder room is learned in 3 s");
+}
+
 __attribute__((noinline)) void testMicAgc(Checker &c) {
   // -6 dBFS is 16,423; a voice at arm's length peaks near -38 dBFS: 412.
   MicAgc a;
@@ -1277,6 +1321,7 @@ bool selfTest(Print &out) {
   testMicPackets(c);
   testTalkLatch(c);
   testHalfDuplex(c);
+  testNoiseGate(c);
   testMicAgc(c);
   testHistory(c);
   testHeard(c);

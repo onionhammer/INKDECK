@@ -239,6 +239,39 @@ struct HalfDuplex {
   }
 };
 
+// The mic's noise gate, a frame at a time, before the gain: the mic's own noise and the room's,
+// which the gain would bring up with the voice, are turned down kClosedDb while nothing rises over
+// them. Every frame still goes out, and nothing is fixed: the room is the quietest frame (RMS) of
+// the last kBlocks * kBlockFrames frames (2.9 s; kept across presses), and a frame kOpenDb over
+// it opens the gate within kOpenSamples of its start (a word that begins inside a frame isn't
+// touched), for that frame and kHoldFrames after; then it closes over kCloseSamples. A room that
+// gets louder holds it open until the window has only the new room in it.
+class NoiseGate {
+ public:
+  static constexpr float kClosedDb = -24;
+  static constexpr float kOpenDb = 8;
+  static constexpr float kStartRoomDb = -72;  // RMS; the test boards' rooms read about that
+  static constexpr float kMinRoomDb = -84;    // a frame of zeros isn't a room
+  static constexpr uint32_t kHoldFrames = 20;     // 400 ms
+  static constexpr uint32_t kBlockFrames = 12;    // 240 ms
+  static constexpr size_t kBlocks = 12;
+  static constexpr uint32_t kOpenSamples = 80;    // 5 ms
+  static constexpr uint32_t kCloseSamples = 3200; // 200 ms
+  NoiseGate();
+  // n samples at 16 kHz, in place.
+  void process(int16_t *pcm, size_t n);
+  bool open() const { return hold_ > 0; }
+  float roomDb() const;
+
+ private:
+  float blocks_[kBlocks];  // the quietest frame of each block before this one
+  size_t at_ = 0;
+  float now_ = 0;          // of the block filling; 0: no frame yet
+  uint32_t inBlock_ = 0;
+  uint32_t hold_ = 0;      // frames it stays open
+  float gain_;             // on the last sample
+};
+
 // The mic's automatic gain, a frame at a time, before a frame is measured and encoded. The mic
 // gives a voice at arm's length peaks of about -35 to -40 dBFS (measured 2026-11-24, the codec's
 // PGA at its 30 dB and 12 dB after it), far too quiet at the other board's speaker. This follows
