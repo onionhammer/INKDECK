@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "apps/home.h"
+#include "audio.h"
 #include "comms_mic.h"
 #include "input.h"
 #include "rtc.h"
@@ -1030,7 +1031,9 @@ class CommsScreen : public ui::Screen {
     }
     out[0] = micHint();
     out[1] = {ui::glyph::kPress, pressWord()};
-    out[2] = {ui::glyph::kHoldPress, "MENU"};
+    // While a voice plays (and a few seconds after) the dial is the volume; HOLD ● still opens
+    // the menu.
+    out[2] = volumeKeys() ? ui::Hint{ui::glyph::kDial, "VOL"} : ui::Hint{ui::glyph::kHoldPress, "MENU"};
     out[3] = {"BOOT", playing() ? "STOP" : "BACK"};
     return 4;
   }
@@ -1051,6 +1054,12 @@ class CommsScreen : public ui::Screen {
     switch (key) {
       case Key::Up:
       case Key::Down: {
+        if (heardNow()) volumeKeysFrom();  // newer than the last tick
+        if (volumeKeys()) {
+          audio::changeVolume(key == Key::Up ? +5 : -5);
+          volumeKeysFrom();
+          return true;
+        }
         if (!cursor_.move(key == Key::Up ? -1 : 1)) return false;
         const int i = cursor_.cursor();
         selected_ = i == 0 ? 0 : boards_[i - 1].id;
@@ -1069,6 +1078,7 @@ class CommsScreen : public ui::Screen {
     if (!comms::configured()) return false;
     load();
     retarget();
+    if (heardNow()) volumeKeysFrom();
     return key() != drawn_;
   }
 
@@ -1116,6 +1126,29 @@ class CommsScreen : public ui::Screen {
     if (k == talked_) return;
     talked_ = k;
     ui::nav::talkChanged();
+  }
+
+  // The dial is the volume while a voice plays here and for kVolumeKeysMs after (and after each
+  // step), CHANNEL's header showing it; otherwise it moves the cursor. A press's voice, PLAY LAST
+  // or a message: not a latched mic's, which may play for hours (the menu's VOLUME, or its mic
+  // screen), and not while this board's mic is on (nothing plays then).
+  static constexpr uint32_t kVolumeKeysMs = 5000;
+  bool heardNow() const {
+    if (comms::micEnabled()) return false;
+    const comms::Status s = comms::status();
+    if (s.replay) return true;
+    if (!s.hearing) return false;
+    for (const comms::OpenMic &m : comms::openMics(-1)) {
+      if (m.playing && !m.latched) return true;
+    }
+    return false;
+  }
+  void volumeKeysFrom() {
+    volumeOn_ = true;
+    volumeMs_ = millis();
+  }
+  bool volumeKeys() const {
+    return volumeOn_ && !comms::micEnabled() && millis() - volumeMs_ < kVolumeKeysMs;
   }
 
   // ●: rings the row selected while the group has no conversation, else joins it or leaves it
@@ -1170,7 +1203,8 @@ class CommsScreen : public ui::Screen {
   // Everything the screen draws, in short: it redraws when this changes.
   std::string key() const {
     std::string k = context() + "\n" + (comms::micEnabled() ? "m" : "") + (playing() ? "p" : "") +
-                    pressWord() + micHint().verb;
+                    pressWord() + micHint().verb +
+                    (volumeKeys() ? "v" + std::to_string(audio::status().volume) : "");
     for (const comms::Group &g : groups_) k += g.name + std::to_string(g.unheard) + ",";
     if (groups_.empty()) return k;
     k += comms::viaName(groups_[group_].via);
@@ -1412,6 +1446,14 @@ class CommsScreen : public ui::Screen {
                        return ms.empty() ? "NONE" : std::to_string(ms.size()) + " KEPT";
                      },
                      [group] { ui::nav::replace(makeMessagesSheet(group)); }});
+    // 20 to 100 in steps of 20, round again (the dial sets it finer while a voice plays).
+    items.push_back({"VOLUME",
+                     []() -> std::string { return std::to_string(audio::status().volume); },
+                     [] {
+                       const int v = audio::status().volume;
+                       const int next = v >= 100 ? 20 : std::min(100, (v / 20 + 1) * 20);
+                       audio::changeVolume(next - v);
+                     }});
     items.push_back({"RELAY FOR OTHERS",
                      []() -> std::string { return comms::relayForOthers() ? "ON" : "OFF"; },
                      [] { comms::setRelayForOthers(!comms::relayForOthers()); }});
@@ -1486,7 +1528,9 @@ class CommsScreen : public ui::Screen {
     if (!error.empty()) {
       drawNotice(c, head, error);
     } else {
-      drawSectionHeader(c, head, "CHANNEL", channelText(status_, groups_[group_].via));
+      drawSectionHeader(c, head, "CHANNEL",
+                        volumeKeys() ? "VOL " + std::to_string(audio::status().volume)
+                                     : channelText(status_, groups_[group_].via));
     }
     constexpr int kMapW = 190, kMapH = 132, kGap = 14;
     const int top = r.y + 12;
@@ -1543,6 +1587,8 @@ class CommsScreen : public ui::Screen {
   uint32_t selected_ = 0;  // TALK TO's row: a board's id, 0 for all
   ui::ListCursor cursor_;
   uint64_t talked_ = ~0ull;  // HOLD BOOT's target as last told to the navigator (retarget())
+  bool volumeOn_ = false;  // the dial is the volume for kVolumeKeysMs from volumeMs_
+  uint32_t volumeMs_ = 0;  // (volumeKeys())
 };
 
 }  // namespace
