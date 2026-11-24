@@ -20,32 +20,6 @@ uint8_t levelByte(float db) {
 
 float levelDb(uint8_t b) { return b == kNoLevel || b >= 96 ? -96 : -static_cast<float>(b); }
 
-// --- MicGate -----------------------------------------------------------------------------------
-
-MicGate::Step MicGate::frame(float levelDb, float echoDb) {
-  const uint32_t i = n_++;
-  const bool masked = echoDb > -96 && levelDb <= echoDb;
-  masked_[i % kRing] = masked;
-  if (levelDb >= threshold_ && !masked) {
-    loud_ = true;
-    lastLoud_ = i;
-  }
-  Step s;
-  // Frame i - kPreFrames goes out if a loud frame came within kPreFrames after it (so up to i)
-  // or kHangFrames before it.
-  s.send = loud_ && i >= kPreFrames && i - lastLoud_ <= kPreFrames + kHangFrames;
-  s.first = s.send && !sending_;
-  s.muted = s.send && masked_[(i - kPreFrames) % kRing];
-  sending_ = s.send;
-  return s;
-}
-
-void MicGate::reset() {
-  n_ = lastLoud_ = 0;
-  loud_ = sending_ = false;
-  memset(masked_, 0, sizeof masked_);
-}
-
 // --- MicHistory --------------------------------------------------------------------------------
 
 void MicHistory::advance(uint16_t bar) {
@@ -86,41 +60,15 @@ uint8_t MicHistory::at(uint16_t bar) const {
 
 // --- HeardMic ----------------------------------------------------------------------------------
 
-void HeardMic::push(const Event &e) {
-  if (events_.size() >= kMaxEvents) events_.erase(events_.begin());
-  events_.push_back(e);
-}
-
-HeardMic::Event *HeardMic::openEvent(bool lost) {
-  if (events_.empty()) return nullptr;
-  Event &e = events_.back();
-  return e.open && e.lost == lost ? &e : nullptr;
-}
-
-const HeardMic::Event *HeardMic::lastSound() const {
-  for (auto it = events_.rbegin(); it != events_.rend(); ++it) {
-    if (!it->lost) return &*it;
-  }
-  return nullptr;
-}
-
-void HeardMic::closeAll(uint32_t now) {
-  for (Event &e : events_) {
-    if (!e.open) continue;
-    e.open = false;
-    if (e.lost) e.endMs = now;
-  }
-}
-
-HeardMic::Change HeardMic::on(uint32_t now, uint16_t session, uint32_t onMs) {
+HeardMic::Change HeardMic::on(uint32_t now, uint16_t session, uint32_t onMs, bool latched) {
   Change c;
   heardMs_ = now;
   if (link_ == Link::Lost) {  // back: the outage is over
-    if (Event *e = openEvent(true)) {
-      e->open = false;
-      e->endMs = now;
+    if (!events_.empty() && events_.back().open) {
+      events_.back().open = false;
+      events_.back().endMs = now;
     }
-    link_ = Link::Quiet;
+    link_ = Link::On;
     sinceMs_ = now;
     acked_ = false;
     c.back = c.shown = true;
@@ -129,62 +77,34 @@ HeardMic::Change HeardMic::on(uint32_t now, uint16_t session, uint32_t onMs) {
     c.ended = true;
     c.endedSession = session_;
     c.endedMs = now - startMs_;
-    closeAll(now);
     link_ = Link::Off;
   }
   if (link_ == Link::Off) {
-    link_ = Link::Quiet;
+    link_ = Link::On;
     session_ = session;
     startMs_ = now - onMs;
     sinceMs_ = now;
+    voiceMs_ = 0;
     acked_ = false;
+    latched_ = latched;
     c.began = c.shown = true;
   } else if (onMs && static_cast<int32_t>((now - onMs) - startMs_) < 0) {
     startMs_ = now - onMs;  // its voice came first (on for 0): its still-here says since when
   }
+  if (latched && !latched_) {  // a press latched it: so it stays for the session
+    latched_ = true;
+    c.shown = true;
+  }
   return c;
-}
-
-bool HeardMic::audio(uint32_t now, uint16_t sound, float levelDb, bool &becameLoud) {
-  becameLoud = false;
-  if (link_ == Link::Off) return false;
-  bool changed = false;
-  heardMs_ = now;
-  // The same sound goes on, even after a gap the air left; another number is another sound.
-  Event *e = events_.empty() || events_.back().lost ? nullptr : &events_.back();
-  if (!e || e->sound != sound) {
-    if (e) e->open = false;
-    Event n;
-    n.startMs = n.endMs = now;
-    n.open = true;
-    n.sound = sound;
-    push(n);
-    e = &events_.back();
-    changed = true;
-  }
-  if (!e->open) {
-    e->open = true;
-    changed = true;
-  }
-  e->endMs = now;
-  e->peakDb = std::max(e->peakDb, levelDb);
-  if (!e->loud && levelDb >= threshold_ + kLoudMarginDb) {
-    e->loud = becameLoud = true;
-    changed = true;
-  }
-  soundMs_ = now;
-  if (link_ != Link::Sound) {
-    link_ = Link::Sound;
-    sinceMs_ = now;
-    changed = true;
-  }
-  return changed;
 }
 
 HeardMic::Change HeardMic::off(uint32_t now, uint16_t session) {
   Change c;
   if (link_ == Link::Off || (session && session != session_)) return c;
-  closeAll(now);
+  if (!events_.empty() && events_.back().open) {
+    events_.back().open = false;
+    events_.back().endMs = now;
+  }
   c.ended = c.shown = true;
   c.back = link_ == Link::Lost;
   c.endedSession = session_;
@@ -195,28 +115,30 @@ HeardMic::Change HeardMic::off(uint32_t now, uint16_t session) {
   return c;
 }
 
-bool HeardMic::tick(uint32_t now, bool alarmable) {
-  if (link_ == Link::Off) return false;
-  bool changed = false;
-  if (link_ == Link::Sound && now - soundMs_ >= kSoundEndMs) {
-    if (Event *e = openEvent(false)) e->open = false;
-    link_ = Link::Quiet;
-    sinceMs_ = soundMs_;
-    changed = true;
+HeardMic::Change HeardMic::tick(uint32_t now, bool alarmable) {
+  Change c;
+  if (link_ != Link::On) return c;
+  const uint32_t quiet = now - heardMs_;
+  if (!latched_ && quiet >= kCutMs) {  // held, then nothing: cut off, no alarm
+    c.ended = c.cut = c.shown = true;
+    c.endedSession = session_;
+    c.endedMs = heardMs_ - startMs_;
+    link_ = Link::Off;
+    sinceMs_ = heardMs_;
+    return c;
   }
-  if (link_ != Link::Lost && now - heardMs_ >= kLostMs) {
-    if (Event *e = openEvent(false)) e->open = false;
-    Event n;
-    n.lost = true;
-    n.startMs = n.endMs = heardMs_;
-    n.open = true;
-    push(n);
+  if (latched_ && quiet >= kLostMs) {
+    if (events_.size() >= kMaxEvents) events_.erase(events_.begin());
+    Event e;
+    e.startMs = e.endMs = heardMs_;
+    e.open = true;
+    events_.push_back(e);
     link_ = Link::Lost;
     sinceMs_ = heardMs_;  // LOST since the last word from it
     acked_ = !alarmable;
-    changed = true;
+    c.lost = c.shown = true;
   }
-  return changed;
+  return c;
 }
 
 bool HeardMic::ack() {
@@ -227,7 +149,7 @@ bool HeardMic::ack() {
 
 // --- Mixer -------------------------------------------------------------------------------------
 
-Mixer::Took Mixer::add(uint32_t sender, uint16_t sound, const Frame &f, uint32_t now) {
+Mixer::Took Mixer::add(uint32_t sender, uint16_t session, const Frame &f, uint32_t now) {
   Source *s = nullptr;
   for (Source &x : src_) {
     if (x.used && x.sender == sender) s = &x;
@@ -243,9 +165,9 @@ Mixer::Took Mixer::add(uint32_t sender, uint16_t sound, const Frame &f, uint32_t
     *s = Source();
     s->used = true;
     s->sender = sender;
-    s->sound = sound;
+    s->session = session;
   }
-  if (s->started && s->sound != sound) {  // another sound: its buffer starts afresh
+  if (s->started && s->session != session) {  // another session: its buffer starts afresh
     noteEnd(*s);
     s->got = s->lost = s->came = s->top = 0;
     s->reported = false;
@@ -254,11 +176,12 @@ Mixer::Took Mixer::add(uint32_t sender, uint16_t sound, const Frame &f, uint32_t
     s->dry = 0;
     s->conceal = Concealer();
   }
-  s->sound = sound;
+  s->session = session;
   s->lastMs = now;
   if (!s->started) {
     s->started = true;
     s->next = f.frame <= kJitterWait ? 0 : f.frame;
+    s->from = s->next;
     s->firstMs = now;
   }
   int ahead = static_cast<int16_t>(f.frame - s->next);
@@ -314,7 +237,7 @@ int Mixer::pull(int16_t *out, uint32_t now) {
     Played &p = playedAt_[played_];
     p = Played();
     p.sender = s.sender;
-    p.sound = s.sound;
+    p.session = s.session;
     Slot &x = s.slots[s.next % kSlots];
     if (x.full && x.f.frame == s.next) {
       if (x.f.bytes) {
@@ -325,7 +248,7 @@ int Mixer::pull(int16_t *out, uint32_t now) {
         adpcm::decode(st, x.f.data, bytes, pcm_);
         for (size_t i = bytes * 2u; i < kFrameSamples; ++i) pcm_[i] = 0;
       } else {
-        memset(pcm_, 0, sizeof pcm_);  // silence sent: the mic's echo, muted
+        memset(pcm_, 0, sizeof pcm_);  // an empty frame (none is sent): silence
       }
       s.conceal.apply(pcm_, kFrameSamples, false);
       x.full = false;
@@ -342,7 +265,7 @@ int Mixer::pull(int16_t *out, uint32_t now) {
       s.primed = false;
       noteEnd(s);
       continue;
-    } else {  // late, or the sound's end
+    } else {  // late, or the session's end
       memset(pcm_, 0, sizeof pcm_);
       s.conceal.apply(pcm_, kFrameSamples, true);
     }
@@ -396,7 +319,8 @@ bool Mixer::has(uint32_t sender) const {
 void Mixer::noteEnd(Source &s) {
   if (s.reported || (!s.got && !s.lost)) return;
   ended_.sender = s.sender;
-  ended_.sound = s.sound;
+  ended_.session = s.session;
+  ended_.from = s.from;
   ended_.came = s.came;
   ended_.top = s.top;
   ended_.played = s.got;
@@ -423,6 +347,42 @@ void Mixer::clear() {
   played_ = 0;
 }
 
+// --- TalkLatch ---------------------------------------------------------------------------------
+
+TalkLatch::Act TalkLatch::holdStart(bool micOn) {
+  if (latched_) {  // a new hold takes the latched mic over: its release ends it
+    latched_ = false;
+    held_ = true;
+    return Act::Unlatch;
+  }
+  if (micOn) return Act::None;  // on some other way: left as it is
+  held_ = true;
+  return Act::MicOn;
+}
+
+TalkLatch::Act TalkLatch::holdEnd() {
+  if (!held_) return Act::None;
+  held_ = false;
+  return latched_ ? Act::None : Act::MicOff;
+}
+
+bool TalkLatch::press(bool select, bool ends, Act &act) {
+  act = Act::None;
+  if (held_ && select) {  // ● while BOOT is held: latch (a second ● then does nothing)
+    if (!latched_) {
+      latched_ = true;
+      act = Act::Latch;
+    }
+    return true;
+  }
+  if (latched_ && !held_ && ends) {  // the next ● or BOOT: it ends, and does nothing else
+    latched_ = false;
+    act = Act::MicOff;
+    return true;
+  }
+  return false;
+}
+
 // --- Packets -----------------------------------------------------------------------------------
 
 size_t putMicStill(uint8_t *body, size_t cap, uint32_t sentAt, const MicStill &s) {
@@ -430,13 +390,11 @@ size_t putMicStill(uint8_t *body, size_t cap, uint32_t sentAt, const MicStill &s
   w.u32(sentAt);
   w.u8(s.flags);
   w.u8(s.battery);
-  w.u8(s.threshold);
   w.u8(s.peak);
   w.u16(s.session);
   w.u32(s.onS);
   w.u16(s.bar);
   w.u8(s.barPeak);
-  w.u8(s.preFrames);
   w.u32(s.target);
   w.u32(s.conv);
   return w.ok() ? w.size() : 0;
@@ -445,13 +403,11 @@ size_t putMicStill(uint8_t *body, size_t cap, uint32_t sentAt, const MicStill &s
 bool readMicStill(Reader &r, MicStill &s) {
   s.flags = r.u8();
   s.battery = r.u8();
-  s.threshold = r.u8();
   s.peak = r.u8();
   s.session = r.u16();
   s.onS = r.u32();
   s.bar = r.u16();
   s.barPeak = r.u8();
-  s.preFrames = r.u8();
   s.target = r.u32();
   s.conv = r.u32();
   return r.ok();
@@ -463,7 +419,6 @@ size_t putVoice(uint8_t *body, size_t cap, uint32_t sentAt, const Voice &v) {
   w.u32(v.target);
   w.u32(v.conv);
   w.u16(v.session);
-  w.u16(v.sound);
   w.u16(v.frame);
   w.u8(v.level);
   w.u8(v.flags);
@@ -479,7 +434,6 @@ bool readVoice(Reader &r, Voice &v) {
   v.target = r.u32();
   v.conv = r.u32();
   v.session = r.u16();
-  v.sound = r.u16();
   v.frame = r.u16();
   v.level = r.u8();
   v.flags = r.u8();

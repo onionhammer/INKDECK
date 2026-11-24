@@ -12,9 +12,11 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
+#include <mutex>
 #include <vector>
 
 #include "apps/home.h"
+#include "comms_mic.h"
 #include "input.h"
 #include "rtc.h"
 #include "timeutil.h"
@@ -23,11 +25,12 @@
 namespace apps {
 
 namespace {
-// What the last HOLD BOOT began, so its release ends it: a message (the ringing sheet), or the mic
-// (push to talk). The input timer calls both ends; the UI task may undo a hold (hold_boot.cpp),
-// and KEEP MIC ON may keep a held mic on (heldMic false: the release leaves it).
+// What the last HOLD BOOT began, so its release ends it: a message (the ringing sheet), or the
+// mic. The input timer calls both ends (hold_boot.cpp); the UI task's key filter latches and
+// unlatches the mic (commsui::latchKey()), so the latch is under a lock.
 std::atomic<bool> heldMessage{false};
-std::atomic<bool> heldMic{false};
+std::mutex latchMu;
+comms::wire::TalkLatch latch;
 }  // namespace
 
 namespace commsui {
@@ -79,31 +82,25 @@ bool stopIfPlaying() {
   return true;
 }
 
-void toggleMic(int group, uint32_t target) {
-  if (comms::micEnabled()) {
-    comms::micOff();
-    return;
-  }
-  noteAttempt();
-  comms::micOn(group, target);
+bool micHeld() {
+  std::lock_guard<std::mutex> l(latchMu);
+  return latch.held();
 }
 
-bool pushToTalk() { return comms::micMode() == comms::MicMode::Push; }
+bool micLatched() {
+  std::lock_guard<std::mutex> l(latchMu);
+  return latch.latched();
+}
 
 ui::Hint micHint() {
-  if (pushToTalk()) return {"HOLD BOOT", "TALK"};
-  return {ui::glyph::kPress, comms::micEnabled() ? "MIC OFF" : "MIC ON"};
-}
-
-bool micPress(int group, uint32_t target) {
-  if (pushToTalk()) return false;
-  toggleMic(group, target);
-  return true;
+  std::lock_guard<std::mutex> l(latchMu);
+  if (latch.latched()) return {"BOOT", "STOP"};
+  if (latch.held()) return {ui::glyph::kPress, "HOLD"};
+  return {"HOLD BOOT", "TALK"};
 }
 
 ui::TalkTo micTalkTo(int group, uint32_t target) {
   ui::TalkTo to;
-  if (!pushToTalk()) return to;  // the agent's
   to.comms = true;
   to.group = group;
   to.board = target;
@@ -112,31 +109,33 @@ ui::TalkTo micTalkTo(int group, uint32_t target) {
 
 ui::TalkTo ringTalkTo(int group, uint32_t target) {
   ui::TalkTo to = micTalkTo(group, target);
-  to.answer = to.comms;
+  to.answer = true;
   return to;
 }
 
-void micAnswered(int group, uint32_t target) {
-  if (!pushToTalk()) comms::micOn(group, target);
-}
-
-bool micKept() { return comms::micEnabled() && !heldMic.load(); }
-
-bool keepMic(int group, uint32_t target, bool on) {
-  if (!on) {
-    heldMic = false;
-    comms::micOff();
-    return true;
+bool latchKey(ui::Key key) {
+  if (key != ui::Key::Select && key != ui::Key::Back) return false;
+  comms::wire::TalkLatch::Act act = comms::wire::TalkLatch::Act::None;
+  {
+    std::lock_guard<std::mutex> l(latchMu);
+    if (!latch.held() && !latch.latched()) return false;
+    // A latch ends on the screens where HOLD BOOT keys the mic (the Comms screens and sheets);
+    // elsewhere ● and BOOT do their own jobs, and the mic stays latched.
+    const bool ends = ui::nav::talkTarget().comms;
+    if (!latch.press(key == ui::Key::Select, ends, act)) return false;
   }
-  if (heldMic.exchange(false)) return true;  // held now: the release leaves it on
-  if (comms::micEnabled()) return true;
-  noteAttempt();
-  return comms::micOn(group, target);
+  if (act == comms::wire::TalkLatch::Act::Latch) {
+    comms::latchMic();
+  } else if (act == comms::wire::TalkLatch::Act::MicOff) {
+    comms::micOff();
+  }
+  return true;  // the navigator redraws: the hints change
 }
 
-std::string micModeText() {
-  return std::string("MIC: ") + (pushToTalk() ? "PUSH TO TALK" : "STICKY") + " \xC2\xB7 " +
-         (comms::testMicMode() ? "DEV OVERRIDE" : "INKDECK.INI");
+void syncLatch() {
+  std::lock_guard<std::mutex> l(latchMu);
+  // The mic went off another way (a leave, the engine, a power-off): nothing is latched.
+  if (latch.latched() && !latch.held() && !comms::micEnabled()) latch.reset();
 }
 
 ui::MicMark micMark() {
@@ -224,12 +223,10 @@ std::string noteText(const comms::Call &c) {
     return c.complete ? "MSG" : "MSG PART";
   }
   if (c.live) return "LIVE";
-  const std::string sounds =
-      c.sounds ? std::to_string(c.sounds) + (c.sounds == 1 ? " SOUND" : " SOUNDS") : "";
-  if (c.outgoing) return sounds;
+  if (c.outgoing) return "";
   if (c.linkLost) return "LOST";
-  if (!c.played) return c.sounds ? "NOT PLAYED" : "";
-  if (!sounds.empty()) return sounds;
+  if (c.cutOff) return "CUT OFF";
+  if (!c.played) return "NOT PLAYED";
   if (c.route == comms::Route::Relayed) {
     if (!c.relayName.empty()) return "VIA " + c.relayName;
     return c.hops == 1 ? "1 HOP" : std::to_string(c.hops) + " HOPS";
@@ -329,7 +326,7 @@ std::string micLine(const comms::OpenMic &m) {
     s += kDot + "TO " + boardName(name, m.target);
   }
   if (m.paused) return s + kDot + "PAUSED";
-  return s + kDot + (m.link == comms::Link::Sound ? "SOUND" : "QUIET");
+  return m.latched ? s + kDot + "LATCHED" : s;
 }
 
 const comms::OpenMic *findMic(const std::vector<comms::OpenMic> &mics, int group, uint32_t id) {
@@ -396,7 +393,7 @@ std::string callRowKey(const comms::Call &call) {
 }
 
 void drawMicMeter(ui::Canvas &c, int x, int y, int w, int h, const char *label, int filled,
-                  int thresholdDb, uint16_t color) {
+                  uint16_t color) {
   using namespace ui;
   constexpr int kGap = 2, kSegs = 20;
   const int kLabelW = std::max(34, textWidth(kMeterLabel, label) + 6);
@@ -411,12 +408,6 @@ void drawMicMeter(ui::Canvas &c, int x, int y, int w, int h, const char *label, 
       frame(c, seg, 2, color);
     }
   }
-  if (thresholdDb <= -100) return;
-  // The ▲ under the boundary the threshold falls on (3 dB a segment from -60).
-  const int at = std::clamp((thresholdDb - comms::kMicMinDb) / comms::kMicStepDb, 0, kSegs);
-  const int tx = mx + at * (segW + kGap) - kGap / 2;
-  const int ty = y + h + 2;
-  c.fillTriangle(tx, ty, tx - 5, ty + 7, tx + 5, ty + 7, color);
 }
 
 void drawStateRow(ui::Canvas &c, const ui::Rect &row, const std::string &word, int filled,
@@ -478,19 +469,31 @@ void commsTalk(const ui::TalkTo &to) {
     comms::messageStart();  // the ring nobody answered: the message goes to whom it rang
     return;
   }
-  // Push to talk (the screens say comms for the mic only then): on while it's held, the ring
-  // answered first on the ring sheet (it becomes the call sheet). A mic on already (kept on) is
-  // left as it is, and the release leaves it too.
+  // The mic, on while it's held (the ring answered first on the ring sheet: it becomes the call
+  // sheet). A latched mic: the hold takes it over, and the release ends it. A mic on already
+  // otherwise (a dev command's) is left as it is, and the release leaves it too.
   if (to.answer) comms::answer();
-  if (comms::micEnabled()) return;
+  comms::wire::TalkLatch::Act act;
+  {
+    std::lock_guard<std::mutex> l(latchMu);
+    act = latch.holdStart(comms::micEnabled());
+  }
+  if (act != comms::wire::TalkLatch::Act::MicOn) return;
   commsui::noteAttempt();
-  heldMic = true;
-  if (!comms::micOn(to.group, to.board)) heldMic = false;  // the screen says why
+  if (!comms::micOn(to.group, to.board)) {  // the screen says why
+    std::lock_guard<std::mutex> l(latchMu);
+    latch.reset();
+  }
 }
 
 void commsTalkStop() {
   if (heldMessage.exchange(false)) comms::messageSend();
-  if (heldMic.exchange(false)) comms::micOff();
+  comms::wire::TalkLatch::Act act;
+  {
+    std::lock_guard<std::mutex> l(latchMu);
+    act = latch.holdEnd();
+  }
+  if (act == comms::wire::TalkLatch::Act::MicOff) comms::micOff();
 }
 
 namespace {
@@ -986,10 +989,9 @@ struct StateBlock {
   std::string line1, line2;
   const char *meterLabel = "IN";
   int meter = 0;
-  int thresholdDb = -1000;  // the ▲ under the meter while this board's mic is on
   std::string key() const {
     return word + (inverted ? "*" : "") + "|" + line1 + "|" + line2 + "|" + meterLabel +
-           std::to_string(meter) + "|" + std::to_string(thresholdDb);
+           std::to_string(meter);
   }
 };
 
@@ -1015,21 +1017,25 @@ class CommsScreen : public ui::Screen {
       out[0] = {"BOOT", "BACK"};
       return 1;
     }
-    // Sticky: MOVE, then ● the mic. Push: HOLD BOOT the mic, then ● rings, joins or leaves (four
-    // hints at most: the dial's goes).
-    if (pushToTalk()) {
-      out[0] = micHint();
-      out[1] = {ui::glyph::kPress, pressWord()};
-    } else {
-      out[0] = {ui::glyph::kDial, "MOVE"};
-      out[1] = micHint();
+    // HOLD BOOT the mic, then ● rings, joins or leaves (four hints at most: the dial's goes).
+    // While BOOT keys it: ● latches it. Latched: BOOT (or ●) ends it.
+    if (micHeld()) {
+      out[0] = micHint();  // ● HOLD
+      return 1;
     }
+    if (micLatched()) {
+      out[0] = micHint();  // BOOT STOP
+      out[1] = {ui::glyph::kHoldPress, "MENU"};
+      return 2;
+    }
+    out[0] = micHint();
+    out[1] = {ui::glyph::kPress, pressWord()};
     out[2] = {ui::glyph::kHoldPress, "MENU"};
     out[3] = {"BOOT", playing() ? "STOP" : "BACK"};
     return 4;
   }
-  // Push to talk: HOLD BOOT keys the mic to the row selected (to a board in the group's
-  // conversation it goes to all of it: the engine). Sticky: the agent's.
+  // HOLD BOOT keys the mic to the row selected (to a board in the group's conversation it goes to
+  // all of it: the engine).
   ui::TalkTo talkTo() const override {
     return groups_.empty() ? ui::TalkTo() : micTalkTo(group_, selected_);
   }
@@ -1051,9 +1057,7 @@ class CommsScreen : public ui::Screen {
         retarget();
         return true;
       }
-      case Key::Select:
-        if (!micPress(group_, selected_)) pressPush();
-        return true;
+      case Key::Select: pressPush(); return true;
       case Key::SelectLong: openMenu(); return true;
       case Key::Back: return stopIfPlaying();  // else back; the mic stays as it is
       default: return false;
@@ -1092,8 +1096,7 @@ class CommsScreen : public ui::Screen {
     drawSectionHeader(c, r.takeTop(kSectionH), "HEARD", countText(calls_));
     if (calls_.empty()) {
       drawText(c, {r.x, r.y + 12, r.w, 24},
-               "NOTHING YET" + kDot +
-                   (pushToTalk() ? "HOLD BOOT TO TALK" : "\xE2\x97\x8F SWITCHES YOUR MIC ON"),
+               "NOTHING YET" + kDot + "HOLD BOOT TO TALK",
                style::kLabel, Align::Center);
       return;
     }
@@ -1107,18 +1110,16 @@ class CommsScreen : public ui::Screen {
   // ringing sheet, Messages) shows its own.
   std::string notice() const { return ui::nav::top() == this ? attemptError() : std::string(); }
 
-  // HOLD BOOT's target changed (the row, the group, the mode): the navigator asks talkTo() again.
+  // HOLD BOOT's target changed (the row, the group): the navigator asks talkTo() again.
   void retarget() {
-    const uint64_t k = pushToTalk() ? (static_cast<uint64_t>(static_cast<uint32_t>(group_)) << 32) |
-                                          selected_
-                                    : ~0ull;
+    const uint64_t k = (static_cast<uint64_t>(static_cast<uint32_t>(group_)) << 32) | selected_;
     if (k == talked_) return;
     talked_ = k;
     ui::nav::talkChanged();
   }
 
-  // ● when push: rings the row selected while the group has no conversation, else joins it or
-  // leaves it (LEAVE also switches this board's mic off).
+  // ●: rings the row selected while the group has no conversation, else joins it or leaves it
+  // (LEAVE also switches this board's mic off).
   const char *pressWord() const { return !conv_.on ? "RING" : conv_.in ? "LEAVE" : "JOIN"; }
   void pressPush() {
     if (conv_.on && conv_.in) {
@@ -1169,7 +1170,7 @@ class CommsScreen : public ui::Screen {
   // Everything the screen draws, in short: it redraws when this changes.
   std::string key() const {
     std::string k = context() + "\n" + (comms::micEnabled() ? "m" : "") + (playing() ? "p" : "") +
-                    (pushToTalk() ? pressWord() : "");
+                    pressWord() + micHint().verb;
     for (const comms::Group &g : groups_) k += g.name + std::to_string(g.unheard) + ",";
     if (groups_.empty()) return k;
     k += comms::viaName(groups_[group_].via);
@@ -1217,15 +1218,21 @@ class CommsScreen : public ui::Screen {
       return b;
     }
     const bool mine = comms::micEnabled();
+    // What moves (meters, seconds): a press, this board's or one heard, and anything for 30 s after
+    // a key; a latched mic (a room) sends all the time, so it moves nothing by itself, or the panel
+    // would refresh every second for as long as it's on.
     const bool live = keyedLately();
-    // This board's mic: where it goes, and for how long (seconds while its sound goes or a key
-    // came lately, whole minutes otherwise).
+    bool heldVoice = false;  // a held mic's voice plays here
+    for (const comms::OpenMic &m : mics_) heldVoice = heldVoice || (m.playing && !m.latched);
+    const bool mineMoves = live || micHeld();
+    // This board's mic: where it goes, and for how long (seconds while it moves, whole minutes
+    // otherwise).
     std::string to;
     if (mine) {
       const int g = mic_.on ? mic_.group : group_;
       to = mic_.target ? "TO " + boardName(mic_.targetName, mic_.target)
                        : "TO ALL OF " + groupName(g);
-      to += kDot + (mic_.sending || live ? lengthText(mic_.ms) : minutesText(mic_.ms));
+      to += kDot + (mineMoves ? lengthText(mic_.ms) : minutesText(mic_.ms));
     }
     const std::string paused =
         mine && !mic_.paused.empty() && mic_.paused != "STARTING"
@@ -1233,10 +1240,12 @@ class CommsScreen : public ui::Screen {
             : std::string();
     auto micMeter = [&] {
       b.meterLabel = "MIC";
-      b.meter = mic_.sending || live ? meterFill(mic_.levelDb) : 0;
-      b.thresholdDb = mic_.thresholdDb;
+      b.meter = mic_.capturing && mineMoves ? meterFill(mic_.levelDb) : 0;
     };
-    auto playMeter = [&] { b.meter = s.hearing || s.replay ? meterFill(s.playLevelDb) : 0; };
+    auto playMeter = [&] {
+      const bool moves = s.replay || (s.hearing && (heldVoice || live));
+      b.meter = moves ? meterFill(s.playLevelDb) : 0;
+    };
 
     // LOST first: a mic heard here that went silent without its off.
     std::string lostNames;
@@ -1263,12 +1272,17 @@ class CommsScreen : public ui::Screen {
     if (mine) {
       b.word = "MIC ON";
       b.inverted = true;
-      if (!heard.empty()) {
+      if (s.talkedOver) {  // half duplex: another board talks, and isn't heard here
+        b.line1 = boardName(s.talkedOverName, s.talkedOverBy) + " TALKING TOO";
+        b.line2 = paused.empty() ? to : paused;
+      } else if (!heard.empty()) {  // still playing out as the mic went on
         b.line1 = "HEARING " + heard;
         b.line2 = paused.empty() ? to : paused;
       } else {
         b.line1 = to;
-        b.line2 = !paused.empty() ? paused : convLine();
+        b.line2 = !paused.empty() ? paused
+                  : micLatched()  ? "LATCHED" + kDot + "BOOT STOPS IT"
+                                  : convLine();
       }
       micMeter();
       return b;
@@ -1280,14 +1294,14 @@ class CommsScreen : public ui::Screen {
       } else if (s.replay && heard.empty()) {
         b.line1 = "REPLAY" + kDot + boardName(s.peerName, s.peer) + kDot + lengthText(s.ms);
       } else {
-        uint32_t soundMs = s.ms;  // how long its sound has come
+        uint32_t soundMs = s.ms;  // how long its voice has come
         for (const comms::OpenMic &m : mics_) {
           if (m.playing) {
             soundMs = m.linkMs;
             break;
           }
         }
-        b.line1 = heard + kDot + lengthText(soundMs);
+        b.line1 = heard + kDot + (heldVoice || live ? lengthText(soundMs) : minutesText(soundMs));
       }
       b.line2 = convLine();
       if (b.line2.empty()) b.line2 = reachText(s.peer, s.route, s.hops, s.relayName, s.rssi);
@@ -1363,9 +1377,6 @@ class CommsScreen : public ui::Screen {
 
   void openMenu() {
     const int group = group_;
-    const uint32_t target = selected_;
-    const std::string rowName =
-        cursor_.cursor() == 0 ? "ALL OF " + groups_[group_].name : talkRow(cursor_.cursor()).title;
     std::vector<ui::MenuItem> items;
     if (const comms::OpenMic *m = selectedMic()) {
       const uint32_t id = m->id;
@@ -1375,62 +1386,12 @@ class CommsScreen : public ui::Screen {
                          const comms::OpenMic *o = findMic(ms, group, id);
                          if (!o) return "OFF";
                          if (o->link == comms::Link::Lost) return "LOST";
-                         return std::string(o->link == comms::Link::Sound ? "SOUND" : "QUIET") +
-                                kDot + minutesText(o->onS * 1000);
+                         return "ON" + kDot + minutesText(o->onS * 1000);
                        },
                        [group, id] { ui::nav::replace(makeMicScreen(group, id)); }});
     }
-    if (pushToTalk()) {
-      // ● rings, joins and leaves on the screen itself. A mic that stays on without a hold (a
-      // room): on to the row selected until this row, or a leave, switches it off.
-      items.push_back({"KEEP MIC ON", []() -> std::string { return micKept() ? "ON" : "OFF"; },
-                       [group, target] {
-                         if (micKept()) {
-                           keepMic(group, target, false);
-                         } else if (!keepMic(group, target, true)) {
-                           ui::nav::pop();  // the screen says why
-                         }
-                       }});
-    } else {
-      items.push_back({"RING " + rowName, nullptr, [group, target] {
-                         if (comms::ringStart(group, target)) {
-                           // It says if the ring won't start.
-                           ui::nav::replace(makeRingingSheet(group, target));
-                         } else {
-                           noteAttempt();
-                           ui::nav::pop();
-                         }
-                       }});
-    }
-    if (conv_.on && !pushToTalk()) {
-      if (conv_.in) {
-        items.push_back({"LEAVE",
-                         [group]() -> std::string {
-                           const comms::Conversation c = comms::conversation(group);
-                           return membersText(c);
-                         },
-                         [group] {
-                           comms::leave(group);  // its voice stops here, and this board's mic
-                           ui::nav::pop();
-                         }});
-      } else {
-        items.push_back({"JOIN",
-                         [group]() -> std::string {
-                           const comms::Conversation c = comms::conversation(group);
-                           return membersText(c);
-                         },
-                         [group] {
-                           if (!comms::join(group)) noteAttempt();  // over a moment ago
-                           ui::nav::pop();
-                         }});
-      }
-    }
-    items.push_back({"MIC LEVEL",
-                     []() -> std::string {
-                       return ui::signedNumber(static_cast<float>(comms::micThreshold()), 0) +
-                              " dBFS";
-                     },
-                     [group, target] { ui::nav::replace(makeMicLevelSheet(group, target)); }});
+    // ● rings, joins and leaves on the screen itself, and HOLD BOOT (● while held latching)
+    // keys the mic.
     items.push_back({"PLAY LAST",
                      []() -> std::string {
                        const comms::LastCall l = comms::lastCall();
@@ -1516,8 +1477,8 @@ class CommsScreen : public ui::Screen {
     }
   }
 
-  // CHANNEL: the state (inverted for MIC ON and LOST), two lines under it, the meter (with the
-  // threshold's ▲ while this board's mic is on) and the legend on the left; the map right.
+  // CHANNEL: the state (inverted for MIC ON and LOST), two lines under it, the meter (this
+  // board's mic while it's on) and the legend on the left; the map right.
   void drawChannel(ui::Canvas &c, Rect r) const {
     using namespace ui;
     const std::string error = notice();
@@ -1540,7 +1501,7 @@ class CommsScreen : public ui::Screen {
     }
     drawText(c, {x, top + 46, w, 17}, b.line1, style::kLabel);
     if (!b.line2.empty()) drawText(c, {x, top + 66, w, 17}, b.line2, style::kLabel);
-    drawMicMeter(c, x, top + 89, w, 14, b.meterLabel, b.meter, b.thresholdDb);
+    drawMicMeter(c, x, top + 89, w, 14, b.meterLabel, b.meter);
     drawLegend(c, x, r.bottom() - 10);
     drawMap(c, {r.right() - kPadX - kMapW, top, kMapW, kMapH}, boards_);
   }

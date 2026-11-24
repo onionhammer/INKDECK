@@ -1,5 +1,5 @@
-// COMMS (issue #66): boards talk to each other directly over the radio. Open mics in groups, and
-// a mesh: boards pass on each other's packets. This is the engine; the screens build on the API
+// COMMS (issue #66): boards talk to each other directly over the radio. Walkie-talkies in groups
+// (push to talk, a latch for a room, half duplex), and a mesh: boards pass on each other's packets. This is the engine; the screens build on the API
 // below. docs/comms-protocol.md has the packet format and the key derivation.
 //
 // Transport: ESP-NOW broadcasts, board to board with no router, each frame at most 250 bytes.
@@ -22,21 +22,21 @@
 // over the air (with its signal), through relays (how many hops, and the last relay), or not
 // lately (away).
 //
-// The mic: a board's mic is on or off, switched on this board only (micOn(), micOff()); no packet
-// switches a mic on, and it doesn't survive a restart. While it's on it captures all the time, and
-// a sound gate sends only what's over a threshold, with the 160 ms before it and 2 s after, so an
-// open mic in a quiet room costs almost no airtime. Several boards can have theirs on at once and
-// speak at once: each board plays the others' voices mixed (up to 4) while its own mic captures
-// (audio's duplex path), and holds back its own speaker's echo (the gate's echo margin). A board
-// left in a room with its mic on is how the room is heard from elsewhere: there is no other
-// feature for that.
+// The mic, a walkie-talkie's: on while HOLD BOOT is held on the Comms screens (push to talk), or
+// latched on (● while held: "hold transmit") until the next ● or BOOT there; switched on this
+// board only (micOn(), micOff(), latchMic()); no packet switches a mic on, and it doesn't survive a
+// restart. While it's on every frame it captures goes out. Half duplex: while this board
+// transmits, nothing of comms plays on its speaker; it hears again when its mic goes off (or
+// pauses). Several boards can transmit at once; each board plays the others' voices mixed (up to
+// 4) while its own mic is off. A board left in a room with its mic latched is how the room is heard
+// from elsewhere: there is no other feature for that.
 //
 // Voice: IMA ADPCM, 16 kHz mono (64 kbps), 20 ms a packet, each packet decodable on its own. Voice
 // doesn't play over the Recorder, a ringing alarm, the agent listening or speaking, or a message
 // being recorded; it stops music, which plays on once comms lets the speaker go. The last 60 s
 // heard are kept (PLAY LAST), and a log in RAM: one entry per mic session (on to off).
 //
-// Conversations: a group has at most one. An open mic is in it: switching a mic on joins the one
+// Conversations: a group has at most one. A mic that's on is in it: switching a mic on joins the one
 // that's on, or opens one, and every board of the group that hears that mic is in it (the
 // walkie-talkie); a mic to one board alone puts that board in. Boards in it play its voice;
 // leave() takes this board out (its voice stops here, and this board's mic goes off) until
@@ -102,8 +102,8 @@ void release();
 
 // Changes whenever anything below that a screen shows has changed: a group, a board's route,
 // signal (in steps of 4 dB), name or flags, the call log, a setting, the state, a ring, a
-// conversation, a message, this board's mic (on, off, paused, sending), the open mics heard
-// (on, off, QUIET, SOUND, LOST, the alarm, their sounds and bars); while a mic is on, voice
+// conversation, a message, this board's mic (on, off, paused, latched), the open mics heard
+// (on, off, LOST, cut off, the alarm, their bars); while a mic is on, voice
 // plays, a ring or a message is on, at most 4 times a second, for the meters and the seconds;
 // and when a mic's level moves a segment (3 dB), at most 4 times a second. Seconds counting up
 // (on for, heard ago, LOST for) don't change it: poll for them.
@@ -198,6 +198,10 @@ struct Status {
   float levelDb = -96;   // Mic: the mic; Hearing: what plays; dBFS, for the meter
   bool hearing = false;  // voice plays here now (in any state)
   int voices = 0;        // boards whose voice plays here now (mixed)
+  // Voice comes while this board transmits: it isn't played (half duplex). The loudest board's.
+  bool talkedOver = false;
+  uint32_t talkedOverBy = 0;
+  std::string talkedOverName;
   float playLevelDb = -96;  // what plays, dBFS (the meter for what's heard, while the mic is on)
   // How the voice heard comes.
   Route route = Route::Away;
@@ -208,9 +212,9 @@ struct Status {
   bool onNetwork = false;  // on a Wi-Fi network: the channel is the network's, not mesh_channel
   bool netUp = false;    // the inkharness link (always false for now)
   bool longRange = false;  // this board sends at the long-range rate (range()); false while off
-  // Changes each time a mic session starts playing here (once a session, not each sound): the UI
-  // raises the call sheet over any screen when it does (unless the Recorder or an alarm is up,
-  // which no voice plays over).
+  // Changes when voice first plays here in a conversation (once a conversation, not each press):
+  // the UI raises the call sheet over any screen when it does (unless the Recorder or an alarm is
+  // up, which no voice plays over).
   uint32_t incoming = 0;
   uint32_t ringsSeen = 0;  // changes each time a ring starts on this board (incomingRing())
   // Changes when a conversation this board isn't in comes on (once each), in this group: the
@@ -254,7 +258,7 @@ struct Call {
   bool heard = false;   // incoming: it played while a Comms screen or the call sheet was up, or
                         // markHeard() since
   bool linkLost = false;  // Voice, incoming: it ended LOST (no off came), not with its off
-  uint32_t sounds = 0;    // Voice: the gate's sounds in it (heard here, or sent)
+  bool cutOff = false;    // Voice, incoming: held, it went silent with no off (out of range?)
   int heardBy = 0;        // outgoing message: boards that have it whole
   uint32_t lost = 0;      // incoming voice: 20 ms frames that never came (covered)
   uint32_t conversation = 0;  // Voice: the conversation it was in
@@ -273,63 +277,34 @@ void markHeard(int group);  // the group's calls count as heard (-1: every group
 //
 // On: this board's mic captures from now until micOff(), a power-off, a restart, or leave(); it
 // joins the group's conversation (or opens one) and its voice goes to all of it (target 0, or a
-// board in it), or to one board alone. The push-to-talk cue plays as it opens. Each 20 ms frame's
-// level (its loudest sample, dBFS) is compared with the threshold: a frame over it starts a sound,
-// which goes out with the kPreRollMs before it, and on for kHangMs after the level drops, each
-// frame kPreRollMs after it was captured. While the speaker plays, a frame no louder than the
-// speaker's echo could be (its level, kEchoCouplingDb and kEchoMarginDb) doesn't count, and goes as
-// silence if it goes: a voice over the echo gets through, the echo doesn't. Every kStillHereMs the
-// mic says it's on (still here: its threshold, the loudest frame since, its power, since when);
-// micOff() sends a clear off. Switched off while a sound goes (a push-to-talk release, mid-word),
-// the frames the gate still holds back (kPreRollMs) go first, 20 ms apart, as if silence had come
-// after, and the off 40 ms after the last of them (its presence says the mic is on until then): the
-// end of the word arrives. The first 200 ms after the mic starts are dropped (its thump).
+// board in it), or to one board alone. The screens key it with HOLD BOOT (push to talk), and ●
+// while held latches it (latchMic(): it stays on after the release; apps/comms_ui.h). The cue
+// plays as it opens, and nothing goes out until it has played (the first kMicSettleMs): from
+// then every 20 ms frame goes out as captured. Every kStillHereMs the mic says it's on (still here:
+// latched or not, the loudest frame since, its power, since when), and at once when it latches;
+// micOff() sends a clear off (three times), after the last, short frame of what was captured.
+// Half duplex: while it captures, nothing of comms reaches the speaker (status().talkedOver says
+// when a board's voice comes meanwhile); it plays again once the mic is off or paused.
 //
 // Something else may take the mic for a while; it pauses (mic().paused says why) and picks up
 // 0.4 s after by itself: the agent listening or speaking, the Recorder, a ringing alarm, music
-// started on this board, a message this board records. Voice from others plays meanwhile only
-// where nothing stops it (a message recording does; music doesn't take what's heard: voice stops
-// it). Playing others' voice doesn't pause it: both run at once.
+// started on this board, a message this board records. Paused, it doesn't transmit: voice from
+// others plays meanwhile where nothing stops it.
 //
-// While it's on, the board doesn't ring (nor answer rings with "ringing") and doesn't chirp: it's
-// in the conversation already, and a room with someone asleep in it stays quiet. It still plays
-// the conversation's voice: that's how the room is talked to. It sounds LOST's alarm only for a
-// mic that was on before its own (the room board doesn't alarm when the board listening to it,
-// which opened its mic later, goes).
+// While it's on, the board doesn't ring (nor answer rings with "ringing") and doesn't chirp. It
+// sounds LOST's alarm only for a latched mic that was on before its own.
 
-constexpr int kMicMinDb = -60;    // the threshold, in kMicStepDb steps: 20 meter segments
-constexpr int kMicMaxDb = 0;
-constexpr int kMicStepDb = 3;
-constexpr int kMicDefaultDb = -30;
-constexpr int kLoudMarginDb = 12;     // a sound this far over a mic's threshold is LOUD, else SOFT
-constexpr int kLowVolume = 30;        // at or below this volume a LOUD sound chirps once
-constexpr uint32_t kPreRollMs = 160;  // sent before the first frame over the threshold
-constexpr uint32_t kHangMs = 2000;    // sent on after the last
+constexpr uint32_t kMicSettleMs = 280;  // dropped at the start: the codec's thump, and the cue
 constexpr uint32_t kStillHereMs = 2000;
-constexpr uint32_t kLostMs = 20000;   // nothing from a mic heard here this long, no off: LOST
+constexpr uint32_t kLostMs = 10000;   // a latched mic heard here silent this long, no off: LOST
+constexpr uint32_t kCutMs = 5000;     // a held one silent this long, no off: cut off, no alarm
 constexpr uint32_t kLongMicMs = 5 * 60000;  // a mic on longer chirps once where it's heard at off
 constexpr int kHistoryBars = 60;       // 2 hours of
 constexpr uint32_t kHistoryBarMs = 120000;  // 2-minute bars, the loudest frame of each
 constexpr int8_t kNoBar = -128;        // a bar with no level: before the start, the mic off
 constexpr int kMaxVoices = 4;          // boards whose voice plays at once (mixed)
-// The echo: what the mic makes of the speaker, against the level played into the DAC after the
-// volume (measured 2026-11-23 with !commsecho, a 1 kHz tone through the duplex path: -26 dB at
-// -20 dBFS and VOL 100, -25 at -10, -22 at full scale, -25 at full scale and VOL 50; the tone's
-// abrupt start came back at -15 dB), and the margin a frame must clear over that before it
-// counts, so the echo's transients don't open the gate (-22 + 9 = -13 dB, over the -15).
-constexpr int kEchoCouplingDb = -22;
-constexpr int kEchoMarginDb = 9;
-
-// A sound this board's mic sent.
-struct MicSound {
-  time_t at = 0;        // its first frame (the pre-roll's), UTC; 0 while the clock isn't set
-  uint32_t agoS = 0;
-  uint32_t ms = 0;      // pre-roll and hang included
-  float peakDb = -96;
-  bool loud = false;    // kLoudMarginDb over the threshold
-  uint32_t muted = 0;   // its frames sent as silence: the speaker's echo
-  bool live = false;    // going now
-};
+constexpr int kMeterMinDb = -60;       // the level meters: -60 to 0 dBFS in 3 dB segments
+constexpr int kMeterStepDb = 3;
 
 struct Mic {
   bool on = false;
@@ -338,26 +313,19 @@ struct Mic {
   std::string targetName;  // "" for all, or a board not heard from yet
   uint32_t conversation = 0;
   bool opened = false;     // it opened the conversation (boards that hear it join)
+  bool latched = false;    // latched on (held transmit), not just held
   time_t since = 0;        // UTC; 0 while the clock isn't set
   uint32_t ms = 0;         // on for
-  int thresholdDb = kMicDefaultDb;  // the threshold (NVS), also while off
   float levelDb = -96;     // the mic now: the loudest frame of the last 200 ms
-  float echoDb = -96;      // what the speaker would put on the mic now (the gate's echo level,
-                           // margin included); -96 while it's silent
-  bool sending = false;    // its gate is open
-  bool capturing = false;  // the mic runs (else paused)
+  bool capturing = false;  // the mic runs: it transmits (else paused)
   std::string paused;  // why the mic is off now: THE AGENT IS LISTENING (or SPEAKING), THE
                        // RECORDER IS ON, AN ALARM IS RINGING, MUSIC IS PLAYING, A MESSAGE IS
                        // RECORDING, STARTING, THE MIC WON'T START; "" while it runs
-  std::vector<MicSound> sent;  // newest first, the last 32
   std::vector<int8_t> bars;    // kHistoryBars, oldest first, the last the bar now: dBFS or kNoBar
-  uint32_t delayMs = 0;  // mouth to ear, to a board that plays it: the pre-roll, the capture and
-                         // the other board's buffers (computed from what was measured)
-  uint32_t framesSent = 0, framesMuted = 0, sounds = 0, stillHeres = 0, histories = 0;
-  // While the speaker played: frames captured, those louder than the echo could be, the loudest
-  // frame and the echo level it met (the echo gate's working margin).
-  uint32_t playFrames = 0, playOver = 0;
-  float playPeakDb = -96, playPeakGateDb = -96;
+  uint32_t delayMs = 0;  // mouth to ear, to a board that plays it: the capture and the other
+                         // board's buffers (computed from what was measured)
+  uint32_t framesSent = 0, stillHeres = 0, histories = 0;
+  uint32_t firstFrameMs = 0;  // the session's first frame sent, after micOn() (0: none yet)
   uint32_t count = 0;     // changes each time it goes on
   bool vanished = false;  // micVanish(): nothing goes out
 };
@@ -369,25 +337,22 @@ Mic mic();
 bool micOn(int group, uint32_t target);
 void micOff();  // the off goes out; the mic closes
 bool micEnabled();  // on, or switching on (from any task, at once)
-int micThreshold();  // NVS, kMicDefaultDb at first
-void setMicThreshold(int db);  // snapped to kMicStepDb and kept; a mic that's on uses it at once
+// The mic that's on is latched (held transmit): it says so at once (a still-here), and the boards
+// that hear it alarm if it goes silent (LOST) instead of cutting it off. Off goes with micOff().
+void latchMic();
 
 // --- Open mics heard ----------------------------------------------------------------------------
 
 enum class Link : uint8_t {
-  Quiet,  // on, nothing over its threshold
-  Sound,  // its voice comes
-  Lost,   // nothing from it for kLostMs and no off: LOST (the alarm, if this board heard it)
+  On,    // on: its voice comes (or it's paused)
+  Lost,  // latched, and nothing from it for kLostMs and no off: LOST (the alarm, if heard here)
 };
 
-// An event of a mic, as this board saw it.
+// A LOST outage of a mic, as this board saw it.
 struct MicEvent {
-  bool lost = false;    // else a sound
-  time_t at = 0;        // its start, UTC; 0 while the clock isn't set
+  time_t at = 0;        // its start (the last packet before it), UTC; 0 while the clock isn't set
   uint32_t agoS = 0;
   uint32_t ms = 0;      // so far, while live
-  bool loud = false;    // a sound: LOUD, else SOFT
-  float peakDb = -96;
   bool live = false;
 };
 
@@ -403,14 +368,14 @@ struct OpenMic {
                          // this board alone), and didn't leave
   bool playing = false;  // its voice comes out of the speaker now
   bool opened = false;   // it opened the conversation
+  bool latched = false;  // latched on (held transmit): it goes LOST, not cut off
   uint32_t conversation = 0;
-  Link link = Link::Quiet;
+  Link link = Link::On;
   uint32_t linkMs = 0;   // in this state for (LOST: since its last packet)
   uint32_t onS = 0;      // on for, as it says (and counted on here)
   time_t since = 0;      // its session's start, UTC; 0 while the clock isn't set
-  int thresholdDb = kMicDefaultDb;
-  float levelDb = -96;   // SOUND: what plays (200 ms); else its loudest since its last still-here
-  bool sending = false;  // its gate is open
+  float levelDb = -96;   // what plays (200 ms) while it plays; else its loudest since its last
+                         // still-here
   bool paused = false;   // something else has its mic for now
   bool alarm = false;    // LOST's alarm sounds for it
   int battery = -1;      // percent, -1 none
@@ -419,9 +384,9 @@ struct OpenMic {
   Route route = Route::Away;
   int hops = 0;
   int rssi = 0;
-  uint32_t delayMs = 0;  // from its mic to this speaker: its pre-roll and the buffers (computed)
+  uint32_t delayMs = 0;  // from its mic to this speaker: the capture and the buffers (computed)
   std::vector<int8_t> bars;  // as Mic::bars, from its board (asked for when this board came late)
-  std::vector<MicEvent> events;  // newest first: sounds and LOSTs since this board heard it on
+  std::vector<MicEvent> events;  // newest first: its LOSTs since this board heard it on
   uint32_t frames = 0, lost = 0, late = 0, histories = 0;
 };
 // The mics on in this board's groups (group -1: all), by group, then the longest on first.
@@ -445,8 +410,8 @@ struct LastCall {
   time_t at = 0;        // when what's kept began
 };
 LastCall lastCall();
-// Plays the last 60 s heard again, over any voice that plays. False (status().error) if there's
-// none, or a message is recording.
+// Plays the last 60 s heard again, over any voice that plays (it waits while this board's mic
+// transmits: half duplex). False (status().error) if there's none, or a message is recording.
 bool playLast();
 void stopPlaying();  // PLAY LAST or a message stops (live voice goes on: leave() stops it)
 
@@ -545,7 +510,7 @@ constexpr int kMaxMessages = 12;  // kept, all groups; the oldest played one goe
 
 // Records a message for the ring that wasn't answered (group -1: canLeaveMessage), or, for
 // testing, for all of a group or one board of it directly. The ring stops (the boards it rang
-// stop ringing), and the mic opens with the cue (an open mic pauses meanwhile). Frames go out as
+// stop ringing), and the mic opens with the cue (this board's mic, latched, pauses meanwhile). Frames go out as
 // they're recorded, numbered. False (status().error) if it can't.
 bool messageStart(int group = -1, uint32_t target = 0);
 void messageSend();    // the mic stops; the end goes out; dial() says Sent
@@ -576,15 +541,8 @@ bool playMessage(uint32_t id);
 
 bool relayForOthers();  // on by default
 void setRelayForOthers(bool on);
-bool callChirp();       // a chirp as a mic session starts playing here; on by default
+bool callChirp();       // a chirp as voice first plays here in a conversation; on by default
 void setCallChirp(bool on);
-
-// How this board's mic is keyed on the screens (apps/comms_ui.h has both key maps): Sticky, ●
-// switches it on and off; Push, it's on while HOLD BOOT is held. The card's mesh_mic line
-// (settings::meshMic()), unless the dev override says otherwise. The engine doesn't use it: a
-// mic is on or off either way, and no packet switches one on.
-enum class MicMode : uint8_t { Sticky, Push };
-MicMode micMode();
 
 // The rate this board sends at: the card's mesh_range line (settings::meshRange()), unless the dev
 // override says otherwise. Normal: 1 Mbps (802.11b). Long: Espressif's long-range rate, 500 kbps,
@@ -657,8 +615,9 @@ ReachEnd reachSleep(const ReachArgs &a);
 
 // The board woke for comms (reachSleep() returned Woken): it listens and rings or plays through
 // the usual paths. power.cpp asks each turn, saying whether a key has been pressed since: Stay;
-// Sleep (30 s after the ring, sound or transfer is over, 60 s after a sound while that mic stays
-// on, 15 s if nothing came: the off face powers off again); On (a key: an ordinary board).
+// Sleep (30 s after the ring, a held mic's voice or the transfer is over, 60 s after that voice
+// while a mic heard stays on: a latched mic's voice, a room's, counts for neither; 15 s if nothing
+// came: the off face powers off again); On (a key: an ordinary board).
 enum class Woken : uint8_t { None, Stay, Sleep, On };
 Woken reachWokenStep(bool keyed);
 
@@ -725,21 +684,16 @@ void reachBenchShow(Print &out);
 void dump(Print &out);
 // A test of the parts that need no radio: HKDF and AES-GCM, the replay window, ADPCM, the
 // packet format (the mic's types too), the seen-cache, a message's reassembly with frames lost and
-// doubled, conversations on a made-up clock, the gate (pre-roll, hang, the echo held back, its
-// drain at a mic's off), the history, an open mic heard (QUIET, SOUND, LOST, its sessions) and the
-// mixer. Prints PASS or FAIL a check; true if all passed.
+// doubled, conversations on a made-up clock, the history, a mic heard (on, cut off when held,
+// LOST when latched), the mixer, half duplex, push to talk's latch, once per conversation, and the
+// relay rule. Prints PASS or FAIL a check; true if all passed.
 bool selfTest(Print &out);
 
-// Dev overrides (devtools.cpp's !commsgroup, !commschannel and !commsmicmode), kept in NVS: a test
-// group from a secret, on top of the card's (the card's mesh_group lines are the real way), a
-// channel in place of mesh_channel, and the mic's mode in place of mesh_mic. An empty secret or
-// channel 0 removes them. They apply at once.
+// Dev overrides (devtools.cpp's !commsgroup and !commschannel), kept in NVS: a test group from a
+// secret, on top of the card's (the card's mesh_group lines are the real way), and a channel in
+// place of mesh_channel. An empty secret or channel 0 removes them. They apply at once.
 void setTestGroup(const std::string &secret, const std::string &name);
 void setTestChannel(int channel);
-// !commsmicmode: the mic's mode in place of the card's mesh_mic line, kept in NVS (set false: the
-// card's line again). testMicMode() says if one is set.
-void setTestMicMode(bool set, MicMode mode = MicMode::Sticky);
-bool testMicMode();
 // !commsrange: the rate in place of the card's mesh_range line, kept in NVS (set false: the card's
 // line again); it applies at once. testRange() says if one is set.
 void setTestRange(bool set, Range r = Range::Normal);
@@ -757,7 +711,7 @@ bool flood();
 // change while joined drops the connection, which joins again. For testing what it costs.
 void longRangeRx(bool on);
 // Sends again, byte for byte, the last frame this board sent (firstVoice false: the others drop it
-// as a duplicate) or the first voice frame of its last sound (true: dropped as replayed, once the
+// as a duplicate) or the first voice frame of its last session (true: dropped as replayed, once the
 // seen-cache has forgotten it). For showing those drops in !comms.
 void resend(bool firstVoice);
 // Testing (!commsringvanish, !commsdropmsg): the ring going stops sending ring packets, with no
@@ -767,24 +721,11 @@ void ringVanish();
 void dropMessageFrames(int nth);
 // Testing the mic (!commsvanish, !commstone, !commslong): this board sends nothing more, its off
 // neither, as if it had gone out of range (false: it's back); for ms, a 1 kHz tone peaking at db
-// dBFS is added to what the mic hears (nobody is there to speak: it's the voice, over the room
-// and the speaker's echo); a mic heard counts as on long after ms instead of kLongMicMs (0:
-// kLongMicMs again).
+// dBFS is added to what the mic hears (nobody is there to speak: it's the voice); a mic heard
+// counts as on long after ms instead of kLongMicMs (0: kLongMicMs again).
 void micVanish(bool on);
 void micTone(uint32_t ms, int db);
 void setLongMicMs(uint32_t ms);
-// The loopback test (!commsecho): with the mic off and nothing playing, a 1 kHz tone at levelDb
-// (into the DAC, before the volume) for ms, through audio's duplex path, and what the mic made of
-// it. The echo delay measured is used from then on, until a restart (the coupling stays
-// kEchoCouplingDb: the test reports it). Waits (up to ms + 4 s).
-struct EchoTest {
-  bool ok = false;
-  std::string error;
-  int volume = 0;
-  float playedDb = -96, micDb = -96, noiseDb = -96, couplingDb = 0;
-  int delayMs = -1;  // from the tone written to the speaker to the mic hearing it
-};
-EchoTest echoTest(float levelDb, uint32_t ms);
 
 // The boards heard straight over the air (comms_mesh.h), for !commsloss: each one's packets since
 // its boot began here, that came and that didn't (gaps in its sequence numbers), the gaps by

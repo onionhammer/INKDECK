@@ -1,6 +1,5 @@
-// The mic's two screens (apps/comms_ui.h): the MIC LEVEL sheet (this board's threshold, against
-// its mic's level) and a board's mic screen (another board's open mic, the long-open case: a
-// room). Named comms_mics.cpp so nothing here can shadow the engine's comms_mic.h.
+// A board's mic screen (apps/comms_ui.h): another board's open mic, the latched case (a room).
+// Named comms_mics.cpp so nothing here can shadow the engine's comms_mic.h.
 #include "features.h"
 
 #if INKDECK_COMMS  // the whole file (features.h)
@@ -27,117 +26,16 @@ using ui::Rect;
 
 const std::string kDot = std::string(" ") + ui::glyph::kDot + " ";
 
-std::string dbfs(int db) { return ui::signedNumber(static_cast<float>(db), 0) + " dBFS"; }
-
-// --- MIC LEVEL ----------------------------------------------------------------------------------
-
-// The threshold: this board's mic meter with the ▲ where it is, ▲▼ moving it 3 dB a step. The
-// meter moves while the mic is on (● switches it, to the talk screen's row; HOLD BOOT keys it when
-// push); it follows the mic for 30 s after a key, then only while a sound goes, so a sheet left up
-// doesn't refresh the panel every second. Its foot says how the mic is keyed, and where that's
-// set.
-class MicLevelSheet : public ui::Screen {
- public:
-  MicLevelSheet(int group, uint32_t target) : group_(group), target_(target) {}
-
-  std::string tag() const override { return {}; }  // the Comms screen's chrome
-  bool overlay() const override { return true; }
-  int hints(ui::Hint *out) const override {
-    out[0] = {ui::glyph::kDial, "LEVEL"};
-    out[1] = micHint();
-    out[2] = {"BOOT", "DONE"};
-    return 3;
-  }
-  ui::TalkTo talkTo() const override { return micTalkTo(group_, target_); }  // push
-
-  bool onKey(Key key) override {
-    switch (key) {
-      case Key::Up:
-      case Key::Down: {
-        const int step = key == Key::Up ? comms::kMicStepDb : -comms::kMicStepDb;
-        const int db = std::clamp(comms::micThreshold() + step, comms::kMicMinDb, comms::kMicMaxDb);
-        comms::setMicThreshold(db);
-        shownDb_ = db;  // the engine keeps it from its task: shown at once
-        return true;
-      }
-      case Key::Select: return micPress(group_, target_);  // sticky
-      default: return false;  // BOOT: done
-    }
-  }
-
-  bool onTick() override { return key() != drawn_; }
-
-  void draw(ui::Canvas &c, const Rect &body) override {
-    using namespace ui;
-    drawn_ = key();
-    const comms::Mic m = comms::mic();
-    const int db = threshold();
-    constexpr int kH = kRule + kSectionH + 154;
-    Rect r{body.x, body.bottom() - kH, body.w, kH};
-    fill(c, {r.x, r.y - 6, r.w, 6}, kPaper);
-    dither50(c, {r.x, r.y - 6, r.w, 6});
-    fill(c, r, kPaper);
-    hrule(c, r.x, r.y, r.w);
-    r.takeTop(kRule);
-    const std::string err = attemptError();
-    if (!err.empty()) {
-      drawNotice(c, r.takeTop(kSectionH), err);
-    } else {
-      drawSectionHeader(c, r.takeTop(kSectionH), "MIC LEVEL", dbfs(db));
-    }
-    const int x = r.x + kPadX, w = r.w - 2 * kPadX;
-    int y = r.y + 16;
-    drawMicMeter(c, x, y, w, 18, "MIC", meter(m), db);
-    y += 18 + 12 + 14;
-    drawText(c, {x, y, w, 17}, "SENDS ABOVE " + std::string(glyph::kUp) + " " + dbfs(db),
-             style::kLabel);
-    y += 22;
-    std::string now;
-    if (!comms::micEnabled()) {
-      now = pushToTalk() ? "YOUR MIC IS OFF: HOLD BOOT TO SEE IT"
-                         : "YOUR MIC IS OFF: \xE2\x97\x8F SWITCHES IT ON TO SEE IT";
-    } else if (!m.paused.empty() && m.paused != "STARTING") {
-      now = "PAUSED" + kDot + pausedText(m.paused);
-    } else if (m.sending) {
-      now = "SENDING" + kDot + "LOUDER THAN THE LEVEL";
-    } else {
-      now = "YOUR MIC" + kDot + "QUIET: NOTHING GOES";
-    }
-    drawText(c, {x, y, w, 17}, now, style::kLabel);
-    y += 22;
-    drawText(c, {x, y, w, 17}, "HIGHER SENDS LESS OF THE ROOM; 3 dB A STEP", style::kLabel);
-    y += 22;
-    drawText(c, {x, y, w, 17}, micModeText(), style::kLabel);
-  }
-
- private:
-  int threshold() const { return shownDb_ > -100 ? shownDb_ : comms::micThreshold(); }
-  int meter(const comms::Mic &m) const {
-    return m.on && (m.sending || keyedLately()) ? meterFill(m.levelDb) : 0;
-  }
-  std::string key() const {
-    const comms::Mic m = comms::mic();
-    return std::to_string(threshold()) + "|" + std::to_string(meter(m)) + "|" +
-           (comms::micEnabled() ? "m" : "") + (m.sending ? "s" : "") + m.paused + "|" +
-           attemptError() + "|" + micModeText();
-  }
-
-  int group_;
-  uint32_t target_;
-  int shownDb_ = -1000;
-  std::string drawn_;
-};
-
 // --- A board's mic ------------------------------------------------------------------------------
 
 constexpr int kEventRowH = 30;
 constexpr int kChartH = 112;
 constexpr int kAxisH = 20;
 
-// The board's open mic, one screen: the state with how long, its level against its threshold, two
-// hours of levels, its board, its events. Redraws when what it shows changes: the meter at most
-// once a second while a sound comes, the chart at the minute (or with a sound or a key), lengths
-// in whole minutes while it's quiet.
+// The board's open mic, one screen: the state with how long, its level, two hours of levels, its
+// board, its LOSTs. Redraws when what it shows changes: the meter at most once a second while its
+// voice plays here, the chart at the minute (or while it plays or after a key), a latched mic's
+// length in whole minutes.
 class MicScreen : public ui::Screen {
  public:
   MicScreen(int group, uint32_t id) : group_(group), id_(id) {
@@ -151,19 +49,24 @@ class MicScreen : public ui::Screen {
   std::string tag() const override { return moduleTag("COMMS"); }
   std::string context() const override { return groupName(group_); }
   int hints(ui::Hint *out) const override {
+    if (micHeld()) {
+      out[0] = micHint();  // ● HOLD
+      return 1;
+    }
     out[0] = {ui::glyph::kDial, "VOL"};
-    out[1] = micHint();
+    out[1] = micHint();  // HOLD BOOT TALK, or BOOT STOP latched
+    if (micLatched()) return 2;
     out[2] = {"BOOT", playing() ? "STOP" : "BACK"};
     return 3;
   }
-  // Push to talk: HOLD BOOT keys the mic to that board (talks into the room), as ● when sticky.
+  // HOLD BOOT keys the mic to that board (talks into the room).
   ui::TalkTo talkTo() const override { return micTalkTo(group_, id_); }
 
   bool onKey(Key key) override {
     switch (key) {
       case Key::Up: audio::changeVolume(+5); return true;
       case Key::Down: audio::changeVolume(-5); return true;
-      case Key::Select: return micPress(group_, id_);  // to it: talks into the room (sticky)
+      case Key::Select: return true;  // HOLD BOOT talks; ● while it's held latches (latchKey())
       case Key::Back: return stopIfPlaying();
       default: return false;
     }
@@ -171,9 +74,9 @@ class MicScreen : public ui::Screen {
 
   bool onTick() override {
     load();
-    // The chart: at the minute, or while a sound comes or a key came lately.
+    // The chart: at the minute, or while its voice plays here or a key came lately.
     const uint32_t minute = minuteNow();
-    if (minute != barsMinute_ || (on_ && mic_.link == comms::Link::Sound) || keyedLately()) {
+    if (minute != barsMinute_ || (on_ && mic_.playing && !mic_.latched) || keyedLately()) {
       bars_ = mic_.bars;
       barsMinute_ = minute;
     }
@@ -200,13 +103,12 @@ class MicScreen : public ui::Screen {
     drawText(c, x, base, word, style::kTitle, ink);
     if (!len.empty()) drawText(c, x + w - textWidth(style::kTitle, len), base, len, style::kTitle, ink);
     drawText(c, {x, block.y + 62, w, 17}, stateLine(), style::kLabel);
-    drawMicMeter(c, x, block.y + 88, w, 14, "LEVEL", meter(), m.thresholdDb);
+    drawMicMeter(c, x, block.y + 88, w, 14, "LEVEL", meter());
 
     // Two hours of it.
     hrule(c, r.x, r.y, r.w);
     r.takeTop(kRule);
-    drawSectionHeader(c, r.takeTop(kSectionH), "LAST 2 HOURS",
-                      "2-MIN BARS" + kDot + std::string(glyph::kUp) + " " + dbfs(m.thresholdDb));
+    drawSectionHeader(c, r.takeTop(kSectionH), "LAST 2 HOURS", "2-MIN BARS" + kDot + "PEAK");
     drawChart(c, r.takeTop(kChartH + kAxisH + 16));
 
     // Its board.
@@ -223,14 +125,14 @@ class MicScreen : public ui::Screen {
                style::kLabel);
     }
 
-    // Its sounds and LOSTs, newest first.
+    // Its LOSTs, newest first.
     hrule(c, r.x, r.y, r.w);
     r.takeTop(kRule);
     const int n = static_cast<int>(m.events.size());
-    drawSectionHeader(c, r.takeTop(kSectionH), "EVENTS", n ? std::to_string(n) : "NONE YET");
+    drawSectionHeader(c, r.takeTop(kSectionH), "LOSTS", n ? std::to_string(n) : "NONE");
     if (m.events.empty()) {
       drawText(c, {r.x + kPadX, r.y + 8, r.w - 2 * kPadX, 20},
-               "SOUNDS OVER ITS LEVEL, AND LOSTS, SINCE THIS BOARD HEARD IT", style::kLabel);
+               "NOT LOST SINCE THIS BOARD HEARD IT", style::kLabel);
     }
     for (const comms::MicEvent &e : m.events) {
       if (r.h < kEventRowH) break;
@@ -264,25 +166,20 @@ class MicScreen : public ui::Screen {
 
   std::string name() const { return boardName(mic_.name, id_); }
 
+  // OFF, LOST, PAUSED, ON (latched: a room) or TALKING (BOOT held there).
   std::string stateWord() const {
     if (!on_) return "OFF";
-    switch (mic_.link) {
-      case comms::Link::Quiet: return mic_.paused ? "PAUSED" : "QUIET";
-      case comms::Link::Sound: return "SOUND";
-      case comms::Link::Lost: return "LOST";
-    }
-    return "";
+    if (mic_.link == comms::Link::Lost) return "LOST";
+    if (mic_.paused) return "PAUSED";
+    return mic_.latched ? "ON" : "TALKING";
   }
-  // How long it has been in that state: seconds while a sound comes, LOST in 10 s steps, whole
-  // minutes while quiet.
+  // How long it has been in that state: LOST in 10 s steps, a latched mic in whole minutes (in
+  // seconds for 30 s after a key), a held one in seconds.
   std::string stateLength() const {
     if (!on_) return {};
-    switch (mic_.link) {
-      case comms::Link::Sound: return lengthText(mic_.linkMs);
-      case comms::Link::Lost: return lostText(mic_.linkMs);
-      case comms::Link::Quiet: break;
-    }
-    return minutesText(mic_.linkMs);
+    if (mic_.link == comms::Link::Lost) return lostText(mic_.linkMs);
+    if (mic_.latched && !keyedLately()) return minutesText(mic_.linkMs);
+    return lengthText(mic_.linkMs);
   }
   std::string stateLine() const {
     const comms::OpenMic &m = mic_;
@@ -293,12 +190,13 @@ class MicScreen : public ui::Screen {
       return "NOT HEARD " + lostText(m.linkMs) + kDot + "ITS MIC WAS ON " +
              minutesText(m.onS * 1000);
     }
-    return "MIC ON " + minutesText(m.onS * 1000) + since + kDot + "SENDS ABOVE " +
-           dbfs(m.thresholdDb);
+    return "MIC ON " + minutesText(m.onS * 1000) + since + kDot +
+           (m.latched ? "LATCHED" : "BOOT HELD THERE");
   }
   int meter() const {
     if (!on_ || mic_.link == comms::Link::Lost) return 0;
-    return mic_.link == comms::Link::Sound || keyedLately() ? meterFill(mic_.levelDb) : 0;
+    // A press moves it; a latched mic (a room) only for 30 s after a key.
+    return (mic_.playing && !mic_.latched) || keyedLately() ? meterFill(mic_.levelDb) : 0;
   }
   std::string powerText() const {
     if (mic_.usb) return mic_.battery >= 0 ? "USB" + kDot + std::to_string(mic_.battery) + "%" : "USB";
@@ -319,8 +217,8 @@ class MicScreen : public ui::Screen {
     return "NOT IN ITS CONVERSATION";
   }
 
-  // 60 bars of 2 minutes, oldest on the left: the part over the threshold solid, under it
-  // dithered; the threshold dashed across; a bar with no level left empty.
+  // 60 bars of 2 minutes, oldest on the left, each its loudest frame; a bar with no level left
+  // empty.
   void drawChart(ui::Canvas &c, const Rect &area) const {
     using namespace ui;
     constexpr int kLabelW = 40;
@@ -331,19 +229,12 @@ class MicScreen : public ui::Screen {
     auto yOf = [&](int db) {
       return ch.bottom() - std::clamp(db + 60, 0, 60) * ch.h / 60;
     };
-    const int yt = yOf(mic_.thresholdDb);
     for (int i = 0; i < n && i < static_cast<int>(bars_.size()); ++i) {
       const int v = bars_[i];
       if (v == comms::kNoBar) continue;
-      const int top = yOf(v / comms::kMicStepDb * comms::kMicStepDb);
-      const int bx = x0 + i * pitch;
-      if (top < yt) fill(c, {bx, top, barW, yt - top}, kInk);
-      const int dTop = std::max(top, yt);
-      if (dTop < ch.bottom()) dither50(c, {bx, dTop, barW, ch.bottom() - dTop});
+      const int top = yOf(v / comms::kMeterStepDb * comms::kMeterStepDb);
+      if (top < ch.bottom()) fill(c, {x0 + i * pitch, top, barW, ch.bottom() - top}, kInk);
     }
-    // The threshold, dashed, 2 px.
-    dashedH(c, x0, yt, pitch * n);
-    dashedH(c, x0, yt + 1, pitch * n);
     // The axis: 30-minute ticks, -2 H on the left, NOW on the right.
     hrule(c, x0, ch.bottom(), pitch * n, 2);
     for (int k = 0; k <= 4; ++k) fill(c, {x0 + k * pitch * n / 4 - (k == 4 ? 2 : 0), ch.bottom(), 2, 6}, kInk);
@@ -356,7 +247,6 @@ class MicScreen : public ui::Screen {
     drawText(c, {area.x + kPadX, ch.y - 6, kLabelW - 6, 14}, "0", style::kTag, Align::Right);
     drawText(c, {area.x + kPadX, ch.bottom() - 10, kLabelW - 6, 14}, "\xE2\x88\x92" "60",
              style::kTag, Align::Right);
-    drawText(c, {area.x + kPadX, yt - 7, kLabelW - 6, 14}, glyph::kUp, style::kTag, Align::Right);
   }
 
   std::string barsKey() const {
@@ -365,36 +255,28 @@ class MicScreen : public ui::Screen {
     return k;
   }
 
-  // A row: when, SOUND · LOUD (or SOFT) or LOST inverted, its length.
+  // A row: when, LOST inverted (NOW while it lasts), its length.
   std::string eventWhat(const comms::MicEvent &e) const {
-    if (e.lost) return "LOST";
-    return std::string("SOUND") + kDot + (e.loud ? "LOUD" : "SOFT");
+    return std::string("LOST") + (e.live ? kDot + "NOW" : "");
   }
   std::string eventLength(const comms::MicEvent &e) const {
-    if (!e.live) return lengthText(e.ms);
-    return e.lost ? lostText(e.ms) : lengthText(e.ms);
+    return e.live ? lostText(e.ms) : lengthText(e.ms);
   }
   void drawEvent(ui::Canvas &c, const Rect &r, const comms::MicEvent &e) const {
     using namespace ui;
     dashedH(c, r.x, r.bottom() - 1, r.w);
     const Rect band{r.x + kPadX, r.y, r.w - 2 * kPadX, r.h - 1};
     drawText(c, {band.x, band.y, 64, band.h}, whenText(e.at, e.agoS), style::kKey);
-    const std::string what = eventWhat(e) + (e.live ? kDot + "NOW" : "");
-    if (e.lost) {
-      drawTag(c, band.x + 70, band.centerY(), 19, what, style::kCap, TagKind::Inverted, 4);
-    } else {
-      drawText(c, {band.x + 70, band.y, band.w - 150, band.h}, what, style::kLabel);
-    }
+    drawTag(c, band.x + 70, band.centerY(), 19, eventWhat(e), style::kCap, TagKind::Inverted, 4);
     drawText(c, {band.right() - 80, band.y, 80, band.h}, eventLength(e), style::kLabel,
              Align::Right);
   }
 
   std::string key() const {
     std::string k = context() + "|" + (comms::micEnabled() ? "m" : "") + (playing() ? "p" : "") +
-                    (pushToTalk() ? "t" : "") +
-                    "|" + stateWord() + "|" + stateLength() + "|" + stateLine() + "|" +
-                    std::to_string(meter()) + "|" + std::to_string(mic_.thresholdDb) + "|" +
-                    powerText() + "|" + reached() + "|" + hereText() + "|" + barsKey() + "\n";
+                    micHint().verb + "|" + stateWord() + "|" + stateLength() + "|" + stateLine() +
+                    "|" + std::to_string(meter()) + "|" + powerText() + "|" + reached() + "|" +
+                    hereText() + "|" + barsKey() + "\n";
     for (size_t i = 0; i < mic_.events.size() && i < 12; ++i) {
       const comms::MicEvent &e = mic_.events[i];
       k += whenText(e.at, e.agoS) + eventWhat(e) + eventLength(e) + (e.live ? "*" : "") + "\n";
@@ -414,9 +296,6 @@ class MicScreen : public ui::Screen {
 
 }  // namespace
 
-std::unique_ptr<ui::Screen> commsui::makeMicLevelSheet(int group, uint32_t target) {
-  return std::make_unique<MicLevelSheet>(group, target);
-}
 
 std::unique_ptr<ui::Screen> commsui::makeMicScreen(int group, uint32_t board) {
   return std::make_unique<MicScreen>(group, board);

@@ -3,13 +3,15 @@
 How INKDECK boards talk to each other over the radio (COMMS, issue #66): open mics in groups,
 rings, conversations, messages, and relaying for each other as a mesh. The board's side is
 `src/comms.h` and `src/comms.cpp`; the packet format is `src/comms_wire.h`, conversations and the
-message reassembly `src/comms_calls.h`, the mic's packets, gate, history and mixer
+message reassembly `src/comms_calls.h`, the mic's packets, history, mixer and push-to-talk latch
 `src/comms_mic.h`, the keys `src/comms_crypto.h`, the codec `src/adpcm.h`, messages on the card
 `src/comms_store.h`, the links packet and the relay rule `src/comms_mesh.h`. Keep this file and
 those in step. Version 1, written 2026-11-22; rings, conversations and messages added the same
 day; on 2026-11-23 the open mic replaced push-to-talk (types 2, 3, 4 and 15's bodies changed, type
 7 retired), and later that day the long-range rate and relaying only when needed (the link group,
-ext type 3) came, all without a new version number ([Versions](#versions)).
+ext type 3) came; on 2026-11-24 the walkie-talkie replaced the open mic's gate (push to talk with a
+latch, half duplex: the bodies of types 2 and 3 changed), all without a new version number
+([Versions](#versions)).
 
 Nothing else speaks it yet. The link through inkharness (phases 5 and 6 of the issue) will carry
 these same packets, still sealed with the group's key, so a daemon or a hub passes them on
@@ -31,7 +33,7 @@ other. Receiving needs Wi-Fi's modem sleep off.
 **The rate.** A board sends at 1 Mbps (802.11b, long preamble), or with `mesh_range = long` at
 Espressif's long-range rate, 500 kbps (`esp_now_set_peer_rate_config()` on the broadcast peer,
 `WIFI_PHY_MODE_LR`, `WIFI_PHY_RATE_LORA_500K`): further and through more walls, each packet twice
-as long on the air. Measured 2026-11-23: a 220-byte voice frame is 2.25 ms on the air at 1 Mbps (an
+as long on the air. Measured 2026-11-23: a 220-byte voice frame (218 since 2026-11-24) is 2.25 ms on the air at 1 Mbps (an
 air survey: 50 a second took 11.3% of the time); at long range its send callback comes about
 2.1 ms later (5.9 to 6.4 ms after `esp_now_send()`, against 3.3 to 4.4 at 1 Mbps, the rest being
 the wait for a clear channel), its 263 bytes at half the rate. The 250 kbps rate isn't
@@ -112,37 +114,31 @@ answers within 0.1 to 0.6 s, at most once in 5 s. A board heard from in no packe
 away. A presence that ends after the name is a board from before conversations: it says nothing
 about them.
 
-**Mic** (2), the still-here: flags (1: `0x01` sending: its gate is open, `0x02` on USB power,
-`0x04` paused: something else has the mic for now, `0x08` opening: this session opened the
-conversation), battery (1: percent, `0xFF` none), threshold (1: dB below full scale, 0 to 60), peak
-(1: the loudest frame since the last still-here, a level), session (2: the board's counter, one more
-each time its mic goes on, from a random number each boot), on for (4: seconds), bar (2: the
-2-minute bar now, numbered from the session's start), bar peak (1: that bar's loudest frame so far,
-a level), pre-roll (1: in 20 ms frames, 8), target (4: 0 for all of the group, else the one board it's
+**Mic** (2), the still-here: flags (1: `0x01` latched: ● latched it, so it stays on without a
+hand on BOOT and goes LOST, not cut off, if it vanishes; `0x02` on USB power, `0x04` paused:
+something else has the mic for now, `0x08` opening: this session opened the conversation), battery
+(1: percent, `0xFF` none), peak (1: the loudest frame since the last still-here, a level), session
+(2: the board's counter, one more each time its mic goes on, from a random number each boot), on for
+(4: seconds), bar (2: the 2-minute bar now, numbered from the session's start), bar peak (1: that
+bar's loudest frame so far, a level), target (4: 0 for all of the group, else the one board it's
 to), conversation (4). Sent when the mic goes on, every 2 s (plus up to 0.2 s) while it's on, paused
-or not, and at once when the threshold changes. 62 bytes on the air. A level is a byte: how many dB
-the loudest sample of a 20 ms frame is below full scale, 0 to 96 (96: silence or quieter), `0xFF`
-for none.
+or not, and at once when it latches. 60 bytes on the air. A level is a byte: how many dB the loudest
+sample of a 20 ms frame is below full scale, 0 to 96 (96: silence or quieter), `0xFF` for none.
 
 **Voice** (3): target (4: 0 for all of the group, else the one board), conversation (4), session (2),
-sound (2: the gate's counter, one more each sound, going on across sessions from a random number
-each boot), frame (2: within the sound, from 0), level (1: this frame's, as the mic measured it before
-encoding), flags (1: `0x01` opening, as the still-here's `0x08`), predictor (2, signed), step index
-(1, 0 to 88), byte count (1, up to 160), then the IMA ADPCM bytes. 64 kbps: 16 kHz mono, two samples a
-byte, the first in the low nibble, the standard IMA step and index tables; 160 bytes are 320 samples,
-20 ms. Predictor and step index are the encoder's state before the first sample, so each frame
-decodes on its own: a lost frame is a 20 ms gap. A byte count of 0 is 20 ms of silence sent on
-purpose: a frame the gate sends while it's open that the board's own speaker could explain (its
-echo, [The mic](#the-mic)); such a frame is 60 bytes on the air, a full one 220. Each frame is sent
-160 ms after it was captured (the pre-roll). A mic switched off while a sound goes out sends the
-frames it still holds back first (up to 8, those the sound's hang covers, each as the gate would
-have sent it), 20 ms apart, at the pace they'd have gone at: a burst would overrun a receiver's
-8-frame jitter buffer.
+frame (2: within the session, from 0), level (1: this frame's, as the mic measured it before
+encoding), flags (1: `0x01` opening, as the still-here's `0x08`; `0x02` latched, as its `0x01`),
+predictor (2, signed), step index (1, 0 to 88), byte count (1, up to 160), then the IMA ADPCM bytes.
+64 kbps: 16 kHz mono, two samples a byte, the first in the low nibble, the standard IMA step and
+index tables; 160 bytes are 320 samples, 20 ms. Predictor and step index are the encoder's state
+before the first sample, so each frame decodes on its own: a lost frame is a 20 ms gap. A full frame
+is 218 bytes on the air. Every frame goes as soon as it's captured, from the first after the cue
+until the mic goes off; the last of a press is shorter (what was captured of it, a 10 ms block or
+more; the rest plays as silence). A byte count of 0 (none is sent) plays as 20 ms of silence.
 
 **Mic off** (4): session (2), reason (1: `1` switched off, `2` the board is powering off), on for (4:
-seconds). Sent three times, 40 ms apart (at once, back to back, for a power-off). After a sound's
-last frames (above), the first goes 40 ms after the last of them: a voice frame of the session
-that came after its off would start the mic again on the receiver, and it would go LOST there.
+seconds). Sent three times, 40 ms apart (at once, back to back, for a power-off), the first right
+after the last voice frame.
 
 **Ping** (5): ping id (4), the pinger's millisecond clock (4). Every board that opens it answers.
 
@@ -219,7 +215,7 @@ seconds between its polls), name length (1, up to 16), name. Sent with ttl 0 (ne
 in each of the sleeper's groups, every interval. 57 bytes on the air with a 7-letter name.
 
 **Answer** (9): to (4: the sleeper), what (1: `0x01` a ring that includes it is on, `0x02` voice it
-would hear sounds now, `0x04` a message for it is kept to be asked for; 0 for nothing, an echo's
+would hear comes now (a held mic's), `0x04` a message for it is kept to be asked for; 0 for nothing, an echo's
 answer), channel (1: the answering board's), flags (1: its presence flags), dialer (4) and ring (2)
 for a ring, then message sender (4), message (4), to (4) and frames (2) for a message (zeros when
 not). Sent with ttl 0, at once, by every board that hears the poll and has something to say. 68
@@ -267,15 +263,15 @@ Reference values (`!commstest` checks them):
   conversation `a1b2c3d4`, rung 4200 ms, is the 54-byte frame
   `c7180300e13e368e44332211070000000200000095184362b8f980d1bcabd37b688b9e0f2160c1a57c8f182d6add0b5f6239176f7ac4`.
 - In that group, a mic still-here (type 2) from sender `11223344`, boot 7, seq 3, ttl 3, sentAt 0:
-  flags 3 (sending, on USB), no battery, threshold 30, peak 24, session 5, on for 600 s, bar 5, bar
-  peak 18, pre-roll 8, to all, conversation `a1b2c3d4` (body
-  `0000000003ff1e180500580200000500120800000000d4c3b2a1`), is the 62-byte frame
-  `c7120300e13e368e443322110700000003000000e74688b99260814b63cfeaa8142b8f33b65b204e035360b1582729fcbda72e8993accf2e6124db819103`.
+  flags 3 (latched, on USB), no battery, peak 24, session 5, on for 600 s, bar 5, bar peak 18, to
+  all, conversation `a1b2c3d4` (body `0000000003ff1805005802000005001200000000d4c3b2a1`), is the
+  60-byte frame
+  `c7120300e13e368e443322110700000003000000e74688b9926087566697b0aa142e8a21a453204ed79006d3e557dd426698d722e353873da414bc1d`.
 - In that group, voice (type 3) from sender `11223344`, boot 7, seq 4, ttl 3, sentAt 0: to all,
-  conversation `a1b2c3d4`, session 5, sound 2, frame 9, level 21, flags 1 (opening), predictor
+  conversation `a1b2c3d4`, session 5, frame 9, level 21, flags 3 (opening, latched), predictor
   -1234, step index 40, the 8 bytes `0102030405060708` (body
-  `0000000000000000d4c3b2a105000200090015012efb28080102030405060708`), is the 68-byte frame
-  `c7130300e13e368e443322110700000004000000a8c23f21818170d60048ac825824a4e2a8b2f438ffdc362dda38f9995ef899d129751713f97265f70f5fe1782ab0339a`.
+  `0000000000000000d4c3b2a10500090015032efb28080102030405060708`), is the 66-byte frame
+  `c7130300e13e368e443322110700000004000000a8c23f21818170d60048ac825824afe2b4b1cfc2f92f1f27d83eff9b5cf6e43a518fdacb399a7dc1f7b7ed2d61fb`.
 - In that group, a mic off (type 4) from sender `11223344`, boot 7, seq 5, ttl 3, sentAt 0: session 5,
   switched off, on for 600 s (body `0000000005000158020000`), is the 47-byte frame
   `c7140300e13e368e4433221107000000050000003ddb4c9843cacf766c0a6f4f4f5c99a236200cdcbdbf1bb3fd7296`.
@@ -373,21 +369,25 @@ straight would otherwise miss it (`Neighbours` in `src/comms_mesh.h`):
   conversation; on one it's addressed to alone (which is then in it), unless that board left it;
   and, the walkie-talkie, on every listening board when its session opened the conversation (flag
   `0x01`), which puts each board that plays it in. A board joins the same way from the still-here
-  alone (a mic opened in a quiet room is heard from its first sound). Any other voice is not
-  played.
+  alone. Any other voice is not played.
+- **Half duplex.** While this board's mic transmits (on and not paused), nothing of comms reaches
+  its speaker: no voice, no PLAY LAST, no message. The mixer goes on taking the voices, a frame each
+  20 ms by the clock (their buffers drain, and the last 60 s heard keep them), and writes nothing;
+  the screens say who talks meanwhile (KITCHEN TALKING TOO). PLAY LAST or a message waits where it
+  is. Once the mic is off or paused, what comes plays again, and PLAY LAST goes on.
 - **Not over** the Recorder, a ringing alarm, the agent listening or speaking, or a message this
   board records: such voice isn't played (it's still logged). Voice stops music, which plays on
   once comms lets the speaker go.
-- **The mixer.** Each board heard has its own jitter buffer (8 frames). A sound starts to play once
+- **The mixer.** Each board heard has its own jitter buffer (8 frames). A press starts to play once
   two of its frames are in (or one has waited 40 ms); then a frame a turn, at this board's pace: a
   frame missing when its turn comes plays as the one before at half level (a second in a row as
   silence) and is dropped if it comes later. A board with nothing for three turns rests until its
   frames come again, and is gone after 2 s. Up to 4 boards play at once, summed and held under full
   scale; a fifth board's voice waits for a free place. A board's buffer more than 8 frames ahead
-  (its clock a little faster than this board's, over a long sound) skips its oldest. The mix is
+  (its clock a little faster than this board's, over a long press) skips its oldest. The mix is
   kept 30 ms ahead of the speaker.
-- **PLAY LAST** plays the last 60 s heard (the mixed frames that had voice in them, the quiet
-  between left out), over any voice that plays, as does a message.
+- **PLAY LAST** plays the last 60 s heard (the mixed frames that had voice in them, talked over or
+  not; the time between presses left out), over any voice that plays, as does a message.
 
 ## Conversations
 
@@ -469,80 +469,79 @@ From 5 s into a ring with no answer (or once it's NO ANSWER) the dialer may leav
 
 ## The mic
 
-A board's mic is on or off. Several can be on at once, in one group or more, and speak at once:
-each board plays the others' voices ([Voice](#voice)) while its own mic captures (the speaker and
-the mic at once: audio's duplex path).
+A walkie-talkie's: push to talk, with a latch, half duplex. Several boards' mics can be on at once,
+in one group or more; a board whose mic is on hears none of them ([Voice](#voice)), and plays them
+again once its mic is off.
 
 - **On this board only.** `micOn()` on the board itself switches it on; no packet does, and a
-  history ask gets an answer only from a mic that's on. It doesn't survive a restart. It goes off
-  with `micOff()` (its off packet), a power-off (the off first), leaving the conversation, or the
-  radio going (groups changed).
-- **The gate.** The mic captures all the time. Each 20 ms frame's level is its loudest sample
-  (dBFS), compared with the threshold (-60 to 0 dBFS in 3 dB steps, -30 by default; a board keeps
-  its last in NVS). Every frame is kept 160 ms (8 frames) and encoded as it comes; a frame goes out
-  160 ms after it was captured, and only if a frame over the threshold came within the 160 ms after
-  it or the 2 s before it. So a sound goes out with the 160 ms before it (pre-roll: the start of a
-  word isn't cut), and on for 2 s after the level drops (hang), all 160 ms late; two sounds closer
-  than 2.2 s are one. Nothing goes out while it's quiet but the still-here. The first 240 ms after
-  the speaker and mic start are dropped: the codec's start-up thump (100 ms of zeros, then -39 dBFS
-  falling to a quiet room's -56 to -64 over about 150 ms, measured 2026-11-23).
-- **The echo.** Speaker and mic share a small case and there's no echo canceller. The speaker's
-  output is known: each 10 ms the mic captures carries the loudest the speaker played into the room
-  around then (the level written, after the volume, from the blocks written 50 to 140 ms before it:
-  the loopback delay, 60 ms measured, and 80 ms of room). A frame no louder than that plus the
-  coupling (-22 dB) plus a margin (9 dB) could be the echo: it doesn't count as over the threshold,
-  and a frame the gate sends anyway (pre-roll, hang) goes as silence (a voice frame of 0 bytes). A
-  voice over the echo, louder than the echo could be, goes as it is. Measured 2026-11-23 with a 1 kHz
-  tone through the speaker: it came back at the mic 26 dB down at -20 dBFS and VOL 100, 25 dB down at
-  -10, 22 dB down at full scale, 25 dB down at full scale and VOL 50; its abrupt start came back only
-  15 dB down, hence the margin. With a -1 dBFS voice playing, the gate is at -14 dBFS: a voice at the
-  mic has to be louder than that to get through over it.
-- **Still here** every 2 s while it's on, with the threshold, the loudest frame since the last one
-  (so a meter elsewhere moves when nothing is sent), the session, power, the bar now, whom it's to,
-  the conversation and whether it's paused; three off packets when it goes off, after the last
-  frames of a sound it was sending. Its presence carries `0x04` while it's on, and until those have
-  gone. A board whose presence lacks `0x04` (newer than the mic's last packet, or
-  from another boot) has its mic off: its off was missed.
+  history ask gets an answer only from a mic that's on. The screens key it with HOLD BOOT while it's
+  held (`apps/comms_ui.h`); ● while BOOT is held latches it (`latchMic()`), and then it stays on
+  after BOOT goes until the next BOOT or ● on the Comms screens. It doesn't survive a restart. It
+  goes off with `micOff()` (its off packet), a power-off (the off first), leaving the conversation,
+  or the radio going (groups changed).
+- **No gate.** Every 20 ms frame captured goes out at once, while the mic is on and not paused:
+  what's said, and the room between. Nothing waits to see if it's loud enough. The cue (three pips,
+  150 ms) plays as the mic opens, and the first 280 ms captured are dropped: the codec's start-up
+  thump when the speaker and mic start (100 ms of zeros, then -37 dBFS falling to the room by about
+  200 ms, measured 2026-11-23 and 24), and the cue, which the mic hears 60 ms after it's written (the
+  loopback), so over at the mic by 210 ms; 70 ms more for the room's tail. Neither goes on the air.
+  Back from a pause there's no cue, and one frame is dropped. Off, the last part captured goes as a
+  short frame, then the off: the end of the last word isn't cut.
+- **Still here** every 2 s while it's on, with whether it's latched, the loudest frame since the
+  last one (so a meter elsewhere moves), the session, power, the bar now, whom it's to, the
+  conversation and whether it's paused; at once when it latches (its voice frames say so too).
+  Three off packets when it goes off. Its presence carries `0x04` while it's on. A board whose
+  presence lacks `0x04` (newer than the mic's last packet, or from another boot) has its mic off: its
+  off was missed.
 - **Paused.** Something else on the board may take the mic for a while: the agent listening or
   speaking, the Recorder, a ringing alarm, music started there, a message it records. The mic then
   captures nothing and the still-here says paused; it picks up by itself 0.4 s after.
 - **Quiet in the room.** A board whose mic is on doesn't ring (nor send ringing) and doesn't chirp.
-  It plays the conversation's voice: that's how a room is talked to.
-- **Heard elsewhere.** Every board of the group follows each mic that's on: QUIET (on, nothing over
-  its threshold), SOUND (its voice comes; QUIET 0.6 s after the last frame), and **LOST** when nothing
-  (still-here or voice) has come from it for 20 s without its off. LOST sounds an alarm (a siren's two
-  notes, at half volume at least) every 2.5 s on a board that heard it (its voice is for that board,
-  which is in the conversation) until that board silences it or the link is back; on a board whose
-  own mic is on, only for a mic that was on before its own (the board left in a room doesn't alarm
-  when the board listening to it goes). The outage is kept with the mic's events and its log entry.
+- **Heard elsewhere.** Every board of the group follows each mic that's on: ON (its voice comes, or
+  its still-heres while it's paused), and then one of two ends when nothing comes and no off:
+  - **held** (BOOT down on its board: a press): after 5 s with nothing (two still-heres missed, 250
+    frames) it's **cut off**: its session ends there, logged as CUT OFF, no alarm. A press that
+    walks out of range is over, as on a walkie-talkie.
+  - **latched** (a room, nobody's hand on it): after 10 s with nothing (five still-heres) it's
+    **LOST**. LOST sounds an alarm (a siren's two notes, at half volume at least) every 2.5 s on a
+    board that heard it (its voice is for that board, which is in the conversation) until that
+    board silences it or the link is back; on a board whose own mic is on, only for a mic that was
+    on before its own. The outage is kept with the mic's LOSTs and its log entry. A session latched
+    once counts as latched to its end.
   A clean off is never an alarm; a mic on longer than 5 minutes chirps once (soft, two falling pips)
-  on the boards that heard it as it goes off. A sound 12 dB or more over the mic's threshold is LOUD;
-  with the volume at 30 or below, a sound turning LOUD chirps once at half volume at least. A board
-  whose own mic is on chirps for neither.
+  on the boards that heard it as it goes off, not on a board whose own mic is on.
 - **History.** The mic's board keeps 60 bars of 2 minutes, the loudest frame of each, numbered from
   the session's start, and sends them to a board that asks; the bar now comes in every still-here,
   so a board that came late has the whole chart within a packet or two.
-- **The log:** one entry per session (on to off), on the mic's board and on each board that heard it,
-  with its length, its sounds, the frames lost and whether it went LOST.
-- **The delay** from a mic to the other board's speaker is about 282 ms (2026-11-23, from measured
-  parts): the capture 22 ms (a 10 ms DMA block, the frame filling, the comms task's turn), the
-  pre-roll 160, the air 5 (half of a ping's 9 ms), the mixer's priming 2 to 30 (20 typical), its queue
-  25 on average, the speaker's DMA 50.
+- **The log:** one entry per session (a press, on to off), on the mic's board and on each board that
+  heard it, with its length, the frames lost, and whether it went LOST or was cut off.
+- **The call sheet and its chirp** rise once per conversation, the first time a voice in it plays
+  on a board, not at every press; a conversation's first voice heard after this board's own press
+  (talked over meanwhile) counts when it plays.
+- **The delay.** From the press to the first frame on the air: 385 ms with the speaker and mic
+  starting (84 ms for the codec and I2S, the 280 ms dropped, a frame), 310 to 330 ms with them on
+  already (measured 2026-11-24). From the mic to the other board's speaker about 122 ms, from
+  measured parts: the capture 22 ms (a 10 ms DMA block, the frame filling, the comms task's turn),
+  the air 5 (half of a ping's 9 ms), the mixer's priming 2 to 30 (20 typical; logged as 56 to 60 ms
+  from the first frame in to its playing, the queue included), its queue 25 on average, the
+  speaker's DMA 50.
 - **Who may hear.** The packets are sealed with the group's key like every other: every board of
   the group can follow a mic that's on and hear it (by joining the conversation). A mic to one board
   is addressed to it, not encrypted for it. A room meant for a few boards wants a group whose secret
   only they have (a `mesh_group` line on those boards alone). There are no keys per board.
-- **Tested** (2026-11-23, two boards in different rooms on channel 6, -73 to -79 dBm, both ways,
-  with `!commstone` adding a 1 kHz tone to the mic: nobody was in either room): a mic to all and to
-  one board; a tone over the threshold with its pre-roll and hang (2 s at -20 dBFS: a 4,160 ms
-  sound), nothing under it; 1.5 to 11% of frames lost as the signal moved, 5.6 and 8.6% while both
-  boards sent (each relayed the other's back: four packets each 20 ms, before the relay rule); both mics on with tones on
-  both, each board's echo held back (no sound opened from echo on either), a -10 dBFS tone through a
-  -14 dBFS echo gate; live voice and PLAY LAST mixed; LOST 20 s after a vanish, its alarm until
-  silenced, the link back; a clean off, the chirp after a long session and none after a short one;
-  a board with its mic on not ringing; ring, answer, mics on; leaving mid-sound; a message; the
-  alarm, the Recorder and the agent pausing a mic, each left whole. Not tested: by ear, three
-  boards at once on the air, on battery, a power-off's off, more than one hop.
+- **Tested** (2026-11-24, two boards in different rooms on channel 6, -76 to -78 dBm, both ways,
+  with `!commstone` adding a 1 kHz tone to the mic: nobody was in either room): HOLD BOOT to all
+  (every frame sent seen there, the short last frame included: 164 sent, frames 0 to 163 seen, 161
+  came); 20 s held each way (1.7% lost one way, 18.4% the other: the second board's reception, as in
+  the earlier runs); the latch with ● while held, ended by BOOT and by ●, neither press doing its
+  other job (no BACK, no ring), and a HOLD BOOT taking a latched mic over; both boards transmitting
+  (the far voice not played, INKDECK-0000 TALKING TOO on screen, played once BOOT went, PLAY LAST
+  then holding what was talked over); a message waiting while this board transmitted and playing
+  on after; a held mic vanishing (cut off after 5 s, no alarm) and a latched one (LOST after 10 s,
+  the alarm until silenced, the link back); the call sheet and chirp once per conversation across
+  presses; ring, ● ANSWER (the mic off), then HOLD BOOT both ways; a message after an unanswered
+  ring; a sleeper (pretending) woken by a ring. Not tested: by ear, three boards at once, on
+  battery, a power-off's off, more than one hop.
 
 ## Reachable on battery
 
@@ -561,9 +560,10 @@ drives with a made-up clock.
   a **ring** that includes the sleeper (its own, or one whose packets go by: rings flood, so every
   listening board of the group knows, and the dialer needn't be in range then; a ring is known for
   3.5 s after its last packet, and is over at its answer or end, or 60 s after it began); **voice**
-  it would hear (a mic on in the group, to the sleeper alone, or to all of the group with the
-  session that opened the conversation, which every board that hears joins) that made a sound
-  within the sleeper's interval plus 2 s; a **message** for it (to all, or to it) that this board
+  it would hear (a held mic on in the group, to the sleeper alone, or to all of the group with the
+  session that opened the conversation, which every board that hears joins) whose voice came
+  within the sleeper's interval plus 2 s (a latched mic, a room, sends all the time and wakes no
+  sleeper); a **message** for it (to all, or to it) that this board
   sent and keeps for asks (5 minutes), unless the sleeper has said it has it whole. A board on USB
   answers a poll with the echo flag even with nothing (what 0).
 - **Asleep, reachable.** A board whose last packet was a poll, within three of its intervals (plus
@@ -574,9 +574,9 @@ drives with a made-up clock.
   within a second; the still-here or the voice of a mic that opened its conversation, which it then
   joins; for a message, it begins it as one whose every frame it missed, and asks for the end, then
   the frames). The face comes back, holds, and the sheets rise over it. With no key it goes back to
-  sleep 30 s after the ring, the sound or the transfer ends, 60 s after a sound while the mic that
-  made it stays on (an open mic in a quiet room doesn't keep a sleeping board up all night), and
-  15 s after the wake if nothing came. A key makes it an ordinary board that's on.
+  sleep 30 s after the ring, a held mic's voice or the transfer ends, 60 s after that voice while a
+  mic heard stays on (a latched mic's voice doesn't count: a room doesn't keep a sleeping board up
+  all night), and 15 s after the wake if nothing came. A key makes it an ordinary board that's on.
 - **LOST doesn't alarm on a sleeping board.** A sleeping board isn't listening: it forgets the mics
   it heard, without an alarm, each time it goes back to sleep. A board that must sound LOST's alarm
   stays on USB.
@@ -604,6 +604,10 @@ drives with a made-up clock.
   starts again at the first sleep after the board was on USB.
 
 ## Versions
+
+The walkie-talkie (2026-11-24) kept version 1: the still-here lost its threshold and pre-roll
+bytes (its `0x01` is now latched, not sending), voice lost its sound counter (its `0x02` is now
+latched), so a board from before misreads both; the two test boards were flashed together.
 
 The long-range rate and the link group (2026-11-23) kept version 1. A board from before them
 ignores links packets (another group's, ttl 0: dropped, not relayed) and floods as before; the

@@ -168,6 +168,11 @@ Status status() {
   return s;
 }
 
+bool usbPower() {
+  const int st = read1(kRegStatus1);
+  return st >= 0 && !fakeBattery && (st & (1 << 5));
+}
+
 void pretendBattery(bool on) {
   if (fakeBattery == on) return;
   fakeBattery = on;

@@ -25,7 +25,7 @@ namespace {
 
 #if INKDECK_AGENT || INKDECK_COMMS
 // What the last hold's edge chose: the agent, the boards (a message from the dialer's ringing
-// sheet, or the mic when push: the screens say so in their talkTo()), or neither (music or a
+// sheet, or the mic: the screens say so in their talkTo()), or neither (music or a
 // podcast playing, or talking not allowed).
 // key() follows it, so the two can't disagree if playback ends in between.
 enum class Hold : uint8_t { None, Agent, Comms };
@@ -56,7 +56,7 @@ void edge(bool down) {
 #endif
   holdTalks = hold;
 #if INKDECK_COMMS
-  if (hold == Hold::Comms) commsTalk(to);  // the message, or the mic (push)
+  if (hold == Hold::Comms) commsTalk(to);  // the message, or the mic
 #endif
 #if INKDECK_AGENT
   if (hold == Hold::Agent) agent::talkStart();  // with no session, opens one

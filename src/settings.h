@@ -30,7 +30,6 @@
 //   mesh_group = <secret>?name=Family&via=air   ; up to 4; stays on the card: it keys the group (comms.h)
 //   mesh_name = KITCHEN                  ; this board's name on the others
 //   mesh_channel = 6                     ; the radio's Wi-Fi channel off Wi-Fi
-//   mesh_mic = push                      ; the mic keyed by HOLD BOOT, not switched by ● (apps/comms_ui.h)
 //   mesh_range = long                    ; send at the long-range rate, 500 kbps (comms.h)
 //   mesh_reachable = 10                  ; on battery, sleep polling every 10 s instead of powering off (comms.h)
 //
@@ -157,12 +156,6 @@ struct MeshGroup {
 std::vector<MeshGroup> meshGroups();  // in the file's order
 std::string meshName();  // mesh_name, "" if the card sets none
 int meshChannel();       // mesh_channel: 1 to 13, 6 without a line
-// mesh_mic: how this board's comms mic is keyed on the screens (apps/comms_ui.h). Sticky (the
-// default, and any value but push): ● switches it on and off. Push: it's on while HOLD BOOT is
-// held.
-// The screens ask comms::micMode(), which a dev override can change.
-enum class MeshMic : unsigned char { Sticky, Push };
-MeshMic meshMic();
 // mesh_range: the rate this board's comms packets go out at (comms.h). Normal (the default, and
 // any value but long): 1 Mbps. Long: Espressif's long-range rate, 500 kbps, which reaches
 // further. Every board hears both. The engine asks comms::range(), which a dev override can

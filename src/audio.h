@@ -81,23 +81,22 @@ void chirp(bool rising);
 // holds for the trill and plays on.
 void ringChirp();
 void messageChirp();
-// Comms's open mics (comms.h): the alarm when a board whose mic this board hears goes silent
-// (LOST), a siren's two notes twice (about 0.8 s; comms repeats it), and one chirp for a LOUD
-// sound while the volume is low, three rising pips. Like ringChirp(), over music too and ignored
-// while anything records, rings, listens or streams; but at the music volume and never below
-// half, so neither goes unheard at a low volume (as the alarm tone).
+// Comms's mics (comms.h): the alarm when a latched mic this board hears goes silent (LOST), a
+// siren's two notes twice (about 0.8 s; comms repeats it). Like ringChirp(), over music too and
+// ignored while anything records, rings, listens or streams; but at the music volume and never
+// below half, so it doesn't go unheard at a low volume (as the alarm tone).
 void lostAlarm();
-void loudChirp();
-// Comms's mic: the push-to-talk cue's three pips as it switches on, and two soft falling pips on
-// a board that hears a mic switch off after a long session. Like chirp().
+// Comms's mic: the push-to-talk cue's three pips as it switches on (comms sends nothing until it
+// has played), and two soft falling pips on a board that hears a mic switch off after a long
+// session. Like chirp().
 void micCue();
 void micOffChirp();
-// While the duplex path (below) is on, every chirp, the alarms' too, plays into it, over the
-// voice; beep() is ignored.
+// While the duplex path (below) is on, every chirp, the alarms' too, plays into it; beep() is
+// ignored.
 //
 // Silent (System's SILENT row, kept in NVS, off by default): no sound the board makes by itself
 // to get attention: the agent's chirps (chirp(), comms's call chirp too), ringChirp(),
-// messageChirp(), loudChirp() and micOffChirp() return at once (and log it). Alarms still sound
+// messageChirp() and micOffChirp() return at once (and log it). Alarms still sound
 // (the Clock's ring(), comms's lostAlarm()), and so does all the user starts: music, podcasts,
 // voice in a conversation, the agent's replies, the mic's cue (micCue(), captureStart(true)),
 // beep() (the Level, the Wi-Fi tone). Works before begin().
@@ -159,9 +158,8 @@ void streamAbort();  // output off now, the rest dropped
 bool streaming();    // from streamStart() until it has played out or was stopped
 
 // --- Duplex (comms.h): the speaker and the mic at once, TX and RX on the one I2S port, the
-// ES8311's DAC and ADC both running, at 16 kHz mono. The mic goes into a queue of 10 ms blocks,
-// each with what the speaker was putting into the room as it was captured (for comms's echo
-// gate); the speaker plays what's queued with duplexWrite(), as a stream does (10 dB up, through
+// ES8311's DAC and ADC both running, at 16 kHz mono. The mic goes into a queue of 10 ms blocks;
+// the speaker plays what's queued with duplexWrite(), as a stream does (10 dB up, through
 // the limiter), and silence when nothing is: the caller paces it (duplexQueuedMs()). The amp is
 // on only while there's sound to play, and for 1.5 s after. Small DMA buffers keep the delay
 // short (audio.cpp: 6 x 10 ms each way).
@@ -172,10 +170,6 @@ constexpr uint32_t kDuplexRate = 16000;
 constexpr size_t kDuplexBlock = 160;  // samples: 10 ms
 struct DuplexBlock {
   int16_t pcm[kDuplexBlock];
-  // The loudest sample played into the room around the time this block was captured (the
-  // loopback delay apart, plus 80 ms of room), in dBFS after the volume (the DAC's output: VOL
-  // 100 is 0 dB); -96 while the speaker is silent or its amp off.
-  float echoDb = -96;
   uint32_t seq = 0;  // blocks since duplexStart()
 };
 // Returns once it runs; false if it couldn't: the alarm rings, a recording or a capture runs, a
@@ -198,25 +192,9 @@ struct DuplexStats {
   uint32_t underruns = 0;    // blocks the speaker had to pad with silence mid-sound
   uint32_t micDropped = 0;   // mic blocks the queue had no room for
   float speakerDb = -96;     // the loudest sample played in the last 200 ms, after the volume
-  int loopbackBlocks = 0;    // the echo delay the gate assumes, in blocks
   uint32_t stackFree = 0;    // the audio task's stack never used, bytes (any path's, since boot)
   float queuedMs = 0;        // queued behind each block taken while sound played, on average
 };
 DuplexStats duplexStats();
-// The loopback test (comms's !commsecho): with the duplex path on and nothing else playing, a
-// 1 kHz tone at levelDb (dBFS into the DAC, before the volume) for ms, after 200 ms of silence;
-// the mic's blocks are compared with what was played. Waits for it (up to ms + 1.5 s).
-struct LoopbackResult {
-  bool ok = false;
-  float noiseDb = -96;      // the mic's loudest block before the tone
-  float micDb = -96;        // its median block while the tone played (from its 5th block)
-  float playedDb = -96;     // what the DAC put out: levelDb plus the volume's dB
-  float couplingDb = 0;     // micDb - playedDb: what comms adds to the speaker's level
-  int delayBlocks = -1;     // from the tone's first block written to the first block heard
-  int volume = 0;
-};
-LoopbackResult duplexLoopback(float levelDb, uint32_t ms);
-// The echo delay, in 10 ms blocks, the echo reference assumes (the loopback test's result).
-void setDuplexLoopback(int blocks);
 
 }  // namespace audio

@@ -103,10 +103,11 @@ class Sleeper {
 // --- The sleeper woken: how long it stays up ------------------------------------------------------
 
 // After an answer woke the board, it listens (comms's task, as if held) and rings or plays
-// through the usual paths. With no key it goes back to sleep kAfterMs after the ring, the sound
-// or the transfer ends (kQuietMicMs after a sound while the mic that made it stays on: an open
-// mic in a quiet room must not keep a sleeping board up all night), or kNothingMs after the wake
-// if nothing came at all. A key makes it an ordinary board that's on.
+// through the usual paths. With no key it goes back to sleep kAfterMs after the ring, the voice
+// or the transfer ends (kQuietMicMs after the voice while a mic heard stays on: a latched one, a
+// room, sends all the time but isn't voice here, so it can't keep a sleeping board up all
+// night), or kNothingMs after the wake if nothing came at all. A key makes it an ordinary board
+// that's on.
 class WokenHold {
  public:
   static constexpr uint32_t kAfterMs = 30000;
@@ -117,8 +118,8 @@ class WokenHold {
 
   struct Seen {
     bool ringing = false;   // a ring rings here
-    bool sound = false;     // voice plays here (a mic heard, PLAY LAST or a message)
-    bool micOn = false;     // a mic heard here is still on (quiet or not)
+    bool sound = false;     // voice plays here (a held mic heard, PLAY LAST or a message)
+    bool micOn = false;     // a mic heard here is still on (held or latched)
     bool transfer = false;  // a message comes in
     bool keyed = false;     // a key since the wake
   };
@@ -185,7 +186,7 @@ struct WaitingNow {
     uint32_t target = 0;   // 0: all of the group
     uint32_t board = 0;    // whose mic
     bool opened = false;   // its session opened the conversation (the walkie-talkie)
-    uint32_t soundMs = 0;  // its last sound (0: none yet)
+    uint32_t soundMs = 0;  // its last voice frame, held (0: none yet, or latched: a room)
   };
   MicNow mics[kMics];
   size_t micCount = 0;
@@ -202,7 +203,8 @@ struct WaitingNow {
 // The answer to a poll from `sleeper` in `group`, polling every intervalS: what's waiting
 // (kWait*, 0 for nothing). Voice counts for a conversation the sleeper would be in, awake: a mic
 // to it alone, or to all of the group whose session opened the conversation (every board that
-// hears it joins); and only if it made a sound within the interval plus kVoiceGraceMs.
+// hears it joins); and only a held mic (someone talking, not a latched room) whose voice came
+// within the interval plus kVoiceGraceMs.
 constexpr uint32_t kVoiceGraceMs = 2000;
 uint8_t waitingFor(const WaitingNow &w, int group, uint32_t sleeper, uint16_t intervalS,
                    uint32_t now);

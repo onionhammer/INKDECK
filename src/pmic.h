@@ -40,6 +40,9 @@ bool setPanelRail(bool on);
 
 // Cached: reads the PMIC at most every few seconds. Begin Wire first.
 Status status();
+// USB power now: one register, read each call (the reachable sleep looks at every wake). False
+// while pretendBattery() is on, or if the PMIC doesn't answer.
+bool usbPower();
 
 // Dev tool (!reachtest, power.h): status() and detail() report USB power absent, so the board
 // behaves as on battery while it charges on USB. The charger itself carries on.

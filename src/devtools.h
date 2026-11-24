@@ -59,27 +59,22 @@
 //               only, off at boot; the volume itself is unchanged
 //   !comms...   comms (with INKDECK_COMMS, comms.h); AGENTS.md's Comms paragraph lists them all.
 //               The mic's:
-//   !commsmic [all|ID] [DB]   this board's mic on in the active group, to all of it or one board
-//               (hex id, as !comms lists it), at DB dBFS (else the threshold kept); again while
-//               on with another board or group: a new session
+//   !commsmic [all|ID] [latch]   this board's mic on in the active group, to all of it or one
+//               board (hex id, as !comms lists it), as if BOOT were held (the far boards cut it off
+//               5 s after it vanishes), or latched (they go LOST after 10 s); again while on with
+//               another board or group: a new session
 //   !commsmicoff   the mic off (its off goes out)
-//   !commsmicthr [DB]   the threshold: shown, or set (3 dB steps, -60 to 0; kept in NVS)
 //   !commstone S DB   a 1 kHz tone peaking at DB dBFS added to what the mic hears for S seconds
-//               (nobody there to speak: the tone is the voice, over the room and the echo)
+//               (nobody there to speak: the tone is the voice, over the room)
 //   !commsvanish [off]   the mic sends nothing more, its off neither, as if out of range (the
-//               boards that hear it see LOST after 20 s); "off": back on air
+//               boards that hear it see LOST after 10 s if it's latched, cut it off after 5 s if
+//               not); "off": back on air
 //   !commsack   LOST's alarm silenced
 //   !commslong S   a mic heard counts as on long after S seconds instead of 5 minutes (its off
 //               chirps once where it's heard; 0: 5 minutes again)
-//   !commsecho [DB [MS]]   the loopback test: a 1 kHz tone at DB dBFS (-20) for MS ms (1000)
-//               through the duplex path with the mic off, and what the mic hears of it (coupling,
-//               delay)
 //   !commstalk N [ID]   the mic on for N seconds, then off
-//   !commsbusy alarm|rec|stop   the alarm or a recording takes the audio (what an open mic does
-//               meanwhile); stop: neither
-//   !commsmicmode [sticky|push|-]   how the screens key the mic, in place of the card's
-//               mesh_mic line (sticky: ● on and off; push: HOLD BOOT while held), kept in NVS until
-//               "-" removes it; without a word, shows the mode in use
+//   !commsbusy alarm|rec|stop   the alarm or a recording takes the audio (what a mic that's on
+//               does meanwhile); stop: neither
 //               !comms shows this board's mic, the mics on that it hears, and the duplex path
 #pragma once
 

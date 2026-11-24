@@ -93,7 +93,7 @@ constexpr Module kModules[] = {
      "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather},
 #if INKDECK_COMMS
     {"COMMS", "RF",
-     "Open mics with the other boards in your groups: board to board, no router.",
+     "Walkie-talkies with the other boards in your groups: board to board, no router.",
      "ESP-NOW \xC2\xB7 ES8311", Kind::Comms},
 #endif
     {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",

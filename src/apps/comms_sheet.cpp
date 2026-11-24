@@ -42,7 +42,7 @@ const std::string kDot = std::string(" ") + ui::glyph::kDot + " ";
 
 constexpr int kSheetMinH = 384;  // the comms sheets alike (the ringing sheet's too)
 constexpr int kStateH = 52;  // the state word beside the meter
-constexpr uint32_t kCloseMs = 10000;       // after the last sound, and as long since a key
+constexpr uint32_t kCloseMs = 10000;       // after the last voice, and as long since a key
 constexpr uint32_t kFirstWordMs = 20000;   // answered or joined: for the first word
 constexpr uint32_t kRingEndShowMs = 6000;  // how a ring ended, shown this long (and since a key)
 constexpr uint32_t kMessageShowMs = 30000;  // a message left, once it's all here
@@ -50,9 +50,8 @@ constexpr uint32_t kMessageWaitMs = 15000;  // the dialer said a message comes: 
 constexpr uint32_t kConvSheetMs = 30000;    // the conversation sheet, untouched
 constexpr uint32_t kQuietKeyMs = 3000;      // the conversation sheet waits this long after a key
 constexpr uint32_t kBackShowMs = 10000;     // the LOST sheet once its mic is back or off
-// A sheet that rose by itself takes no ● that would switch the mic on (the call sheet's MIC ON,
-// the ring sheet's ANSWER) this soon after it rose: a press meant for the screen under it mustn't
-// open a mic.
+// A sheet that rose by itself takes no ● that would answer (the ring sheet's ANSWER) this soon
+// after it rose: a press meant for the screen under it mustn't answer a ring.
 constexpr uint32_t kRiseGuardMs = 1000;
 // A conversation this board isn't in waits this long before its sheet rises: a board that hears
 // a mic open joins its conversation by itself a moment after it has seen it.
@@ -147,7 +146,7 @@ const comms::OpenMic *newestPlaying(const std::vector<comms::OpenMic> &mics) {
 class CallSheet : public ui::Screen {
  public:
   // For the mic session that has just started playing here.
-  explicit CallSheet(const comms::OpenMic &m) : rose_(millis()) {
+  explicit CallSheet(const comms::OpenMic &m) {
     comms::hold();  // while it's up the session counts as heard, and the radio stays on
     incoming_ = comms::status().incoming;
     follow(m);
@@ -174,15 +173,14 @@ class CallSheet : public ui::Screen {
   bool overlay() const override { return true; }
   int hints(ui::Hint *out) const override {
     int n = 0;
-    out[n++] = micHint();  // ● MIC ON (sticky), HOLD BOOT TALK (push)
+    out[n++] = micHint();  // HOLD BOOT TALK; ● HOLD while held; BOOT STOP latched
     out[n++] = {ui::glyph::kDial, "VOL"};
     if (conv_.on && conv_.in) out[n++] = {ui::glyph::kHoldPress, "LEAVE"};
     out[n++] = {"BOOT", playing() ? "STOP" : "CLOSE"};  // closing leaves this board in it
     return n;
   }
 
-  // Push to talk: HOLD BOOT keys the mic to the conversation the session is in, as ● would when
-  // sticky.
+  // HOLD BOOT keys the mic to the conversation the session is in.
   ui::TalkTo talkTo() const override { return micTalkTo(group_, micTarget()); }
 
   void onEnter() override { entered(this, Kind::Call); }
@@ -192,11 +190,7 @@ class CallSheet : public ui::Screen {
     switch (key) {
       case Key::Up: audio::changeVolume(+5); return true;
       case Key::Down: audio::changeVolume(-5); return true;
-      case Key::Select:
-        // Sticky: the mic, to the conversation the session is in. Not in the sheet's first second,
-        // unless it's to go off. Push: nothing (HOLD BOOT talks).
-        if (!pushToTalk() && !comms::micEnabled() && millis() - rose_ < kRiseGuardMs) return true;
-        return micPress(group_, micTarget());
+      case Key::Select: return true;  // HOLD BOOT talks; ● while it's held latches (latchKey())
       case Key::SelectLong:
         if (conv_.on && conv_.in) {  // out of the conversation: its voice stops here
           comms::leave(group_);
@@ -212,17 +206,17 @@ class CallSheet : public ui::Screen {
     const comms::Status s = comms::status();
     const uint32_t now = millis();
     load();
-    // Another session started playing while it was up: it follows that one.
+    // Another conversation started playing while it was up: it follows that one.
     if (s.incoming != incoming_) {
       incoming_ = s.incoming;
       if (const comms::OpenMic *m = newestPlaying(mics_)) {
         follow(*m);
-        rose_ = now;  // another board under the same finger
-        ui::nav::talkChanged();  // HOLD BOOT's target with it (push)
+        ui::nav::talkChanged();  // HOLD BOOT's target with it
       }
     }
-    // A sound, theirs or this board's, keeps it up.
-    if (s.hearing || mic_.sending) {
+    // Voice keeps it up: a press, theirs (played, or talked over) or this board's. A latched mic's
+    // (a room) sends all the time: it doesn't, or the sheet would stay up as long as the room.
+    if (heldPlaying() || s.talkedOver || micHeld()) {
       activeMs_ = now;
       waiting_ = false;
     }
@@ -254,8 +248,8 @@ class CallSheet : public ui::Screen {
     drawStateRow(c, r.takeTop(kStateH), word(), meter());
     r.takeTop(drawNameBlock(c, r, label(), name(), line(), line2()) - r.y);
     drawEarlier(c, r, earlier(),
-                conv_.on && conv_.in ? "CLOSES 10 S AFTER THE LAST SOUND; YOU STAY IN IT"
-                                     : "CLOSES 10 S AFTER THE LAST SOUND");
+                conv_.on && conv_.in ? "CLOSES 10 S AFTER THE LAST WORD; YOU STAY IN IT"
+                                     : "CLOSES 10 S AFTER THE LAST WORD");
   }
 
  private:
@@ -287,10 +281,16 @@ class CallSheet : public ui::Screen {
     if (const comms::Board *b = findBoard(comms::boards(group_), peer_)) board_ = *b;
   }
 
-  bool hearingPeer() const { return havePeerMic_ && peerMic_.playing; }
   bool anyPlaying() const {
     for (const comms::OpenMic &m : mics_) {
       if (m.playing) return true;
+    }
+    return false;
+  }
+  // A press plays here: a held mic's voice (a latched one's is a room's).
+  bool heldPlaying() const {
+    for (const comms::OpenMic &m : mics_) {
+      if (m.playing && !m.latched) return true;
     }
     return false;
   }
@@ -302,15 +302,20 @@ class CallSheet : public ui::Screen {
     if (conv_.on && conv_.in) to += kDot + "CONVERSATION";
     return "COMMS" + kDot + groupName(group_) + kDot + to;
   }
-  // HEARING while a voice plays, MIC ON while this board's goes, else QUIET.
+  // MIC ON while this board's mic is on (nothing plays then: half duplex), HEARING while a voice
+  // plays, else QUIET.
   std::string word() const {
-    if (anyPlaying()) return "HEARING";
     if (comms::micEnabled()) return "MIC ON";
+    if (anyPlaying()) return "HEARING";
     return "QUIET";
   }
+  // The meter moves with a press (this board's, or one heard), and for 30 s after a key; a
+  // latched mic alone moves nothing, so the panel isn't refreshed every second for a room.
   int meter() const {
-    if (anyPlaying()) return meterFill(comms::status().playLevelDb);
-    if (mic_.sending) return meterFill(mic_.levelDb);
+    if (mic_.capturing) return micHeld() || keyedLately() ? meterFill(mic_.levelDb) : 0;
+    if (anyPlaying() && (heldPlaying() || keyedLately())) {
+      return meterFill(comms::status().playLevelDb);
+    }
     return 0;
   }
   std::string label() const { return peer_ ? label_ : "WITH"; }
@@ -319,13 +324,13 @@ class CallSheet : public ui::Screen {
     const std::string others = othersText(conv_);
     return others.empty() ? "ALL OF " + groupName(group_) : others;
   }
-  // How it comes, and its mic: ON AIR · −52 dBm · 0:04 SO FAR (seconds while it sounds, whole
-  // minutes otherwise).
+  // How it comes, and its mic: ON AIR · −52 dBm · MIC ON 0:04 SO FAR (a latched one in whole
+  // minutes, seconds within 30 s of a key).
   std::string line() const {
     if (!peer_) return how_;
     std::string reach = reachText(peer_, board_.route, board_.hops, board_.relayName, board_.rssi);
     if (waiting_) {
-      // The dialer's "● MIC ON TO TALK" goes once its mic is on (line2 says YOUR MIC ON).
+      // The dialer's "HOLD BOOT TO TALK" goes once its mic is on (line2 says YOUR MIC ON).
       std::string how = how_;
       if (dialer() && comms::micEnabled()) how = "ANSWERED";
       return how + (reach.empty() ? "" : kDot + reach);
@@ -336,13 +341,20 @@ class CallSheet : public ui::Screen {
       return s + (c ? "ITS MIC WAS ON " + lengthText(c->ms) : std::string("ITS MIC IS OFF"));
     }
     if (peerMic_.link == comms::Link::Lost) return s + "LOST " + lostText(peerMic_.linkMs);
-    if (hearingPeer()) return s + "SOUND " + lengthText(peerMic_.linkMs) + " SO FAR";
-    return s + "MIC ON " + minutesText(peerMic_.onS * 1000) + kDot + "QUIET";
+    if (peerMic_.latched && !keyedLately()) {
+      return s + "MIC ON " + minutesText(peerMic_.onS * 1000) + kDot + "LATCHED";
+    }
+    return s + "MIC ON " + lengthText(peerMic_.onS * 1000) + " SO FAR";
   }
   std::string line2() const {
+    // Half duplex: another board talks while this one's mic is on, and isn't heard.
+    const comms::Status st = comms::status();
+    if (st.talkedOver) return boardName(st.talkedOverName, st.talkedOverBy) + " TALKING TOO";
     std::string s;
     if (conv_.on) s = membersText(conv_) + kDot + forText(conv_.ms);
-    if (comms::micEnabled()) s += (s.empty() ? "" : kDot) + std::string("YOUR MIC ON");
+    if (comms::micEnabled()) {
+      s += (s.empty() ? "" : kDot) + std::string(micLatched() ? "YOUR MIC LATCHED" : "YOUR MIC ON");
+    }
     return s;
   }
   // The session the sheet is about, in the log (left out of EARLIER).
@@ -365,17 +377,15 @@ class CallSheet : public ui::Screen {
     return headText() + "|" + attemptError() + "|" + std::to_string(audio::status().volume) +
            "|" + word() + std::to_string(meter()) + "|" + label() + name() + "|" + line() + "|" +
            line2() + "|" + (playing() ? "p" : "") + (conv_.on && conv_.in ? "c" : "") +
-           (pushToTalk() ? "t" : "") + "\n" +
-           earlierKey(earlier());
+           micHint().verb + "\n" + earlierKey(earlier());
   }
 
-  uint32_t rose_ = 0;  // it rose by itself (a session's first sound); 0 when a key brought it
   uint32_t incoming_ = 0;
   int group_ = 0;
   uint32_t peer_ = 0;
   std::string peerName_;
   bool toAll_ = true;
-  bool waiting_ = false;  // a conversation answered or joined, before its first sound here
+  bool waiting_ = false;  // a conversation answered or joined, before its first word here
   const char *label_ = "FROM";
   const char *how_ = "";  // then: "ANSWERED", "JOINED"
   std::vector<comms::OpenMic> mics_;
@@ -500,7 +510,7 @@ class RingSheet : public ui::Screen {
   int hints(ui::Hint *out) const override {
     int n = 0;
     if (ringing_) {
-      if (pushToTalk()) out[n++] = micHint();  // HOLD BOOT TALK: answers, and talks while held
+      out[n++] = micHint();  // HOLD BOOT TALK: answers, and talks while held
       out[n++] = {ui::glyph::kPress, "ANSWER"};
       out[n++] = {"BOOT", "IGNORE"};
       return n;
@@ -512,9 +522,9 @@ class RingSheet : public ui::Screen {
     return n;
   }
 
-  // Push to talk, while it rings: HOLD BOOT answers and keys the mic while held (to the dialer
-  // alone for a ring to this board alone), wherever the sheet rose; then it's the call sheet.
-  // Sticky, or once the ring is over: the default (the agent's).
+  // While it rings: HOLD BOOT answers and keys the mic while held (to the dialer alone for a ring
+  // to this board alone), wherever the sheet rose; then it's the call sheet. Once the ring is
+  // over: the default (the agent's).
   ui::TalkTo talkTo() const override {
     return ringing_ ? ringTalkTo(group_, toAll_ ? 0 : from_) : ui::TalkTo();
   }
@@ -527,14 +537,11 @@ class RingSheet : public ui::Screen {
     switch (key) {
       case Key::Select:
         if (ringing_) {
-          // Sticky: answered to talk, this board's mic goes on in the conversation the answer
-          // opens (to the dialer alone for a ring to this board alone; the MIC mark shows it).
-          // Push: it stays off, and HOLD BOOT talks on the call sheet. Not in the sheet's first
-          // second (a press meant for the screen under it).
+          // Answered, this board's mic stays off: HOLD BOOT talks on the call sheet. Not in the
+          // sheet's first second (a press meant for the screen under it).
           if (millis() - rose_ < kRiseGuardMs) return true;
           if (comms::answer()) {
             noteAttempt();
-            micAnswered(group_, toAll_ ? 0 : from_);
             toConversation(group_, from_, toAll_, "FROM", "ANSWERED");
           }
           return true;
@@ -563,7 +570,7 @@ class RingSheet : public ui::Screen {
     if (rg.on && rg.count != count_) {  // another ring: it follows that one
       follow(rg);
       rose_ = now;
-      ui::nav::talkChanged();  // HOLD BOOT's target with it (push)
+      ui::nav::talkChanged();  // HOLD BOOT's target with it
       return true;
     }
     ring_ = rg;
@@ -704,8 +711,8 @@ class RingSheet : public ui::Screen {
     stateTexts(word, right, line);
     return attemptError() + "|" + word + "|" + right + "|" + line + "|" +
            boardName(ring_.fromName, from_) + (ringing_ ? "r" : "") + (playing() ? "p" : "") +
-           (pushToTalk() ? "t" : "") +
-           (msg_.id && !msg_.receiving ? "m" : "") + "\n" + earlierKey(earlier());
+           micHint().verb + (msg_.id && !msg_.receiving ? "m" : "") + "\n" +
+           earlierKey(earlier());
   }
 
   void follow(const comms::Ring &rg) {
@@ -912,9 +919,12 @@ ui::MicMark micMarkNow() { return micMark(); }
 // its sheet can't rise.
 bool silentRinging() { return audio::silent() && comms::incomingRing().on; }
 
-// LOST's alarm where its sheet isn't on top (it couldn't rise there: the lock, a face, the
-// Recorder...): the first key silences it, and does nothing else.
-bool lostKeyFirst(Key) {
+// The keys before any screen's: ● while HOLD BOOT keys the mic latches it, and the next ● or BOOT
+// on the Comms screens and sheets ends the latch (commsui::latchKey()); and LOST's alarm where its
+// sheet isn't on top (it couldn't rise there: the lock, a face, the Recorder...): the first key
+// silences it, and does nothing else.
+bool keyFirst(Key key) {
+  if (latchKey(key)) return true;
   if (sheetOnTop(Kind::Lost) || !comms::status().alarm) return false;
   log_i("comms: a key silenced LOST's alarm");
   comms::ackLost();
@@ -942,7 +952,7 @@ void pollComms() {
     ui::nav::onConversation(conversationMark);
     ui::nav::onMic(micMarkNow);
     ui::nav::onRing(silentRinging);
-    ui::nav::onKeyFirst(lostKeyFirst);
+    ui::nav::onKeyFirst(keyFirst);
     return;
   }
 
@@ -953,12 +963,12 @@ void pollComms() {
     ui::nav::invalidate();
   }
 
-  // The mic's mode changed (the dev override, at run time): HOLD BOOT's targets change with it.
-  static bool pushWas = pushToTalk();
-  if (pushToTalk() != pushWas) {
-    pushWas = !pushWas;
-    ui::nav::talkChanged();
-    ui::nav::invalidate();  // the hints
+  // A latch let go another way (a leave, a power-off): the hints change back.
+  static bool latchedWas = false;
+  syncLatch();
+  if (micLatched() != latchedWas) {
+    latchedWas = !latchedWas;
+    ui::nav::invalidate();
   }
 
   // LOST's alarm starts: its sheet, over the Comms screen too, at once or as soon as it may.

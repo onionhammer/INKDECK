@@ -40,7 +40,6 @@ struct Values {
   std::vector<std::string> meshGroups;  // the mesh_group lines' values, checked, in order
   std::string meshName;
   int meshChannel = 6;
-  bool meshMicPush = false;  // mesh_mic = push
   bool meshRangeLong = false;  // mesh_range = long
   int meshReachable = 0;     // mesh_reachable: seconds between polls, 0 off
 
@@ -51,7 +50,7 @@ struct Values {
            tailscaleName == o.tailscaleName && tailscaleExitNode == o.tailscaleExitNode &&
            agentFaceDetails == o.agentFaceDetails && newsFaceEvery == o.newsFaceEvery &&
            meshGroups == o.meshGroups && meshName == o.meshName && meshChannel == o.meshChannel &&
-           meshMicPush == o.meshMicPush && meshRangeLong == o.meshRangeLong &&
+           meshRangeLong == o.meshRangeLong &&
            meshReachable == o.meshReachable;
   }
 };
@@ -212,10 +211,6 @@ constexpr const char *kTemplate =
     "; same on every board. On a network it uses the network's channel, so set this to your\n"
     "; Wi-Fi's channel and boards on and off the Wi-Fi still hear each other.\n"
     "; mesh_channel = 6\n"
-    "; How this board's mic is keyed on the COMMS screens: sticky (the default: a press of the\n"
-    "; wheel switches it on, and it stays on until the next) or push (on only while BOOT is held:\n"
-    "; push to talk; the menu's KEEP MIC ON leaves it on, to hear a room).\n"
-    "; mesh_mic = push\n"
     "; The rate this board sends at: normal (the default: 1 Mbps) or long (Espressif's long-range\n"
     "; rate, 500 kbps: further, through more walls, but each packet takes twice the air). Every\n"
     "; board hears both, so boards on either setting talk to each other.\n"
@@ -302,7 +297,6 @@ void loadNvs() {
   card.meshGroups = splitLines(nvsString(prefs, "mgroups"));
   card.meshName = nvsString(prefs, "mname");
   card.meshChannel = prefs.getInt("mchan", 6);
-  card.meshMicPush = prefs.getBool("mmic", false);
   card.meshRangeLong = prefs.getBool("mrange", false);
   card.meshReachable = prefs.getInt("mreach", 0);
   tailscaleKeySet = prefs.isKey("tskey");
@@ -331,7 +325,6 @@ void saveNvs() {
   prefs.putString("mgroups", joinLines(card.meshGroups).c_str());
   prefs.putString("mname", card.meshName.c_str());
   prefs.putInt("mchan", card.meshChannel);
-  prefs.putBool("mmic", card.meshMicPush);
   prefs.putBool("mrange", card.meshRangeLong);
   prefs.putInt("mreach", card.meshReachable);
   prefs.end();
@@ -774,12 +767,9 @@ Values parse(const std::string &text, CardPin &cardPin, CardTailscaleKey &cardKe
         log_w("settings: %s: mesh_channel must be 1 to 13", kFile);
       }
     } else if (key == "mesh_mic") {
-      // sticky or push; anything else is sticky.
-      const std::string mode = text::lower(value);
-      v.meshMicPush = mode == "push";
-      if (!v.meshMicPush && mode != "sticky") {
-        log_w("settings: %s: mesh_mic must be sticky or push; sticky it is", kFile);
-      }
+      // Gone: the mic is push to talk on every board now (comms.h).
+      log_w("settings: %s: mesh_mic is no longer used (HOLD BOOT talks; ● while held latches)",
+            kFile);
     } else if (key == "mesh_range") {
       // normal or long; anything else is normal.
       const std::string range = text::lower(value);
@@ -1237,10 +1227,6 @@ int meshChannel() {
   return card.meshChannel >= 1 && card.meshChannel <= 13 ? card.meshChannel : 6;
 }
 
-MeshMic meshMic() {
-  loadNvs();
-  return card.meshMicPush ? MeshMic::Push : MeshMic::Sticky;
-}
 
 MeshRange meshRange() {
   loadNvs();

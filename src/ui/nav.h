@@ -18,8 +18,8 @@
 //            the speaker (allowsTalk()). While music or a podcast plays, it raises the player
 //            sheet instead (apps/music.h). In a build with INKDECK_COMMS (apps/comms_ui.h), on
 //            the dialer's ringing sheet it records a message for the ring nobody answered
-//            instead, and with the card's mesh_mic = push it keys the comms mic on the Comms
-//            screens (on the ring sheet it answers first) (talkTo()). Screens never see it.
+//            instead, and on the Comms screens it keys the comms mic while held (on the ring
+//            sheet it answers first) (talkTo()). Screens never see it.
 //
 // Screens draw only their body. For portrait screens with chrome() the navigator draws the
 // status bar (tag(), context(), battery, clock) and the key-hint bar (hints()) around it.
@@ -41,8 +41,8 @@ enum class Refresh : uint8_t { None, Partial, Full };
 
 // Where HOLD BOOT's words go (issue #52, "Security: talk and agent"). Talk is the default: the
 // limited assistant, which sees no sessions. The agent is only reached from the Agent's screens.
-// The dialer's ringing sheet records a message for other boards instead, and with the card's
-// mesh_mic = push the Comms screens key this board's mic (issue #66).
+// The dialer's ringing sheet records a message for other boards instead, and the Comms screens
+// key this board's mic (issue #66).
 struct TalkTo {
   bool agent = false;
   std::string session;  // with agent: the session to talk into; empty starts a new one
@@ -52,8 +52,7 @@ struct TalkTo {
   uint32_t board = 0;   // with comms: the board talked to or rung; 0 for all of the group
   bool message = false;  // with comms: records a message for the ring not answered (the
                          // dialer's ringing sheet) instead of keying the mic
-  bool answer = false;   // with comms: answers the ring first, then keys the mic (the ring sheet
-                         // when push)
+  bool answer = false;   // with comms: answers the ring first, then keys the mic (the ring sheet)
 };
 
 class Screen {
@@ -114,9 +113,9 @@ class Screen {
   virtual bool locks() const { return false; }
   // Where HOLD BOOT's words go while this is the top screen that isn't a sheet (nav::base()):
   // a talk turn, by default, or the agent (the Agent's screens, apps/agent.h), or other boards
-  // (the Comms screens when push). A sheet over it that says the agent (the ask sheet: words
-  // answer its question) or comms (the dialer's ringing sheet: a message; the call sheet when
-  // push) speaks for both. Asked when the stack changes, and when a screen calls
+  // (the Comms screens). A sheet over it that says the agent (the ask sheet: words answer its
+  // question) or comms (the dialer's ringing sheet: a message; the call sheet: the mic) speaks
+  // for both. Asked when the stack changes, and when a screen calls
   // nav::talkChanged().
   virtual TalkTo talkTo() const { return {}; }
 

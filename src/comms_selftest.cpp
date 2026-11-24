@@ -460,9 +460,9 @@ __attribute__((noinline)) void testMicPackets(Checker &c) {
   std::unique_ptr<Bufs> u(new Bufs());
   uint8_t *f = u->f;
   uint8_t *b = u->b;
-  // A still-here (type 2) from sender 11223344, boot 7, seq 3: sending, on USB, no battery,
-  // threshold -30, peak -24, session 5, on 600 s, bar 5 at -18, pre-roll 8 frames, to all, in
-  // conversation A1B2C3D4 (docs/comms-protocol.md has these bytes).
+  // A still-here (type 2) from sender 11223344, boot 7, seq 3: latched, on USB, no battery, peak
+  // -24, session 5, on 600 s, bar 5 at -18, to all, in conversation A1B2C3D4
+  // (docs/comms-protocol.md has these bytes).
   Header h;
   h.type = kMic;
   h.ttl = 3;
@@ -472,21 +472,19 @@ __attribute__((noinline)) void testMicPackets(Checker &c) {
   h.seq = 3;
   putHeader(h, f);
   MicStill &st = u->st;
-  st.flags = kMicSending | kMicUsb;
+  st.flags = kMicLatched | kMicUsb;
   st.battery = 0xFF;
-  st.threshold = 30;
   st.peak = 24;
   st.session = 5;
   st.onS = 600;
   st.bar = 5;
   st.barPeak = 18;
-  st.preFrames = 8;
   st.target = 0;
   st.conv = 0xA1B2C3D4;
   size_t n = s->seal(f, putMicStill(f + kHeader, kMaxBody, 0, st));
   std::vector<uint8_t> want = unhex(
-      "c7120300e13e368e443322110700000003000000e74688b99260814b63cfeaa8142b8f33b65b204e035360b158"
-      "2729fcbda72e8993accf2e6124db819103");
+      "c7120300e13e368e443322110700000003000000e74688b9926087566697b0aa142e8a21a453204ed79006d3e5"
+      "57dd426698d722e353873da414bc1d");
   c.check(n == want.size() && memcmp(f, want.data(), n) == 0,
           "a sealed still-here (type 2) matches the reference bytes");
   size_t body = 0;
@@ -494,39 +492,37 @@ __attribute__((noinline)) void testMicPackets(Checker &c) {
   Reader r(f + kHeader, body);
   r.u32();
   MicStill &back = u->back;
-  ok = ok && readMicStill(r, back) && back.flags == st.flags && back.threshold == 30 &&
-       back.peak == 24 && back.session == 5 && back.onS == 600 && back.bar == 5 &&
-       back.barPeak == 18 && back.preFrames == 8 && back.target == 0 &&
-       back.conv == 0xA1B2C3D4 && r.left() == 0;
+  ok = ok && readMicStill(r, back) && back.flags == st.flags && back.peak == 24 &&
+       back.session == 5 && back.onS == 600 && back.bar == 5 && back.barPeak == 18 &&
+       back.target == 0 && back.conv == 0xA1B2C3D4 && r.left() == 0;
   c.check(ok, "the still-here reads back field by field");
 
-  // Voice (type 3), seq 4: to all, conversation A1B2C3D4, session 5, sound 2, frame 9, level -21,
-  // opening, predictor -1234, index 40, 8 bytes.
+  // Voice (type 3), seq 4: to all, conversation A1B2C3D4, session 5, frame 9, level -21, opening
+  // and latched, predictor -1234, index 40, 8 bytes (a press's last frame is short).
   h.type = kVoice;
   h.seq = 4;
   putHeader(h, f);
   Voice &v = u->v;
   v.conv = 0xA1B2C3D4;
   v.session = 5;
-  v.sound = 2;
   v.frame = 9;
   v.level = 21;
-  v.flags = kVoiceOpening;
+  v.flags = kVoiceOpening | kVoiceLatched;
   v.predictor = -1234;
   v.index = 40;
   v.bytes = 8;
   for (uint8_t i = 0; i < 8; ++i) v.data[i] = static_cast<uint8_t>(i + 1);
   n = s->seal(f, putVoice(f + kHeader, kMaxBody, 0, v));
   want = unhex(
-      "c7130300e13e368e443322110700000004000000a8c23f21818170d60048ac825824a4e2a8b2f438ffdc362dda"
-      "38f9995ef899d129751713f97265f70f5fe1782ab0339a");
+      "c7130300e13e368e443322110700000004000000a8c23f21818170d60048ac825824afe2b4b1cfc2f92f1f27d8"
+      "3eff9b5cf6e43a518fdacb399a7dc1f7b7ed2d61fb");
   ok = n == want.size() && memcmp(f, want.data(), n) == 0;
   ok = ok && s->open(f, n, body);
   Reader rv(f + kHeader, body);
   rv.u32();
   Voice &vb = u->vb;
   ok = ok && readVoice(rv, vb) && vb.target == 0 && vb.conv == 0xA1B2C3D4 && vb.session == 5 &&
-       vb.sound == 2 && vb.frame == 9 && vb.level == 21 && vb.flags == kVoiceOpening &&
+       vb.frame == 9 && vb.level == 21 && vb.flags == (kVoiceOpening | kVoiceLatched) &&
        vb.predictor == -1234 && vb.index == 40 && vb.bytes == 8 && vb.data[7] == 8;
   c.check(ok, "a sealed voice frame (type 3) matches the reference bytes and reads back");
 
@@ -553,160 +549,81 @@ __attribute__((noinline)) void testMicPackets(Checker &c) {
   full.bytes = kFrameBytes;
   full.target = 0x55667788;
   const size_t fullLen = putVoice(b, kMaxBody, 0, full);
-  ok = fullLen && kHeader + fullLen + kTag == 220 && get32(b + 4) == 0x55667788;
+  ok = fullLen && kHeader + fullLen + kTag == 218 && get32(b + 4) == 0x55667788;
   History &hist = u->hist;
   hist.to = 0x55667788;
   hist.count = MicHistory::kBars;
   const size_t histLen = putHistory(b, kMaxBody, 0, hist);
   ok = ok && kHeader + histLen + kTag == 110 &&
-       kHeader + putMicStill(b, kMaxBody, 0, st) + kTag == 62;
+       kHeader + putMicStill(b, kMaxBody, 0, st) + kTag == 60;
   ok = ok && extFor(b, putHistory(b, kMaxBody, 0, hist)) == 0x55667788 &&
        extFor(b, putHistoryAsk(b, kMaxBody, 0, 0x11223344)) == 0x11223344;
   // A frame of more than 160 bytes, or a step index past 88, is refused.
   b[0] = b[1] = b[2] = b[3] = 0;
   const size_t len = putVoice(b, kMaxBody, 0, full);
-  b[4 + 4 + 4 + 2 + 2 + 2 + 1 + 1 + 2] = 89;  // the step index
+  b[4 + 4 + 4 + 2 + 2 + 1 + 1 + 2] = 89;  // the step index
   Reader bad(b + 4, len - 4);
   ok = ok && !readVoice(bad, u->vb);
-  c.check(ok, "voice is 220 bytes full, a still-here 62, a 2 h history 110; each for whom it says; "
+  c.check(ok, "voice is 218 bytes full, a still-here 60, a 2 h history 110; each for whom it says; "
               "a bad step index is refused");
 }
 
-__attribute__((noinline)) void testGate(Checker &c) {
-  // -30 dBFS threshold; 100 quiet frames, 10 over it, then quiet.
-  std::unique_ptr<MicGate> g(new MicGate());
-  g->setThreshold(-30);
-  int sent = 0, firsts = 0;
-  uint32_t firstAt = 0, lastAt = 0;
-  for (uint32_t i = 0; i < 400; ++i) {
-    const float db = i >= 100 && i < 110 ? -20.0f : -45.0f;
-    const MicGate::Step s = g->frame(db);
-    if (s.send) {
-      if (!sent) firstAt = i;
-      lastAt = i;
-      ++sent;
-    }
-    if (s.first) ++firsts;
-  }
-  const uint32_t P = MicGate::kPreFrames, H = MicGate::kHangFrames;
-  // The first frame sent is frame 100 - P (the pre-roll), sent at frame 100; the last, frame
-  // 109 + H, sent P later.
-  bool ok = sent == static_cast<int>(P + 10 + H) && firsts == 1 && firstAt == 100 &&
-            lastAt - P == 109 + H && !g->sending() && P * kFrameMs == 160;
-  c.check(ok, "gate: a sound goes with 160 ms before it and 2 s after, 160 ms late");
+__attribute__((noinline)) void testTalkLatch(Checker &c) {
+  using L = TalkLatch;
+  using A = TalkLatch::Act;
+  L l;
+  // Held: on at the press, off at the release; ● and BOOT meanwhile do their own jobs (BOOT can't
+  // come while it's held; ● latches).
+  bool ok = l.holdStart(false) == A::MicOn && l.held() && l.holdEnd() == A::MicOff && !l.held();
+  A act = A::None;
+  ok = ok && !l.press(true, true, act) && !l.press(false, true, act) && act == A::None;
+  // ● while held latches (that ● does nothing else); the release leaves the mic on.
+  ok = ok && l.holdStart(false) == A::MicOn && l.press(true, true, act) && act == A::Latch &&
+       l.latched();
+  // A second ● while still held is used up too, and changes nothing.
+  ok = ok && l.press(true, false, act) && act == A::None && l.latched();
+  ok = ok && l.holdEnd() == A::None && l.latched() && !l.held();
+  c.check(ok, "push to talk: on while held, off at the release; ● while held latches, the "
+              "release leaves it on");
 
-  g.reset(new MicGate());
-  g->setThreshold(-30);
-  sent = 0;
-  for (uint32_t i = 0; i < 300; ++i) sent += g->frame(i % 50 == 0 ? -30.5f : -60.0f).send;
-  ok = sent == 0;
-  g->reset();
-  g->setThreshold(-60);
-  sent = 0;
-  for (uint32_t i = 0; i < 300; ++i) sent += g->frame(-59.0f).send;
-  ok = ok && sent == static_cast<int>(300 - P);
-  c.check(ok, "gate: below the threshold nothing goes; at -60 a -59 dBFS room goes all the time");
-
-  // Two loud frames 2 s apart are one sound; 5 s apart, two. A loud frame right after a reset
-  // has only the pre-roll there is.
-  g.reset(new MicGate());
-  g->setThreshold(-30);
-  firsts = 0;
-  for (uint32_t i = 0; i < 600; ++i) {
-    const bool loud = i == 100 || i == 200 || i == 450;
-    firsts += g->frame(loud ? -10.0f : -50.0f).first;
-  }
-  ok = firsts == 2;
-  g->reset();
-  sent = 0;
-  for (uint32_t i = 0; i < 30; ++i) {
-    const MicGate::Step s = g->frame(i == 3 ? -10.0f : -50.0f);
-    if (s.send && !sent) firstAt = i;
-    sent += s.send;
-  }
-  c.check(ok && firstAt == P && sent == static_cast<int>(30 - P),
-          "gate: sounds 2 s apart are one, 5 s apart two; after a pause the pre-roll starts there");
+  // Latched: BOOT (a tap) or ● ends it where it ends (the Comms screens), and nothing else;
+  // elsewhere both do their own jobs.
+  ok = !l.press(false, false, act) && !l.press(true, false, act) && l.latched();
+  ok = ok && l.press(false, true, act) && act == A::MicOff && !l.latched();
+  ok = ok && l.holdStart(false) == A::MicOn && l.press(true, true, act) && l.holdEnd() == A::None;
+  ok = ok && l.press(true, true, act) && act == A::MicOff && !l.latched() && !l.held();
+  // A HOLD BOOT while latched takes it over: on while held, off at the release.
+  l.holdStart(false);
+  l.press(true, true, act);
+  l.holdEnd();
+  ok = ok && l.holdStart(true) == A::Unlatch && l.held() && !l.latched() &&
+       l.holdEnd() == A::MicOff && !l.held();
+  // A mic on already, not by a hold (a dev command's): a hold leaves it, and so does the release.
+  ok = ok && l.holdStart(true) == A::None && !l.held() && l.holdEnd() == A::None;
+  c.check(ok, "latch: BOOT or ● ends it on the Comms screens and does nothing else; elsewhere "
+              "they do their own jobs; a hold takes a latched mic over");
 }
 
-__attribute__((noinline)) void testEchoGate(Checker &c) {
-  // The speaker plays from frame 50 to 150, putting up to -20 dBFS on the mic (with the
-  // margin): the echo alone (-24 at the mic) opens nothing.
-  std::unique_ptr<MicGate> g(new MicGate());
-  g->setThreshold(-30);
-  int sent = 0;
-  for (uint32_t i = 0; i < 300; ++i) {
-    const bool playing = i >= 50 && i < 150;
-    sent += g->frame(playing ? -24.0f : -50.0f, playing ? -20.0f : -96.0f).send;
-  }
-  bool ok = sent == 0;
-  // Someone speaks over it at -10 (frames 100 to 109): it goes, and the frames around it that
-  // the echo could explain go as silence; after the speaker stops, the hang's frames go as they
-  // are.
-  g.reset(new MicGate());
-  g->setThreshold(-30);
-  int loud = 0, muted = 0, plain = 0, firsts = 0;
-  for (uint32_t i = 0; i < 400; ++i) {
-    const bool playing = i >= 50 && i < 150;
-    const bool talk = i >= 100 && i < 110;
-    const float db = talk ? -10.0f : playing ? -24.0f : -50.0f;
-    const MicGate::Step s = g->frame(db, playing ? -20.0f : -96.0f);
-    if (!s.send) continue;
-    firsts += s.first;
-    const uint32_t f = i - MicGate::kPreFrames;  // the frame that goes
-    if (f >= 100 && f < 110) {
-      loud += !s.muted;
-    } else if (f < 150) {
-      muted += s.muted;
-    } else {
-      plain += !s.muted;
-    }
-  }
-  const uint32_t P = MicGate::kPreFrames, H = MicGate::kHangFrames;
-  // The pre-roll (P before 100) and the hang's part while the speaker played (110 to 149) muted;
-  // the hang after it (150 to 109 + H) as it is.
-  ok = ok && firsts == 1 && loud == 10 && muted == static_cast<int>(P + 40) &&
-       plain == static_cast<int>(109 + H - 150 + 1);
-  c.check(ok, "echo gate: the speaker's echo alone opens nothing; a voice over it goes, the "
-              "echo around it as silence");
-}
+__attribute__((noinline)) void testHalfDuplex(Checker &c) {
+  int16_t pcm[8] = {100, -100, 200, -200, 300, -300, 400, -400};
+  HalfDuplex h;
+  // Not transmitting: voice plays as it is.
+  bool ok = h.apply(pcm, 8, 2, false) && pcm[3] == -200 && h.talkedOver == 0;
+  // Transmitting: silence, and a frame with voice in it counts as talked over; one without none.
+  ok = ok && !h.apply(pcm, 8, 2, true) && pcm[0] == 0 && pcm[7] == 0 && h.talkedOver == 1;
+  ok = ok && !h.apply(pcm, 8, 0, true) && h.talkedOver == 1;
+  c.check(ok, "half duplex: nothing plays while this board transmits; voice then is counted");
 
-__attribute__((noinline)) void testGateDrain(Checker &c) {
-  // Loud frames 100 to 109, the speaker's echo on 110 and 111, the mic off after frame 111: the
-  // 8 frames held back (104 to 111) go, the two the echo explains as silence, none a new sound.
-  const uint32_t P = MicGate::kPreFrames, H = MicGate::kHangFrames;
-  std::unique_ptr<MicGate> g(new MicGate());
-  g->setThreshold(-30);
-  int sent = 0;
-  for (uint32_t i = 0; i < 112; ++i) {
-    const bool echo = i >= 110;
-    sent += g->frame(i >= 100 && i < 110 ? -20.0f : echo ? -40.0f : -50.0f,
-                     echo ? -35.0f : -96.0f).send;
-  }
-  int drained = 0, muted = 0, firsts = 0;
-  for (uint32_t k = 0; k < P; ++k) {
-    const MicGate::Step s = g->drain();
-    if (!s.send) break;
-    ++drained;
-    muted += s.muted;
-    firsts += s.first;
-  }
-  // Sent before the off: frames 100 - P to 103, at frames 100 to 111.
-  bool ok = sent == 12 && drained == static_cast<int>(P) && muted == 2 && firsts == 0;
-  // Nothing going out: nothing to drain.
-  g.reset(new MicGate());
-  g->setThreshold(-30);
-  for (uint32_t i = 0; i < 50; ++i) g->frame(-50.0f);
-  ok = ok && !g->drain().send;
-  // Off near the hang's end (a loud frame at 10, the mic off after frame 12 + H): only the frames
-  // the hang still covers, up to 10 + H.
-  g.reset(new MicGate());
-  g->setThreshold(-30);
-  for (uint32_t i = 0; i < 13 + H; ++i) g->frame(i == 10 ? -20.0f : -50.0f);
-  drained = 0;
-  for (uint32_t k = 0; k < P && g->drain().send; ++k) ++drained;
-  c.check(ok && drained == static_cast<int>(P - 2),
-          "gate drain: a mic off mid-sound sends the 160 ms held back, echo as silence; nothing "
-          "when quiet, only what the hang covers at its end");
+  // The call sheet and chirp once per conversation: each press in it is a session, and none of
+  // them after the first raises it again; another conversation does. Outside one (0), once a
+  // board's session.
+  FirstHeard f;
+  ok = f.first(0xA1, 0x11, 1) && !f.first(0xA1, 0x11, 2) && !f.first(0xA1, 0x22, 1) &&
+       !f.first(0xA1, 0x11, 3);
+  ok = ok && f.first(0xB2, 0x11, 4) && !f.first(0xB2, 0x22, 9);
+  ok = ok && f.first(0, 0x11, 5) && !f.first(0, 0x11, 5) && f.first(0, 0x11, 6) &&
+       f.first(0xB2, 0x11, 7);
+  c.check(ok, "call sheet: once per conversation, not per press; outside one, once a session");
 }
 
 __attribute__((noinline)) void testHistory(Checker &c) {
@@ -736,54 +653,55 @@ __attribute__((noinline)) void testHistory(Checker &c) {
 __attribute__((noinline)) void testHeard(Checker &c) {
   using L = HeardMic;
   std::unique_ptr<L> s(new L());
-  s->setThreshold(-30);
-  // Session 5, on 4 s when first heard.
-  L::Change ch = s->on(1000, 5, 4000);
-  bool ok = ch.began && !ch.ended && s->link() == L::Link::Quiet && s->startMs() == 0 - 3000u;
-  bool loud = false;
-  // A soft sound (-25: over the threshold, not 12 dB over), then a loud one.
-  for (uint32_t t = 1000; t < 3000; t += 20) s->audio(t, 1, -25, loud);
-  ok = ok && s->link() == L::Link::Sound && !loud;
-  s->tick(3000 + L::kSoundEndMs, true);
-  ok = ok && s->link() == L::Link::Quiet && s->events().size() == 1 && !s->events()[0].loud &&
-       s->events()[0].endMs - s->events()[0].startMs == 1980;
-  int becameLoud = 0;
-  for (uint32_t t = 5000; t < 6000; t += 20) {
-    s->audio(t, 2, t < 5500 ? -30.0f : -18.0f, loud);
-    becameLoud += loud;
+  // Held (BOOT down there), session 5: its voice from 1 s, a frame each 20 ms to 4 s; then
+  // nothing (it went out of range, or its board died): cut off kCutMs after the last, no LOST,
+  // no alarm, the session ended as long as it was heard.
+  L::Change ch = s->on(1000, 5, 0, false);
+  bool ok = ch.began && !ch.ended && s->link() == L::Link::On && !s->latched();
+  for (uint32_t t = 1000; t <= 4000; t += 20) {
+    ok = ok && !s->on(t, 5, 0, false).began;
+    s->voice(t);
   }
-  ok = ok && becameLoud == 1 && s->events().back().loud && s->events().back().peakDb == -18;
-  c.check(ok, "heard mic: SOUND, then QUIET 0.6 s after; LOUD 12 dB over its threshold, once");
+  ok = ok && !s->tick(4000 + L::kCutMs - 1, true).ended && s->link() == L::Link::On;
+  ch = s->tick(4000 + L::kCutMs, true);
+  ok = ok && ch.ended && ch.cut && !ch.lost && ch.endedSession == 5 && ch.endedMs == 3000 &&
+       s->link() == L::Link::Off && !s->alarm() && s->events().empty();
+  c.check(ok, "heard mic: a held mic that goes silent is cut off after 5 s, with no LOST and no "
+              "alarm");
 
-  // Still-heres every 2 s until 10 s; then nothing: LOST at 30 s, the alarm, ack, the link back.
-  for (uint32_t t = 6000; t <= 10000; t += 2000) ok = ok && !s->on(t, 5, t + 3000).began;
-  s->tick(29999, true);
-  ok = ok && s->link() == L::Link::Quiet && !s->alarm();
-  s->tick(30000, true);
-  ok = ok && s->link() == L::Link::Lost && s->alarm() && s->sinceMs() == 10000;
+  // Latched, session 6 (its still-here said so, or a frame's flag): silent, LOST after kLostMs,
+  // the alarm until ack, the outage when it's back; a held one is never LOST.
+  ch = s->on(20000, 6, 0, false);
+  ok = ch.began && !s->latched();
+  ch = s->on(20500, 6, 0, true);  // ● there latched it
+  ok = ok && !ch.began && ch.shown && s->latched();
+  ok = ok && !s->on(21000, 6, 0, false).shown && s->latched();  // a latch stays for the session
+  ok = ok && !s->tick(21000 + L::kCutMs, true).ended && !s->tick(21000 + L::kLostMs - 1, true).lost;
+  ch = s->tick(21000 + L::kLostMs, true);
+  ok = ok && ch.lost && !ch.ended && s->link() == L::Link::Lost && s->alarm() &&
+       s->sinceMs() == 21000;
   ok = ok && s->ack() && !s->alarm() && s->link() == L::Link::Lost && !s->ack();
-  ch = s->on(45000, 5, 48000);
+  ch = s->on(45000, 6, 25000, true);
   const L::Event &e = s->events().back();
-  ok = ok && ch.back && !ch.began && s->link() == L::Link::Quiet && e.lost && !e.open &&
-       e.endMs - e.startMs == 35000;
-  s->tick(66000, false);  // lost again, this board not hearing it now: no alarm
+  ok = ok && ch.back && !ch.began && s->link() == L::Link::On && !e.open &&
+       e.endMs - e.startMs == 24000;
+  s->tick(45000 + L::kLostMs, false);  // lost again, this board not hearing it: no alarm
   ok = ok && s->link() == L::Link::Lost && !s->alarm();
-  c.check(ok, "heard mic: LOST 20 s after the last packet, its alarm until ack, the outage 35 s; "
-              "no alarm where it isn't heard");
+  c.check(ok, "heard mic: a latched mic is LOST 10 s after the last packet, its alarm until ack, "
+              "the outage logged; no alarm where it isn't heard");
 
-  // Sessions: back, then its off: session 5 ended, 70 s long. Session 6 begins; 7 comes without
-  // 6's off: 6 ends, 7 begins. An off for another session changes nothing.
-  s->on(67000, 5, 70000);
-  ch = s->off(68000, 5);
-  ok = ch.ended && ch.endedSession == 5 && ch.endedMs == 71000 && s->link() == L::Link::Off &&
-       !s->alarm();
-  ok = ok && !s->audio(69000, 3, -10, loud) && !s->tick(200000, true) &&
-       s->link() == L::Link::Off;
-  ch = s->on(300000, 6, 0);
-  ok = ok && ch.began && !ch.ended && s->session() == 6;
-  ch = s->on(310000, 7, 1000);
-  ok = ok && ch.ended && ch.endedSession == 6 && ch.endedMs == 10000 && ch.began &&
-       s->session() == 7 && !s->off(320000, 6).ended && s->on();
+  // Sessions: back, then its off: session 6 ended. 7 comes without 6's off: 6 ends, 7 begins,
+  // held again. An off for another session changes nothing; a clean off is no alarm.
+  s->on(60000, 6, 40000, true);
+  ch = s->off(61000, 6);
+  ok = ch.ended && !ch.cut && ch.endedSession == 6 && ch.endedMs == 41000 &&
+       s->link() == L::Link::Off && !s->alarm();
+  ok = ok && !s->tick(200000, true).ended && s->link() == L::Link::Off;
+  ch = s->on(300000, 7, 0, false);
+  ok = ok && ch.began && s->session() == 7 && !s->latched();
+  ch = s->on(301000, 8, 0, false);
+  ok = ok && ch.ended && ch.endedSession == 7 && ch.began && s->session() == 8 &&
+       !s->off(302000, 7).ended && s->on();
   c.check(ok, "heard mic: a session a log entry, on to off; a new one without the off ends the "
               "one before; a clean off is no alarm");
 }
@@ -1318,9 +1236,8 @@ bool selfTest(Print &out) {
   testMessages(c);
   testConversations(c);
   testMicPackets(c);
-  testGate(c);
-  testEchoGate(c);
-  testGateDrain(c);
+  testTalkLatch(c);
+  testHalfDuplex(c);
   testHistory(c);
   testHeard(c);
   testMixer(c);

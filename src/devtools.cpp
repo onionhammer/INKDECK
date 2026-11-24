@@ -333,25 +333,6 @@ void lineCommand(const String &line) {
     }
     return;
   }
-  if (line.startsWith("commsmicmode")) {
-    // How the mic is keyed, in place of the card's mesh_mic line (the card is the real way):
-    // kept in NVS. "!commsmicmode -" removes it.
-    String rest = line.substring(12);
-    rest.trim();
-    if (rest == "sticky" || rest == "push") {
-      comms::setTestMicMode(true, rest == "push" ? comms::MicMode::Push : comms::MicMode::Sticky);
-    } else if (rest == "-") {
-      comms::setTestMicMode(false);
-    } else if (!rest.isEmpty()) {
-      Serial.println("commsmicmode: sticky, push, or - (the card's mesh_mic line again)");
-      return;
-    }
-    Serial.printf("commsmicmode: %s%s\n",
-                  comms::micMode() == comms::MicMode::Push ? "push" : "sticky",
-                  comms::testMicMode() ? " (dev override; !commsmicmode - removes it)"
-                                       : " (the card's mesh_mic line)");
-    return;
-  }
   if (line.startsWith("commsrange")) {
     // The rate this board sends at, in place of the card's mesh_range line (the card is the real
     // way): kept in NVS. "!commsrange -" removes it.
@@ -612,19 +593,6 @@ void lineCommand(const String &line) {
     Serial.println("commsmicoff: the mic goes off (its off goes out)");
     return;
   }
-  if (line.startsWith("commsmicthr")) {
-    String rest = line.substring(11);
-    rest.trim();
-    if (rest.isEmpty()) {
-      Serial.printf("commsmicthr: %d dBFS (!commsmicthr -36 sets it, in 3 dB steps, -60 to 0)\n",
-                    comms::micThreshold());
-      return;
-    }
-    comms::setMicThreshold(rest.toInt());
-    delay(50);
-    Serial.printf("commsmicthr: %d dBFS\n", comms::micThreshold());
-    return;
-  }
   if (line.startsWith("commstone")) {
     // "!commstone S DB": a 1 kHz tone peaking at DB dBFS added to the mic's input for S s.
     String rest = line.substring(9);
@@ -637,16 +605,16 @@ void lineCommand(const String &line) {
       return;
     }
     comms::micTone(seconds * 1000u, db);
-    Serial.printf("commstone: a 1 kHz tone at %d dBFS for %d s added to the mic "
-                  "(threshold %d dBFS)\n",
-                  std::min(0, db), seconds, comms::mic().thresholdDb);
+    Serial.printf("commstone: a 1 kHz tone at %d dBFS for %d s added to the mic\n", std::min(0, db),
+                  seconds);
     return;
   }
   if (line == "commsvanish" || line == "commsvanish off") {
     const bool on = line == "commsvanish";
     comms::micVanish(on);
     Serial.printf("commsvanish: %s\n", on ? "the mic sends nothing from now, its off neither "
-                                            "(the boards that hear it see LOST after 20 s)"
+                                            "(latched, the boards that hear it see LOST after "
+                                            "10 s; held, they cut it off after 5 s)"
                                           : "the mic is back on air");
     return;
   }
@@ -664,42 +632,21 @@ void lineCommand(const String &line) {
                   seconds ? seconds : static_cast<int>(comms::kLongMicMs / 1000));
     return;
   }
-  if (line == "commsecho" || line.startsWith("commsecho ")) {
-    // "!commsecho [DB [MS]]": the loopback test: a 1 kHz tone at DB dBFS (-20) for MS ms (1000)
-    // through the duplex path, and what the mic hears of it.
-    String rest = line.substring(9);
-    rest.trim();
-    const int space = rest.indexOf(' ');
-    const int db = rest.isEmpty() ? -20 : static_cast<int>(rest.toInt());
-    const int ms = space < 0 ? 1000 : static_cast<int>(rest.substring(space + 1).toInt());
-    comms::hold();
-    for (int i = 0; i < 60 && !comms::listening(); ++i) delay(50);
-    const comms::EchoTest e = comms::echoTest(static_cast<float>(std::min(0, db)), ms);
-    comms::release();
-    if (!e.ok) {
-      Serial.printf("commsecho: %s\n", e.error.c_str());
-      return;
-    }
-    Serial.printf("commsecho: VOL %d, played %d dBFS (DAC out), the mic heard %d dBFS (quiet %d): "
-                  "coupling %+d dB, delay %d ms (the delay used from now on, until a restart)\n",
-                  e.volume, static_cast<int>(lroundf(e.playedDb)), static_cast<int>(lroundf(e.micDb)),
-                  static_cast<int>(lroundf(e.noiseDb)), static_cast<int>(lroundf(e.couplingDb)),
-                  e.delayMs);
-    return;
-  }
   if (line == "commsmic" || line.startsWith("commsmic ")) {
-    // "!commsmic [all|ID] [DB]": this board's mic on in the active group, to all of it or one
-    // board (hex id, as !comms lists it), at DB dBFS (else the threshold kept).
+    // "!commsmic [all|ID] [latch]": this board's mic on in the active group, to all of it or
+    // one board (hex id, as !comms lists it), as if BOOT were held (the far boards cut it off 5 s
+    // after it vanishes), or latched (they go LOST after 10 s).
     String rest = line.substring(8);
     rest.trim();
     uint32_t target = 0;
+    bool latch = false;
     while (!rest.isEmpty()) {
       const int space = rest.indexOf(' ');
       String word = space < 0 ? rest : rest.substring(0, space);
       rest = space < 0 ? String() : rest.substring(space + 1);
       rest.trim();
-      if (word.startsWith("-") || word == "0") {
-        comms::setMicThreshold(word.toInt());
+      if (word == "latch") {
+        latch = true;
       } else if (word != "all") {
         target = strtoul(word.c_str(), nullptr, 16);
       }
@@ -712,12 +659,13 @@ void lineCommand(const String &line) {
       Serial.printf("commsmic: %s\n", comms::status().error.c_str());
       return;
     }
+    if (latch) comms::latchMic();
     delay(600);
     const comms::Mic m = comms::mic();
-    Serial.printf("commsmic: the mic is %s in group %d to %s at %d dBFS (!comms shows it, "
-                  "!commsmicoff switches it off)\n",
+    Serial.printf("commsmic: the mic is %s%s in group %d to %s (!comms shows it, !commsmicoff "
+                  "switches it off)\n",
                   m.capturing ? "on" : m.paused.empty() ? "starting" : m.paused.c_str(),
-                  comms::activeGroup(), target ? "one board" : "all", m.thresholdDb);
+                  m.latched ? ", latched" : "", comms::activeGroup(), target ? "one board" : "all");
     if (!m.on && !comms::status().error.empty()) {
       Serial.printf("commsmic: %s\n", comms::status().error.c_str());
     }
@@ -766,9 +714,9 @@ void lineCommand(const String &line) {
         delay(seconds * 1000);
         const comms::Mic m = comms::mic();
         comms::micOff();
-        Serial.printf("commstalk: off; %lu sounds, %lu frames sent (%lu as echo)\n",
-                      static_cast<unsigned long>(m.sounds), static_cast<unsigned long>(m.framesSent),
-                      static_cast<unsigned long>(m.framesMuted));
+        Serial.printf("commstalk: off; %lu frames sent, the first %lu ms after the press\n",
+                      static_cast<unsigned long>(m.framesSent),
+                      static_cast<unsigned long>(m.firstFrameMs));
       }
     }
     comms::release();
