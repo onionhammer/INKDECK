@@ -591,6 +591,9 @@ constexpr Tone kFall[] = {{45, 1500, 1500}, {35, 0, 0}, {70, 1125, 1125}};
                    {25, 1400, 1400}, {25, 1120, 1120}, {25, 1400, 1400}, {25, 1120, 1120}
 constexpr Tone kRingTrill[] = {RING_BURST, {120, 0, 0}, RING_BURST};
 #undef RING_BURST
+// The ring as the board that rings the others hears it (audio::ringbackChirp()): the same trill,
+// soft.
+constexpr float kRingbackLevel = 0.1f;
 // A comms message that came (audio::messageChirp()): high, low, high.
 constexpr Tone kMessageChirp[] = {{50, 1500, 1500}, {30, 0, 0}, {50, 1125, 1125},
                                   {30, 0, 0}, {80, 1500, 1500}};
@@ -1286,13 +1289,16 @@ void handle(const Command &c) {
           case 4: duplexChirp(TONES(kLostAlarm), kLostAlarmLevel, kRampMs, kLostMinVolume); break;
           case 6: duplexChirp(TONES(kCue), kCueLevel, kCueRampMs); break;
           case 7: duplexChirp(TONES(kFall), kMicOffLevel, kCueRampMs); break;
+          case 8: duplexChirp(TONES(kRingTrill), kRingbackLevel, kCueRampMs); break;
           default: duplexChirp(c.arg ? kRise : kFall, 3, kCueLevel, kCueRampMs); break;
         }
 #undef TONES
         break;
       }
-      if (c.arg == 2) {  // comms's ring: over music too (tonesNow() plays into its output)
-        tonesNow(kRingTrill, sizeof kRingTrill / sizeof kRingTrill[0], kCueLevel, kCueRampMs);
+      if (c.arg == 2 || c.arg == 8) {  // comms's ring: over music too (tonesNow() plays into its
+                                       // output); soft on the board that rings the others
+        tonesNow(kRingTrill, sizeof kRingTrill / sizeof kRingTrill[0],
+                 c.arg == 8 ? kRingbackLevel : kCueLevel, kCueRampMs);
       } else if (c.arg == 4) {  // comms's LOST alarm: over music too, at half volume at least
         tonesNow(kLostAlarm, sizeof kLostAlarm / sizeof kLostAlarm[0], kLostAlarmLevel, kRampMs,
                  kLostMinVolume);
@@ -1663,6 +1669,8 @@ void chirp(bool rising) {
 void ringChirp() {
   if (attention("ring chirp")) send(Cmd::Chirp, 2);
 }
+
+void ringbackChirp() { send(Cmd::Chirp, 8); }
 
 void messageChirp() {
   if (attention("message chirp")) send(Cmd::Chirp, 3);

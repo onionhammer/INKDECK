@@ -81,6 +81,9 @@ void chirp(bool rising);
 // holds for the trill and plays on.
 void ringChirp();
 void messageChirp();
+// The ring as the board that rings the others hears it: ringChirp()'s trill, soft, while a board
+// it rings is ringing (comms repeats it). The user's own ring, so SILENT doesn't stop it.
+void ringbackChirp();
 // Comms's mics (comms.h): the alarm when a latched mic this board hears goes silent (LOST), a
 // siren's two notes twice (about 0.8 s; comms repeats it). Like ringChirp(), over music too and
 // ignored while anything records, rings, listens or streams; but at the music volume and never

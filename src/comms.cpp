@@ -291,6 +291,7 @@ struct Dialing {
   uint32_t conv = 0;  // the conversation an answer puts the boards in
   uint32_t startMs = 0, nextSendMs = 0, endMs = 0;
   bool vanished = false;  // !commsringvanish: ring packets stop, no cancel
+  uint32_t nextBackMs = 0;  // the soft ring here while a board rung is ringing; 0: none played yet
   uint32_t answeredBy = 0;
   struct Ack {
     uint32_t id = 0, ms = 0;
@@ -2050,6 +2051,12 @@ void pumpDial(uint32_t now) {
   if (n != d.shownRinging) {
     d.shownRinging = n;
     bump();
+  }
+  // The ring as this board hears it: soft, at the ringing boards' pace, and only while one of
+  // them says it rings (none does: nobody hears the ring yet).
+  if (n > 0 && (!d.nextBackMs || static_cast<int32_t>(now - d.nextBackMs) >= 0)) {
+    if (canChirp()) audio::ringbackChirp();
+    d.nextBackMs = (now + kRingChirpMs) | 1;
   }
 }
 
