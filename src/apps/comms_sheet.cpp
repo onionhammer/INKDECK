@@ -908,6 +908,10 @@ int conversationMark() {
 
 ui::MicMark micMarkNow() { return micMark(); }
 
+// A ring that rings here with no sound (silent: audio.h): the status bar's RING, so it shows where
+// its sheet can't rise.
+bool silentRinging() { return audio::silent() && comms::incomingRing().on; }
+
 // LOST's alarm where its sheet isn't on top (it couldn't rise there: the lock, a face, the
 // Recorder...): the first key silences it, and does nothing else.
 bool lostKeyFirst(Key) {
@@ -937,8 +941,16 @@ void pollComms() {
     convSeen = s.conversationsSeen;
     ui::nav::onConversation(conversationMark);
     ui::nav::onMic(micMarkNow);
+    ui::nav::onRing(silentRinging);
     ui::nav::onKeyFirst(lostKeyFirst);
     return;
+  }
+
+  // The status bar's RING comes and goes with a silent ring: the screen under it redraws.
+  static bool ringMarkWas = false;
+  if (silentRinging() != ringMarkWas) {
+    ringMarkWas = !ringMarkWas;
+    ui::nav::invalidate();
   }
 
   // The mic's mode changed (the dev override, at run time): HOLD BOOT's targets change with it.

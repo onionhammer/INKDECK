@@ -16,6 +16,7 @@
 #include "pin_places.h"
 #include "ota.h"
 #include "comms.h"
+#include "comms_reach.h"
 #include "pmic.h"
 #include "power.h"
 #include "rtc.h"
@@ -53,10 +54,12 @@ constexpr int kStripH = 66;
 constexpr int kStripKeyW = 124;
 
 // The actions live in a sheet (● ACTIONS), which pages once they outgrow the screen.
-enum class Action : uint8_t { Sleep, SyncTime, FullRefresh, PinLock, Update, WifiDrive, Reboot };
+enum class Action : uint8_t {
+  Sleep, SyncTime, FullRefresh, PinLock, Reachable, Silent, Update, WifiDrive, Reboot
+};
 constexpr const char *kActionLabels[] = {"SLEEP NOW", "SYNC TIME (NTP)",   "AUTO FULL REFRESH",
-                                         "PIN LOCK",  "UPDATE OVER WI-FI", "WI-FI DRIVE",
-                                         "REBOOT"};
+                                         "PIN LOCK",  "REACHABLE",         "SILENT",
+                                         "UPDATE OVER WI-FI", "WI-FI DRIVE", "REBOOT"};
 constexpr int kActionCount = sizeof kActionLabels / sizeof kActionLabels[0];
 
 // AUTO FULL REFRESH's steps, in screens' worth of pixels flipped (screen.h); 0 = off.
@@ -83,6 +86,22 @@ std::string pinLockValue() {
   const int minutes = pinplaces::asks(pinplaces::kPowerOn) ? settings::lockMinutes() : 0;
   return minutes > 0 ? "ON \xC2\xB7 " + std::to_string(minutes) + " MIN" : "ON";
 }
+
+// REACHABLE's value: the interval in effect (comms.h reachInterval()), with CARD when it's the
+// card's mesh_reachable line rather than this row's choice; NO GROUP without one to poll in.
+std::string reachableValue() {
+#if INKDECK_COMMS
+  if (!comms::reachPossible()) return "NO GROUP";
+  const int s = comms::reachInterval();
+  std::string v = s ? std::to_string(s) + " S" : "OFF";
+  if (!comms::reachOverridden() && settings::meshReachable() > 0) v += " \xC2\xB7 CARD";
+  return v;
+#else
+  return "NOT BUILT";
+#endif
+}
+
+std::string silentValue() { return audio::silent() ? "ON" : "OFF"; }
 
 std::string volts(int mv, int decimals) {
   char buf[16];
@@ -258,6 +277,8 @@ class SystemScreen : public ui::Screen {
       std::function<std::string()> value;
       if (a == Action::FullRefresh) value = fullRefreshValue;
       if (a == Action::PinLock) value = pinLockValue;
+      if (a == Action::Reachable) value = reachableValue;
+      if (a == Action::Silent) value = silentValue;
       items.push_back({kActionLabels[i], value, [this, i] {
                          lastAction_ = i;
                          run(static_cast<Action>(i));
@@ -312,6 +333,28 @@ class SystemScreen : public ui::Screen {
             }));
         break;
       }
+      case Action::Reachable: {
+#if INKDECK_COMMS
+        // OFF, 10 S, 30 S, OFF: kept in NVS over the card's mesh_reachable line (!commsreach -
+        // hands it back to the card).
+        if (!comms::reachPossible()) {
+          say("NO COMMS GROUP: SET MESH_GROUP IN INKDECK.INI");
+          break;
+        }
+        const int next = comms::wire::nextReachStep(comms::reachInterval());
+        comms::setReachOverride(next);
+        message_ = next ? "ON BATTERY: ASLEEP, A POLL EVERY " + std::to_string(next) + " S"
+                        : "OFF: ON BATTERY THE BOARD POWERS OFF";
+#else
+        say("COMMS ISN'T IN THIS BUILD");
+#endif
+        break;
+      }
+      case Action::Silent:
+        audio::setSilent(!audio::silent());
+        message_ = audio::silent() ? "SILENT: NO CHIRPS; ALARMS STILL SOUND"
+                                   : "SILENT OFF: CHIRPS AS BEFORE";
+        break;
       case Action::Update: {
         if (!wlan::configured()) {
           say("NO WI-FI: SET ONE IN INKDECK.INI OR .ENV");

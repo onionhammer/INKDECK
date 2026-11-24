@@ -94,6 +94,15 @@ void micCue();
 void micOffChirp();
 // While the duplex path (below) is on, every chirp, the alarms' too, plays into it, over the
 // voice; beep() is ignored.
+//
+// Silent (System's SILENT row, kept in NVS, off by default): no sound the board makes by itself
+// to get attention: the agent's chirps (chirp(), comms's call chirp too), ringChirp(),
+// messageChirp(), loudChirp() and micOffChirp() return at once (and log it). Alarms still sound
+// (the Clock's ring(), comms's lostAlarm()), and so does all the user starts: music, podcasts,
+// voice in a conversation, the agent's replies, the mic's cue (micCue(), captureStart(true)),
+// beep() (the Level, the Wi-Fi tone). Works before begin().
+bool silent();
+void setSilent(bool on);
 
 // --- Recording: 16 kHz, mono, 16-bit WAV. record() stops playback first. The file is
 // finished (its header's sizes filled in) by stopRecording(), or by stop(), which power-off

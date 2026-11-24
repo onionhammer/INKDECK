@@ -54,6 +54,8 @@ void unlock();
 
 // Writes the framebuffer for tools/screenshot.py: "#FB <w> <h> <rotation>", numbered base64
 // lines, then "#END <crc32>". Takes the lock.
+// begin() has run (the framebuffer exists).
+bool ready();
 void dump(Print &out);
 
 }  // namespace screen

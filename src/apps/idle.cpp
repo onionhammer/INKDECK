@@ -147,6 +147,19 @@ void pollPower() {
   if (before == power::Held::Stay && power::reachHold() == power::Held::None) wokenOnPending = true;
   if (power::reachHold() != power::Held::None) wokenOnPending = false;
   if (wokenOnPending) wokenOn();
+#if INKDECK_COMMS
+  // A key on a board that's up (not one held after a wake: reachStep() decides there): the rings
+  // missed while silent have been seen, and the off faces stop showing them (apps/missed_ring.h).
+  {
+    static uint32_t keyAt = 0;  // the last key as first seen (input::begin()'s start counts as one)
+    const uint32_t lastKey = millis() - input::idleMs();
+    if (!keyAt) keyAt = lastKey | 1;
+    if (static_cast<int32_t>(lastKey - keyAt) > 50) {
+      keyAt = lastKey;
+      if (power::reachHold() == power::Held::None) comms::clearMissedRings();
+    }
+  }
+#endif
   switch (power::reachHold()) {
     case power::Held::Stay: return;
     case power::Held::Sleep: {

@@ -390,6 +390,7 @@ void reachStep() {
     case comms::Woken::On:
       held = Held::None;
       comms::release();
+      comms::clearMissedRings();  // seen: the board is an ordinary one again
       log_i("power: woken for comms, and a key: on");
       break;
     case comms::Woken::None:

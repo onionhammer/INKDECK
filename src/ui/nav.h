@@ -187,6 +187,11 @@ void onConversation(int (*count)());
 // Agent and News faces live on USB, the picture viewer with its chrome hidden).
 void onMic(MicMark (*mark)());
 MicMark micMark();
+// A comms ring ringing here with no sound (audio::silent()), for the status bar's RING before the
+// MIC (apps/comms_ui.h): so a silent ring shows where its sheet can't rise (the lock, the desk
+// face, the Recorder). ringMark() asks it, for the desk face's own status bar.
+void onRing(bool (*ringing)());
+bool ringMark();
 // Sees each key (▲ ▼ ● HOLD ● BOOT; not HOLD BOOT or PWR) before the screen on top does: true uses
 // it up. Comms's LOST alarm where its sheet can't rise: the first key silences it.
 void onKeyFirst(bool (*filter)(Key key));

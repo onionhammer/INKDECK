@@ -223,7 +223,8 @@ constexpr const char *kTemplate =
     "; On battery, instead of powering off, stay reachable: light sleep with the radio off,\n"
     "; waking every few seconds to ask the boards in range whether a ring, voice or a message\n"
     "; waits. off (the default), on (every 5 s) or the seconds between those checks, 2 to 30:\n"
-    "; sooner answers, more battery. A sleeping board doesn't sound LOST's alarm.\n"
+    "; sooner answers, more battery. A sleeping board doesn't sound LOST's alarm. SYSTEM >\n"
+    "; ACTIONS > REACHABLE (OFF, 10 S, 30 S) overrides this line until !commsreach - on the console.\n"
     "; mesh_reachable = 10\n";
 
 // The share lines and SMB passwords go in NVS as one string each, a line apiece.

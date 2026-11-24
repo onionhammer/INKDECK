@@ -246,6 +246,24 @@ uint8_t waitingFor(const WaitingNow &w, int group, uint32_t sleeper, uint16_t in
   return what;
 }
 
+// --- Settings and what the off faces show ------------------------------------------------------
+
+int nextReachStep(int seconds) {
+  if (seconds <= 0) return kReachSteps[0];
+  for (const int step : kReachSteps) {
+    if (step > seconds) return step;
+  }
+  return 0;
+}
+
+void addMissed(MissedRec &r, uint32_t from, const char *name, uint32_t at) {
+  r.from = from;
+  memset(r.name, 0, sizeof r.name);
+  if (name) strncpy(r.name, name, sizeof r.name - 1);
+  r.at = at;
+  if (r.count < 0xFFFF) ++r.count;
+}
+
 }  // namespace wire
 }  // namespace comms
 

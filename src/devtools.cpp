@@ -257,23 +257,29 @@ void lineCommand(const String &line) {
     String rest = line.substring(10);
     rest.trim();
     if (rest == "-") {
-      comms::setTestReach(-1);
+      comms::setReachOverride(-1);
     } else if (rest == "off") {
-      comms::setTestReach(0);
+      comms::setReachOverride(0);
     } else if (rest == "on") {
-      comms::setTestReach(5);
+      comms::setReachOverride(5);
     } else if (!rest.isEmpty()) {
       const int n = rest.toInt();
       if (n < 2 || n > 30) {
         Serial.println("commsreach: 2 to 30 (seconds), on, off, or - (the card's mesh_reachable)");
         return;
       }
-      comms::setTestReach(n);
+      comms::setReachOverride(n);
     }
     const int s = comms::reachInterval();
     Serial.printf("commsreach: %s%s\n", s ? ("every " + String(s) + " s").c_str() : "off",
-                  comms::testReach() ? " (dev override; !commsreach - removes it)"
+                  comms::reachOverridden() ? " (System's REACHABLE or !commsreach; - removes it)"
                                      : " (the card's mesh_reachable line)");
+    return;
+  }
+  if (line == "silent" || line == "silent on" || line == "silent off") {
+    // System's SILENT row from the console: no attention chirps (audio.h silent()).
+    if (line != "silent") audio::setSilent(line.endsWith("on"));
+    Serial.printf("silent: %s\n", audio::silent() ? "on" : "off");
     return;
   }
   if (line.startsWith("reachtest")) {

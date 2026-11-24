@@ -77,6 +77,13 @@ int drawMicMark(Canvas &c, int x, int centerY, MicMark mark, uint16_t color) {
                  mark == MicMark::On ? TagKind::Inverted : TagKind::Outlined, 5, color);
 }
 
+int ringMarkWidth(bool ring) { return ring ? tagWidth("RING", style::kStatusTag, 5) : 0; }
+
+int drawRingMark(Canvas &c, int x, int centerY, bool ring, uint16_t color) {
+  if (!ring) return 0;
+  return drawTag(c, x, centerY, 20, "RING", style::kStatusTag, TagKind::Inverted, 5, color);
+}
+
 void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   const Rect band{r.x, r.y, r.w, r.h - kRule};
   hrule(c, r.x, band.bottom(), r.w);
@@ -87,7 +94,7 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   drawText(c, {band.x + 12, band.y, tagW - 24, band.h}, info.tag, style::kStatusTag, Align::Left,
            kPaper);
 
-  // Right block: [▶/‖] [?n] [bubble n] [MIC] [WIFI] [temp] [battery glyph + %] [clock], after a
+  // Right block: [▶/‖] [?n] [bubble n] [RING] [MIC] [WIFI] [temp] [battery glyph + %] [clock], after a
   // 3 px rule.
   constexpr int kGap = 14;
   constexpr int kBatteryGlyphW = 28 + 6;
@@ -108,6 +115,7 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   const std::string asks = info.asks > 0 ? "?" + std::to_string(info.asks) : std::string();
   if (!asks.empty()) blockW += tagWidth(asks, style::kStatusTag, 5) + kGap;
   if (info.conversation > 0) blockW += conversationMarkWidth(info.conversation) + kGap;
+  if (info.ring) blockW += ringMarkWidth(true) + kGap;
   if (info.mic != MicMark::None) blockW += micMarkWidth(info.mic) + kGap;
   const int blockX = band.right() - std::max(blockW, 0) - 12;
   vrule(c, blockX - 12 - kRule, band.y, band.h);
@@ -122,6 +130,7 @@ void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info) {
   if (info.conversation > 0) {
     x += drawConversationMark(c, x, band.centerY(), info.conversation) + kGap;
   }
+  if (info.ring) x += drawRingMark(c, x, band.centerY(), true) + kGap;
   if (info.mic != MicMark::None) x += drawMicMark(c, x, band.centerY(), info.mic) + kGap;
   for (int i = 0; i < 4; ++i) {
     if (texts[i].empty()) continue;

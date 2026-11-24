@@ -40,6 +40,7 @@ struct StatusInfo {
   int conversation = 0;  // boards in a conversation this board isn't in: an inverted speech
                          // bubble with the count after the ?n (issue #66)
   MicMark mic = MicMark::None;  // after the bubble
+  bool ring = false;  // a ring rings here with no sound (silent): an inverted RING before the MIC
 };
 void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info);
 int drawBattery(Canvas &c, int x, int centerY, int percent);  // returns its width
@@ -53,6 +54,9 @@ int conversationMarkWidth(int count);
 // None).
 int drawMicMark(Canvas &c, int x, int centerY, MicMark mark, uint16_t color = kInk);
 int micMarkWidth(MicMark mark);
+// The RING mark, 20 px tall, left edge at x; returns its width (0 when off).
+int drawRingMark(Canvas &c, int x, int centerY, bool ring, uint16_t color = kInk);
+int ringMarkWidth(bool ring);
 
 // --- Section header: "// LABEL" on the left, a count or address on the right, rule below.
 struct SectionOptions {

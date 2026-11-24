@@ -140,5 +140,6 @@ nfs = nfs://nas.local/volume1/books
 ; On battery, instead of powering off, stay reachable: light sleep with the radio off,
 ; waking every few seconds to ask the boards in range whether a ring, voice or a message
 ; waits. off (the default), on (every 5 s) or the seconds between those checks, 2 to 30:
-; sooner answers, more battery. A sleeping board doesn't sound LOST's alarm.
+; sooner answers, more battery. A sleeping board doesn't sound LOST's alarm. SYSTEM >
+; ACTIONS > REACHABLE (OFF, 10 S, 30 S) overrides this line until !commsreach - on the console.
 ; mesh_reachable = 10

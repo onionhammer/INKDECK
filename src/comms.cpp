@@ -43,6 +43,7 @@
 #include "pmic.h"
 #include "power.h"
 #include "rtc.h"
+#include "screen.h"
 #include "text.h"
 #include "wlan.h"
 
@@ -2148,6 +2149,26 @@ void sendRinging(GroupRec &g, uint32_t dialer, uint16_t ring, uint8_t state) {
 }
 
 // The ring on this board stops.
+// missedRing()'s count as last read or written (-1: not read yet), so the UI's checks don't read
+// NVS each turn.
+std::atomic<int> missedCount{-1};
+
+// A ring nobody answered while silent and reachable (missedRing()).
+void noteMissedRing(uint32_t from, time_t at) {
+  std::string name;
+  {
+    std::lock_guard<std::mutex> l(core->mu);
+    name = nameOf(from);
+  }
+  MissedRec r;
+  kv::load("reach", "missed", r);
+  addMissed(r, from, name.c_str(), static_cast<uint32_t>(at ? at : utcNow()));
+  kv::save("reach", "missed", r);
+  missedCount = r.count;
+  log_i("comms: a missed ring from %08lX kept for the off face (%u)",
+        static_cast<unsigned long>(from), r.count);
+}
+
 void ringingOver(RingEnd why) {
   Ringing &rg = core->ringing;
   if (!rg.on) return;
@@ -2171,6 +2192,11 @@ void ringingOver(RingEnd why) {
                                      "given up", "no answer",   "lost",           "a message"};
   log_i("comms: ring from %08lX stopped: %s", static_cast<unsigned long>(rg.from),
         kWhy[static_cast<int>(why)]);
+  // Silent and reachable: nobody heard it, so the off faces show it (apps/missed_ring.h). To
+  // show it without silent too, drop audio::silent() here.
+  const bool unanswered = why == RingEnd::GaveUp || why == RingEnd::NoAnswer ||
+                          why == RingEnd::Lost || why == RingEnd::Message;
+  if (unanswered && audio::silent() && reachInterval() > 0) noteMissedRing(rg.from, rg.at);
   bump();
 }
 
@@ -5663,7 +5689,11 @@ bool reachNap(uint32_t ms, bool pretend) {
     while (millis() - t0 < ms) {
       if (gpio_get_level(pwr)) return true;
       while (Serial.available() > 0) {
-        if (Serial.read() == 'o') return true;
+        const int k = Serial.read();
+        if (k == 'o') return true;
+        // The dev tools' screenshot, while pretending (no dev tools task runs here): the face
+        // as the boot drew it (tools/screenshot.py's format; nothing before screen::begin()).
+        if (k == 's' && screen::ready()) screen::dump(Serial);
       }
       delay(std::min<uint32_t>(20, ms - (millis() - t0)));
     }
@@ -5756,15 +5786,16 @@ int reachInterval() {
   int s = dev >= 0 ? (dev == 0xFFFF ? 0 : dev) : settings::meshReachable();
   if (s <= 0) return 0;
   s = std::max(2, std::min(s, 30));
-  // A group: a mesh_group line, the agent token's, or the dev one.
-  if (settings::meshGroups().empty() && settings::agentToken().empty() &&
-      devGroupRecord().empty()) {
-    return 0;
-  }
-  return s;
+  return reachPossible() ? s : 0;
 }
 
-void setTestReach(int seconds) {
+bool reachPossible() {
+  // A group: a mesh_group line, the agent token's, or the dev one.
+  return !settings::meshGroups().empty() || !settings::agentToken().empty() ||
+         !devGroupRecord().empty();
+}
+
+void setReachOverride(int seconds) {
   Preferences prefs;
   if (!prefs.begin(kNsReach, false)) return;
   if (seconds < 0) {
@@ -5778,9 +5809,32 @@ void setTestReach(int seconds) {
   prefs.end();
 }
 
-bool testReach() {
+bool reachOverridden() {
   reachInterval();
   return devReach.load() >= 0;
+}
+
+MissedRing missedRing() {
+  MissedRec r;
+  MissedRing m;
+  if (missedCount.load() == 0) return m;
+  const bool have = kv::load(kNsReach, "missed", r) && r.count > 0;
+  missedCount = have ? r.count : 0;
+  if (!have) return m;
+  m.from = r.from;
+  m.name = r.name;
+  m.at = static_cast<time_t>(r.at);
+  m.count = r.count;
+  return m;
+}
+
+void clearMissedRings() {
+  if (missedCount.load() == 0) return;
+  MissedRec r;
+  missedCount = 0;
+  if (!kv::load(kNsReach, "missed", r) || r.count == 0) return;
+  kv::save(kNsReach, "missed", MissedRec());
+  log_i("comms: the missed rings are cleared");
 }
 
 ReachEnd reachSleep(const ReachArgs &a) {
@@ -5995,8 +6049,17 @@ void dumpReach(Print &out) {
   const int interval = reachInterval();
   out.printf("reach: %s%s; polls on channel %u (boards last heard on %u)\n",
              interval ? ("every " + std::to_string(interval) + " s").c_str() : "off",
-             testReach() ? " (dev override; !commsreach - removes it)" : " (mesh_reachable)",
+             reachOverridden() ? " (System's REACHABLE or !commsreach; !commsreach - removes it)"
+                               : " (mesh_reachable)",
              lg.channel, homeChannel());
+  const MissedRing mr = missedRing();
+  out.printf("  silent %s; missed rings shown on the off faces: %d", audio::silent() ? "on" : "off",
+             mr.count);
+  if (mr.count) {
+    out.printf(" (the last from %s %08lX at %ld)", mr.name.c_str(),
+               static_cast<unsigned long>(mr.from), static_cast<long>(mr.at));
+  }
+  out.println();
   if (!lg.since) {
     out.println("  log: empty (no sleep since it began)");
     return;

@@ -259,12 +259,23 @@ start and now. Not built: boards on USB keeping a message for a sleeper after it
 minutes. Packets and rules: [`docs/comms-protocol.md`](docs/comms-protocol.md#reachable-on-battery).
 Dev commands: `!commsreach N|on|off|-` (the `mesh_reachable` line without the card), `!reachtest
 pretend|sleep M|off` (on USB, behave as on battery; the sleep a delay with the console alive, or M
-minutes of real light sleep), `!reachlog [reset]`, `!reachchan N [misses]`, `!reachbench MODE N
+minutes of real light sleep), `!reachlog [reset]` (with the missed rings), `!silent on|off`, `!reachchan N [misses]`, `!reachbench MODE N
 SLEEPMS LISTENMS` (the radio around light sleep, timed). Measured 2026-11-23: a poll keeps the
 board awake about 8 ms when an answer comes (Wi-Fi up in 2 ms, the answer 3 ms after the send) and
 19 ms when none does. Tested on USB with `!reachtest pretend` (rings, voice and a message waking it,
 PWR, the Clock face's minute, a channel sweep, a key making it an ordinary board); not on battery,
 and its battery life is unmeasured: leave a board unplugged overnight and read `!reachlog`.
+**System → ACTIONS → REACHABLE** sets it on the board (OFF, 10 S, 30 S, kept over the card's line;
+`!commsreach -` hands it back to the card), and **SILENT** (off by default) stops the chirps the
+board makes by itself: comms's ring, message, call, loud and mic-off chirps and the agent's
+chirps. Alarms (the Clock's, LOST's) still sound, and so does everything you start. A ring that
+rings with SILENT on shows an inverted `RING` in the status bar where its sheet can't rise (the
+lock, the desk face). With SILENT and REACHABLE both on, a ring nobody answered stays on the off
+face (`MISSED RING · INKDECK-0000 RANG 18:02`, on all five faces, through the Clock face's minute
+redraws) until a key, PWR or USB. Tested 2026-11-23 on USB the same way (screenshots of both rows
+cycling and kept through a restart, a silent ring with no chirp on an awake board, on the desk
+face and on a sleeper's Sleep and Clock faces, the mark kept through two minute redraws, cleared
+by PWR and by a key).
 
 **Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
 `.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
@@ -316,7 +327,7 @@ mesh_name = KITCHEN                   ; this board's name on the others
 mesh_channel = 6                      ; the radio's channel off Wi-Fi
 mesh_mic = push                       ; push to talk (HOLD BOOT); sticky, the default: ● on and off
 mesh_range = long                     ; send at the long-range rate (500 kbps); normal: 1 Mbps
-mesh_reachable = 10                   ; on battery, sleep polling every 10 s instead of powering off
+mesh_reachable = 10                   ; on battery, sleep polling every 10 s instead of powering off (System's REACHABLE overrides it)
 ```
 
 Each `smb =` or `nfs =` line is a share Files lists:

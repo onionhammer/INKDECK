@@ -28,6 +28,7 @@ void (*talkKeyHandler)(bool) = nullptr;
 int (*asksCount)() = nullptr;
 int (*conversationCount)() = nullptr;
 MicMark (*micMarkFn)() = nullptr;
+bool (*ringMarkFn)() = nullptr;
 bool (*keyFilter)(Key) = nullptr;
 bool dialSwapped = false;  // the swap orientDial() chose at the dial's press, kept for its repeats
 std::atomic<bool> talkOk{false};  // talkAllowed(), worked out when the stack changes
@@ -85,6 +86,7 @@ StatusInfo statusFor(const Screen &s) {
   info.asks = asksCount ? asksCount() : 0;
   info.conversation = conversationCount ? conversationCount() : 0;
   info.mic = micMarkFn ? micMarkFn() : MicMark::None;
+  info.ring = ringMarkFn && ringMarkFn();
   if (!s.statusClock()) {
     info.clock.clear();
   } else if (rtc::timeValid()) {
@@ -310,6 +312,10 @@ void onConversation(int (*count)()) { conversationCount = count; }
 void onMic(MicMark (*mark)()) { micMarkFn = mark; }
 
 MicMark micMark() { return micMarkFn ? micMarkFn() : MicMark::None; }
+
+void onRing(bool (*ringing)()) { ringMarkFn = ringing; }
+
+bool ringMark() { return ringMarkFn && ringMarkFn(); }
 
 void onKeyFirst(bool (*filter)(Key key)) { keyFilter = filter; }
 

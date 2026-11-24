@@ -17,6 +17,7 @@
 #include "apps/agent_face.h"
 #include "apps/clock.h"
 #include "apps/lock.h"
+#include "apps/missed_ring.h"
 #include "apps/news.h"
 #include "apps/off_face.h"
 #include "apps/weather.h"
@@ -493,6 +494,7 @@ void drawStory(Canvas &c, const Card &card, const Clock &k) {
 // Live on USB with the comms mic on (it stays on there; issue #66): the foot's band says MIC ON.
 // Set by the face before it draws.
 bool micShown = false;
+bool ringShown = false;  // a silent ring, live on USB: the band says RING
 
 void drawFoot(Canvas &c, const Card &card, const Clock &k) {
   using namespace ui;
@@ -542,11 +544,17 @@ void drawFoot(Canvas &c, const Card &card, const Clock &k) {
   y += kRowH + kGap;
 
   std::string band;
-  if (k.mode == Mode::Usb) band = (micShown ? "MIC ON" : "LIVE") + dot() + "USB";
+  if (k.mode == Mode::Usb) {
+    band = (ringShown ? "RING" : micShown ? "MIC ON" : "LIVE") + dot() + "USB";
+  }
   if (k.mode == Mode::Stopped && k.battery >= 0) {
     band = "BATTERY " + std::to_string(k.battery) + "%";
   }
-  if (!band.empty()) drawTag(c, x, y + 9, 19, band, kTag, TagKind::Inverted, 6);
+  if (!band.empty()) {
+    drawTag(c, x, y + 9, 19, band, kTag, TagKind::Inverted, 6);
+  } else {
+    drawMissedRing(c, x, y + 9, 19, w);  // a ring missed while silent (apps/missed_ring.h)
+  }
 
   // HOLD [PWR] TO READ, at the bottom.
   drawHoldPwr(c, {x, inY + inH - 24, w, 24}, "TO READ");
@@ -598,6 +606,7 @@ class FaceScreen : public OffFaceScreen {
       const bool minute = minuteStart(now) != minuteStart(clock_.now);
       const bool mic = ui::nav::micMark() != ui::MicMark::None;
       if (mic != micShown) return true;  // the band: MIC ON or LIVE
+      if (ui::nav::ringMark() != ringShown) return true;  // or RING
       if (!minute && gen == gen_) return false;
       Card next = card_;
       if (card_.kind != Kind::Story && gen != gen_) {
@@ -635,6 +644,7 @@ class FaceScreen : public OffFaceScreen {
 
   void draw(Canvas &c, const Rect &) override {
     micShown = usb_ && ui::nav::micMark() != ui::MicMark::None;
+    ringShown = usb_ && ui::nav::ringMark();
     drawFace(c, clock_, card_);
     drawn();
   }

@@ -610,13 +610,29 @@ bool listening();        // the radio is up and receiving
 // minutes) gets an answer from the boards on USB even with nothing, and three unanswered in a row
 // sweep the channels.
 
-// Seconds between a sleeping board's polls: mesh_reachable (settings::meshReachable()), or the dev
-// override (!commsreach); 0 when off, or when no group is configured. Works before begin().
+// Seconds between a sleeping board's polls: the override (System's REACHABLE row, !commsreach),
+// else mesh_reachable (settings::meshReachable()); 0 when off, or when no group is configured.
+// Works before begin().
 int reachInterval();
-// !commsreach: seconds (2 to 30) in place of mesh_reachable, 0 for off, -1 to remove the override
-// (kept in NVS). testReach() says if one is set.
-void setTestReach(int seconds);
-bool testReach();
+// The override: seconds (2 to 30) in place of mesh_reachable, 0 for off, -1 to remove it and go
+// by the card's line again. Kept in NVS (reach/dev), so it survives restarts.
+void setReachOverride(int seconds);
+bool reachOverridden();
+// A group to poll in: a mesh_group line, the agent token's group or the dev one. Before begin().
+bool reachPossible();
+
+// A ring nobody answered here (given up, 60 s with no answer, the dialer gone, or a message left
+// instead) while audio::silent() and reachInterval() were both on: the off faces show it
+// (apps/missed_ring.h). Kept in NVS until clearMissedRings(): a key, PWR or USB making the board
+// an ordinary one. count 0: none. Works before begin().
+struct MissedRing {
+  uint32_t from = 0;
+  std::string name;  // "" if its presence never came
+  time_t at = 0;     // UTC; 0 if the clock wasn't set
+  int count = 0;     // since the record began
+};
+MissedRing missedRing();
+void clearMissedRings();
 
 enum class ReachEnd : uint8_t {
   PowerKey,    // PWR (or the dev tools' 'o' while pretending)

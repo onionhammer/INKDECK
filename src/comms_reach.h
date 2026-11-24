@@ -207,5 +207,25 @@ constexpr uint32_t kVoiceGraceMs = 2000;
 uint8_t waitingFor(const WaitingNow &w, int group, uint32_t sleeper, uint16_t intervalS,
                    uint32_t now);
 
+// --- Settings and what the off faces show ------------------------------------------------------
+
+// System's REACHABLE row: OFF -> 10 S -> 30 S -> OFF. From a value off those steps (the card's
+// mesh_reachable can say 2 to 30), the next step up.
+constexpr int kReachSteps[] = {10, 30};
+int nextReachStep(int seconds);
+
+// A ring nobody answered here while silent and reachable were both on: the latest ring's board,
+// its name and when, and how many since the record began. Kept in NVS (a plain record, so the
+// RTC wakes' restarts and the off faces' redraws in setup() read it) until a key makes the board
+// an ordinary one again.
+struct MissedRec {
+  uint32_t from = 0;
+  char name[17] = {};  // upper case, terminated
+  uint32_t at = 0;     // UTC; 0 if the clock wasn't set
+  uint16_t count = 0;  // 0: no record
+  uint16_t pad = 0;
+};
+void addMissed(MissedRec &r, uint32_t from, const char *name, uint32_t at);
+
 }  // namespace wire
 }  // namespace comms

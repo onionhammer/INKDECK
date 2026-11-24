@@ -19,6 +19,7 @@
 
 #include "board_pins.h"
 #include "es8311.h"
+#include "kv_store.h"
 #include "mp3info.h"
 #include "paths.h"
 #include "pmic.h"
@@ -1756,19 +1757,55 @@ bool ringing() { return ringOn.load(); }
 
 void beep(uint32_t ms, uint32_t hz) { send(Cmd::Beep, static_cast<int>(ms), static_cast<int>(hz)); }
 
-void chirp(bool rising) { send(Cmd::Chirp, rising ? 1 : 0); }
+namespace {
+std::atomic<int> silentMode{-1};  // -1: not read from NVS yet
 
-void ringChirp() { send(Cmd::Chirp, 2); }
+// The one gate for the chirps that call for attention by themselves (audio.h, silent()).
+bool attention(const char *what) {
+  const bool on = !silent();
+  log_i("audio: %s%s", on ? "" : "silent: no ", what);
+  return on;
+}
+}  // namespace
 
-void messageChirp() { send(Cmd::Chirp, 3); }
+bool silent() {
+  int v = silentMode.load();
+  if (v < 0) {
+    v = kv::loadU32("audio", "silent") ? 1 : 0;
+    silentMode = v;
+  }
+  return v == 1;
+}
+
+void setSilent(bool on) {
+  silentMode = on ? 1 : 0;
+  kv::saveU32("audio", "silent", on ? 1 : 0);
+  log_i("audio: silent %s", on ? "on" : "off");
+}
+
+void chirp(bool rising) {
+  if (attention(rising ? "rising chirp" : "falling chirp")) send(Cmd::Chirp, rising ? 1 : 0);
+}
+
+void ringChirp() {
+  if (attention("ring chirp")) send(Cmd::Chirp, 2);
+}
+
+void messageChirp() {
+  if (attention("message chirp")) send(Cmd::Chirp, 3);
+}
 
 void lostAlarm() { send(Cmd::Chirp, 4); }
 
-void loudChirp() { send(Cmd::Chirp, 5); }
+void loudChirp() {
+  if (attention("loud chirp")) send(Cmd::Chirp, 5);
+}
 
 void micCue() { send(Cmd::Chirp, 6); }
 
-void micOffChirp() { send(Cmd::Chirp, 7); }
+void micOffChirp() {
+  if (attention("mic-off chirp")) send(Cmd::Chirp, 7);
+}
 
 void record(const std::string &path) {
   if (!lock) return;

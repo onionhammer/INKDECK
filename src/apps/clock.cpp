@@ -12,6 +12,7 @@
 #include "alarms.h"
 #include "apps/home.h"
 #include "apps/lock.h"
+#include "apps/missed_ring.h"
 #include "apps/off_face.h"
 #include "apps/sleep.h"
 #include "apps/weather.h"
@@ -569,7 +570,7 @@ void drawFace(ui::Canvas &c, const Rect &body, const Face &f) {
 // The desk face passes the mic's mark (it stays on there: comms, issue #66); standby's is drawn
 // on the way to a power-off, which switches the mic off.
 void drawOffFace(ui::Canvas &c, const Face &f, const std::string &context, const ui::Hint &hint,
-                 bool wifi = false, ui::MicMark mic = ui::MicMark::None) {
+                 bool wifi = false, ui::MicMark mic = ui::MicMark::None, bool ring = false) {
   Rect r{0, 0, c.width(), c.height()};
   ui::StatusInfo info;
   info.tag = moduleTag("CLOCK");
@@ -578,6 +579,7 @@ void drawOffFace(ui::Canvas &c, const Face &f, const std::string &context, const
   info.usb = f.usb;
   info.wifi = wifi;
   info.mic = mic;
+  info.ring = ring;
   ui::drawStatusBar(c, r.takeTop(ui::kStatusBarH), info);
   ui::drawHintBar(c, r.takeBottom(ui::kHintBarH), &hint, 1);
   drawFace(c, r, f);
@@ -585,6 +587,10 @@ void drawOffFace(ui::Canvas &c, const Face &f, const std::string &context, const
 
 void drawStandbyFace(ui::Canvas &c, const Face &f) {
   drawOffFace(c, f, "STANDBY \xC2\xB7 " + syncText(f), {"PWR", "HOLD TO WAKE"});
+  // A ring missed while silent (apps/missed_ring.h): the hint bar's right side, beside its one
+  // hint.
+  drawMissedRing(c, c.width() - 12, c.height() - ui::kHintBarH / 2 + 1, 22, c.width() - 300,
+                 true);
 }
 
 // The desk face's status context: when the forecast it shows was fetched.
@@ -897,22 +903,25 @@ class DeskScreen : public ui::Screen {
       sleepNow();
       return false;
     }
-    return minuteKey() != drawnMinute_ || ui::nav::micMark() != drawnMic_;
+    return minuteKey() != drawnMinute_ || ui::nav::micMark() != drawnMic_ ||
+           ui::nav::ringMark() != drawnRing_;
   }
   void draw(ui::Canvas &c, const Rect &) override {
     drawnMinute_ = minuteKey();
     drawnMic_ = ui::nav::micMark();
+    drawnRing_ = ui::nav::ringMark();  // a silent ring: RING in its status bar (no sheet here)
     Face f = liveFace(-1);
     addStrip(f);
     // The comms mic stays on here: the status bar's MIC, and MIC ON in words after ON USB.
     std::string context = deskContext(f);
     if (drawnMic_ != ui::MicMark::None) context.insert(10, "MIC ON \xC2\xB7 ");
-    drawOffFace(c, f, context, {"ANY KEY", "WAKE"}, wlan::radioOn(), drawnMic_);
+    drawOffFace(c, f, context, {"ANY KEY", "WAKE"}, wlan::radioOn(), drawnMic_, drawnRing_);
   }
 
  private:
   long drawnMinute_ = -2;
   ui::MicMark drawnMic_ = ui::MicMark::None;  // the comms mic's mark, as drawn
+  bool drawnRing_ = false;                    // the RING mark, as drawn
 };
 
 // --- Standby --------------------------------------------------------------------------------

@@ -92,6 +92,11 @@ void setup() {
   const bool reopenNews = power::lastMode() == power::Mode::Edition &&
                           ((power::wake() != power::Wake::Alarm && !woken) || editionPwr);
   power::markOn();
+#if INKDECK_COMMS
+  // A start by PWR, USB or a reset makes the board an ordinary one: the rings missed while silent
+  // (apps/missed_ring.h) have been seen. RTC wakes and a Comms wake keep them on the faces.
+  if (power::wake() != power::Wake::Alarm && !woken) comms::clearMissedRings();
+#endif
   pmic::status();  // first read logs what the PMIC reports
   net::begin();  // TLS buffers in PSRAM
   sensors::begin();

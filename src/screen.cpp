@@ -72,6 +72,8 @@ bool begin() {
 
 GFXcanvas1 &canvas() { return *fb; }
 
+bool ready() { return fb != nullptr; }
+
 void clear() { fb->fillScreen(gfx::kWhite); }
 
 bool present(bool forceFull) {

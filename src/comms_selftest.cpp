@@ -1284,6 +1284,25 @@ void testWaiting(Checker &c) {
   c.check(ok, "reach: a message waits for a sleeper it's for, until it has it whole");
 }
 
+void testReachSettings(Checker &c) {
+  // System's REACHABLE row: OFF, 10 S, 30 S, OFF; the card's other values step up.
+  bool ok = nextReachStep(0) == 10 && nextReachStep(10) == 30 && nextReachStep(30) == 0 &&
+            nextReachStep(5) == 10 && nextReachStep(2) == 10 && nextReachStep(20) == 30 &&
+            nextReachStep(25) == 30;
+  c.check(ok, "reach: the REACHABLE row goes OFF, 10 S, 30 S, OFF; 5 S and 20 S step up");
+  // The missed rings an off face shows: the latest board and time, and how many.
+  MissedRec r;
+  ok = r.count == 0;
+  addMissed(r, 0x1A420000, "INKDECK-0000", 1000);
+  ok = ok && r.count == 1 && r.from == 0x1A420000 && strcmp(r.name, "INKDECK-0000") == 0 &&
+       r.at == 1000;
+  addMissed(r, 0x641BF0E2, "A NAME LONGER THAN SIXTEEN", 2000);
+  ok = ok && r.count == 2 && r.from == 0x641BF0E2 && strlen(r.name) == 16 && r.at == 2000;
+  addMissed(r, 0x641BF0E2, nullptr, 0);
+  ok = ok && r.count == 3 && r.name[0] == 0;
+  c.check(ok, "reach: missed rings keep the latest board and time, and count");
+}
+
 }  // namespace
 
 bool selfTest(Print &out) {
@@ -1311,6 +1330,7 @@ bool selfTest(Print &out) {
   testSleeper(c);
   testWoken(c);
   testWaiting(c);
+  testReachSettings(c);
   out.printf("commstest: %s (%d failed) in %lu ms\n", c.failed ? "FAILED" : "all passed",
              c.failed, static_cast<unsigned long>(millis() - t0));
   return c.failed == 0;
