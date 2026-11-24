@@ -14,7 +14,9 @@ namespace comms {
 namespace wire {
 
 // One group's conversation as this board knows it. A conversation is on from an answered ring or
-// the first voice until 60 s after the last word, or until nobody is in it. Its boards say so in
+// the first voice until 60 s after the last word, or until nobody is in it; and for a board in it
+// that had company, until the others have all gone (left, or not heard from) and its own mic is
+// off: it doesn't stay in a conversation by itself. Its boards say so in
 // their presence every few seconds (with when it began, the last word and who else is in it), so
 // a board that isn't in it can still tell it's on. A group has one at a time: if two meet (two
 // boards began one each at the same moment), both become the one with the lower id.
@@ -56,9 +58,10 @@ class ConvState {
   bool join(uint32_t now, uint32_t conv);
   // This board leaves: it's out until join(). The conversation ends if nobody else is in it.
   bool leave(uint32_t now);
-  // Members that stopped saying so go; the conversation ends kQuietMs after the last word, or
-  // when nobody is in it.
-  bool expire(uint32_t now);
+  // Members that stopped saying so go; the conversation ends kQuietMs after the last word, when
+  // nobody is in it, or when this board is the only one left of several and isn't talking (its
+  // mic is off: a mic that's on keeps the conversation on).
+  bool expire(uint32_t now, bool talking = false);
   void clear() { *this = ConvState(); }
 
  private:
@@ -76,6 +79,7 @@ class ConvState {
   uint32_t id_ = 0;
   uint32_t startMs_ = 0, lastWordMs_ = 0;
   bool mine_ = false;
+  bool company_ = false;  // another board has been in it
   uint32_t leftId_ = 0;  // the conversation this board left
   struct Ended {
     uint32_t id = 0, ms = 0, startMs = 0, lastWordMs = 0;

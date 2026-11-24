@@ -26,6 +26,7 @@ uint32_t ConvState::adopt(uint32_t now, uint32_t conv, bool &changed) {
     id_ = conv;
     startMs_ = lastWordMs_ = now;
     mine_ = false;
+    company_ = false;
     count_ = 0;
     changed = true;
   } else if (conv < id_) {  // two met: the lower id wins, members and all
@@ -66,6 +67,7 @@ bool ConvState::addMember(uint32_t now, uint32_t id, bool listed) {
     members_[oldest] = members_[--count_];
   }
   members_[count_++] = Member{id, now, listed};
+  company_ = true;
   return true;
 }
 
@@ -86,6 +88,7 @@ bool ConvState::revive(uint32_t now, uint32_t conv) {
   lastWordMs_ = ended_.lastWordMs;
   mine_ = ended_.mine;
   leftId_ = ended_.left ? conv : 0;
+  company_ = false;
   count_ = 0;
   return true;
 }
@@ -153,7 +156,7 @@ bool ConvState::leave(uint32_t now) {
   return true;
 }
 
-bool ConvState::expire(uint32_t now) {
+bool ConvState::expire(uint32_t now, bool talking) {
   bool changed = false;
   for (size_t i = 0; i < count_;) {
     if (now - members_[i].seenMs >= kMemberMs) {
@@ -163,7 +166,8 @@ bool ConvState::expire(uint32_t now) {
       ++i;
     }
   }
-  if (id_ && (now - lastWordMs_ >= kQuietMs || (!mine_ && count_ == 0))) {
+  const bool alone = count_ == 0 && (!mine_ || (company_ && !talking));
+  if (id_ && (now - lastWordMs_ >= kQuietMs || alone)) {
     ended_ = Ended{id_, now, startMs_, lastWordMs_, mine_, leftId_ == id_};
     id_ = 0;
     mine_ = false;

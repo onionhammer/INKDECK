@@ -41,7 +41,8 @@
 // walkie-talkie); a mic to one board alone puts that board in. Boards in it play its voice;
 // leave() takes this board out (its voice stops here, and this board's mic goes off) until
 // join(). It's on while any mic in it is on, and for 60 s after the last word once none is, or
-// until nobody is in it. Its boards say so every few seconds, so every board of the group sees
+// until nobody is in it; a board left alone in it by the others, its own mic off, is out of it
+// at once (the screens offer RING again). Its boards say so every few seconds, so every board of the group sees
 // it's on, and who is in it.
 //
 // Ringing: ringStart() rings all of a group or one board of it, once a second, until someone

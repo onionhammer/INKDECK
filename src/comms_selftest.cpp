@@ -388,6 +388,7 @@ void testConversations(Checker &c) {
   ok = ok && v->join(100, 0) && v->mine() && v->id() == 500;
   v->spoke(10000, 500, kA, kSelf);  // the last word at 10 s
   v->report(19000, kA, 500, 19, 9, nullptr, 0, kSelf);
+  v->report(60000, kA, 500, 60, 50, nullptr, 0, kSelf);  // A is still in it
   v->expire(69999);
   ok = ok && v->on();
   v->expire(70000);
@@ -408,9 +409,29 @@ void testConversations(Checker &c) {
   ok = ok && v->isMember(kB);
   v->expire(14000);  // B never said so itself: 13 s after A listed it, it's out
   ok = ok && !v->isMember(kB) && v->isMember(kA);
-  v->expire(18000);
-  c.check(ok && v->on() && v->count() == 0 && v->mine(),
-          "conversation: members that stop saying so go after 13 s; this board alone keeps it");
+  v->expire(18000, true);  // A gone too, this board's mic on: it keeps the conversation on
+  ok = ok && v->on() && v->count() == 0 && v->mine();
+  v->expire(18020);  // its mic off: it doesn't stay in a conversation by itself
+  c.check(ok && !v->on() && !v->mine(),
+          "conversation: members that stop saying so go after 13 s; the last board left in it "
+          "keeps it only while its mic is on");
+
+  // This board's mic opens one: alone from the start, it stays on for the others to join.
+  v.reset(new C());
+  v->join(0, 650);
+  v->spoke(2000, 650, kSelf, kSelf);
+  v->expire(30000);
+  ok = v->on() && v->mine() && v->count() == 0;
+  v->report(31000, kA, 650, 31, 29, nullptr, 0, kSelf);  // A joined
+  v->expire(32000);
+  ok = ok && v->on() && v->isMember(kA);
+  v->reportNone(33000, kA);  // and left: this board is alone in it
+  v->expire(33020, true);
+  ok = ok && v->on() && v->mine();  // talking still
+  v->expire(33040);
+  c.check(ok && !v->on() && !v->mine(),
+          "conversation: opened alone it waits for the others; once they've come and gone it's "
+          "over when this board's mic is off");
 
   v.reset(new C());
   v->report(0, kA, 700, 0, 0, nullptr, 0, kSelf);  // seen, not in it

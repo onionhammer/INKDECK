@@ -3975,13 +3975,20 @@ void tick(uint32_t now) {
       GroupRec &g = core->groups[i];
       ConvState &c = g.conv;
       MicRec &m = core->mic;
-      if (m.on && m.group == static_cast<int>(i)) {
+      const bool talking = m.on && m.group == static_cast<int>(i);
+      if (talking) {
         // This board's open mic keeps it on (and opens it again should it have ended).
         if (!c.on() || !c.mine()) c.join(now, c.on() ? 0 : newConvId());
         c.spoke(now, c.id(), core->id, core->id);
         m.conv = c.id();
       }
-      if (c.expire(now)) bump();
+      const bool was = c.on() && c.mine();
+      const uint32_t wasId = c.id();
+      if (c.expire(now, talking)) bump();
+      if (was && !c.on()) {
+        log_i("comms: the conversation %08lX in %s is over here", static_cast<unsigned long>(wasId),
+              g.name.c_str());
+      }
       if (c.on() && !c.mine() && !c.left() && c.id() != g.convSeen) {
         g.convSeen = c.id();
         ++core->conversationsSeen;

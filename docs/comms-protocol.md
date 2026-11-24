@@ -394,7 +394,9 @@ straight would otherwise miss it (`Neighbours` in `src/comms_mesh.h`):
 A group has one conversation at a time, with a random 32-bit id. It's on from an answered ring
 (the ring's id) or a mic switched on (a mic on with none on opens one, flag `0x08`/`0x01`), while
 any mic in it is on (each still-here is a word in it), and until 60 s after its last word once
-none is, or until nobody is in it. Each board keeps its own view of it (`ConvState` in
+none is, or until nobody is in it. A board in it that had company doesn't stay in it by itself:
+once the others have all left (their presence says so) or gone unheard for 13 s, and its own mic
+is off, the conversation is over there. Each board keeps its own view of it (`ConvState` in
 `src/comms_calls.h`):
 
 - **Members.** A board is in it once it answered, joined, switched its mic on in it, or heard the
