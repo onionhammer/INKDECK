@@ -2,8 +2,8 @@
   "mcpServers": {
     "scanruler": {
       "type": "stdio",
-      "command": "cmd",
-      "args": ["/c", "npx", "-y", "scanruler-mcp@latest"],
+      "command": "npx",
+      "args": ["-y", "scanruler-mcp@latest"],
       "env": {}
     }
   }
