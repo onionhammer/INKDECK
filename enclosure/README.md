@@ -8,10 +8,14 @@ That print had the screw heads standing proud, a gap above the PCB at the back o
 notch, and a frog that let light through. v0.4 fixes all three (see **Screws**, **Front bezel**
 and **Frog**). It also moves the seam down from the glass to just above the PCB, so the bezel's
 frame is 2.55 mm deep and about 6.5 times as stiff (see **Stiffer bezel**), and the caps hold
-with eight deeper hooks instead of four (see **Hooks**). Earlier designs (v0.1, a two-part shell
-with a screwed-on bezel; v0.2, the tray alone with no front) are in git history.
+with eight deeper hooks instead of four (see **Hooks**). v0.5 (not printed yet) brings the seam
+down to z −2.6 on all four sides, except over the PWR / BOOT buttons and the thumbwheel. The
+bezel's skirts take the top 2.8 mm of the walls, which makes the frame about 6 times stiffer
+again (see **Deeper skirts**). It also repeats the antenna end's three fins on the other three
+sides. Earlier designs (v0.1, a two-part shell with a screwed-on bezel; v0.2, the tray alone with
+no front) are in git history.
 
-## v0.4: back tray + snap-on front bezel with corner caps (11.86 mm)
+## v0.5: back tray + snap-on front bezel with corner caps (11.86 mm)
 
 ![assembly](renders/assembly_iso.png)
 
@@ -19,16 +23,18 @@ with a screwed-on bezel; v0.2, the tray alone with no front) are in git history.
 
 | File | What |
 | --- | --- |
-| `ereader-enclosure.scanruler` | Parametric source: 115 features (1 suppressed), 109 parameters (5 pinned), board STEP, battery dummy, 1 open note |
+| `ereader-enclosure.scanruler` | Parametric source: 130 features (1 suppressed), 116 parameters (5 pinned), board STEP, battery dummy, 1 open note |
 | `ereader-enclosure.step` | Both parts as solids, `Back tray` and `Bezel` (read back and verified) |
 | `back-tray.stl` | Tray print mesh (0.02 mm chord), the right way up to print |
 | `front-bezel.stl` | Bezel print mesh (0.02 mm chord), as fitted: turn it face-down to print |
 | `revision_glyphs.py` | Draws the revision engraving's sketches (`uv run enclosure/revision_glyphs.py OUT_DIR`). Only for a new font, size or place: a revision bump is the parameter `rev` alone (**Revision**) |
-| `renders/*.png` | Assembly, the back with the frog, the revision close up, the tray and the bezel apart, a corner cap, the USB-C / microSD end, the thumbwheel slot, sections through a side hook, an end hook, a button and the wheel |
+| `renders/*.png` | Assembly, the back with the frog, the revision close up, the tray and the bezel apart, the button side's seam, a corner cap, the USB-C / microSD end, the thumbwheel slot, sections through a side hook, an end hook, a button and the wheel |
 
 **Size:** 105.9 × 66.1 mm over the corner caps (the tray alone is 104.3 × 64.5). **11.86 mm**
-from the flat back to the bezel's flat front (v0.1 was 14.85). The seam is 9.31 up from the back
-(z 0.2, 0.2 above the PCB's top face): the tray is 9.31 tall, and the bezel stands 2.55 above it.
+from the flat back to the bezel's flat front (v0.1 was 14.85). The seam is 6.51 up from the back
+(z −2.6) on all four sides between the corner caps. Over the controls and at the corners it's 9.31
+up (z 0.2, 0.2 above the PCB's top face). The tray is 9.31 tall there, and the bezel stands 2.55
+above it (5.35 where its skirts come down).
 
 **Stiffer bezel.** Until 2026-11-16 the walls stopped level with the panel glass (z 1.35) and the
 bezel was a flat frame 1.2 mm thick over the glass (1.4 over the walls), about 6 mm wide on three
@@ -49,6 +55,30 @@ tray 572 mm³ less, about 0.75 g of PETG more in all. The new seam is below the 
 BOOT slots, so those slots now run up through the wall top and the bezel closes them (**Printing
 the tray**). The cap hooks now flex from the seam; they're covered under **Hooks**. The end
 fins stay centred between the back and the seam, so they sit 0.575 lower.
+
+**Deeper skirts (v0.5, 2026-11-24).** The USB-C end already had a skirt down to z −2.6 for its
+split openings. v0.5 does the same on the other three sides. Between the corner caps the tray's
+walls stop at z −2.6 (`ant_seam_z` at the antenna end, `side_seam_z` on the long sides; both
+follow `sd_cz`, so all four match). The bezel carries the walls the rest of the way up as skirts
+the full 2 mm thick: `Antenna skirt` and `Side skirt ±Y`, cut from the tray by `Antenna wall
+seam` and `Side wall seam ±Y`. Each skirt joins the cap legs at both its ends and stands 0.15
+above the tray's wall top (`cap_gap`), like the end skirt. So the bezel now sits on the tray only
+at the corners and over the controls. The long sides keep the old seam over the controls, from
+`fin_gap_x0` to `fin_gap_x1` (x 69.35–88.55): the PWR / BOOT slots and the button relief on one
+side, the thumbwheel notch on the other. The seam climbs to z 0.2 there on 45° ramps: the tray's
+ramp reaches the top at `fin_gap_x0`, 1 mm short of the button relief, so the skirt never comes
+down where the button stems pass as the board drops in. The skirt's ramp runs parallel to it,
+0.15 off it (measured square to the slope). Both ramps face up on their part's print bed. The
+frame's second moment for bending out of the screen's plane went from 6.26 to 36.1 mm⁴ across
+the long sides (×5.8; 5.96 to 35.5 on the thumbwheel side), and its section from 12.1 to
+17.4 mm². At the antenna end it went from 4.16 to 26.6 through the pry notch (×6.4), and 34.2
+beside it. Over the controls, 19.2 mm of each long side, it's still 2.55 deep. The bezel weighs
+1001 mm³ more and the tray 1165 mm³ less (the new fins take some of that), so the pair is about
+0.2 g lighter. The pry notch moved down with the antenna seam into the skirt's underside. Every
+cap leg is now joined to a skirt at its free end, as only the USB-C end's were before, and that
+stiffens the hooks (**Hooks**).
+
+![button side: the seam climbs over PWR / BOOT](renders/button_side.png)
 
 **Battery:** a 1500 mAh 454261 pouch, measured 62.5 long (with its protection board) and ~4.61
 thick, 42 wide by its name. Centred at x 39.85, y 33.8, it spans x 8.6–71.1, y 12.8–54.8, with
@@ -79,10 +109,11 @@ the PCB edge. A relief in the inner wall along the button zone (x 70.4–87.6, 0
 them slide down past the wall as the board drops in.
 
 **How it goes together.** The board drops in face up and four screws come through the back into
-its brass standoffs, clamping it onto the bosses. The tray's walls stop 0.2 mm above the PCB's
-top face, below the panel glass, except at the USB-C end, which stops lower still. The bezel then
-snaps on over the glass and the walls. Its frame carries the walls the rest of the way up and
-fills the strip between them and the glass, and its skirt fills in the top of the USB-C end. Its
+its brass standoffs, clamping it onto the bosses. The tray's walls stop at z −2.6, 2.6 mm below
+the PCB's top face, except at the corners and over the controls, where they stop 0.2 above it. The
+bezel then snaps on over the glass and the walls. Its frame carries the walls the rest of the way
+up and fills the strip between them and the glass, and its skirts fill in the tops of all four
+walls. Its
 four corner caps run down over the tray's corners to the back face, and two hooks inside each one
 (one per leg) click into grooves in the tray.
 
@@ -90,7 +121,8 @@ four corner caps run down over the tray's corners to the back face, and two hook
 
 ![bezel](renders/bezel_alone.png)
 
-**Front bezel.** One piece, standing on the tray's wall tops at z 0.2. From its front (z 2.75,
+**Front bezel.** One piece, standing on the tray's wall tops at z 0.2 at the corners and over the
+controls. Its skirts reach down to z −2.45 everywhere else (**Deeper skirts**). From its front (z 2.75,
 `bezel_top`, taken from the glass) down to that plane it is solid everywhere but a pocket over the
 glass (`Glass pocket plan`, cut by `Glass relief`). The pocket is the glass outline (`panel_x1`,
 `panel_y0`, `panel_y1`) plus 0.25 a side (`glass_clr`). At the USB-C end it runs out to the
@@ -113,7 +145,8 @@ the PCB edge and the block under the wheel, so the notch stays open and the PCB 
 A separate `Wheel skirt` did this before the frame went all the way round; it's suppressed in the
 tree now, since the frame covers it. At the USB-C end the bezel carries the top of the end wall,
 between the corner caps, as a skirt that forms the top halves of the USB-C and microSD openings
-(below).
+(below). The antenna end and the long sides have skirts like it (**Deeper skirts**). They stand
+0.25 off the PCB's long edges and 0.4 off its ends.
 
 **Corner caps.** The corners belong to the bezel. Each cap is the chamfered bumper shape
 (`bump_l`, `bump_out`, `bump_ch`), one L-shaped wall from the bezel's front down to the back face,
@@ -135,12 +168,18 @@ groove floor is 0.61 above the back face, and the end grooves leave 1.0 of end w
 Going on, the cap wall flexes 0.5 mm there (`hook_d` − `cap_gap`). The cap is joined to the frame
 above the seam, so it bends over the 6.4 mm below it. As a plain cantilever that's about 1.8 %
 strain, and about 1.9 times the force per hook of the first print. With twice the hooks, the
-bezel holds nearly four times as hard. The USB-C end's caps are joined to the end skirt as well, so
-their end hooks are stiffer still. The corner stiffens the wall too, so it takes more force than
-a free tab would; only a test print will say how much. Since the caps bend across the layer lines,
-**print in PETG**. The 45° faces let a firm pull release the hooks. To take the bezel off, put a
-spudger in the pry notch (6 × 1.5 × 0.6, `pry_*`) under the middle of the antenna end and lever
-that end up. The four hooks there let go first, then the other four. The knobs for a test print
+bezel holds nearly four times as hard. Since v0.5 every leg is also joined to a skirt along its
+last 1 mm, beside the hook (x or y 4.1–5.1 from the corner's outer faces, with the hook at
+1.55–4.55). Over that strip the leg hangs only 3.75 mm below the skirt's foot (z −2.45), and over
+that length a plain cantilever would strain 5.3 %, near PETG's yield. Away from the joint the
+leg still hangs the full 6.4 from the frame, so the real figure lies between 1.8 and 5.3 %. Only
+the USB-C end's two hooks were built like this in v0.4, and none has been printed yet. The corner
+stiffens the wall too, so it takes more force than a free tab would; only a test print will say
+how much. If the bezel won't go on, or a leg cracks, take `hook_d` down first. Since the caps
+bend across the layer lines, **print in PETG**. The 45° faces let a firm pull release the hooks.
+To take the bezel off, put a spudger in the pry notch (6 × 1.5 × 0.6, `pry_*`, cut up into the
+antenna skirt's underside at the lowered seam) under the middle of the antenna end and lever that
+end up. The four hooks there let go first, then the other four. The knobs for a test print
 are `hook_d` (grip), `hook_l` (stiffness; up to about 6.5, where the groove floor comes within
 0.5 of the back face) and `cap_gap` (fit). Suppressing `Join end hooks` and `Cut end grooves`
 takes the end hooks out.
@@ -161,7 +200,7 @@ thumbwheel side is up (the render above upside down). The cells are fixed in the
 sketch also takes a few minutes to solve after any edit; to turn the frog, rewrite the cells'
 coordinates in a script and send the whole sketch in one `reverse_feature_update`.
 
-**Revision.** `v0.4` is engraved on the back, in the free corner below the vent slots. Its
+**Revision.** `v0.5` is engraved on the back, in the free corner below the vent slots. Its
 reading-left edge lines up with the outer vent slot (x 90.0), and its baseline and digit tops
 with the hazard band (y 0.1–7.1). It reads upright the same way as the frog. It sits on the full
 1.2 mm floor, clear of the battery pocket and 3.8 mm from the countersink. It's cut like the other
@@ -187,7 +226,7 @@ the strip more or fewer pieces, list them again.
 `front-bezel.stl`), set `rev` to the next number before exporting. That includes a change no one
 could see from outside, such as a clearance or a hook. v0.3 was the 2026-11-14 print, and the
 changes since (sunk screw heads, the wheel-notch gap closed, the frog turned, the stiffer bezel,
-eight hooks, the thicker skin) make v0.4. Only the tray is marked, so a bezel printed on its own
+eight hooks, the thicker skin) make v0.4, and the deeper skirts and the fins all round make v0.5. Only the tray is marked, so a bezel printed on its own
 carries no revision. One digit runs to v0.9. Past that, cut a second digit window or go to v1.0
 (the "v0." comes from `revision_glyphs.py`).
 
@@ -241,7 +280,8 @@ the socket, where the panel's flex cable wraps the board edge (0.72 mm away). Th
 
 **Printing the tray:** back face on the bed, no supports. Everything is laid out for that:
 - The back is flat. Its decoration is inward grooves with 45° walls (`groove_draft`), so each layer steps in by at most its own height and nothing bridges. That covers the hatch outline, the hazard stripes, the vent slots and the revision.
-- The end fins have flat floors and 45° ceilings.
+- The fins on all four sides have flat floors and 45° ceilings.
+- Between the corner caps the walls stop at z −2.6, with 45° ramps up to the full height over the controls, so nothing overhangs at the seam.
 - The thumbwheel slot runs straight down to the bed, so its walls are vertical and nothing overhangs.
 - The corner recesses are vertical, and the hook grooves in them have 45° roofs.
 - The end wall stops at the middle of the USB-C and microSD openings, so they're open Us with their curves facing up. The bezel's skirt makes their tops.
@@ -252,8 +292,8 @@ the socket, where the panel's flex cable wraps the board edge (0.72 mm away). Th
 
 **Printing the bezel:** front face on the bed, no supports. The front is flat. The window
 chamfer and the 0.5 mm outer chamfer are 45°. The corner caps stand straight up 11.86 mm, their
-hooks' retaining faces are 45°, and the chamfers on their feet face up. The end skirt stands
-straight up off the underside, with the top halves of the openings as upward-facing curves. The
+hooks' retaining faces are 45°, and the chamfers on their feet face up. The skirts stand
+straight up off the underside on all four sides. The USB-C end's holds the top halves of the openings as upward-facing curves, and the long sides' end in 45° ramps facing up by the controls. The
 frame stands straight up 2.55 mm off the bed all round, with a flat top (its underside when
 fitted). The glass pocket (1.35 deep) and the pry notch are open pockets on top. Print it in
 **PETG**, so the caps flex rather than crack.
@@ -261,7 +301,7 @@ fitted). The glass pocket (1.35 deep) and the pry notch are open pockets on top.
 **Checked in ScanRuler** (model only):
 - **Clearances:** button stems to nubs and relief 0.15, PCB to walls 0.24, wheel 0.37, panel to tray 1.59 and to bezel 0.25, USB-C socket shell to its opening 1.16. The MX1.25 headers and ESP32 module are ~3 mm above the floor.
 - **Battery:** sits on the pocket floor, 0.10 under the display FPC connector, 0.96 from the wheel, 0.92 from USB-C. A swelling pouch has only that 0.1 mm above it.
-- **Contact:** the tray touches the board only at the four standoff ends. The bezel touches nothing on the board: its frame is 0.20 above the PCB's top face all round, 0.40 from the PCB's end at the end skirt, 0.25 off the panel glass, 0.66 from the nearest standoff and 2.8 above the wheel. It touches the tray only on the wall tops and the hook retaining faces. The caps and the skirt stand 0.15 off the tray everywhere else.
+- **Contact:** the tray touches the board only at the four standoff ends. The bezel touches nothing on the board: its frame is 0.20 above the PCB's top face all round, 0.40 from the PCB's ends at the end skirts, 0.25 from its long edges at the side skirts, 0.25 off the panel glass, 0.66 from the nearest standoff and 2.8 above the wheel. It touches the tray only on the wall tops at the corners and over the controls, and on the hook retaining faces. The caps and the skirts stand 0.15 off the tray everywhere else.
 - **Solids:** both valid and closed, with no slivers or voids, and the STEP round trip is exact. The only steps between features the check flags are the frog's intended 0.2 mm depth on the tray; the bezel has none.
 
 **Openings:** USB-C 11.25 × 5.5, for Apple-size plugs (the panel's flex cable wraps the board edge
@@ -270,13 +310,13 @@ fingernail recess. Both are split between the tray and the bezel. Flared thumbwh
 
 **Decoration** (each one is a feature of its own, so any can be suppressed):
 - Chamfered corner caps on the bezel (`bump_l`, `bump_out`, `bump_ch`, `cap_t`).
-- Three fins on the antenna end, centred between the back face and the seam (`fin_*`).
+- Three fins on each side, all at one height (z −8.06 to −3.66), centred between the back face and the z −2.6 seam (`fin_*`, `*_fin_zc`). They stop 1 mm short of each corner cap. On the long sides they break for the controls (`fin_gap_x0` to `fin_gap_x1`), leaving a 4.85 mm run between the controls and the antenna end's caps. At the USB-C end they run only between the USB-C opening and the cap (`USB end fins`, y 36.6–53.75), since the openings fill the rest.
 - On the back: a chamfered hatch outline round the battery (`hatch_*`, `line_*`), five vent slots spanning the hatch's height beside it (`vent_*`), and a band of 45° hazard stripes below it (`haz_*`). All 0.4 mm deep, and they follow the battery parameters.
 - The pixel-art frog inside the hatch outline (`frog_d`).
 - The revision, v0.`rev`, below the vent slots (**Revision**).
-- Chamfers: 0.5 mm on the bezel's front outer edges, 0.5 on the tray's top outer edges (a groove at the seam between the caps; the USB-C end has the 0.15 parting gap instead), 0.6 round the back (cap feet and thumbwheel slot included).
+- Chamfers: 0.5 mm on the bezel's front outer edges, 0.5 on the tray's top outer edges where they're still at z 0.2: over the controls and inside the corner caps. The lowered seam has the 0.15 parting gap instead, 0.6 round the back (cap feet and thumbwheel slot included).
 
-**Pinned parameters:** `rev` 4, `batt_t` 4.61, `bump_up` 0, `bump_l` 7.5, `wall_t` 2.0.
+**Pinned parameters:** `rev` 5, `batt_t` 4.61, `bump_up` 0, `bump_l` 7.5, `wall_t` 2.0.
 
 **Open question** (pinned as a note in the project): **screws**. This assumes the standoffs are
 fixed to the PCB. The panel glass covers their holes, so they must be.
