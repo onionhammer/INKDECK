@@ -30,9 +30,10 @@ so the frog stays on it.
   and the thumbwheel side, which leaves about 28 mm of thin case at the antenna end.
 - **Speaker:** the field still has 3.6 to 4.0 mm under the bare PCB at the antenna end (x 74–94,
   y 4–19, between the PWR / BOOT switches and the ESP32 module). A speaker up to about 3.6 mm thick
-  fits there, firing through a grille in the back, with no bump of its own. The mock-up uses a
-  20 × 15 × 3.6 placeholder: Waveshare lists the kit's speaker only as "8Ω 1W", so the real one
-  needs measuring. A thicker one needs its own small bump.
+  fits there, firing through a grille in the back, with no bump of its own: 0.8 mm slots at 45°,
+  parallel to the frog's hatch, on a 2 mm pitch over a 14 × 8 patch, about 45 mm² open. The
+  mock-up uses a 20 × 15 × 3.6 placeholder: Waveshare lists the kit's speaker only as "8Ω 1W",
+  so the real one needs measuring. A thicker one needs its own small bump.
 - **Plugs:** the MX1.25 plugs enter from +Y at z −5 to −1.6, above the new floor top (−6.0).
 - **Printing:** the tray prints back-down. With the pod face on the bed, the field hangs 1.9 mm in
   the air over about 3,400 mm², so it would need supports on the visible back. A2 makes the pod its

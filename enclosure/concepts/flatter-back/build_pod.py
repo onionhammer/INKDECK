@@ -27,6 +27,9 @@ POCKET = (8.1, 12.3, 71.6, 55.3)       # battery pocket in plan
 Z_POCKET = -8.31
 HOLES = [(2.7, 2.7), (96.8, 2.7), (2.7, 57.3), (96.8, 57.3)]
 SPK = dict(x0=74.0, y0=4.0, l=20.0, w=15.0, t=3.6)   # placeholder speaker: the real one isn't measured
+# speaker grille: slots at 45°, parallel to the frog's hatch (its edges run along +X+Y), clipped to a
+# patch centred under the speaker; a piece shorter than min_l at a corner is left out
+GRILLE = dict(w=0.8, pitch=2.0, patch=(14.0, 8.0), min_l=2.0)
 
 def chamfer_rect(cx, cy, w, h, c):
     x0, x1, y0, y1 = cx - w/2, cx + w/2, cy - h/2, cy + h/2
@@ -69,10 +72,21 @@ for (x, y) in HOLES:
     new_tray = new_tray.cut(hole).cut(cq.Workplane().add(csk))
 # keep the thumbwheel slot open to the back (its back wall is y 60, the cavity reached 60.25)
 new_tray = new_tray.cut(box(73.63, 60.0, Z_FIELD - 1, 84.43, 61.0, Z_FTOP + 0.01))
-# speaker grille under the placeholder: 6 slots, their 45° walls not modelled
-for i in range(6):
-    x = SPK["x0"] + 2.0 + i * 3.2
-    new_tray = new_tray.cut(box(x, SPK["y0"] + 2.5, Z_FIELD - 1, x + 1.2, SPK["y0"] + SPK["w"] - 2.5, Z_FTOP + 0.01))
+# speaker grille under the placeholder (see GRILLE); the slots' 45° walls not modelled
+gx, gy = SPK["x0"] + SPK["l"] / 2, SPK["y0"] + SPK["w"] / 2
+PW, PH = GRILLE["patch"]
+z0, z1 = Z_FIELD - 1, Z_FTOP + 0.01
+patch = box(gx - PW / 2, gy - PH / 2, z0, gx + PW / 2, gy + PH / 2, z1)
+grille_mm2 = 0.0
+k_max = int((PW + PH) / 2 / math.sqrt(2) // GRILLE["pitch"])
+for k in range(-k_max, k_max + 1):
+    off = k * GRILLE["pitch"] / math.sqrt(2)             # along (-1, 1)/√2, square to the slots
+    band = (cq.Workplane("XY", origin=(gx - off, gy + off, z0)).transformed(rotate=(0, 0, 45))
+            .rect(40, GRILLE["w"]).extrude(z1 - z0))
+    slot = band.intersect(patch)
+    area = slot.val().Volume() / (z1 - z0) if slot.vals() else 0.0
+    if area < GRILLE["w"] * GRILLE["min_l"]: continue
+    new_tray = new_tray.cut(slot); grille_mm2 += area
 
 new_bezel = bezel.cut(below)
 
@@ -89,6 +103,6 @@ batt = box(8.6, 12.8, Z_POCKET, 71.1, 54.8, Z_POCKET + 4.61)
 cq.exporters.export(spk, str(BUILD / "speaker.stl")); cq.exporters.export(batt, str(BUILD / "battery.stl"))
 vt, vb = new_tray.val().Volume(), new_bezel.val().Volume()
 ot, ob = tray.val().Volume(), bezel.val().Volume()
-print(json.dumps(dict(tray_mm3=[round(ot), round(vt)], bezel_mm3=[round(ob), round(vb)],
+print(json.dumps(dict(tray_mm3=[round(ot), round(vt)], bezel_mm3=[round(ob), round(vb)], grille_mm2=round(grille_mm2, 1),
                       valid=[new_tray.val().isValid(), new_bezel.val().isValid()],
                       solids=[len(new_tray.solids().vals()), len(new_bezel.solids().vals())])))
