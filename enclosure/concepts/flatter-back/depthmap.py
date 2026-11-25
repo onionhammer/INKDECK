@@ -4,7 +4,7 @@
 # ///
 """How deep the board reaches below the PCB, everywhere: rasterises every part of Waveshare's board
 STEP that hangs below the PCB into a min-z map (0.25 mm grid, enclosure frame) and plots it as
-depthmap.png. Also writes build/board.stl for sections.py.
+depthmap.png, with the battery and the speaker on it. Also writes build/board.stl for pictures.py.
 
     uv run enclosure/concepts/flatter-back/depthmap.py
 """
@@ -97,7 +97,7 @@ plt.colorbar(im, label="lowest part under the PCB, z mm (PCB bottom −1.6)")
 ax.add_patch(Rectangle((-2.4, -2.25), 104.3, 64.5, fill=False, ec="w", lw=1.5, ls="--"))
 ax.add_patch(Rectangle((8.6, 12.8), 62.5, 42, fill=False, ec="r", lw=2))
 ax.text(39.85, 33.8, "battery 62.5×42×4.61\ntop −3.7, back −9.11", color="r", ha="center", va="center", fontsize=11, weight="bold")
-# the speaker (build_pod.py's SPK) and the tray's screw boss beside it
+# the speaker (build.py's SPK)
 ax.add_patch(Rectangle((85.4, 5.8), 14.0, 10.0, fill=False, ec="#ffb000", lw=2))
 ax.text(92.4, 10.8, "speaker\n14×10", color="#ffb000", ha="center", va="center", fontsize=9, weight="bold")
 for x in np.arange(0, 104, 10): ax.axvline(x, color="w", lw=0.2)

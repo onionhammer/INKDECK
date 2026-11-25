@@ -1,10 +1,10 @@
 # /// script
 # requires-python = ">=3.10"
 # ///
-"""Does each part need supports? Slices every concept's parts, as they'd lie on the bed, with
-PrusaSlicer's own CORE One presets (the enclosure's printer, profile and PETG) and automatic supports
-on at the profile's threshold, and counts the support extrusions in the G-code. Run the build_*.py
-scripts first; gcode goes to build/.
+"""Does each part need supports? Slices the flatter back's parts and v0.6's, as they'd lie on the
+bed, with PrusaSlicer's own CORE One presets (the enclosure's printer, profile and PETG) and
+automatic supports on at the profile's threshold, and counts the support extrusions in the G-code.
+Run build.py first; gcode goes to build/.
 
     uv run enclosure/concepts/flatter-back/printcheck.py
 """
@@ -18,10 +18,8 @@ PRESETS = ["--printer-profile", "Prusa CORE One HF0.4 nozzle", "--print-profile"
            "--material-profile", "Generic PETG @COREONE HF0.4"]
 # (name, mesh, extra args): trays and the tub print back-down as modelled, bezels face-down
 PARTS = [("v0.6 tray", BUILD / "v06_tray.stl", []), ("v0.6 bezel", BUILD / "v06_bezel.stl", ["--rotate-x", "180"]),
-         ("A tray", HERE / "podA_tray.stl", []), ("A bezel", HERE / "podA_bezel.stl", ["--rotate-x", "180"]),
-         ("B tray", HERE / "bevelB_tray.stl", []),
-         ("A2 tray", HERE / "a2_tray.stl", []), ("A2 tub", HERE / "a2_tub.stl", []),
-         ("A2 bezel", HERE / "a2_bezel.stl", ["--rotate-x", "180"])]
+         ("back tray", HERE / "back-tray.stl", []), ("battery tub", HERE / "battery-tub.stl", []),
+         ("front bezel", HERE / "front-bezel.stl", ["--rotate-x", "180"])]
 
 def check(name, mesh, extra):
     out = BUILD / (re.sub(r"\W+", "_", name).strip("_") + ".gcode")
