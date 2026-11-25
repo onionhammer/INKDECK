@@ -26,10 +26,13 @@ RISE = Z_FIELD - Z_BACK                # 1.91
 POCKET = (8.1, 12.3, 71.6, 55.3)       # battery pocket in plan
 Z_POCKET = -8.31
 HOLES = [(2.7, 2.7), (96.8, 2.7), (2.7, 57.3), (96.8, 57.3)]
-SPK = dict(x0=74.0, y0=4.0, l=20.0, w=15.0, t=3.6)   # placeholder speaker: the real one isn't measured
+# the speaker: 14 × 10, long side along the case, between the antenna end's corner screw (its boss
+# on the floor reaches y 5.3) and the ESP32 module, where nothing hangs below the board: 4.1 of height
+# over the floor, less 0.3 clear. Its thickness isn't given; 3.0 is drawn.
+SPK = dict(x0=85.4, y0=5.8, l=14.0, w=10.0, t=3.0)
 # speaker grille: slots at 45°, parallel to the frog's hatch (its edges run along +X+Y), clipped to a
 # patch centred under the speaker; a piece shorter than min_l at a corner is left out
-GRILLE = dict(w=0.8, pitch=2.0, patch=(14.0, 8.0), min_l=2.0)
+GRILLE = dict(w=0.8, pitch=2.0, patch=(10.0, 6.0), min_l=2.0)     # patch 2 in from the speaker's edges
 
 def chamfer_rect(cx, cy, w, h, c):
     x0, x1, y0, y1 = cx - w/2, cx + w/2, cy - h/2, cy + h/2

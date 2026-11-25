@@ -28,12 +28,14 @@ so the frog stays on it.
 
 - **Look:** 11.86 at the pod, 9.95 everywhere else. The pod sits off-centre toward the USB-C end
   and the thumbwheel side, which leaves about 28 mm of thin case at the antenna end.
-- **Speaker:** the field still has 3.6 to 4.0 mm under the bare PCB at the antenna end (x 74–94,
-  y 4–19, between the PWR / BOOT switches and the ESP32 module). A speaker up to about 3.6 mm thick
-  fits there, firing through a grille in the back, with no bump of its own: 0.8 mm slots at 45°,
-  parallel to the frog's hatch, on a 2 mm pitch over a 14 × 8 patch, about 45 mm² open. The
-  mock-up uses a 20 × 15 × 3.6 placeholder: Waveshare lists the kit's speaker only as "8Ω 1W",
-  so the real one needs measuring. A thicker one needs its own small bump.
+- **Speaker:** 14 × 10 mm, long side along the case, between the antenna end's corner screw and
+  the ESP32 module (x 85.4 to 99.4, y 5.8 to 15.8; it's on the depth map). Nothing hangs below the
+  board there, so it has 4.1 mm of height over the floor, 0.3 clear of the PCB: the floor top is
+  z −6.0, the PCB's underside −1.6. Turned the other way (10 along the case, 14 across), it fits
+  over the screw only up to 3.2 thick, because parts at y 16.6 to 19 hang to z −2.4. The screw's
+  boss on the floor reaches y 5.3. It fires through a grille in the back, with no bump of its own:
+  0.8 mm slots at 45°, parallel to the frog's hatch, on a 2 mm pitch over a 10 × 6 patch under its
+  middle, about 24 mm² open. Its thickness isn't given; the mock-up draws 3.0.
 - **Plugs:** the MX1.25 plugs enter from +Y at z −5 to −1.6, above the new floor top (−6.0).
 - **Printing:** the tray prints back-down. With the pod face on the bed, the field hangs 1.9 mm in
   the air over about 3,400 mm², so it would need supports on the visible back. A2 makes the pod its
@@ -51,8 +53,8 @@ so the frog stays on it.
     drops them, and the 0.6 chamfer round the field's edges.
   - **Battery leads:** the pocket rim now rises 2.3 mm up the cell's side, so it needs a notch for
     the leads.
-- **Solids:** tray 9,765 → 9,334 mm³, bezel 5,626 → 5,519 mm³ (its skirt feet trimmed to the new
-  back), both valid single solids. About 0.7 g of PETG saved.
+- **Solids:** tray 9,765 → 9,392 mm³, bezel 5,626 → 5,519 mm³ (its skirt feet trimmed to the new
+  back), both valid single solids. About 0.6 g of PETG saved.
 
 ## A2 · pod back in three parts, bevelled back and front
 
@@ -98,7 +100,7 @@ softer in the hand. It's cut from `podA.step`, so A's knock-on changes still app
   layers.
   Not checked: the tub going in (the barbs passing the ledge), tolerances on the seat, and a notch
   for the battery leads.
-- **Solids:** tray 5,937 mm³, tub 3,318, bezel 5,438 (A: tray 9,334, bezel 5,519), all valid
+- **Solids:** tray 5,995 mm³, tub 3,318, bezel 5,438 (A: tray 9,392, bezel 5,519), all valid
   single solids, and the tray and tub don't overlap.
 
 ![A2's seam, latches and bevels](a2_seam.png)
@@ -124,7 +126,7 @@ has roughly a quarter less capacity than the 1500 mAh one.
 | `concepts_sheet.png` | v0.6, A, B and A2: back view, side elevation (USB-C end on the left), antenna end |
 | `a2_parts.png` | A2 exploded, and its tray and tub as they print |
 | `a2_seam.png` | Close-ups of A2's seat, latches and bevels |
-| `sections.png` | Sections through v0.6 and A at y 15 (battery and speaker spot) and x 44.8 (an MX1.25 header) |
+| `sections.png` | Sections through v0.6 and A at y 13.5 (battery and speaker) and x 44.8 (an MX1.25 header) |
 | `depthmap.png` | The lowest part under the PCB, everywhere, with the battery outline |
 | `podA.step` | Concept A, tray and bezel as solids |
 | `podA_tray.stl`, `podA_bezel.stl` | Concept A meshes (0.02 mm chord), as fitted |

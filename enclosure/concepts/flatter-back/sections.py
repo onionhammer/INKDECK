@@ -3,7 +3,7 @@
 # dependencies = ["trimesh", "numpy", "matplotlib", "shapely", "networkx", "scipy", "rtree"]
 # ///
 """Sections through v0.6 and A, with the board, battery and placeholder speaker: along the length at
-y 15 and across at x 44.8 (through an MX1.25 header). Writes sections.png. Then close-ups of A2's
+y 13.5 and across at x 44.8 (through an MX1.25 header). Writes sections.png. Then close-ups of A2's
 seam, latches and bevels as a2_seam.png. Run depthmap.py (for build/board.stl), build_pod.py and
 build_a2.py first.
 
@@ -57,9 +57,9 @@ def panel(ax, tray, bezel, origin, normal, axes, title, show_spk):
     ax.text(103.5, -7.2, "z −7.2", fontsize=7, va="bottom", ha="right", color="#666")
 
 fig, axs = plt.subplots(4, 1, figsize=(15, 11.5))
-o1, n1 = [0, 15.0, 0], [0, 1, 0]
-panel(axs[0], "v06_tray", "v06_bezel", o1, n1, [0, 2], "v0.6 — section along the length at y 15 (battery, and where a speaker could go)", False)
-panel(axs[1], "podA_tray", "podA_bezel", o1, n1, [0, 2], "A · pod back — same section: the back hugs the battery; a 20×15×3.6 placeholder speaker sits on the field over a grille", True)
+o1, n1 = [0, 13.5, 0], [0, 1, 0]
+panel(axs[0], "v06_tray", "v06_bezel", o1, n1, [0, 2], "v0.6 — section along the length at y 13.5 (battery, and where the speaker goes)", False)
+panel(axs[1], "podA_tray", "podA_bezel", o1, n1, [0, 2], "A · pod back — same section: the back hugs the battery; the 14×10 speaker (3.0 drawn) sits on the field over its grille", True)
 o2, n2 = [44.8, 0, 0], [1, 0, 0]
 panel(axs[2], "v06_tray", "v06_bezel", o2, n2, [1, 2], "v0.6 — section across at x 44.8 (an MX1.25 header on the left, the battery)", False)
 panel(axs[3], "podA_tray", "podA_bezel", o2, n2, [1, 2], "A · pod back — same section", False)
