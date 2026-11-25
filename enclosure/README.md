@@ -12,9 +12,9 @@ with eight deeper hooks instead of four (see **Hooks**). v0.5 (printed by 2026-1
 down to z −2.6 on all four sides, except over the PWR / BOOT buttons and the thumbwheel. The
 bezel's skirts take the top 2.8 mm of the walls, which makes the frame about 6 times stiffer
 again (see **Deeper skirts**). It also repeats the antenna end's three fins on the other three
-sides. v0.6 (not printed yet) draws the frog on the back as an outline instead of a dot matrix,
-which cuts the first layer's retractions from 509 to 111 and drops the 96 point-sized loops the
-slicer laid there (see **Frog**). It also lowers the bezel's hooks 0.2 mm so they click all the
+sides. v0.6 (not printed yet) draws the frog on the back as an outline with a 45° hatch over its
+body instead of a dot matrix, which cuts the first layer's retractions from 509 to 125 and drops
+the 96 point-sized loops the slicer laid there (see **Frog**). It also lowers the bezel's hooks 0.2 mm so they click all the
 way into the tray's grooves, which they didn't quite do on the v0.5 print (see **Hook play**). Earlier designs (v0.1, a two-part shell with a screwed-on bezel; v0.2, the tray alone with
 no front) are in git history.
 
@@ -215,20 +215,26 @@ bottom ledge: 0.112 mm clear at 0.2, 0.075 at 0.3, 0.025 at 0.4.
 ![end hook section](renders/section_end_hook.png)
 
 **Frog.** The sleeping frog from the Sleep screen (`kFrog` in `src/apps/sleep.cpp`) is engraved
-in the hatch panel on the back as an outline, centred on the battery. Its ink cells (`#`) sit on a
-2 mm grid, each a full 2 mm square joined to its neighbours. Where two cells touch only at a
-corner, a 45° join links them, as wide as a straight stroke (2 mm). The 50 % dither and the paper
-inside the sprite are left flat. That gives four pieces: the outline, the mouth, and the two
-nostrils, 554 mm² in all over 52 × 32 mm. It's 0.2 deep (`frog_d`): one first layer, over the
+in the hatch panel on the back as an outline with a 45° hatch over its body, centred on the
+battery. Its ink cells (`#`) sit on a 2 mm grid, each a full 2 mm square joined to its
+neighbours. Where two cells touch only at a corner, a 45° join links them, as wide as a straight
+stroke (2 mm). The 50 % dither cells (`+`) are hatched: grooves 1.41 mm wide with 1.41 lands,
+parallel to the hazard stripes, running on into the outline. The paper inside the sprite (`o`,
+the belly) is left flat. The hatch is locked to the cell grid: each groove spans one cell
+diagonal. Its edges run midway between the cells' corners, so no edge passes through a corner of
+the outline. At a pitch not locked to the grid, some groove edge always grazes a corner, leaving
+edges a few µm long. Locked with its edges on the corners, lands met the recess at single points,
+which the CAD kernel can't build into a closed solid. The whole frog is one recess, 815 mm² over
+52 × 32 mm, with nothing narrower than 0.6 mm and no edge shorter than 0.29. It's 0.2 deep (`frog_d`): one first layer, over the
 battery, where the skin is 0.8, so 0.6 (three layers) stays under it. The v0.3 print had a 0.6
 skin, and the 0.4 left under the frog let light through. Its walls are straight: a 45° draft does
 nothing on one layer, and it made the slicer see the strokes 0.2 narrower. It reads upright with
 the device turned over side to side, so the thumbwheel side is up (the render above upside down).
-The outline is fixed in its sketch (`Frog plan`, 218 lines), so it doesn't follow the battery
-parameters. Cell (row r, column c) of `kFrog` is centred at x 14.85 + 2c, y 18.8 + 2(15 − r). To
-redraw it, write the lines from a script and send the whole sketch in one
-`reverse_feature_update`. Give the `Frog` cut its regions as one point inside each piece, not
-"all", which would also cut the areas the outline closes in.
+The frog is fixed in its sketch (`Frog plan`, 316 lines), so it doesn't follow the battery
+parameters. Cell (row r, column c) of `kFrog` is centred at x 14.85 + 2c, y 18.8 + 2(15 − r), and
+the grooves are centred on the lines x − y = 0.05 + 4k. To redraw it, write the lines from a
+script and send the whole sketch in one `reverse_feature_update`. Give the `Frog` cut its region
+as one point inside the recess, not "all", which would also cut the lands and the belly.
 
 Until v0.6 the frog was a dot matrix: ink cells as 1.5 mm square holes and dither cells as 0.8 mm
 dots, 266 holes in all, with 45° walls. Printed, that layer came out with a couple of globs, in
@@ -236,12 +242,19 @@ the same places each time. In PrusaSlicer (CORE One HF0.4, PETG, Arachne perimet
 tray's first layer took 509 retractions. With elephant-foot compensation at 0.2, the slicer also
 laid 96 point-sized loops where the holes' corners met (0.03 mm³ each, the nozzle circling
 0.12 mm). They printed one after another on bare bed, before the lines round the holes, and PETG
-that small tends to ride off on the nozzle: the likely source of the globs. The outline slices to 111 retractions and no such loops (two
-of 0.009 mm³ where the 45° joins meet the wall at compensation 0.2, none at 0). The cost is on
-layer 2, which bridges the recess. The slicer bridges a connected recess in one direction, so the
-legs and the upright runs of the sides are bridged lengthwise, up to 12.1 mm, 0.2 above the bed,
-where no span over the dot matrix was longer than 1.5. The sketch is also far lighter: the dot
-matrix was 1,862 entities with 3,724 constraints and took minutes to solve.
+that small tends to ride off on the nozzle: the likely source of the globs. The hatched frog
+slices to 125 retractions and no such loops: four of 0.015 mm³ at the hatch's land tips at
+compensation 0.2, none at 0. (The outline alone, briefly in v0.6, sliced to 111.) The cost is on
+layer 2, which bridges the recess. The slicer bridges a connected recess in one direction, and
+left to itself it picks one nearly level: the mouth line and the other level strokes are then
+bridged lengthwise, 31 spans over 10 mm and up to 23 mm, 0.2 above the bed. **Set the tray's
+bridging angle to 135°** (across the grooves; PrusaSlicer: right-click the tray → Add settings →
+Infill → Bridging angle, with the tray as the model lies, not turned on the bed). The frog is the
+tray's only bridging, so nothing else changes. Then the grooves are bridged straight across
+(1.4 mm), the level and upright strokes at 45° (2.8 mm), and only the outline's diagonal steps
+that run with the bridges are spanned lengthwise: 4 spans over 10 mm, up to 15.3. No span over
+the dot matrix was longer than 1.5. The sketch is also far lighter: the dot matrix was 1,862
+entities with 3,724 constraints and took minutes to solve.
 
 **Revision.** `v0.6` is engraved on the back, in the free corner below the vent slots. Its
 reading-left edge lines up with the outer vent slot (x 90.0), and its baseline and digit tops
@@ -270,7 +283,7 @@ the strip more or fewer pieces, list them again.
 could see from outside, such as a clearance or a hook. v0.3 was the 2026-11-14 print, and the
 changes since (sunk screw heads, the wheel-notch gap closed, the frog turned, the stiffer bezel,
 eight hooks, the thicker skin) make v0.4, the deeper skirts and the fins all round make v0.5, and
-the outline frog and the hook play make v0.6. Only the tray is marked, so a bezel printed on its own
+the hatched frog and the hook play make v0.6. Only the tray is marked, so a bezel printed on its own
 carries no revision. One digit runs to v0.9. Past that, cut a second digit window or go to v1.0
 (the "v0." comes from `revision_glyphs.py`).
 
@@ -329,8 +342,8 @@ the socket, where the panel's flex cable wraps the board edge (0.72 mm away). Th
 - The thumbwheel slot runs straight down to the bed, so its walls are vertical and nothing overhangs.
 - The corner recesses are vertical, and the hook grooves in them have 45° roofs.
 - The end wall stops at the middle of the USB-C and microSD openings, so they're open Us with their curves facing up. The bezel's skirt makes their tops.
-- The frog is a 0.2 mm recess in the first layer, 2 mm strokes with straight walls. The second layer bridges it: across the mouth and the level strokes, and lengthwise, up to 12.1 mm, along the legs and the upright runs of the sides (**Frog**).
-- The countersinks are 45° cones opening onto the bed (Ø6.0 there, `csk_d`). The 0.6 mm back-edge chamfer also hides elephant's foot, so set PrusaSlicer's elephant-foot compensation (Print Settings → Advanced → Slicing) to 0 for the tray: at 0.2 it leaves two point-sized extrusions where the frog's 45° joins meet the wall.
+- The frog is a 0.2 mm recess in the first layer, 2 mm strokes and 1.41 mm hatch grooves with straight walls. The second layer bridges it, so **set the tray's bridging angle to 135°**, across the grooves: left to the slicer it bridges the level strokes lengthwise, up to 23 mm (**Frog**).
+- The countersinks are 45° cones opening onto the bed (Ø6.0 there, `csk_d`). The 0.6 mm back-edge chamfer also hides elephant's foot, so set PrusaSlicer's elephant-foot compensation (Print Settings → Advanced → Slicing) to 0 for the tray: at 0.2 it leaves four point-sized extrusions at the frog's hatch.
 - The PWR / BOOT flexures stand upright, rooted at the floor, so the tab never overhangs. Each tab is 4 × 6.9 × 0.8 mm (`tab_w`, `tab_top`, `tab_t`), and its nub has a 45° underside and sits 0.15 from the stem (`btn_gap`). An upright tab bends across the layer lines, so print it in **PETG**, or expect PLA to crack at the root.
 - The slots round the two tabs run up through the wall top, and the bezel closes them from above, so they need no bridge: the frog is the only bridging left. Each tab has 1.2 mm of room above its free end.
 
@@ -359,7 +372,7 @@ fingernail recess. Both are split between the tray and the bezel. Flared thumbwh
 - Chamfered corner caps on the bezel (`bump_l`, `bump_out`, `bump_ch`, `cap_t`).
 - Three fins on each side, all at one height (z −8.06 to −3.66), centred between the back face and the z −2.6 seam (`fin_*`, `*_fin_zc`). They stop 1 mm short of each corner cap. On the long sides they break for the controls (`fin_gap_x0` to `fin_gap_x1`), leaving a 4.85 mm run between the controls and the antenna end's caps. At the USB-C end they run only between the USB-C opening and the cap (`USB end fins`, y 36.6–53.75), since the openings fill the rest.
 - On the back: a chamfered hatch outline round the battery (`hatch_*`, `line_*`), five vent slots spanning the hatch's height beside it (`vent_*`), and a band of 45° hazard stripes below it (`haz_*`). All 0.4 mm deep, and they follow the battery parameters.
-- The frog's outline inside the hatch outline (`frog_d`, **Frog**).
+- The frog, outlined and hatched, inside the hatch outline (`frog_d`, **Frog**).
 - The revision, v0.`rev`, below the vent slots (**Revision**).
 - Chamfers: 0.5 mm on the bezel's front outer edges, 0.5 on the tray's top outer edges where they're still at z 0.2: over the controls and inside the corner caps. The lowered seam has the 0.15 parting gap instead, 0.6 round the back (cap feet and thumbwheel slot included).
 
