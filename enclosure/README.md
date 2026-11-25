@@ -26,7 +26,7 @@ no front) are in git history.
 
 | File | What |
 | --- | --- |
-| `ereader-enclosure.scanruler` | Parametric source: 130 features (1 suppressed), 117 parameters (6 pinned), board STEP, battery dummy, 1 open note |
+| `ereader-enclosure.scanruler` | Parametric source: 130 features (1 suppressed), 117 parameters (7 pinned), board STEP, battery dummy, 1 open note |
 | `ereader-enclosure.step` | Both parts as solids, `Back tray` and `Bezel` (read back and verified) |
 | `back-tray.stl` | Tray print mesh (0.02 mm chord), the right way up to print |
 | `front-bezel.stl` | Bezel print mesh (0.02 mm chord), as fitted: turn it face-down to print |
@@ -376,7 +376,7 @@ fingernail recess. Both are split between the tray and the bezel. Flared thumbwh
 - The revision, v0.`rev`, below the vent slots (**Revision**).
 - Chamfers: 0.5 mm on the bezel's front outer edges, 0.5 on the tray's top outer edges where they're still at z 0.2: over the controls and inside the corner caps. The lowered seam has the 0.15 parting gap instead, 0.6 round the back (cap feet and thumbwheel slot included).
 
-**Pinned parameters:** `rev` 6, `batt_t` 4.61, `bump_up` 0, `bump_l` 7.5, `wall_t` 2.0, `hook_play` 0.2.
+**Pinned parameters:** `rev` 6, `batt_t` 4.61, `bump_up` 0, `bump_l` 7.5, `wall_t` 2.0, `hook_play` 0.2, `frog_d` 0.2.
 
 **Open question** (pinned as a note in the project): **screws**. This assumes the standoffs are
 fixed to the PCB. The panel glass covers their holes, so they must be.
