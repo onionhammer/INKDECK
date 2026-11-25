@@ -383,3 +383,6 @@ fixed to the PCB. The panel glass covers their holes, so they must be.
 
 **Not done yet:** speaker mount and grille, mic port, raised labels, a test print for
 tolerances (`clr_side`, `clr_end`, `btn_gap`, `tab_t`, `cap_gap`, `hook_d` and `hook_play` are the knobs).
+
+**Concept, not built:** a flatter back that hugs the battery, 9.95 mm everywhere but a pod round
+the cell, and a bevelled-edge alternative: [`concepts/flatter-back/`](concepts/flatter-back/README.md).
