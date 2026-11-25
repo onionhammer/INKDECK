@@ -3,8 +3,8 @@
 # dependencies = ["cadquery>=2.4", "numpy"]
 # ///
 """Concept A, the pod back: the back rises to the field level everywhere except a pod round the
-battery. Cut from the v0.5 solids in ../../ereader-enclosure.step (a mock-up: the ScanRuler model
-is untouched). Writes podA_tray.stl, podA_bezel.stl and podA.step here, and the v0.5 meshes and the
+battery. Cut from the v0.6 solids in ../../ereader-enclosure.step (a mock-up: the ScanRuler model
+is untouched). Writes podA_tray.stl, podA_bezel.stl and podA.step here, and the v0.6 meshes and the
 battery and placeholder speaker boxes to build/ for render.py and sections.py.
 
     uv run enclosure/concepts/flatter-back/build_pod.py
@@ -16,7 +16,7 @@ HERE = Path(__file__).resolve().parent
 BUILD = HERE / "build"; BUILD.mkdir(exist_ok=True)
 STEP = HERE.parents[1] / "ereader-enclosure.step"
 
-Z_BACK = -9.11            # v0.5 flat back
+Z_BACK = -9.11            # v0.6 flat back
 Z_FIELD = -7.2            # standoff_z - back_t: set by the screws (and the USB-C opening + 1.2)
 FLOOR = 1.2
 Z_FTOP = Z_FIELD + FLOOR  # -6.0
@@ -38,12 +38,12 @@ def prism(pts, z0, z1, taper=0.0):
 def box(x0, y0, z0, x1, y1, z1):
     return cq.Workplane("XY").box(x1-x0, y1-y0, z1-z0, centered=False).translate((x0, y0, z0))
 
-def load_v05():
-    """(tray, bezel) from the v0.5 STEP: the tray is the solid that reaches lowest."""
+def load_v06():
+    """(tray, bezel) from the v0.6 STEP: the tray is the solid that reaches lowest."""
     s = sorted(cq.importers.importStep(str(STEP)).solids().vals(), key=lambda v: v.BoundingBox().zmin)
     return cq.Workplane().add(s[0]), cq.Workplane().add(s[1])
 
-tray, bezel = load_v05()
+tray, bezel = load_v06()
 
 # Pod: the hatch outline at the field level, its 45° flanks running down to a face RISE smaller a side.
 face_ch = HCH - RISE * math.tan(math.radians(22.5))
@@ -82,8 +82,8 @@ def stl(shape, path):
 stl(new_tray, HERE / "podA_tray.stl")
 stl(new_bezel, HERE / "podA_bezel.stl")
 cq.exporters.export(cq.Assembly().add(new_tray, name="tray").add(new_bezel, name="bezel").toCompound(), str(HERE / "podA.step"))
-stl(tray, BUILD / "v05_tray.stl")
-stl(bezel, BUILD / "v05_bezel.stl")
+stl(tray, BUILD / "v06_tray.stl")
+stl(bezel, BUILD / "v06_bezel.stl")
 spk = box(SPK["x0"], SPK["y0"], Z_FTOP, SPK["x0"] + SPK["l"], SPK["y0"] + SPK["w"], Z_FTOP + SPK["t"])
 batt = box(8.6, 12.8, Z_POCKET, 71.1, 54.8, Z_POCKET + 4.61)
 cq.exporters.export(spk, str(BUILD / "speaker.stl")); cq.exporters.export(batt, str(BUILD / "battery.stl"))

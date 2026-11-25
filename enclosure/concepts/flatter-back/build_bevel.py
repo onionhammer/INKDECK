@@ -4,7 +4,7 @@
 # ///
 """Concept B, the bevelled edge: one-piece tray, flat back kept, a 45° bevel S high round the back
 edge between the corner caps (skipping the PWR / BOOT flexures). Prints back-down with no supports.
-Cut from the v0.5 solids in ../../ereader-enclosure.step (a mock-up). Writes bevelB_tray.stl here.
+Cut from the v0.6 solids in ../../ereader-enclosure.step (a mock-up). Writes bevelB_tray.stl here.
 
     uv run enclosure/concepts/flatter-back/build_bevel.py
 """
