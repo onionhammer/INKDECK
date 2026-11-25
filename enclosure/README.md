@@ -8,13 +8,14 @@ That print had the screw heads standing proud, a gap above the PCB at the back o
 notch, and a frog that let light through. v0.4 fixes all three (see **Screws**, **Front bezel**
 and **Frog**). It also moves the seam down from the glass to just above the PCB, so the bezel's
 frame is 2.55 mm deep and about 6.5 times as stiff (see **Stiffer bezel**), and the caps hold
-with eight deeper hooks instead of four (see **Hooks**). v0.5 (not printed yet) brings the seam
+with eight deeper hooks instead of four (see **Hooks**). v0.5 (printed by 2026-11-25) brings the seam
 down to z −2.6 on all four sides, except over the PWR / BOOT buttons and the thumbwheel. The
 bezel's skirts take the top 2.8 mm of the walls, which makes the frame about 6 times stiffer
 again (see **Deeper skirts**). It also repeats the antenna end's three fins on the other three
 sides. v0.6 (not printed yet) draws the frog on the back as an outline instead of a dot matrix,
 which cuts the first layer's retractions from 509 to 111 and drops the 96 point-sized loops the
-slicer laid there (see **Frog**). Earlier designs (v0.1, a two-part shell with a screwed-on bezel; v0.2, the tray alone with
+slicer laid there (see **Frog**). It also lowers the bezel's hooks 0.2 mm so they click all the
+way into the tray's grooves, which they didn't quite do on the v0.5 print (see **Hook play**). Earlier designs (v0.1, a two-part shell with a screwed-on bezel; v0.2, the tray alone with
 no front) are in git history.
 
 ## v0.6: back tray + snap-on front bezel with corner caps (11.86 mm)
@@ -25,7 +26,7 @@ no front) are in git history.
 
 | File | What |
 | --- | --- |
-| `ereader-enclosure.scanruler` | Parametric source: 130 features (1 suppressed), 116 parameters (5 pinned), board STEP, battery dummy, 1 open note |
+| `ereader-enclosure.scanruler` | Parametric source: 130 features (1 suppressed), 117 parameters (6 pinned), board STEP, battery dummy, 1 open note |
 | `ereader-enclosure.step` | Both parts as solids, `Back tray` and `Bezel` (read back and verified) |
 | `back-tray.stl` | Tray print mesh (0.02 mm chord), the right way up to print |
 | `front-bezel.stl` | Bezel print mesh (0.02 mm chord), as fitted: turn it face-down to print |
@@ -163,9 +164,11 @@ printing.
 (`Cap hook`, centred at `hook_x0`) and on the USB-C and antenna ends (`End hook`, at `hook_y0`),
 each mirrored to all four corners. The first print had only the four on the long sides, 0.5 deep,
 and the joint was a bit flimsy. Each hook is 3 mm wide (`hook_w`) and 0.65 deep (`hook_d`), with a 45°
-retaining face, a 0.2 flat (`hook_tip`) and a 1:2 lead-in. Its top is 6.4 mm below the wall top
-(`hook_l`), at z −6.2. It clicks into a groove in the tray's corner recess whose 45° roof meets
-the retaining face with no gap. Once in, the hook overlaps the tray by 0.5 (0.35 before). The
+retaining face, a 0.2 flat (`hook_tip`) and a 1:2 lead-in. It clicks into a groove in the tray's
+corner recess. The groove's top is 6.4 mm below the wall top (`hook_l`), at z −6.2, and its 45°
+roof runs parallel to the retaining face. The hook sits `hook_play` (0.2) lower, its top at
+z −6.4, so with the bezel down the roof stands 0.2 above the retaining face (**Hook play**). Once
+in, the hook overlaps the tray by 0.5 (0.35 before). The
 groove floor is 0.61 above the back face, and the end grooves leave 1.0 of end wall behind them.
 Going on, the cap wall flexes 0.5 mm there (`hook_d` − `cap_gap`). The cap is joined to the frame
 above the seam, so it bends over the 6.4 mm below it. As a plain cantilever that's about 1.8 %
@@ -175,7 +178,7 @@ last 1 mm, beside the hook (x or y 4.1–5.1 from the corner's outer faces, with
 1.55–4.55). Over that strip the leg hangs only 3.75 mm below the skirt's foot (z −2.45), and over
 that length a plain cantilever would strain 5.3 %, near PETG's yield. Away from the joint the
 leg still hangs the full 6.4 from the frame, so the real figure lies between 1.8 and 5.3 %. Only
-the USB-C end's two hooks were built like this in v0.4, and none has been printed yet. The corner
+the USB-C end's two hooks were built like this in v0.4; v0.5 printed all eight so. The corner
 stiffens the wall too, so it takes more force than a free tab would; only a test print will say
 how much. If the bezel won't go on, or a leg cracks, take `hook_d` down first. Since the caps
 bend across the layer lines, **print in PETG**. The 45° faces let a firm pull release the hooks.
@@ -183,8 +186,27 @@ To take the bezel off, put a spudger in the pry notch (6 × 1.5 × 0.6, `pry_*`,
 antenna skirt's underside at the lowered seam) under the middle of the antenna end and lever that
 end up. The four hooks there let go first, then the other four. The knobs for a test print
 are `hook_d` (grip), `hook_l` (stiffness; up to about 6.5, where the groove floor comes within
-0.5 of the back face) and `cap_gap` (fit). Suppressing `Join end hooks` and `Cut end grooves`
-takes the end hooks out.
+0.5 of the back face), `hook_play` (seating) and `cap_gap` (fit). Suppressing `Join end hooks`
+and `Cut end grooves` takes the end hooks out.
+
+**Hook play (v0.6).** On the v0.5 print the hooks didn't quite click in: the end hook at the top
+right corner (+X +Y, the antenna end's thumbwheel corner, with the thumbwheel edge up) stopped
+part way into its groove, and the others weren't all the way in either. All eight hooks and grooves are the same shape mirrored, and the parts
+don't overlap anywhere in the model. The cause was the fit itself: until v0.6 the retaining face
+met the groove roof with no gap, so the hooks seated only if the bezel came down exactly to its
+drawn height. At 0.2 mm layers it doesn't. The tray's 9.31 mm at the corners rounds up to 9.4,
+and the frame's 2.55 below the bezel's front rounds up to 2.60, so the bezel rests 0.14 high on
+its seats. The two 45° faces print as matching stairs, and the G-code of the v0.5 parts left each
+hook 0.14 short of seating, at all eight, before PETG's slightly fat walls and the faces' droop
+took it further. On top of that the bezel slice started the caps' outer perimeters right at the
+end of four hooks (the end hooks at +X +Y, +X −Y and −X +Y, and the long-side hook at −X −Y). A
+seam's bump there sits in the 0.15 gap against the tray, which can leave those hooks worse than
+the rest. v0.6 lowers the hooks on the bezel by `hook_play`, 0.2 mm, and leaves the tray as it
+was, so a v0.5 tray takes a v0.6 bezel. Each layer of play frees as much sideways, so a hook is
+held back by 0.14 − `hook_play` as sliced: 0.2 seats them all with 0.06 to spare. That much is
+also how far the bezel can lift before the hooks bear, less what the print takes up. If hooks
+still sit short, raise `hook_play` to 0.3. Past that the lowered lead-in closes on the groove's
+bottom ledge: 0.112 mm clear at 0.2, 0.075 at 0.3, 0.025 at 0.4.
 
 ![corner cap](renders/corner_cap.png)
 
@@ -248,7 +270,7 @@ the strip more or fewer pieces, list them again.
 could see from outside, such as a clearance or a hook. v0.3 was the 2026-11-14 print, and the
 changes since (sunk screw heads, the wheel-notch gap closed, the frog turned, the stiffer bezel,
 eight hooks, the thicker skin) make v0.4, the deeper skirts and the fins all round make v0.5, and
-the outline frog makes v0.6. Only the tray is marked, so a bezel printed on its own
+the outline frog and the hook play make v0.6. Only the tray is marked, so a bezel printed on its own
 carries no revision. One digit runs to v0.9. Past that, cut a second digit window or go to v1.0
 (the "v0." comes from `revision_glyphs.py`).
 
@@ -318,12 +340,15 @@ hooks' retaining faces are 45°, and the chamfers on their feet face up. The ski
 straight up off the underside on all four sides. The USB-C end's holds the top halves of the openings as upward-facing curves, and the long sides' end in 45° ramps facing up by the controls. The
 frame stands straight up 2.55 mm off the bed all round, with a flat top (its underside when
 fitted). The glass pocket (1.35 deep) and the pry notch are open pockets on top. Print it in
-**PETG**, so the caps flex rather than crack.
+**PETG**, so the caps flex rather than crack. Keep the seam off the hooks: with the seam set to
+Aligned, PrusaSlicer starts the caps' outer perimeters at the end of four hooks (**Hook play**).
+Paint a seam blocker over the caps' inner faces round the hooks, or an enforcer on each cap's
+45° outer corner.
 
 **Checked in ScanRuler** (model only):
 - **Clearances:** button stems to nubs and relief 0.15, PCB to walls 0.24, wheel 0.37, panel to tray 1.59 and to bezel 0.25, USB-C socket shell to its opening 1.16. The MX1.25 headers and ESP32 module are ~3 mm above the floor.
 - **Battery:** sits on the pocket floor, 0.10 under the display FPC connector, 0.96 from the wheel, 0.92 from USB-C. A swelling pouch has only that 0.1 mm above it.
-- **Contact:** the tray touches the board only at the four standoff ends. The bezel touches nothing on the board: its frame is 0.20 above the PCB's top face all round, 0.40 from the PCB's ends at the end skirts, 0.25 from its long edges at the side skirts, 0.25 off the panel glass, 0.66 from the nearest standoff and 2.8 above the wheel. It touches the tray only on the wall tops at the corners and over the controls, and on the hook retaining faces. The caps and the skirts stand 0.15 off the tray everywhere else.
+- **Contact:** the tray touches the board only at the four standoff ends. The bezel touches nothing on the board: its frame is 0.20 above the PCB's top face all round, 0.40 from the PCB's ends at the end skirts, 0.25 from its long edges at the side skirts, 0.25 off the panel glass, 0.66 from the nearest standoff and 2.8 above the wheel. It touches the tray only on the wall tops at the corners and over the controls. The hooks' retaining faces stand 0.2 below their groove roofs (`hook_play`), and the caps and the skirts 0.15 off the tray everywhere else.
 - **Solids:** both valid and closed, with no slivers or voids, and the STEP round trip is exact. The only steps between features the check flags are the frog's intended 0.2 mm depth on the tray; the bezel has none.
 
 **Openings:** USB-C 11.25 × 5.5, for Apple-size plugs (the panel's flex cable wraps the board edge
@@ -338,10 +363,10 @@ fingernail recess. Both are split between the tray and the bezel. Flared thumbwh
 - The revision, v0.`rev`, below the vent slots (**Revision**).
 - Chamfers: 0.5 mm on the bezel's front outer edges, 0.5 on the tray's top outer edges where they're still at z 0.2: over the controls and inside the corner caps. The lowered seam has the 0.15 parting gap instead, 0.6 round the back (cap feet and thumbwheel slot included).
 
-**Pinned parameters:** `rev` 6, `batt_t` 4.61, `bump_up` 0, `bump_l` 7.5, `wall_t` 2.0.
+**Pinned parameters:** `rev` 6, `batt_t` 4.61, `bump_up` 0, `bump_l` 7.5, `wall_t` 2.0, `hook_play` 0.2.
 
 **Open question** (pinned as a note in the project): **screws**. This assumes the standoffs are
 fixed to the PCB. The panel glass covers their holes, so they must be.
 
 **Not done yet:** speaker mount and grille, mic port, raised labels, a test print for
-tolerances (`clr_side`, `clr_end`, `btn_gap`, `tab_t`, `cap_gap` and `hook_d` are the knobs).
+tolerances (`clr_side`, `clr_end`, `btn_gap`, `tab_t`, `cap_gap`, `hook_d` and `hook_play` are the knobs).
