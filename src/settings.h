@@ -47,6 +47,10 @@
 // without the card keep using them; a card whose file doesn't set a value puts the built-in one
 // back.
 //
+// "Built in" means the firmware's .env values, or for an image built without one (a release from
+// GitHub, ota.h) the value the last image that had it kept in NVS: so an update from GitHub
+// keeps the Wi-Fi network, time zone and location the board was built with.
+//
 // Each ssid line names a network wlan.h may join, and the password line after it (before the
 // next ssid) is that network's. wlan.h tries the network it last joined first, then the others
 // in the file's order. The card's networks replace the built-in one; without an ssid line, the

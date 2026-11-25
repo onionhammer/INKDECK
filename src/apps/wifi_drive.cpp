@@ -6,7 +6,6 @@
 #include <algorithm>
 
 #include "apps/home.h"
-#include "ota.h"
 #include "podcast_library.h"
 #include "settings.h"
 #include "tailnet.h"
@@ -46,7 +45,7 @@ std::string bytes(uint64_t n) {
 
 // The headline's font has capitals only.
 std::string hostName(bool upper = false) {
-  std::string h = std::string(ota::kHostname) + ".local";
+  std::string h = std::string(webdav::kHostname) + ".local";
   if (upper) {
     for (char &c : h) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
   }

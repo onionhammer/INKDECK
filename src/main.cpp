@@ -136,7 +136,7 @@ void setup() {
 #endif
   power::bootDone();  // a power-off from now on restarts to sleep reachable (power.h)
   // Made it through setup() with a frame on the panel: if this is the first boot after an
-  // update over Wi-Fi, keep the new image (until now a reset would have rolled it back).
+  // update, keep the new image (until now a reset would have rolled it back).
   ota::confirmBoot();
 }
 

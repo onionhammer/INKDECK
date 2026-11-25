@@ -2,13 +2,12 @@
 
 Settings: WIFI_SSID and WIFI_PASSWORD (the network that SYNC TIME, and later the network
 screens, join), TIMEZONE (a POSIX TZ string, so local time follows daylight saving; empty
-means UTC), LATITUDE/LONGITUDE in decimal degrees (sunrise and sunset on the Clock, the
-Weather forecast; optional, but both or neither), and OTA_PASSWORD (guards updates over Wi-Fi,
-src/ota.h; optional, but without it the board won't listen for one).
+means UTC), and LATITUDE/LONGITUDE in decimal degrees (sunrise and sunset on the Clock, the
+Weather forecast; optional, but both or neither).
 
-OTA_PASSWORD goes into the firmware only as its SHA-256, which is all ArduinoOTA's handshake
-needs. An upload to a network address (`pio run -t upload --upload-port inkdeck.local`, which
-PlatformIO sends with espota) gets it as espota's --auth flag; serial uploads don't.
+Release builds (.github/workflows/release.yml) have no .env. The board keeps the values of the
+last image that had them in NVS and uses those instead (src/settings.h), so an update from
+GitHub keeps the network it came over.
 
 The secrets go into a header in the build directory rather than -D flags, so they never appear
 on compiler command lines or in verbose build logs, and any character in a Wi-Fi password
@@ -21,19 +20,17 @@ the firmware builds without a network. A value that is set but invalid produces 
 #errors, so the build stops with the reason instead of flashing credentials that can't work.
 
 Environment variables of the same name override .env, e.g. for a one-off build on another
-network. On the board, SD:/inkdeck.ini overrides TIMEZONE, LATITUDE and LONGITUDE (never Wi-Fi):
-see src/settings.h.
+network. On the board, SD:/inkdeck.ini overrides all of them: see src/settings.h.
 
 Adapted from https://github.com/onionhammer/lollipop-smell (scripts/gen_secrets.py).
 """
-import hashlib
 import os
 import re
 
 Import("env")  # noqa: F821 - SCons injects Import into extra scripts
 
 HEADER = "inkdeck_secrets.h"
-KEYS = ("WIFI_SSID", "WIFI_PASSWORD", "TIMEZONE", "LATITUDE", "LONGITUDE", "OTA_PASSWORD")
+KEYS = ("WIFI_SSID", "WIFI_PASSWORD", "TIMEZONE", "LATITUDE", "LONGITUDE")
 DEFAULT_TIMEZONE = "UTC0"
 
 # POSIX TZ, the only form newlib's tzset() understands: std offset [dst [offset] [,start,end]],
@@ -46,11 +43,6 @@ TZ_RE = re.compile(
     % (_TZ_NAME, _TZ_OFFSET, _TZ_NAME, _TZ_OFFSET, _TZ_RULE, _TZ_RULE)
 )
 DEGREES_RE = re.compile(r"^[+-]?\d{1,3}(?:\.\d+)?$")
-# Characters that survive espota's command line unquoted.
-OTA_PASSWORD_RE = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
-# The espressif32 builder's own test for an upload port that is a network address, on which it
-# switches the upload to espota (builder/main.py, "Compatibility with old OTA configurations").
-NETWORK_PORT_RE = re.compile(r"\"?((([0-9]{1,3}\.){3}[0-9]{1,3})|[^\\/]+\.local)\"?$")
 
 
 def degrees(text, limit):
@@ -127,14 +119,11 @@ def build_header(values):
         else:
             location = (lat, lon)
 
-    ota_password = values.get("OTA_PASSWORD", "")
-    if ota_password and not OTA_PASSWORD_RE.match(ota_password):
-        errors.append("OTA_PASSWORD must be 8-64 letters, digits, '.', '_' or '-'")
-
     if errors:
         lines += ['#error "%s: see .env.example"' % e for e in errors]
         return "\n".join(lines) + "\n", errors, False
 
+    lines.append("#define TIMEZONE_CONFIGURED %d" % (1 if values.get("TIMEZONE") else 0))
     lines.append("#define TIMEZONE %s" % c_string(timezone))
     if location:
         lines += [
@@ -152,11 +141,6 @@ def build_header(values):
         ]
     else:
         lines += ["#define WIFI_CONFIGURED 0", '#define WIFI_SSID ""', '#define WIFI_PASSWORD ""']
-    if ota_password:
-        digest = hashlib.sha256(ota_password.encode("ascii")).hexdigest()
-        lines += ["#define OTA_CONFIGURED 1", '#define OTA_PASSWORD_SHA256 "%s"' % digest]
-    else:
-        lines += ["#define OTA_CONFIGURED 0", '#define OTA_PASSWORD_SHA256 ""']
     return "\n".join(lines) + "\n", errors, bool(ssid)
 
 
@@ -184,24 +168,6 @@ def main():
         print("gen_secrets: %s (the firmware build will fail)" % e)
     if not errors and not configured:
         print("gen_secrets: no WIFI_SSID in .env; building without Wi-Fi")
-
-    configure_ota_upload(values.get("OTA_PASSWORD", ""))
-
-
-def configure_ota_upload(password):
-    """An upload to a network address goes over espota: hand it the password."""
-    from SCons.Script import COMMAND_LINE_TARGETS, Exit
-
-    port = env.get("UPLOAD_PORT", "")  # noqa: F821
-    if "upload" not in COMMAND_LINE_TARGETS or not NETWORK_PORT_RE.match(port):
-        return
-    if not password or not OTA_PASSWORD_RE.match(password):
-        print(
-            "gen_secrets: uploading to %s over Wi-Fi needs a valid OTA_PASSWORD in .env"
-            " (the one the board was built with): see .env.example" % port
-        )
-        Exit(1)
-    env.Append(UPLOAD_FLAGS=["--auth=" + password])  # noqa: F821
 
 
 main()

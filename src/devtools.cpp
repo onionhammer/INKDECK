@@ -24,6 +24,7 @@
 #include "forecast.h"
 #include "input.h"
 #include "news_library.h"
+#include "ota.h"
 #include "pmic.h"
 #include "power.h"
 #include "podcast_library.h"
@@ -934,6 +935,12 @@ void lineCommand(const String &line) {
   if (line == "newssync") {
     news::sync();
     Serial.println("devtools: syncing the news feeds");
+    return;
+  }
+  if (line == "update" || line.startsWith("update ")) {
+    ota::setManifestUrl(line.length() > 7 ? line.substring(7).c_str() : "");
+    Serial.printf("devtools: the updater checks %s until the next boot\n",
+                  ota::manifestUrl().c_str());
     return;
   }
   if (line.startsWith("feed ")) {

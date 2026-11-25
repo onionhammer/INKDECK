@@ -35,7 +35,7 @@ board instead, and the wheel keeps its portrait sense there.
 | **Files** | Browses the microSD card and the onboard 9.9 MB FAT partition, and opens books, audio, pictures and text. With a PIN set, it can ask for it first unless you used it in the last minute (see Lock). A held dial pages through long folders. **HOLD ● deletes** the selected file or folder after asking; the sheet shows the file's size or how many items the folder holds, since they all go with it. Playback of a file being deleted stops first, and the Podcasts folder can't be deleted from while a download runs. **Pictures** (JPEG, PNG) show full screen, dithered, in portrait or landscape as the board is held (the IMU), and turn with it within a couple of seconds, on battery too; lying flat, they stay as they were (tilt decides, not the picture's shape). The wheel works
 the same way round in both. Phone photos come out upright (EXIF orientation), and ▲▼ steps through the folder. ● hides the status and hint bars. JPEGs of any size stream from the card; PNGs up to 2400 px wide and 4 megapixels. **Text**: any file that reads as text (UTF-8, Windows-1252 or UTF-16) opens in the text reader, which scrolls instead of paging: ▲▼ scrolls by a line, a quarter or half a screen (menu), and keeps going while held. Literata or JetBrains Mono in three sizes; hard-wrapped prose (Project Gutenberg) is joined back into paragraphs. The place, size and font are kept per file. A file over 4 MB shows its first 4 MB (less if memory is short). A Markdown file (`.md`) in a folder called `Notes` opens as a note instead (see Voice) |
 | **Network shares** | Files also browses shares on the local network or your tailnet (a NAS, a home server, a Windows PC), listed in `inkdeck.ini` (below): **SMB** (SMB2/3, user name and password) and **NFS** (v3). Each share is a row on the card's root after ONBOARD FLASH, tagged SMB or NFS. Opening one joins Wi-Fi and mounts it (read-only, so HOLD ● doesn't delete there), and its books, music, pictures and text open as they do from the card. **HOLD ● saves** the selected file to the card, into the folder its type belongs in: an MP3 to Music or Podcasts (a sheet asks which), a WAV to Music, a picture to Pictures, an EPUB to Books, any other text to Documents. Music keeps the folders it was in below the share's own `music` folder (else the folder it's in, the album), and a podcast lands in its show's folder (the one below the share's `podcasts` folder), where Podcasts lists it. A file of the same name and size already there isn't copied again; a different one gets a ` (2)`. The header shows how far it has got and the time left, BOOT stops it (nothing is left behind), and the board doesn't power off until it's done. Wi-Fi stays on while the share is open in Files or a file on it is (music playing, a book open), and goes off 30 s after |
-| **System** | Battery and charger state, power rails, wake plan, Wi-Fi, the tailnet, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates over Wi-Fi, how often the screen does a full refresh, the PIN lock, and the card as a network drive (all below). The actions are in a sheet that ● opens |
+| **System** | Battery and charger state, power rails, wake plan, Wi-Fi, the tailnet, memory and OTA slots, and the build running (version and git commit). Also NTP time sync, sleep, reboot, firmware updates from GitHub releases, how often the screen does a full refresh, the PIN lock, and the card as a network drive (all below). The actions are in a sheet that ● opens |
 
 **Power**
 - PWR shows a sleep screen and powers the board off completely. The e-paper keeps its image,
@@ -134,9 +134,9 @@ address your router's DNS gives the name, and the addresses the machine last gav
 At home one answers within milliseconds and the board connects there without joining (voice
 starts about 2.6 s after you press BOOT); elsewhere nothing answers within a second and it goes
 through the tailnet. A 100.x address always goes through the tailnet. A share in Files works
-the same way (`smb://erik@macbook/share`), and a podcast feed can be on a tailnet machine too. While Wi-Fi Drive or Update over Wi-Fi is open, the board answers on the
+the same way (`smb://erik@macbook/share`), and a podcast feed can be on a tailnet machine too. While Wi-Fi Drive is open, the board answers on the
 tailnet too, at `http://inkdeck` or its 100.x address (the screen shows it), so you can copy
-books or push an update from elsewhere. A host counts as on the tailnet when it's a
+books from elsewhere. A host counts as on the tailnet when it's a
 100.64.0.0/10 address, ends in `.ts.net`, or has no dots (a machine's name there); the board
 looks such names up in the tailnet's list of machines. On battery it leaves the tailnet a minute
 after the last thing using it lets go. **On USB power it stays on the tailnet**, Wi-Fi with it, so
@@ -152,7 +152,7 @@ join after a start, joins again from there if it has to (about 4 s more, once), 
 takes about 4 s after Wi-Fi, and voice over the tailnet starts about 6.5 s after you press BOOT
 (measured with inkharness on a home server). While on the tailnet, MicroLink's four tasks take
 42 KB of internal RAM, and fetching the list of machines takes 512 KB of PSRAM. Voice over the
-tailnet is tested on the board; shares, feeds, Wi-Fi Drive and updates over it aren't yet.
+tailnet is tested on the board; shares, feeds and Wi-Fi Drive over it aren't yet.
 **Exit node:** with `tailscale_exit_node = on`, the board offers itself as an exit node, so a
 laptop or phone on the tailnet can send its internet traffic out through the board's Wi-Fi.
 Approve it in the admin console (Machines → the board → Edit route settings → Use as exit
@@ -280,8 +280,8 @@ cycling and kept through a restart, a silent ring with no chirp on an awake boar
 face and on a sleeper's Sleep and Clock faces, the mark kept through two minute redraws, cleared
 by PWR and by a key).
 
-**Settings:** Wi-Fi, time zone, location and the password for updates over Wi-Fi come from
-`.env` at build time (template: `.env.example`). `inkdeck.ini` in the card's root overrides the
+**Settings:** Wi-Fi, time zone and location come from `.env` at build time (template:
+`.env.example`), and the board keeps them for builds without them (an update from GitHub). `inkdeck.ini` in the card's root overrides the
 Wi-Fi network, time zone and location without a rebuild, sets the lock, lists network shares,
 sets how long News's off face shows each story, puts the board on your tailnet and sets its comms groups, the rate it sends at and whether it stays reachable on battery (example: [`inkdeck.ini.example`](inkdeck.ini.example)). The board reads it at startup, and if
 the card has none, it writes one with every line commented out. It can list up to 8 Wi-Fi
@@ -368,31 +368,44 @@ Every link ends with `scripts/check_calls.py`, which fails the build if a call i
 own code doesn't land on a function: a check on the linker, which shrinks that code after
 laying it out.
 
-### Updating over Wi-Fi
+### Updating from GitHub
 
-Once a build with Wi-Fi and an `OTA_PASSWORD` in `.env` is on the board (flash it over USB the
-first time), later builds can go over the network:
+Each release on GitHub carries a firmware image built by CI, and the board installs it over
+Wi-Fi: System → CHECK FOR UPDATE. The board joins Wi-Fi, reads the latest release's
+`manifest.json` and shows its version against the one running. ● installs a newer one
+(HOLD ● takes an older one, to leave a build from the computer for the release). The image is
+downloaded straight into the idle OTA slot over HTTPS and checked against the manifest's size
+and SHA-256, and against its own checks, before the boot slot switches. So a lost connection,
+a flat battery or BOOT (cancel) midway leaves the running firmware in place. The board then
+restarts into the new build, and System's context line shows its version and git commit.
 
-1. On the board: System → UPDATE OVER WI-FI. It joins the network and listens for 10 minutes
-   (each attempt restarts the window), showing its address.
-2. On the computer, from the same network:
+A new build stays on probation until it gets through `setup()`. If it crashes or resets before
+then, the bootloader goes back to the previous one, and System's OTA row says
+`ROLLED BACK FROM app1`. A USB upload still works as before and always boots the slot it writes
+(`app0`).
 
-   ```sh
-   pio run -t upload --upload-port inkdeck.local    # or the IP the board shows
-   ```
+Release images are built without `.env`, so they hold no Wi-Fi, time zone or location. The board
+keeps the ones its last build from `.env` had and goes on using them, and `inkdeck.ini` on the
+card still overrides them. The release also uses `platformio.ini`'s build flags as committed
+(°F, the agent, comms and the tailnet on, BLE off): a board built with others gets those back with the
+update. The partition table can't change over the air.
 
-PlatformIO sends a network upload with espota, and `scripts/gen_secrets.py` passes it the
-`OTA_PASSWORD` from `.env` (the firmware keeps only its SHA-256). espota has the board connect
-back to the computer for the image, so the firewall must let Python accept incoming connections.
-espota's debug output prints the password, so don't paste upload logs anywhere public.
+**Releasing.** Push a version tag:
 
-The image goes into the idle OTA slot. Only a complete image that passes its checks switches
-the boot slot, so cutting the power or Wi-Fi midway leaves the running firmware in place. The
-board then restarts into the new build. The System screen's context line shows the build's git
-commit (with `+` for uncommitted changes), so you can see it took. A new build stays on
-probation until it gets through `setup()`. If it crashes or resets before then, the bootloader
-goes back to the previous one, and System's OTA row says `ROLLED BACK FROM app1`. A USB upload
-still works as before and always boots the slot it writes (`app0`).
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) builds the firmware with that
+version, writes the manifest (`scripts/release_manifest.py`) and publishes the release with
+`inkdeck-0.2.0.bin`, `manifest.json` and notes generated from the merged pull requests. A tag
+with a suffix (`v0.3.0-rc1`) makes a pre-release, which boards don't see. Running the workflow
+by hand (Actions → Release → Run workflow) builds without releasing. Local builds take their
+version from the nearest tag (`0.2.0+5` is five commits after `v0.2.0`), so a board running one
+counts as ahead of that release. A fork sets `INKDECK_UPDATE_REPO` in `platformio.ini` to its own
+repository. To try an image before releasing it, serve it and a manifest from the computer and
+point the board there with dev command `!update http://<computer>:8000/manifest.json`, which
+lasts until the next boot.
 
 ## More
 

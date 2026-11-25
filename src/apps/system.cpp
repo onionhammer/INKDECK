@@ -14,7 +14,6 @@
 #include "audio.h"
 #include "board_pins.h"
 #include "pin_places.h"
-#include "ota.h"
 #include "comms.h"
 #include "comms_reach.h"
 #include "pmic.h"
@@ -57,9 +56,9 @@ constexpr int kStripKeyW = 124;
 enum class Action : uint8_t {
   Sleep, SyncTime, FullRefresh, PinLock, Reachable, Silent, Update, WifiDrive, Reboot
 };
-constexpr const char *kActionLabels[] = {"SLEEP NOW", "SYNC TIME (NTP)",   "AUTO FULL REFRESH",
-                                         "PIN LOCK",  "REACHABLE",         "SILENT",
-                                         "UPDATE OVER WI-FI", "WI-FI DRIVE", "REBOOT"};
+constexpr const char *kActionLabels[] = {"SLEEP NOW", "SYNC TIME (NTP)",  "AUTO FULL REFRESH",
+                                         "PIN LOCK",  "REACHABLE",        "SILENT",
+                                         "CHECK FOR UPDATE", "WI-FI DRIVE", "REBOOT"};
 constexpr int kActionCount = sizeof kActionLabels / sizeof kActionLabels[0];
 
 // AUTO FULL REFRESH's steps, in screens' worth of pixels flipped (screen.h); 0 = off.
@@ -200,10 +199,10 @@ class SystemScreen : public ui::Screen {
   }
 
   std::string tag() const override { return moduleTag("SYSTEM"); }
-  // The build's commit, so an update over Wi-Fi shows it took. The IDF version, which used to
+  // The version and commit, so an update shows it took. The IDF version, which used to
   // be here, is on the Updater: the status bar has room for about 20 characters.
   std::string context() const override {
-    return std::string("FW ") + sysinfo::kFirmwareVersion + " \xC2\xB7 " + sysinfo::buildId();
+    return std::string("FW ") + sysinfo::firmwareVersion() + " \xC2\xB7 " + sysinfo::buildId();
   }
   int hints(ui::Hint *out) const override {
     out[0] = {ui::glyph::kPress, "ACTIONS"};
@@ -358,10 +357,6 @@ class SystemScreen : public ui::Screen {
       case Action::Update: {
         if (!wlan::configured()) {
           say("NO WI-FI: SET ONE IN INKDECK.INI OR .ENV");
-          break;
-        }
-        if (!ota::configured()) {
-          say("NO OTA_PASSWORD: SET IT IN .ENV, REBUILD");
           break;
         }
         // An interrupted update is harmless (the running firmware stays), but a flat battery

@@ -10,7 +10,7 @@
 
 #include <algorithm>
 
-#include "inkdeck_secrets.h"  // WIFI_*, TIMEZONE, LOCATION_CONFIGURED, LATITUDE, LONGITUDE
+#include "inkdeck_secrets.h"  // WIFI_*, TIMEZONE*, LOCATION_CONFIGURED, LATITUDE, LONGITUDE
 #include "shares.h"
 #include "sdcard.h"
 #include "text.h"
@@ -76,7 +76,21 @@ struct CardTailscaleKey {
   std::string key;
 };
 
+// The Wi-Fi network, time zone and location built into the firmware from .env
+// (scripts/gen_secrets.py), each kept in NVS ("built") by the image that has it. An image built
+// without one (a release from GitHub, ota.h) uses the kept one instead, so updating from GitHub
+// doesn't lose the network the update came over.
+struct BuiltIn {
+  std::string tz;  // "": none (UTC)
+  std::string ssid;  // "": none
+  std::string password;
+  bool location = false;
+  double lat = 0;
+  double lon = 0;
+};
+
 Values card;
+BuiltIn built;
 bool loaded = false;
 std::string pin;  // the board's PIN (NVS); empty: no lock
 PinChange pending = PinChange::None;
@@ -275,9 +289,12 @@ std::string nvsString(Preferences &prefs, const char *key) {
   return prefs.isKey(key) ? std::string(prefs.getString(key, "").c_str()) : std::string();
 }
 
+void loadBuiltIn();
+
 void loadNvs() {
   if (loaded) return;
   loaded = true;
+  loadBuiltIn();
   Preferences prefs;
   if (!prefs.begin(kNamespace, false)) return;
   card.tz = prefs.getString("tz", "").c_str();
@@ -925,6 +942,47 @@ void putOrRemove(Preferences &prefs, const char *key, const std::string &value) 
   }
 }
 
+void putDoubleIfChanged(Preferences &prefs, const char *key, double value) {
+  if (!prefs.isKey(key) || prefs.getDouble(key, 0) != value) prefs.putDouble(key, value);
+}
+
+// BuiltIn: this image's .env values, kept for an image without them; else the kept ones.
+void loadBuiltIn() {
+  built.tz = TIMEZONE_CONFIGURED ? TIMEZONE : "";
+  built.ssid = WIFI_CONFIGURED ? WIFI_SSID : "";
+  built.password = WIFI_CONFIGURED ? WIFI_PASSWORD : "";
+  built.location = LOCATION_CONFIGURED;
+  built.lat = LATITUDE;
+  built.lon = LONGITUDE;
+  Preferences prefs;
+  if (!prefs.begin("built", false)) return;
+  if (TIMEZONE_CONFIGURED) {
+    putOrRemove(prefs, "tz", built.tz);
+  } else {
+    built.tz = nvsString(prefs, "tz");
+  }
+  if (WIFI_CONFIGURED) {
+    putOrRemove(prefs, "ssid", built.ssid);
+    putOrRemove(prefs, "pass", built.password);
+  } else {
+    built.ssid = nvsString(prefs, "ssid");
+    built.password = nvsString(prefs, "pass");
+  }
+  if (LOCATION_CONFIGURED) {
+    if (!prefs.getBool("loc", false)) prefs.putBool("loc", true);
+    putDoubleIfChanged(prefs, "lat", built.lat);
+    putDoubleIfChanged(prefs, "lon", built.lon);
+  } else if (prefs.getBool("loc", false)) {
+    built.location = true;
+    built.lat = prefs.getDouble("lat", 0);
+    built.lon = prefs.getDouble("lon", 0);
+  }
+  prefs.end();
+  if (!WIFI_CONFIGURED && !built.ssid.empty()) {
+    log_i("settings: no Wi-Fi built in; using %s, kept from an earlier build", built.ssid.c_str());
+  }
+}
+
 // Keeps the passwords the card gave (and drops ones nothing names any more), then takes them
 // off the card: a Wi-Fi password line becomes a note, an smb URL loses its :password.
 void applyCardSecrets(const CardSecrets &s) {
@@ -1060,7 +1118,8 @@ void loadCard() {
 
 const char *timezone() {
   loadNvs();
-  return card.tz.empty() ? TIMEZONE : card.tz.c_str();
+  if (!card.tz.empty()) return card.tz.c_str();
+  return built.tz.empty() ? "UTC0" : built.tz.c_str();
 }
 
 Source timezoneSource() {
@@ -1070,17 +1129,17 @@ Source timezoneSource() {
 
 bool hasLocation() {
   loadNvs();
-  return card.location || LOCATION_CONFIGURED;
+  return card.location || built.location;
 }
 
 double latitude() {
   loadNvs();
-  return card.location ? card.lat : LATITUDE;
+  return card.location ? card.lat : built.lat;
 }
 
 double longitude() {
   loadNvs();
-  return card.location ? card.lon : LONGITUDE;
+  return card.location ? card.lon : built.lon;
 }
 
 Source locationSource() {
@@ -1090,14 +1149,14 @@ Source locationSource() {
 
 bool hasWifi() {
   loadNvs();
-  return !card.wifiSsids.empty() || WIFI_CONFIGURED;
+  return !card.wifiSsids.empty() || !built.ssid.empty();
 }
 
 std::vector<WifiNetwork> wifiNetworks() {
   loadNvs();
   if (card.wifiSsids.empty()) {
-    if (!WIFI_CONFIGURED) return {};
-    return {{WIFI_SSID, WIFI_PASSWORD}};
+    if (built.ssid.empty()) return {};
+    return {{built.ssid, built.password}};
   }
   const Secrets stored = storedSecrets("wpass");
   std::vector<WifiNetwork> out;
@@ -1111,8 +1170,8 @@ std::vector<WifiNetwork> wifiNetworks() {
 std::vector<std::string> wifiSsids() {
   loadNvs();
   if (!card.wifiSsids.empty()) return card.wifiSsids;
-  if (!WIFI_CONFIGURED) return {};
-  return {WIFI_SSID};
+  if (built.ssid.empty()) return {};
+  return {built.ssid};
 }
 
 Source wifiSource() {

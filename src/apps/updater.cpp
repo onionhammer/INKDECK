@@ -7,7 +7,6 @@
 #include "apps/home.h"
 #include "ota.h"
 #include "sysinfo.h"
-#include "tailnet.h"
 #include "wlan.h"
 
 namespace apps {
@@ -19,12 +18,9 @@ using ui::TextStyle;
 
 constexpr TextStyle kHeadline = ui::style::kTitle;
 constexpr TextStyle kRowValue{&ui::fonts::kMono14Bold, 0};
-constexpr TextStyle kCommand{&ui::fonts::kMono14Bold, 0};
-constexpr TextStyle kNote{&ui::fonts::kMono14Medium, 0};
 
 constexpr int kRowH = 26;
 constexpr int kRowKeyW = 104;
-constexpr int kNoteH = 22;
 constexpr int kCells = 10;
 
 std::string megabytes(uint32_t bytes) {
@@ -35,14 +31,18 @@ std::string megabytes(uint32_t bytes) {
 
 int percentOf(const ota::Status &s) {
   if (s.phase == ota::Phase::Done) return 100;
-  return s.total ? static_cast<int>(static_cast<uint64_t>(s.bytes) * 100 / s.total) : 0;
+  return s.release.size ? static_cast<int>(static_cast<uint64_t>(s.bytes) * 100 / s.release.size)
+                        : 0;
 }
 
-const char *phaseName(ota::Phase p) {
-  switch (p) {
+bool known(const ota::Status &s) { return !s.release.version.empty(); }
+
+const char *phaseName(const ota::Status &s) {
+  switch (s.phase) {
     case ota::Phase::Joining: return "JOINING";
-    case ota::Phase::Listening: return "LISTENING";
-    case ota::Phase::Receiving: return "RECEIVING";
+    case ota::Phase::Checking: return "CHECKING";
+    case ota::Phase::Checked: return s.order > 0 ? "NEW" : s.order == 0 ? "LATEST" : "AHEAD";
+    case ota::Phase::Downloading: return "DOWNLOADING";
     case ota::Phase::Done: return "DONE";
     case ota::Phase::Failed: return "FAILED";
     case ota::Phase::Idle: break;
@@ -54,8 +54,11 @@ const char *phaseName(ota::Phase p) {
 std::string headline(const ota::Status &s) {
   switch (s.phase) {
     case ota::Phase::Joining: return "JOINING\xE2\x80\xA6";
-    case ota::Phase::Listening: return std::to_string((s.secondsLeft + 59) / 60) + " MIN LEFT";
-    case ota::Phase::Receiving: return std::to_string(percentOf(s)) + "%";
+    case ota::Phase::Checking: return "CHECKING\xE2\x80\xA6";
+    case ota::Phase::Checked:
+      if (s.order > 0) return ui::upper(s.release.version);
+      return s.order == 0 ? "UP TO DATE" : "AHEAD";
+    case ota::Phase::Downloading: return std::to_string(percentOf(s)) + "%";
     case ota::Phase::Done: return "UPDATED";
     case ota::Phase::Failed: return "NO UPDATE";
     case ota::Phase::Idle: break;
@@ -65,60 +68,87 @@ std::string headline(const ota::Status &s) {
 
 // Under it: what's happening, or what went wrong.
 std::string detail(const ota::Status &s) {
+  const std::string running = sysinfo::firmwareVersion();
   switch (s.phase) {
     case ota::Phase::Joining: return std::string("joining ") + wlan::network();
-    case ota::Phase::Listening:
-      return s.result.empty() ? "waiting for an upload from the computer" : "last try: " + s.result;
-    case ota::Phase::Receiving:
-      return megabytes(s.bytes) + " / " + megabytes(s.total) + " MB into the idle slot";
-    case ota::Phase::Done: return "restarting into the new build\xE2\x80\xA6";
+    case ota::Phase::Checking: return "asking GitHub for the latest release";
+    case ota::Phase::Checked:
+      if (s.order > 0) return "new release \xC2\xB7 running " + running;
+      if (s.order == 0) return s.release.version + " is the latest release";
+      return "running " + running + ", newer than " + s.release.version;
+    case ota::Phase::Downloading:
+      return megabytes(s.bytes) + " / " + megabytes(s.release.size) + " MB into the idle slot";
+    case ota::Phase::Done: return "restarting into " + s.release.version + "\xE2\x80\xA6";
     case ota::Phase::Failed: return s.result;
     case ota::Phase::Idle: break;
   }
-  return "\xE2\x97\x8F listens again";
+  return "\xE2\x97\x8F checks again";
 }
 
 class UpdaterScreen : public ui::Screen {
  public:
-  UpdaterScreen() { ota::start(); }
+  UpdaterScreen() { ota::check(); }
   ~UpdaterScreen() override { ota::stop(); }
 
   std::string tag() const override { return moduleTag("SYSTEM"); }
-  std::string context() const override { return "UPDATE OVER WI-FI"; }
+  std::string context() const override { return "FIRMWARE UPDATE"; }
 
   int hints(ui::Hint *out) const override {
-    switch (ota::status().phase) {
-      case ota::Phase::Receiving:
-        out[0] = {"BOOT", ui::glyph::kEmDash};  // can't cancel mid-transfer
-        return 1;
+    const ota::Status s = ota::status();
+    switch (s.phase) {
       case ota::Phase::Done: return 0;
+      case ota::Phase::Checked:
+        if (s.order > 0) {
+          out[0] = {ui::glyph::kPress, "INSTALL"};
+          out[1] = {"BOOT", "BACK"};
+          return 2;
+        }
+        out[0] = {ui::glyph::kPress, "CHECK"};
+        if (s.order == 0) {
+          out[1] = {"BOOT", "BACK"};
+          return 2;
+        }
+        out[1] = {ui::glyph::kHoldPress, "INSTALL"};  // going back to the release
+        out[2] = {"BOOT", "BACK"};
+        return 3;
       case ota::Phase::Idle:
       case ota::Phase::Failed:
-        out[0] = {ui::glyph::kPress, "LISTEN"};
+        out[0] = {ui::glyph::kPress, "CHECK"};
         out[1] = {"BOOT", "BACK"};
         return 2;
-      default:
+      default:  // joining, checking, downloading: leaving cancels
         out[0] = {"BOOT", "CANCEL"};
         return 1;
     }
   }
 
   bool onKey(Key key) override {
-    const ota::Phase p = ota::status().phase;
+    const ota::Status s = ota::status();
     switch (key) {
       case Key::Select:
-        if (p != ota::Phase::Idle && p != ota::Phase::Failed) return false;
-        ota::start();
+        if (s.phase == ota::Phase::Checked && s.order > 0) {
+          ota::install();
+        } else if (s.phase == ota::Phase::Checked || s.phase == ota::Phase::Idle ||
+                   s.phase == ota::Phase::Failed) {
+          ota::check();
+        } else {
+          return false;
+        }
+        return true;
+      case Key::SelectLong:
+        // An older release (the board runs a build from the computer): only on a hold.
+        if (s.phase != ota::Phase::Checked || s.order >= 0) return false;
+        ota::install();
         return true;
       case Key::Back:
-        // Not while an image is arriving or the board is about to restart into it.
-        return p == ota::Phase::Receiving || p == ota::Phase::Done;
+        // Not while the board is about to restart into the new image.
+        return s.phase == ota::Phase::Done;
       default: return false;
     }
   }
 
-  // Redraws when the phase, the 5 % step, the minutes left or the message change. Once the
-  // DONE frame is on the panel (this tick comes after its refresh), the board may restart.
+  // Redraws when the phase, the 5 % step or the message change. Once the DONE frame is on the
+  // panel (this tick comes after its refresh), the board may restart.
   bool onTick() override {
     if (doneDrawn_) ota::doneShown();
     return signature(ota::status()) != drawnSignature_;
@@ -130,22 +160,18 @@ class UpdaterScreen : public ui::Screen {
     doneDrawn_ = s.phase == ota::Phase::Done;
 
     Rect r = body;
-    const Rect firmware = r.takeBottom(ui::kRule + ui::kSectionH + 4 + 2 * kRowH + 6);
-    const Rect upload = r.takeBottom(ui::kRule + ui::kSectionH + 8 + 3 * kNoteH + 8);
-    const int addressRows = tailnet::configured() ? 4 : 3;
-    const Rect address = r.takeBottom(ui::kRule + ui::kSectionH + 4 + addressRows * kRowH + 6);
+    const Rect firmware = r.takeBottom(ui::kRule + ui::kSectionH + 4 + 3 * kRowH + 6);
+    const Rect release = r.takeBottom(ui::kRule + ui::kSectionH + 4 + 4 * kRowH + 6);
     drawState(c, r, s);
-    drawAddress(c, address, s);
-    drawUpload(c, upload);
+    drawRelease(c, release, s);
     drawFirmware(c, firmware);
   }
 
  private:
   static std::string signature(const ota::Status &s) {
-    std::string sig = phaseName(s.phase);
-    if (s.phase == ota::Phase::Receiving) sig += std::to_string(percentOf(s) / 5);
-    if (s.phase == ota::Phase::Listening) sig += std::to_string((s.secondsLeft + 59) / 60);
-    return sig + "|" + s.ip + "|" + s.result + "|" + tailnet::describe();
+    std::string sig = phaseName(s);
+    if (s.phase == ota::Phase::Downloading) sig += std::to_string(percentOf(s) / 5);
+    return sig + "|" + s.release.version + "|" + s.result;
   }
 
   static void drawState(ui::Canvas &c, const Rect &area, const ota::Status &s) {
@@ -153,7 +179,7 @@ class UpdaterScreen : public ui::Screen {
     const Rect p{area.x + 20, area.y + 12, area.w - 40, area.h - 12 - 14};
     constexpr int kHeadH = 19;
     drawText(c, {p.x, p.y, p.w, kHeadH}, "// STATE", style::kSection);
-    const std::string pill = phaseName(s.phase);
+    const std::string pill = phaseName(s);
     drawTag(c, p.right() - tagWidth(pill, style::kPill, 6), p.y + kHeadH / 2, kHeadH, pill,
             style::kPill, TagKind::Inverted, 6);
 
@@ -168,7 +194,7 @@ class UpdaterScreen : public ui::Screen {
     drawText(c, {p.x, detailTop, p.w, lineHeight(style::kBody)}, detail(s), style::kBody);
 
     // Segmented gauge, one cell per 10 %, a part-full cell dithered (System's battery gauge).
-    const int percent = s.phase == ota::Phase::Receiving || s.phase == ota::Phase::Done
+    const int percent = s.phase == ota::Phase::Downloading || s.phase == ota::Phase::Done
                             ? percentOf(s)
                             : 0;
     const int cellsTop = detailTop + lineHeight(style::kBody) + 18;
@@ -200,43 +226,28 @@ class UpdaterScreen : public ui::Screen {
     }
   }
 
-  static void drawAddress(ui::Canvas &c, const Rect &area, const ota::Status &s) {
+  // The latest release, once a check has found it, and where it comes from.
+  static void drawRelease(ui::Canvas &c, const Rect &area, const ota::Status &s) {
     using namespace ui;
     Rect r = area;
     hrule(c, r.x, r.y, r.w);
     r.takeTop(kRule);
-    drawSectionHeader(c, r.takeTop(kSectionH), "ADDRESS", "PORT " + std::to_string(ota::kPort));
+    const std::string defaultUrl =
+        std::string("https://github.com/") + ota::kRepo + "/releases/latest/download/manifest.json";
+    const std::string url = ota::manifestUrl();
+    drawSectionHeader(c, r.takeTop(kSectionH), "LATEST RELEASE",
+                      url == defaultUrl ? "GITHUB" : "TEST SERVER");  // !update URL
     r.takeTop(4);
-    // With a tailnet: the board's address on it while the updater listens there (or why not).
-    std::string onTailnet = tailnet::address();
-    if (onTailnet.empty()) {
-      const std::string state = tailnet::describe();
-      onTailnet = state.substr(0, state.find(" \xC2\xB7 "));
-    }
+    const ota::Release &rel = s.release;
+    std::string version = known(s) ? rel.version : "--";
+    if (known(s) && !rel.build.empty()) version += " \xC2\xB7 " + rel.build;
     const std::pair<const char *, std::string> rows[] = {
-        {"HOST", std::string(ota::kHostname) + ".local"},
-        {"IP", s.ip.empty() ? "--" : s.ip},
-        {"NETWORK", wlan::network()},
-        {"TAILNET", onTailnet},
+        {"VERSION", version},
+        {"DATE", known(s) && !rel.date.empty() ? rel.date : "--"},
+        {"SIZE", known(s) ? megabytes(rel.size) + " MB" : "--"},
+        {"FROM", url == defaultUrl ? std::string(ota::kRepo) : url},
     };
-    drawRows(c, r, rows, tailnet::configured() ? 4 : 3);
-  }
-
-  static void drawUpload(ui::Canvas &c, const Rect &area) {
-    using namespace ui;
-    Rect r = area;
-    hrule(c, r.x, r.y, r.w);
-    r.takeTop(kRule);
-    drawSectionHeader(c, r.takeTop(kSectionH), "ON THE COMPUTER", "ESPOTA");
-    r.takeTop(8);
-    const int x = r.x + kPadX;
-    const int w = r.w - 2 * kPadX;
-    const std::string command =
-        std::string("$ pio run -t upload --upload-port ") + ota::kHostname + ".local";
-    drawText(c, {x, r.takeTop(kNoteH).y, w, kNoteH}, command, kCommand);
-    drawText(c, {x, r.takeTop(kNoteH).y, w, kNoteH}, "password: OTA_PASSWORD from .env", kNote);
-    drawText(c, {x, r.takeTop(kNoteH).y, w, kNoteH}, "let Python accept incoming connections",
-             kNote);
+    drawRows(c, r, rows, 4);
   }
 
   static void drawFirmware(ui::Canvas &c, const Rect &area) {
@@ -247,10 +258,11 @@ class UpdaterScreen : public ui::Screen {
     drawSectionHeader(c, r.takeTop(kSectionH), "FIRMWARE", "IDF " + sysinfo::idfVersion());
     r.takeTop(4);
     const std::pair<const char *, std::string> rows[] = {
-        {"RUNNING", std::string(sysinfo::kFirmwareVersion) + " \xC2\xB7 " + sysinfo::buildId()},
+        {"RUNNING", std::string(sysinfo::firmwareVersion()) + " \xC2\xB7 " + sysinfo::buildId()},
         {"SLOTS", sysinfo::otaState()},
+        {"NETWORK", wlan::network()},
     };
-    drawRows(c, r, rows, 2);
+    drawRows(c, r, rows, 3);
   }
 
   std::string drawnSignature_;

@@ -26,6 +26,9 @@
 //               it next opens)
 //   !newsfeed URL   add a news feed to SD:/News/feeds.txt
 //   !newssync   sync the news feeds now
+//   !update URL   the updater (ota.h) fetches its manifest.json from URL until the next boot,
+//               to try an image served from the computer before releasing it; !update alone
+//               goes back to GitHub's latest release
 //   !wxforget   drop the saved weather forecast (the Weather screen shows the room instead until
 //               the next sync)
 //   !wxmodels A,B,...   log the sky now (weather code, cloud layers) from each Open-Meteo model
