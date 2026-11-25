@@ -33,6 +33,7 @@ void pollAgentFace() {}
 #include "apps/clock.h"
 #include "apps/home.h"
 #include "apps/lock.h"
+#include "apps/missed_ring.h"
 #include "apps/news_edition.h"
 #include "audio.h"
 #include "board_pins.h"
@@ -70,11 +71,12 @@ std::atomic<bool> faceRequest{false};
 // partially.
 struct FaceRecord {
   uint8_t version;
-  uint8_t flags;  // kLow, kUsb
+  uint8_t flags;  // kLow, kUsb, kMic
   uint32_t checked, next;
   agent::Summary sum;
 };
-constexpr uint8_t kLow = 1, kUsb = 2;
+// kMic: live on USB with the comms mic on (it stays on there; issue #66), said in the foot.
+constexpr uint8_t kLow = 1, kUsb = 2, kMic = 4, kRing = 8;  // kRing: a silent ring, live on USB
 
 using power::lowBattery;
 using power::pwrHeld;
@@ -105,7 +107,11 @@ time_t nextCheck(time_t now) {
 
 std::string rightText(const FaceRecord &r) {
   if (r.flags & kLow) return "CHECK-INS PAUSED " + kDot + " BATTERY LOW";
-  if (r.flags & kUsb) return r.checked ? "LIVE " + kDot + " " + clockText(r.checked) : "LIVE";
+  const std::string mic = std::string(r.flags & kRing ? "RING " + kDot + " " : "") +
+                          (r.flags & kMic ? "MIC ON " + kDot + " " : "");
+  if (r.flags & kUsb) {
+    return mic + (r.checked ? "LIVE " + kDot + " " + clockText(r.checked) : "LIVE");
+  }
   std::string out;
   if (r.checked) out = "CHECKED " + clockText(r.checked);
   if (r.next) out += (out.empty() ? "" : " " + kDot + " ") + std::string("NEXT ") + clockText(r.next);
@@ -119,6 +125,11 @@ void drawFace(ui::Canvas &c, const FaceRecord &r) {
   const agent::Summary &m = r.sum;
   Rect body{0, 0, c.width(), c.height()};
   drawResumeBand(c, body.takeBottom(kBandH), rightText(r));
+  // A ring missed while silent (apps/missed_ring.h): a strip of its own over the band.
+  if (missedRingShown()) {
+    const Rect strip = body.takeBottom(36);
+    drawMissedRing(c, strip.x + kPadX, strip.centerY(), 24, strip.w - 2 * kPadX);
+  }
 
   // The head: what this is, and when.
   const time_t now = r.checked ? static_cast<time_t>(r.checked) : time(nullptr);
@@ -240,7 +251,9 @@ void drawFace(ui::Canvas &c, const FaceRecord &r) {
 FaceRecord recordNow(bool usb, uint32_t next) {
   FaceRecord r = {};
   r.version = kRecordVersion;
-  r.flags = static_cast<uint8_t>((lowBattery() ? kLow : 0) | (usb ? kUsb : 0));
+  r.flags = static_cast<uint8_t>((lowBattery() ? kLow : 0) | (usb ? kUsb : 0) |
+                                 (usb && ui::nav::micMark() != ui::MicMark::None ? kMic : 0) |
+                                 (usb && ui::nav::ringMark() ? kRing : 0));
   r.checked = agent::checkedAt();
   r.next = usb ? 0 : next;
   r.sum = agent::summary();

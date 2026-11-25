@@ -39,6 +39,7 @@
 #include "readstate.h"
 #include "sdcard.h"
 #include "sensor_hub.h"
+#include "sorting.h"
 #include "text.h"
 #include "ui/nav.h"
 #include "units.h"
@@ -161,7 +162,7 @@ Result findBooks(const cJSON *in) {
   std::vector<std::string> books;
   int visited = 0;
   collectBooks(root, 0, books, visited);
-  std::sort(books.begin(), books.end(), [](const std::string &a, const std::string &b) {
+  sorting::stable(books.begin(), books.end(), [](const std::string &a, const std::string &b) {
     return strcasecmp(a.c_str(), b.c_str()) < 0;
   });
   if (books.empty()) return {"There are no books (EPUB files) in " + displayPath(root) + "."};

@@ -9,7 +9,8 @@
 // off. Pause switches them all off too and keeps the track open: play picks up where it paused.
 // The same task rings alarms: ring() pauses any music and plays a beep pattern until stopped.
 // Recording uses the mic through the codec's ADC, I2S receive only; the amp stays off.
-// The agent uses the same two paths without files: capture and stream, below.
+// The agent uses the same two paths without files: capture and stream, below. Comms (issue #66)
+// uses a third, duplex: the speaker and the mic at once on the one I2S port (below).
 #pragma once
 #include <stdint.h>
 
@@ -73,6 +74,37 @@ void beep(uint32_t ms = 80, uint32_t hz = 2000);
 // (issue #52). Like beep(): ignored while anything plays, is paused, records, rings or listens,
 // silent at volume 0. About half a second in the audio task.
 void chirp(bool rising);
+// Comms (issue #66): a ring, a phone's double trill (two 200 ms bursts of pips a third apart,
+// about half a second), every few seconds while a board rings; and a message that came, three
+// pips (high, low, high). Like chirp(), silent at volume 0 and ignored while anything records,
+// rings, listens or streams; but a ring also plays over music, paused or playing: the music
+// holds for the trill and plays on.
+void ringChirp();
+void messageChirp();
+// The ring as the board that rings the others hears it: ringChirp()'s trill, soft, while a board
+// it rings is ringing (comms repeats it). The user's own ring, so SILENT doesn't stop it.
+void ringbackChirp();
+// Comms's mics (comms.h): the alarm when a latched mic this board hears goes silent (LOST), a
+// siren's two notes twice (about 0.8 s; comms repeats it). Like ringChirp(), over music too and
+// ignored while anything records, rings, listens or streams; but at the music volume and never
+// below half, so it doesn't go unheard at a low volume (as the alarm tone).
+void lostAlarm();
+// Comms's mic: the push-to-talk cue's three pips as it switches on (comms sends nothing until it
+// has played), and two soft falling pips on a board that hears a mic switch off after a long
+// session. Like chirp().
+void micCue();
+void micOffChirp();
+// While the duplex path (below) is on, every chirp, the alarms' too, plays into it; beep() is
+// ignored.
+//
+// Silent (System's SILENT row, kept in NVS, off by default): no sound the board makes by itself
+// to get attention: the agent's chirps (chirp(), comms's call chirp too), ringChirp(),
+// messageChirp() and micOffChirp() return at once (and log it). Alarms still sound
+// (the Clock's ring(), comms's lostAlarm()), and so does all the user starts: music, podcasts,
+// voice in a conversation, the agent's replies, the mic's cue (micCue(), captureStart(true)),
+// beep() (the Level, the Wi-Fi tone). Works before begin().
+bool silent();
+void setSilent(bool on);
 
 // --- Recording: 16 kHz, mono, 16-bit WAV. record() stops playback first. The file is
 // finished (its header's sizes filled in) by stopRecording(), or by stop(), which power-off
@@ -127,5 +159,45 @@ size_t streamWrite(const uint8_t *pcm, size_t bytes, uint32_t timeoutMs);
 void streamEnd();    // no more data: what's queued plays out, then the output goes off
 void streamAbort();  // output off now, the rest dropped
 bool streaming();    // from streamStart() until it has played out or was stopped
+
+// --- Duplex (comms.h): the speaker and the mic at once, TX and RX on the one I2S port, the
+// ES8311's DAC and ADC both running, at 16 kHz mono. The mic goes into a queue of 10 ms blocks;
+// the speaker plays what's queued with duplexWrite(), as a stream does (10 dB up, through
+// the limiter), and silence when nothing is: the caller paces it (duplexQueuedMs()). The amp is
+// on only while there's sound to play, and for 1.5 s after. Small DMA buffers keep the delay
+// short (audio.cpp: 6 x 10 ms each way).
+// Anything else that plays or records ends it: music, a stream (the agent speaking), a capture
+// (the agent listening), the Recorder, the alarm, stop(); comms sees duplexOn() go false. Call
+// these from one task only (comms's).
+constexpr uint32_t kDuplexRate = 16000;
+constexpr size_t kDuplexBlock = 160;  // samples: 10 ms
+struct DuplexBlock {
+  int16_t pcm[kDuplexBlock];
+  uint32_t seq = 0;  // blocks since duplexStart()
+};
+// Returns once it runs; false if it couldn't: the alarm rings, a recording or a capture runs, a
+// stream plays (none of them is stopped for it), or the codec. Music, playing or paused, stops.
+bool duplexStart();
+void duplexStop();   // returns once it's off
+bool duplexOn();
+// The mic's blocks go to the queue from now (on: emptied first), or are dropped (off).
+void duplexMic(bool on);
+// The next block of the mic, waiting up to timeoutMs; false if none came.
+bool duplexRead(DuplexBlock &b, uint32_t timeoutMs);
+// Queues mono PCM for the speaker; never waits. Returns the samples taken (fewer when 1 s is
+// queued already).
+size_t duplexWrite(const int16_t *pcm, size_t samples);
+uint32_t duplexQueuedMs();  // queued and not yet handed to the DMA
+struct DuplexStats {
+  bool on = false;
+  bool ampOn = false;
+  uint32_t blocks = 0;       // 10 ms blocks since it started
+  uint32_t underruns = 0;    // blocks the speaker had to pad with silence mid-sound
+  uint32_t micDropped = 0;   // mic blocks the queue had no room for
+  float speakerDb = -96;     // the loudest sample played in the last 200 ms, after the volume
+  uint32_t stackFree = 0;    // the audio task's stack never used, bytes (any path's, since boot)
+  float queuedMs = 0;        // queued behind each block taken while sound played, on average
+};
+DuplexStats duplexStats();
 
 }  // namespace audio

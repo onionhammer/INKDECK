@@ -96,7 +96,10 @@ class ViewerScreen : public ui::Screen {
     switch (key) {
       case Key::Up: return step(-1);
       case Key::Down: return step(+1);
-      case Key::Select: chrome_ = !chrome_; return true;
+      case Key::Select:
+        chrome_ = !chrome_;
+        drawnMic_ = ui::nav::micMark();
+        return true;
       default: return false;  // BOOT: the navigator goes back to Files
     }
   }
@@ -105,6 +108,8 @@ class ViewerScreen : public ui::Screen {
   // held now. Upright, the screen turns with it (a full refresh, the picture decoded again at
   // the new size). Laid down, it stays as it is, for the next pictures too.
   bool onTick() override {
+    // The comms mic switched on or off while the chrome is hidden: its tag in the corner.
+    if (!chrome_ && ui::nav::micMark() != drawnMic_) return true;
     const Pose p = sensePose();
     if (p == Pose::Unclear || p == held_) {
       seenTicks_ = 0;
@@ -136,11 +141,20 @@ class ViewerScreen : public ui::Screen {
       failed_ = !picture::renderFile(paths_[index_], w, h, bitmap_);
       if (failed_) log_w("viewer: %s: couldn't decode", paths_[index_].c_str());
     }
+    drawnMic_ = ui::nav::micMark();
     if (!probed_ || failed_) {
       drawError(c, body);
-      return;
+    } else {
+      picture::draw(c, (cw - w) / 2, (ch - h) / 2, bitmap_, body.y, body.y + body.h);
     }
-    picture::draw(c, (cw - w) / 2, (ch - h) / 2, bitmap_, body.y, body.y + body.h);
+    // The chrome hidden, and with it the status bar's MIC: the comms mic is on, so a MIC tag in
+    // the top right corner, on a paper margin, says so (it must never be invisible).
+    if (!chrome_ && drawnMic_ != ui::MicMark::None) {
+      const int w0 = ui::micMarkWidth(drawnMic_);
+      const Rect pad{cw - w0 - 16, 0, w0 + 16, 32};
+      ui::fill(c, pad, ui::kPaper);
+      ui::drawMicMark(c, pad.x + 8, 16, drawnMic_);
+    }
   }
 
  private:
@@ -188,6 +202,7 @@ class ViewerScreen : public ui::Screen {
   int h_ = 0;
   bool landscape_ = false;
   bool chrome_ = true;
+  ui::MicMark drawnMic_ = ui::MicMark::None;  // the comms mic's, as drawn
   Pose held_ = Pose::Flat;     // how the board is held, as last settled
   Pose seen_ = Pose::Unclear;  // a different pose on the latest ticks, and how many in a row
   int seenTicks_ = 0;

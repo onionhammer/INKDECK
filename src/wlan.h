@@ -38,12 +38,25 @@ void disconnect();  // this user is done; the radio goes off after the last one
 void forceOff();
 
 bool radioOn();  // connecting, connected or held (the status bar shows WIFI)
+// connect() is trying networks: the radio moves between channels, so a holder that sets the
+// channel itself (comms.h) waits until it's done. Safe from any task.
+bool joining();
 
-// The radio on in station mode without joining anything, for scanning (wifi_survey.h): it
+// The radio on in station mode without joining anything, for scanning (wifi_survey.h) and the
+// comms radio (comms.h, ESP-NOW, which needs Wi-Fi started but no network): it
 // stays on until the matching releaseRadio(), whatever connect() and disconnect() users do
 // meanwhile, and goes off at the release if nobody is connected. May wait for a connect in
 // progress, so call from a background task.
 void holdRadio();
 void releaseRadio();
+
+// The station takes Espressif's long-range protocol on top of 802.11b/g/n while comms is built in
+// (INKDECK_COMMS), so comms hears boards that send at the long-range rate (comms.h). Set each
+// time the station comes up and before each join, never while joined: changing the protocols
+// drops the connection. Ordinary access points are joined and talked to as before.
+uint8_t stationProtocols();  // the bitmap wlan sets (WIFI_PROTOCOL_*)
+// Testing (comms' !commslrrx): false leaves the long-range protocol out from the next join, to
+// compare; true (the default) puts it back.
+void setLongRangeProtocol(bool on);
 
 }  // namespace wlan

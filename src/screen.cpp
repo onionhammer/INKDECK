@@ -8,6 +8,7 @@
 #include <algorithm>
 
 #include "epd.h"
+#include "pmic.h"
 #include "typeset.h"
 
 namespace screen {
@@ -71,6 +72,8 @@ bool begin() {
 
 GFXcanvas1 &canvas() { return *fb; }
 
+bool ready() { return fb != nullptr; }
+
 void clear() { fb->fillScreen(gfx::kWhite); }
 
 bool present(bool forceFull) {
@@ -128,13 +131,9 @@ void presentOver(bool landscape, bool full, const std::function<void()> &drawOld
   unlock();
 }
 
-void powerOff() {
-  lock();  // not in the middle of a frame
-  epd.powerOff();
-  unlock();
-}
-
-void sleepWhileBusy(bool on) { epd.setSleepWhileBusy(on); }
+// Not while the board only pretends to be on battery (!reachtest): it's on USB, and light sleep
+// takes the USB console away.
+void sleepWhileBusy(bool on) { epd.setSleepWhileBusy(on && !pmic::pretendingBattery()); }
 
 void setLandscape(bool landscape) { fb->setRotation(landscape ? kLandscapeRotation : kRotation); }
 

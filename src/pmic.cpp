@@ -64,12 +64,14 @@ bool write1(uint8_t reg, uint8_t value) {
   return Wire.endTransmission() == 0;
 }
 
+bool fakeBattery = false;  // pretendBattery()
+
 Status readStatus() {
   Status s;
   uint8_t st[2];
   if (!read(kRegStatus1, st, 2)) return s;
   s.ok = true;
-  s.vbus = st[0] & (1 << 5);
+  s.vbus = !fakeBattery && (st[0] & (1 << 5));
   s.battery = st[0] & (1 << 3);
   s.charging = ((st[1] >> 5) & 3) == 1;
   const int pct = s.battery ? read1(kRegPercent) : -1;
@@ -165,6 +167,21 @@ Status status() {
   cached = s;
   return s;
 }
+
+bool usbPower() {
+  const int st = read1(kRegStatus1);
+  return st >= 0 && !fakeBattery && (st & (1 << 5));
+}
+
+void pretendBattery(bool on) {
+  if (fakeBattery == on) return;
+  fakeBattery = on;
+  everRead = false;  // the next status() reads again
+  log_w("PMIC: %s", on ? "pretending to be on battery (dev tool): USB power is reported absent"
+                       : "USB power reported as it is again");
+}
+
+bool pretendingBattery() { return fakeBattery; }
 
 Detail detail() {
   Detail d;

@@ -17,6 +17,7 @@
 #include "apps/agent_face.h"
 #include "apps/clock.h"
 #include "apps/lock.h"
+#include "apps/missed_ring.h"
 #include "apps/news.h"
 #include "apps/off_face.h"
 #include "apps/weather.h"
@@ -32,6 +33,7 @@
 #include "screen.h"
 #include "sdcard.h"
 #include "settings.h"
+#include "sorting.h"
 #include "timeutil.h"
 #include "ui/nav.h"
 #include "units.h"
@@ -247,7 +249,7 @@ std::vector<StoryInfo> recent(time_t now) {
   for (StoryInfo &s : news::stories(-1, news::Show::All)) {
     if (s.published >= now - kWindowS && s.published <= now + kAheadS) out.push_back(std::move(s));
   }
-  std::stable_sort(out.begin(), out.end(), [](const StoryInfo &a, const StoryInfo &b) {
+  sorting::stable(out.begin(), out.end(), [](const StoryInfo &a, const StoryInfo &b) {
     return a.published > b.published;
   });
   return out;
@@ -490,6 +492,11 @@ void drawStory(Canvas &c, const Card &card, const Clock &k) {
 }
 
 // The foot: the frog, the cycle, the next fetch, the way back.
+// Live on USB with the comms mic on (it stays on there; issue #66): the foot's band says MIC ON.
+// Set by the face before it draws.
+bool micShown = false;
+bool ringShown = false;  // a silent ring, live on USB: the band says RING
+
 void drawFoot(Canvas &c, const Card &card, const Clock &k) {
   using namespace ui;
   const int top = kStoryBottom;
@@ -538,11 +545,17 @@ void drawFoot(Canvas &c, const Card &card, const Clock &k) {
   y += kRowH + kGap;
 
   std::string band;
-  if (k.mode == Mode::Usb) band = "LIVE" + dot() + "USB";
+  if (k.mode == Mode::Usb) {
+    band = (ringShown ? "RING" : micShown ? "MIC ON" : "LIVE") + dot() + "USB";
+  }
   if (k.mode == Mode::Stopped && k.battery >= 0) {
     band = "BATTERY " + std::to_string(k.battery) + "%";
   }
-  if (!band.empty()) drawTag(c, x, y + 9, 19, band, kTag, TagKind::Inverted, 6);
+  if (!band.empty()) {
+    drawTag(c, x, y + 9, 19, band, kTag, TagKind::Inverted, 6);
+  } else {
+    drawMissedRing(c, x, y + 9, 19, w);  // a ring missed while silent (apps/missed_ring.h)
+  }
 
   // HOLD [PWR] TO READ, at the bottom.
   drawHoldPwr(c, {x, inY + inH - 24, w, 24}, "TO READ");
@@ -592,6 +605,9 @@ class FaceScreen : public OffFaceScreen {
       // brings something.
       const uint32_t gen = news::generation();
       const bool minute = minuteStart(now) != minuteStart(clock_.now);
+      const bool mic = ui::nav::micMark() != ui::MicMark::None;
+      if (mic != micShown) return true;  // the band: MIC ON or LIVE
+      if (ui::nav::ringMark() != ringShown) return true;  // or RING
       if (!minute && gen == gen_) return false;
       Card next = card_;
       if (card_.kind != Kind::Story && gen != gen_) {
@@ -628,6 +644,8 @@ class FaceScreen : public OffFaceScreen {
   }
 
   void draw(Canvas &c, const Rect &) override {
+    micShown = usb_ && ui::nav::micMark() != ui::MicMark::None;
+    ringShown = usb_ && ui::nav::ringMark();
     drawFace(c, clock_, card_);
     drawn();
   }

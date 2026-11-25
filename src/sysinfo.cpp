@@ -18,6 +18,7 @@
 
 namespace sysinfo {
 
+const char *firmwareVersion() { return INKDECK_VERSION; }
 const char *buildId() { return INKDECK_BUILD_ID; }
 
 std::string idfVersion() {

@@ -5,13 +5,14 @@
 //
 // On demand, like Wi-Fi (wlan.h): hold() joins Wi-Fi and the tailnet (the control plane, the
 // list of machines, a relay: a few seconds), release() lets go, and the board leaves kLingerMs
-// after the last user. What joins it:
+// (a minute) after the last user, or at once after release(false): the agent's check-ins on
+// battery, where nobody is about to use it again and the radio's minute would cost more than
+// the check-in did (issue #72). What joins it:
 //   - the agent daemon, when agent_host is on the tailnet (agent_client.h): inkharness on a
 //     machine anywhere, the board on any Wi-Fi;
 //   - a share in Files whose server is (shares.h);
 //   - an HTTP fetch from a host that is (netget.h): a feed on a home server;
-//   - Wi-Fi Drive and Update over Wi-Fi while they're open, so the board answers there too
-//     (webdav.h, ota.h);
+//   - Wi-Fi Drive while it's open, so the board answers there too (webdav.h);
 //   - USB power (begin()): plugged in, the board stays on the tailnet, Wi-Fi with it, so the
 //     other machines always find it; on battery it joins only for the above.
 //
@@ -55,10 +56,13 @@ bool routes(const std::string &host);  // reached through the tailnet (above); f
 // with its address and the list of machines. Each true is matched by a release(). On failure,
 // error says why in a few words (TAILSCALE KEY REFUSED). Blocks: call from a background task.
 bool hold(uint32_t timeoutMs, std::string &error);
-void release();
+// The last user's release leaves the tailnet after its linger, or with linger false straight
+// away (in a task of its own: release() never waits for it). Either way a hold() in between
+// keeps the board on.
+void release(bool linger = true);
 
 // hold() and release() for a server that wants to be reachable on the tailnet but mustn't wait
-// for it (Wi-Fi Drive, the updater): join() starts a hold in a task of its own and returns at
+// for it (Wi-Fi Drive): join() starts a hold in a task of its own and returns at
 // once; leave() lets it go, or has the join let go as soon as it's done. One try: if it fails,
 // describe() says why. Nothing happens without configured().
 void join();

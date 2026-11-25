@@ -8,45 +8,65 @@
 
 namespace ui::fonts {
 
-extern const GFXfont kMono12Bold;  // weight 700, 12 px, line 16 px
-extern const GFXfont kMono13Medium;  // weight 500, 13 px, line 17 px
-extern const GFXfont kMono13Bold;  // weight 700, 13 px, line 17 px
-extern const GFXfont kMono13ExtraBold;  // weight 800, 13 px, line 17 px
-extern const GFXfont kMono14Medium;  // weight 500, 14 px, line 18 px
-extern const GFXfont kMono14Bold;  // weight 700, 14 px, line 18 px
-extern const GFXfont kMono14ExtraBold;  // weight 800, 14 px, line 18 px
-extern const GFXfont kMono15Medium;  // weight 500, 15 px, line 20 px
-extern const GFXfont kMono15Bold;  // weight 700, 15 px, line 20 px
-extern const GFXfont kMono15ExtraBold;  // weight 800, 15 px, line 20 px
-extern const GFXfont kMono16Bold;  // weight 700, 16 px, line 21 px
-extern const GFXfont kMono17Bold;  // weight 700, 17 px, line 22 px
-extern const GFXfont kMono17ExtraBold;  // weight 800, 17 px, line 22 px
-extern const GFXfont kMono18Medium;  // weight 500, 18 px, line 24 px
-extern const GFXfont kMono18Bold;  // weight 700, 18 px, line 24 px
-extern const GFXfont kMono18ExtraBold;  // weight 800, 18 px, line 24 px
-extern const GFXfont kMono20Medium;  // weight 500, 20 px, line 26 px
-extern const GFXfont kMono22ExtraBold;  // weight 800, 22 px, line 29 px
-extern const GFXfont kMono24ExtraBold;  // weight 800, 24 px, line 32 px
-extern const GFXfont kMono28ExtraBold;  // weight 800, 28 px, line 37 px
-extern const PackedFont kMono38ExtraBoldPacked;  // weight 800, 38 px, line 50 px, deflated
+extern const PackedFont kMono12BoldPacked;  // weight 700, 12 px, line 16 px
+inline constexpr const GFXfont &kMono12Bold = kMono12BoldPacked.font;
+extern const PackedFont kMono13MediumPacked;  // weight 500, 13 px, line 17 px
+inline constexpr const GFXfont &kMono13Medium = kMono13MediumPacked.font;
+extern const PackedFont kMono13BoldPacked;  // weight 700, 13 px, line 17 px
+inline constexpr const GFXfont &kMono13Bold = kMono13BoldPacked.font;
+extern const PackedFont kMono13ExtraBoldPacked;  // weight 800, 13 px, line 17 px
+inline constexpr const GFXfont &kMono13ExtraBold = kMono13ExtraBoldPacked.font;
+extern const PackedFont kMono14MediumPacked;  // weight 500, 14 px, line 18 px
+inline constexpr const GFXfont &kMono14Medium = kMono14MediumPacked.font;
+extern const PackedFont kMono14BoldPacked;  // weight 700, 14 px, line 18 px
+inline constexpr const GFXfont &kMono14Bold = kMono14BoldPacked.font;
+extern const PackedFont kMono14ExtraBoldPacked;  // weight 800, 14 px, line 18 px
+inline constexpr const GFXfont &kMono14ExtraBold = kMono14ExtraBoldPacked.font;
+extern const PackedFont kMono15MediumPacked;  // weight 500, 15 px, line 20 px
+inline constexpr const GFXfont &kMono15Medium = kMono15MediumPacked.font;
+extern const PackedFont kMono15BoldPacked;  // weight 700, 15 px, line 20 px
+inline constexpr const GFXfont &kMono15Bold = kMono15BoldPacked.font;
+extern const PackedFont kMono15ExtraBoldPacked;  // weight 800, 15 px, line 20 px
+inline constexpr const GFXfont &kMono15ExtraBold = kMono15ExtraBoldPacked.font;
+extern const PackedFont kMono16BoldPacked;  // weight 700, 16 px, line 21 px
+inline constexpr const GFXfont &kMono16Bold = kMono16BoldPacked.font;
+extern const PackedFont kMono17BoldPacked;  // weight 700, 17 px, line 22 px
+inline constexpr const GFXfont &kMono17Bold = kMono17BoldPacked.font;
+extern const PackedFont kMono17ExtraBoldPacked;  // weight 800, 17 px, line 22 px
+inline constexpr const GFXfont &kMono17ExtraBold = kMono17ExtraBoldPacked.font;
+extern const PackedFont kMono18MediumPacked;  // weight 500, 18 px, line 24 px
+inline constexpr const GFXfont &kMono18Medium = kMono18MediumPacked.font;
+extern const PackedFont kMono18BoldPacked;  // weight 700, 18 px, line 24 px
+inline constexpr const GFXfont &kMono18Bold = kMono18BoldPacked.font;
+extern const PackedFont kMono18ExtraBoldPacked;  // weight 800, 18 px, line 24 px
+inline constexpr const GFXfont &kMono18ExtraBold = kMono18ExtraBoldPacked.font;
+extern const PackedFont kMono20MediumPacked;  // weight 500, 20 px, line 26 px
+inline constexpr const GFXfont &kMono20Medium = kMono20MediumPacked.font;
+extern const PackedFont kMono22ExtraBoldPacked;  // weight 800, 22 px, line 29 px
+inline constexpr const GFXfont &kMono22ExtraBold = kMono22ExtraBoldPacked.font;
+extern const PackedFont kMono24ExtraBoldPacked;  // weight 800, 24 px, line 32 px
+inline constexpr const GFXfont &kMono24ExtraBold = kMono24ExtraBoldPacked.font;
+extern const PackedFont kMono28ExtraBoldPacked;  // weight 800, 28 px, line 37 px
+inline constexpr const GFXfont &kMono28ExtraBold = kMono28ExtraBoldPacked.font;
+extern const PackedFont kMono38ExtraBoldPacked;  // weight 800, 38 px, line 50 px
 inline constexpr const GFXfont &kMono38ExtraBold = kMono38ExtraBoldPacked.font;
-extern const PackedFont kMono40ExtraBoldPacked;  // weight 800, 40 px, line 53 px, deflated
+extern const PackedFont kMono40ExtraBoldPacked;  // weight 800, 40 px, line 53 px
 inline constexpr const GFXfont &kMono40ExtraBold = kMono40ExtraBoldPacked.font;
-extern const PackedFont kMono50ExtraBoldPacked;  // weight 800, 50 px, line 66 px, deflated
+extern const PackedFont kMono50ExtraBoldPacked;  // weight 800, 50 px, line 66 px
 inline constexpr const GFXfont &kMono50ExtraBold = kMono50ExtraBoldPacked.font;
-extern const PackedFont kMono64ExtraBoldPacked;  // weight 800, 64 px, line 84 px, deflated
+extern const PackedFont kMono64ExtraBoldPacked;  // weight 800, 64 px, line 84 px
 inline constexpr const GFXfont &kMono64ExtraBold = kMono64ExtraBoldPacked.font;
-extern const PackedFont kMono68ExtraBoldPacked;  // weight 800, 68 px, line 90 px, deflated
+extern const PackedFont kMono68ExtraBoldPacked;  // weight 800, 68 px, line 90 px
 inline constexpr const GFXfont &kMono68ExtraBold = kMono68ExtraBoldPacked.font;
-extern const PackedFont kMono80ExtraBoldPacked;  // weight 800, 80 px, line 106 px, deflated
+extern const PackedFont kMono80ExtraBoldPacked;  // weight 800, 80 px, line 106 px
 inline constexpr const GFXfont &kMono80ExtraBold = kMono80ExtraBoldPacked.font;
-extern const PackedFont kMono96ExtraBoldPacked;  // weight 800, 96 px, line 127 px, deflated
+extern const PackedFont kMono96ExtraBoldPacked;  // weight 800, 96 px, line 127 px
 inline constexpr const GFXfont &kMono96ExtraBold = kMono96ExtraBoldPacked.font;
-extern const PackedFont kMono104ExtraBoldPacked;  // weight 800, 104 px, line 137 px, deflated
+extern const PackedFont kMono104ExtraBoldPacked;  // weight 800, 104 px, line 137 px
 inline constexpr const GFXfont &kMono104ExtraBold = kMono104ExtraBoldPacked.font;
-extern const PackedFont kMono130ExtraBoldPacked;  // weight 800, 130 px, line 172 px, deflated
+extern const PackedFont kMono130ExtraBoldPacked;  // weight 800, 130 px, line 172 px
 inline constexpr const GFXfont &kMono130ExtraBold = kMono130ExtraBoldPacked.font;
-extern const PackedFont kMono172ExtraBoldPacked;  // weight 800, 172 px, line 227 px, deflated
+extern const PackedFont kMono172ExtraBoldPacked;  // weight 800, 172 px, line 227 px
 inline constexpr const GFXfont &kMono172ExtraBold = kMono172ExtraBoldPacked.font;
 
 }  // namespace ui::fonts

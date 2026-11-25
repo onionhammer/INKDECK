@@ -16,6 +16,7 @@
 #include "paths.h"
 #include "pmic.h"
 #include "sdcard.h"
+#include "sorting.h"
 #include "timeutil.h"
 #include "ui/menu.h"
 
@@ -107,7 +108,7 @@ std::vector<Memo> scanMemos() {
     out.push_back(std::move(m));
   }
   closedir(d);
-  std::sort(out.begin(), out.end(), [](const Memo &a, const Memo &b) { return a.name > b.name; });
+  sorting::stable(out.begin(), out.end(), [](const Memo &a, const Memo &b) { return a.name > b.name; });
   return out;
 }
 

@@ -11,6 +11,7 @@
 #include "ui/draw.h"
 #include "ui/fonts/glyphs.h"
 #include "ui/fonts/jbmono.h"
+#include "ui/packed_fonts.h"
 #include "ui/type.h"
 
 namespace {
@@ -43,11 +44,9 @@ constexpr char kTimes = static_cast<char>(0xD7);
 
 int glyphAdvance(const GFXfont *f, char c) { return gfx::advance(f, c == kNoBreak ? ' ' : c); }
 
-bool hasGlyph(const GFXfont *f, uint8_t slot) {
-  return slot >= f->first && slot <= f->last && f->glyph[slot - f->first].xAdvance > 0;
-}
+bool hasGlyph(const GFXfont *f, uint8_t slot) { return ui::fonts::glyph(f, slot).xAdvance > 0; }
 
-int capHeight(const GFXfont *f) { return -f->glyph['H' - f->first].yOffset; }
+int capHeight(const GFXfont *f) { return -ui::fonts::glyph(f, 'H').yOffset; }
 
 // Appends cp to flow text in font's slots: its glyph if the font has one, else a stand-in or
 // ASCII. Emoji and other pictographs go. Never a control byte.

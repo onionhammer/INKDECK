@@ -16,7 +16,10 @@
 //            half a second, the agent sheet rises over the lower half; let go to send. Not while
 //            the lock is on the stack, under an off face, or over a screen that has the mic or
 //            the speaker (allowsTalk()). While music or a podcast plays, it raises the player
-//            sheet instead (apps/music.h). Screens never see it.
+//            sheet instead (apps/music.h). In a build with INKDECK_COMMS (apps/comms_ui.h), on
+//            the dialer's ringing sheet it records a message for the ring nobody answered
+//            instead, and on the Comms screens it keys the comms mic while held (on the ring
+//            sheet it answers first) (talkTo()). Screens never see it.
 //
 // Screens draw only their body. For portrait screens with chrome() the navigator draws the
 // status bar (tag(), context(), battery, clock) and the key-hint bar (hints()) around it.
@@ -38,9 +41,18 @@ enum class Refresh : uint8_t { None, Partial, Full };
 
 // Where HOLD BOOT's words go (issue #52, "Security: talk and agent"). Talk is the default: the
 // limited assistant, which sees no sessions. The agent is only reached from the Agent's screens.
+// The dialer's ringing sheet records a message for other boards instead, and the Comms screens
+// key this board's mic (issue #66).
 struct TalkTo {
   bool agent = false;
   std::string session;  // with agent: the session to talk into; empty starts a new one
+  bool comms = false;   // to boards over the radio (apps/comms_ui.h), not the agent: this
+                        // board's mic while held (push to talk), or a message
+  int group = 0;        // with comms: the group (an index into comms::groups())
+  uint32_t board = 0;   // with comms: the board talked to or rung; 0 for all of the group
+  bool message = false;  // with comms: records a message for the ring not answered (the
+                         // dialer's ringing sheet) instead of keying the mic
+  bool answer = false;   // with comms: answers the ring first, then keys the mic (the ring sheet)
 };
 
 class Screen {
@@ -100,8 +112,11 @@ class Screen {
   // itself, and HOLD BOOT doesn't talk while it's on the stack.
   virtual bool locks() const { return false; }
   // Where HOLD BOOT's words go while this is the top screen that isn't a sheet (nav::base()):
-  // a talk turn, by default, or the agent (the Agent's screens, apps/agent.h). A sheet over it
-  // that says the agent (the ask sheet: words answer its question) speaks for both.
+  // a talk turn, by default, or the agent (the Agent's screens, apps/agent.h), or other boards
+  // (the Comms screens). A sheet over it that says the agent (the ask sheet: words answer its
+  // question) or comms (the dialer's ringing sheet: a message; the call sheet: the mic) speaks
+  // for both. Asked when the stack changes, and when a screen calls
+  // nav::talkChanged().
   virtual TalkTo talkTo() const { return {}; }
 
   // Called when the screen becomes the top of the stack (pushed, or uncovered by a pop) and
@@ -149,8 +164,11 @@ bool locked();   // a screen that locks() is on the stack
 // handlers do, in the timer task); it changes only with the stack.
 bool talkAllowed();
 // What nav::base() says HOLD BOOT talks to (Screen::talkTo()). Any task may ask; it changes
-// only with the stack.
+// with the stack, and when a screen says its talkTo() changed.
 TalkTo talkTarget();
+// A screen's talkTo() changed without the stack changing (the Comms screen's cursor moved to
+// another board): works talkTarget() out again. From the UI task.
+void talkChanged();
 
 // What a PWR press does (input::Key::Power; screens never see it).
 void onPowerKey(void (*handler)());
@@ -160,6 +178,22 @@ void onPowerKey(void (*handler)());
 void onTalkKey(void (*handler)(bool held));
 // Questions the agent has waiting, for the status bar's ?n (apps/agent.h); none without one.
 void onAsks(int (*count)());
+// The boards in a conversation this board isn't in, for the status bar's speech bubble after the
+// ?n (apps/comms_ui.h); none without one.
+void onConversation(int (*count)());
+// This board's comms mic, for the status bar's MIC after the speech bubble (apps/comms_ui.h);
+// none without one. micMark() asks it, for the screens that draw their own (the desk face, the
+// Agent and News faces live on USB, the picture viewer with its chrome hidden).
+void onMic(MicMark (*mark)());
+MicMark micMark();
+// A comms ring ringing here with no sound (audio::silent()), for the status bar's RING before the
+// MIC (apps/comms_ui.h): so a silent ring shows where its sheet can't rise (the lock, the desk
+// face, the Recorder). ringMark() asks it, for the desk face's own status bar.
+void onRing(bool (*ringing)());
+bool ringMark();
+// Sees each key (▲ ▼ ● HOLD ● BOOT; not HOLD BOOT or PWR) before the screen on top does: true uses
+// it up. Comms's LOST alarm where its sheet can't rise: the first key silences it.
+void onKeyFirst(bool (*filter)(Key key));
 
 }  // namespace nav
 }  // namespace ui

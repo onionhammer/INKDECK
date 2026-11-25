@@ -20,6 +20,7 @@
 #include "rss.h"
 #include "rtc.h"
 #include "sdcard.h"
+#include "sorting.h"
 #include "text.h"
 #include "wlan.h"
 
@@ -272,7 +273,7 @@ Feed merge(const Feed &old, rss::NewsFeed &fetched, time_t now, uint32_t bytes, 
   for (const Item &it : old.items) {
     if (ids.insert(it.id).second) kept.push_back({it, nullptr});
   }
-  std::stable_sort(kept.begin(), kept.end(), [](const Kept &a, const Kept &b) {
+  sorting::stable(kept.begin(), kept.end(), [](const Kept &a, const Kept &b) {
     return a.item.published > b.item.published;
   });
   // The newest kKeepPerFeed, and saved ones past them.
@@ -586,7 +587,7 @@ std::vector<StoryInfo> stories(int feed, Show show) {
       }
     }
   }
-  std::stable_sort(out.begin(), out.end(), [](const StoryInfo &a, const StoryInfo &b) {
+  sorting::stable(out.begin(), out.end(), [](const StoryInfo &a, const StoryInfo &b) {
     return a.published > b.published;
   });
   return out;

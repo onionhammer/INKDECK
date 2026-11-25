@@ -11,7 +11,6 @@
 #include "alarms.h"
 #include "apps/clock.h"
 #include "apps/files.h"
-#include "apps/level.h"
 #include "apps/library.h"
 #include "apps/lock.h"
 #include "apps/music.h"
@@ -25,6 +24,9 @@
 #if INKDECK_AGENT
 #include "apps/agent.h"
 #include "agent_client.h"
+#endif
+#if INKDECK_COMMS
+#include "apps/comms_ui.h"
 #endif
 #include "apps/weather.h"
 #include "audio.h"
@@ -54,9 +56,12 @@ using ui::Key;
 using ui::Rect;
 
 enum class Kind : uint8_t {
-  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Level, Recorder, News,
+  Reader, Music, Podcasts, Files, Sensors, System, Clock, Weather, Recorder, News,
 #if INKDECK_AGENT
   Agent,
+#endif
+#if INKDECK_COMMS
+  Comms,
 #endif
 };
 
@@ -71,7 +76,8 @@ struct Module {
 // Copy from the design canvas, trimmed to what the firmware does today. The order is the
 // user's (2026-11-13; AGENT up to 03 and MUSIC down to 07 on 2026-11-20, issue #52): what's
 // used most first, related modules together; NEWS up to 02 and PODCASTS down to 05 on
-// 2026-11-21. Screen tags follow it through moduleTag().
+// 2026-11-21; COMMS at 05 above PODCASTS and LEVEL off Home (into Sensors' menu) on 2026-11-22,
+// issue #66. Screen tags follow it through moduleTag().
 // The \xC2\xB7 escapes in these strings are the middle dot (UTF-8 U+00B7).
 constexpr Module kModules[] = {
     {"READER", "SD", "EPUB books from microSD. Opens where you left off.",
@@ -85,6 +91,11 @@ constexpr Module kModules[] = {
 #endif
     {"WEATHER", "NET", "Now, hourly and 6-day forecast over Wi-Fi, every half hour on USB.",
      "Wi-Fi \xC2\xB7 Open-Meteo", Kind::Weather},
+#if INKDECK_COMMS
+    {"COMMS", "RF",
+     "Walkie-talkies with the other boards in your groups: board to board, no router.",
+     "ESP-NOW \xC2\xB7 ES8311", Kind::Comms},
+#endif
     {"PODCASTS", "NET", "RSS over Wi-Fi, or folders of MP3s. Episodes resume where you stopped.",
      "Wi-Fi \xC2\xB7 microSD \xC2\xB7 ES8311", Kind::Podcasts},
     {"CLOCK", "RTC", "Desk clock and alarms. An alarm can boot the board from power-off.",
@@ -95,8 +106,6 @@ constexpr Module kModules[] = {
      "ES8311 \xC2\xB7 NS4150B \xC2\xB7 I2S", Kind::Music},
     {"SENSORS", "I2C", "Live readouts from every chip on the I2C bus, and Wi-Fi and Bluetooth LE scans.",
      "SHTC3 \xC2\xB7 QMI8658A \xC2\xB7 TG28", Kind::Sensors},
-    {"LEVEL", "IMU", "Bubble level for surfaces, a vial for edges, and a tone when it's level.",
-     "QMI8658A @ 0x6B", Kind::Level},
     {"FILES", "SD",
      "Browse the microSD card, onboard flash and NFS shares. Books, music, pictures, text.",
      "SDMMC 4-bit \xC2\xB7 16 MB flash", Kind::Files},
@@ -348,24 +357,6 @@ int statsFor(const Module &m, Stat out[4]) {
       out[3] = {"UPDATED", updated};
       return 4;
     }
-    case Kind::Level: {
-      const qmi8658::Reading m = sensors::motion();
-      if (!m.ok) {
-        out[0] = {"IMU", "NOT ANSWERING"};
-        return 1;
-      }
-      const float g = sqrtf(m.acc[0] * m.acc[0] + m.acc[1] * m.acc[1] + m.acc[2] * m.acc[2]);
-      const bool flat = g > 0 && fabsf(m.acc[2]) / g >= 0.7f;
-      float pitch = 0, roll = 0;
-      sensors::tilt(m, pitch, roll);
-      char tilt[24];
-      snprintf(tilt, sizeof tilt, "%.1f\xC2\xB0", sqrtf(pitch * pitch + roll * roll));
-      out[0] = {"POSE", flat ? "LYING FLAT" : "ON AN EDGE"};
-      out[1] = {"TILT", flat ? tilt : "--"};
-      out[2] = {"OPENS", "LANDSCAPE"};
-      out[3] = {"IMU", "QMI8658A \xC2\xB7 56 Hz"};
-      return 4;
-    }
     case Kind::Recorder: {
       const MemoSummary memos = memoSummary();
       const audio::RecordStatus r = audio::recordStatus();
@@ -394,12 +385,64 @@ int statsFor(const Module &m, Stat out[4]) {
       return 4;
     }
 #endif
+#if INKDECK_COMMS
+    case Kind::Comms: {
+      if (!comms::configured()) {
+        out[0] = {"GROUP", "NOT SET"};
+        out[1] = {"SET UP", "mesh_group"};  // a line in inkdeck.ini (the screen says how)
+        return 2;
+      }
+      const std::vector<comms::Group> groups = comms::groups();
+      const int a = comms::activeGroup();
+      if (a < 0 || a >= static_cast<int>(groups.size())) return 0;
+      const comms::Group &g = groups[a];
+      const std::string dot = " \xC2\xB7 ";
+      out[0] = {"GROUP", groups.size() > 1 ? g.name + dot + std::to_string(a + 1) + " of " +
+                                                 std::to_string(groups.size())
+                                           : g.name};
+      std::string reached;
+      if (g.via != comms::Via::Net) reached = std::to_string(g.onAir) + " air";
+      if (g.via != comms::Via::Air) {
+        reached += (reached.empty() ? "" : dot) + std::to_string(g.onNet) + " net";
+      }
+      out[1] = {"REACHED", reached};
+      // The last call, ring or message: what it was in the key (MISSED RING, NEW MESSAGE),
+      // who and when in the value.
+      const std::vector<comms::Call> last = comms::calls(-1, 1);
+      if (last.empty()) {
+        out[2] = {"LAST", ui::glyph::kEmDash};
+      } else {
+        const comms::Call &c = last[0];
+        std::string key = "LAST CALL";
+        if (c.kind == comms::Kind::Ring) {
+          key = !c.outgoing && c.missed ? "MISSED RING" : "LAST RING";
+        } else if (c.kind == comms::Kind::Message) {
+          key = !c.outgoing && !c.played && !c.live ? "NEW MESSAGE" : "LAST MESSAGE";
+        }
+        out[2] = {key, (c.outgoing ? std::string("YOU")
+                                   : commsui::boardName(c.fromName, c.from)) +
+                           dot + commsui::whenText(c.at, c.agoS)};
+      }
+      // The mics on: this board's, the others', a LOST one.
+      out[3] = {"MICS", commsui::micsGlance()};
+      return 4;
+    }
+#endif
   }
   return 0;
 }
 
+#if INKDECK_COMMS
+// Calls, missed rings and messages not heard, over all groups: COMMS's "1 NEW".
+int commsUnheard() {
+  int n = 0;
+  for (const comms::Group &g : comms::groups()) n += g.unheard;
+  return n;
+}
+#endif
+
 // The list's row for module i: its bus tag, or for the Agent while questions wait, an inverted
-// "1 ASK".
+// "1 ASK"; for Comms with calls, rings or messages not heard, an inverted "1 NEW".
 ui::Row moduleRow(int i) {
   ui::Row row;
   row.index = twoDigits(i + 1);
@@ -410,6 +453,15 @@ ui::Row moduleRow(int i) {
     const agent::Glance g = agent::glance();
     if (g.known && g.asks > 0) {
       row.tag = std::to_string(g.asks) + " ASK";
+      row.tagInverted = true;
+    }
+  }
+#endif
+#if INKDECK_COMMS
+  if (kModules[i].kind == Kind::Comms) {
+    const int n = commsUnheard();
+    if (n > 0) {
+      row.tag = std::to_string(std::min(n, 99)) + " NEW";
       row.tagInverted = true;
     }
   }
@@ -475,12 +527,25 @@ class HomeScreen : public ui::Screen {
     changed |= sig != drawnAgent_;
     drawnAgent_ = sig;
 #endif
+#if INKDECK_COMMS
+    // The COMMS preview when it shows, and its row's "1 NEW" wherever the cursor: redrawn only
+    // when what they say changes (comms::generation() changes several times a second while a
+    // mic is on).
+    const int unheard = commsUnheard();
+    changed |= unheard != drawnCommsNew_;
+    drawnCommsNew_ = unheard;
+    if (kind == Kind::Comms) changed |= commsPreview() != drawnCommsPreview_;
+#endif
     return changed;
   }
 
   void draw(ui::Canvas &c, const Rect &body) override {
     drawnGeneration_ = audio::status().generation;
     drawnWeather_ = weather::status().phase;
+#if INKDECK_COMMS
+    drawnCommsNew_ = commsUnheard();
+    drawnCommsPreview_ = kModules[cursor_.cursor()].kind == Kind::Comms ? commsPreview() : "";
+#endif
     Rect r = body;
     const Rect list = r.takeBottom(kModuleCount * ui::kRowH);
     const Rect header = r.takeBottom(ui::kSectionH);
@@ -517,9 +582,11 @@ class HomeScreen : public ui::Screen {
       case Kind::Clock: ui::nav::push(makeClock()); break;
       case Kind::Podcasts: ui::nav::push(makePodcasts()); break;
       case Kind::Weather: ui::nav::push(makeWeather()); break;
-      case Kind::Level: ui::nav::push(makeLevel()); break;
       case Kind::Recorder: ui::nav::push(makeRecorder()); break;
       case Kind::News: ui::nav::push(makeNews()); break;
+#if INKDECK_COMMS
+      case Kind::Comms: ui::nav::push(makeComms()); break;
+#endif
 #if INKDECK_AGENT
       case Kind::Agent: openGuarded(Guarded::Agent, makeAgent); break;
 #endif
@@ -531,8 +598,8 @@ class HomeScreen : public ui::Screen {
     using namespace ui;
     const Module &m = kModules[i];
     // 10 px above and 8 below: with 11 modules in the list the preview is 34 px shorter than
-    // the canvas drew it, and the stats would otherwise meet the OPEN button. With 12 it's 68 px
-    // shorter, and the button goes.
+    // the canvas drew it, and the stats would otherwise meet the OPEN button. With 12 (as now,
+    // with COMMS and the agent) it's 68 px shorter, and the button goes.
     const Rect p{area.x + 20, area.y + 10, area.w - 40, area.h - 10 - 8};
 
     const std::string num = twoDigits(i + 1);
@@ -614,6 +681,24 @@ class HomeScreen : public ui::Screen {
   bool drawnNews_ = false;
 #if INKDECK_AGENT
   uint32_t drawnAgent_ = 0;
+#endif
+#if INKDECK_COMMS
+  // What COMMS's preview says, as drawn.
+  static std::string commsPreview() {
+    Stat stats[4];
+    const int n = statsFor(kModules[commsIndex()], stats);
+    std::string k;
+    for (int i = 0; i < n; ++i) k += stats[i].key + "=" + stats[i].value + "\n";
+    return k;
+  }
+  static int commsIndex() {
+    for (int i = 0; i < kModuleCount; ++i) {
+      if (kModules[i].kind == Kind::Comms) return i;
+    }
+    return 0;
+  }
+  std::string drawnCommsPreview_;
+  int drawnCommsNew_ = 0;
 #endif
 };
 

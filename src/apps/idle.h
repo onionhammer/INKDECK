@@ -12,7 +12,10 @@
 //   - Reading on battery: once the page is drawn the board light-sleeps until the next key or
 //     the next minute (alarms ring on the minute), with the IMU in standby and the panel's
 //     power (ALDO3) off. A paused player doesn't stop it (pause switches the audio off), and
-//     the hourly weather sync waits for the next key (main.cpp). A page turn wakes it in
+//     the hourly weather sync waits for the next key (main.cpp). The agent's check-ins end a
+//     nap while they run, so with a reading screen up on battery they come every 30 minutes,
+//     page turns don't ask for more, and one over the tailnet lets it go at once
+//     (agent_client.h, issue #72). A page turn wakes it in
 //     milliseconds. Nothing redraws while it naps, so the status-bar clock updates with
 //     the next page. Under the picture viewer the IMU watches for motion instead, and turning
 //     the board wakes it for a few seconds to see which way up it ended. Never on USB: light
@@ -21,10 +24,19 @@
 #pragma once
 #include <stdint.h>
 
+#include "power.h"
+
 namespace apps {
 
-// Call from loop(): powers off when power::idle() says so (or when requested).
+// Call from loop(): powers off when power::idle() says so (or when requested). Up after a Comms
+// wake (power.h, reachable on battery), steps that instead: the face holds, then powers off
+// again.
 void pollPower();
+
+// A Comms wake (power.h): the face of the mode the board slept in comes back, holding while the
+// board is up for the ring or the voice. Sleep, Standby, a closed book (the Reader under it, as
+// main.cpp opens it), the Agent and News faces.
+void reachFace(power::Mode mode);
 
 // The PWR key (the navigator's handler): on USB the desk face; on battery Sleep, or with a book
 // open in the Reader its cover (closed_book.h). On News its off face (news_edition.h),

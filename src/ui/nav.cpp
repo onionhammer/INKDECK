@@ -26,6 +26,10 @@ std::string drawnStatus;  // clock + battery as last drawn, to spot when they ch
 void (*powerKeyHandler)() = nullptr;
 void (*talkKeyHandler)(bool) = nullptr;
 int (*asksCount)() = nullptr;
+int (*conversationCount)() = nullptr;
+MicMark (*micMarkFn)() = nullptr;
+bool (*ringMarkFn)() = nullptr;
+bool (*keyFilter)(Key) = nullptr;
 bool dialSwapped = false;  // the swap orientDial() chose at the dial's press, kept for its repeats
 std::atomic<bool> talkOk{false};  // talkAllowed(), worked out when the stack changes
 std::mutex talkToLock;            // guards talkTo
@@ -52,9 +56,10 @@ void stackChanged() {
   TalkTo to;
   for (size_t i = stack.size(); i-- > 0;) {
     TalkTo said = stack[i]->talkTo();
-    // A sheet speaks only when it sends words to the agent (the ask sheet): the agent sheet
-    // over it must not mask it, nor the player sheet the screen under.
-    if (!stack[i]->overlay() || said.agent) {
+    // A sheet speaks only when it sends words to the agent (the ask sheet) or to boards (the
+    // call sheet): the agent sheet over it must not mask it, nor the player sheet or a menu the
+    // screen under.
+    if (!stack[i]->overlay() || said.agent || said.comms) {
       to = std::move(said);
       break;
     }
@@ -79,6 +84,9 @@ StatusInfo statusFor(const Screen &s) {
     case audio::State::Stopped: break;
   }
   info.asks = asksCount ? asksCount() : 0;
+  info.conversation = conversationCount ? conversationCount() : 0;
+  info.mic = micMarkFn ? micMarkFn() : MicMark::None;
+  info.ring = ringMarkFn && ringMarkFn();
   if (!s.statusClock()) {
     info.clock.clear();
   } else if (rtc::timeValid()) {
@@ -97,7 +105,8 @@ StatusInfo statusFor(const Screen &s) {
 std::string signature(const StatusInfo &info) {
   return info.clock + "|" + std::to_string(info.battery) + "|" + (info.usb ? "u" : "") +
          (info.wifi ? "w" : "") + std::to_string(static_cast<int>(info.playback)) + "|" +
-         info.temp + "|" + std::to_string(info.asks);
+         info.temp + "|" + std::to_string(info.asks) + "|" +
+         std::to_string(info.conversation) + "|" + std::to_string(static_cast<int>(info.mic));
 }
 
 // How many screens home() keeps: the root, or everything up to the topmost lock screen.
@@ -172,6 +181,10 @@ void dispatch(Key key) {
   }
   if (key == Key::Power) {
     if (powerKeyHandler) powerKeyHandler();
+    return;
+  }
+  if (keyFilter && keyFilter(key)) {
+    request(Refresh::Partial);
     return;
   }
   if (stack.back()->onKey(key)) {
@@ -286,10 +299,24 @@ TalkTo talkTarget() {
   return talkTo;
 }
 
+void talkChanged() { stackChanged(); }
+
 void onPowerKey(void (*handler)()) { powerKeyHandler = handler; }
 
 void onTalkKey(void (*handler)(bool held)) { talkKeyHandler = handler; }
 
 void onAsks(int (*count)()) { asksCount = count; }
+
+void onConversation(int (*count)()) { conversationCount = count; }
+
+void onMic(MicMark (*mark)()) { micMarkFn = mark; }
+
+MicMark micMark() { return micMarkFn ? micMarkFn() : MicMark::None; }
+
+void onRing(bool (*ringing)()) { ringMarkFn = ringing; }
+
+bool ringMark() { return ringMarkFn && ringMarkFn(); }
+
+void onKeyFirst(bool (*filter)(Key key)) { keyFilter = filter; }
 
 }  // namespace ui::nav

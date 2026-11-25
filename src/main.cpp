@@ -4,12 +4,14 @@
 // Keys, the same on every screen (details in ui/nav.h):
 //   ▲ / ▼ dial: move, page, adjust      ●  primary action      HOLD ●  secondary action
 //   BOOT  back (on Home: full refresh)  HOLD BOOT  the player sheet while music plays, else
-//                                       talk to the assistant (apps/hold_boot.h)
+//                                       talk to the assistant; on the Comms screens, to the
+//                                       other boards (apps/hold_boot.h)
 //   PWR   the Sleep screen, then power-off (power.h)
 //
-// Screens live in apps/, one per module on Home (README.md lists them): Reader, Podcasts,
-// Agent, Weather, Clock, Recorder, Music, Sensors, Level, Files, System and News. With a PIN set
-// in SD:/inkdeck.ini, the lock (apps/lock.h) comes up over them at every start.
+// Screens live in apps/, one per module on Home (README.md lists them): Reader, News, Agent,
+// Weather, Comms, Podcasts, Clock, Recorder, Music, Sensors (its menu opens the Level), Files and
+// System. With a PIN set in SD:/inkdeck.ini, the lock (apps/lock.h) comes up over them at every
+// start.
 #include <Arduino.h>
 #include <Wire.h>
 
@@ -26,8 +28,10 @@
 #include "apps/agent.h"
 #include "apps/agent_face.h"
 #include "apps/board_tools.h"
+#include "apps/comms_ui.h"
 #include "audio.h"
 #include "board_pins.h"
+#include "comms.h"
 #include "devtools.h"
 #include "features.h"
 #include "input.h"
@@ -57,9 +61,13 @@ void setup() {
   pmic::configure();  // charger and PWR-key settings; they don't survive a total power loss
   rtc::begin();
   power::begin();  // why the board started; releases the RTC alarm's hold on PWRON
+  // Off but reachable on battery (power.h): a power-off restarted the board to sleep polling the
+  // other boards. It restarts for what an RTC alarm, PWR or USB would boot it for, and returns when
+  // an answer woke it: wake() is then Comms, and the boot goes on.
+  power::reachResume();
   // Let the USB CDC host attach so the first logs aren't lost; not on RTC wakes, which are
-  // usually on battery and should be short.
-  if (power::wake() != power::Wake::Alarm) delay(500);
+  // usually on battery and should be short, nor for a ring.
+  if (power::wake() != power::Wake::Alarm && power::wake() != power::Wake::Comms) delay(500);
   Serial.println("\n== ESP32-S3-ePaper-3.97 INKDECK/OS ==");
   Serial.printf("PSRAM: %lu KB total, %lu KB free%s; setup() at %lu ms\n",
                 ESP.getPsramSize() >> 10, ESP.getFreePsram() >> 10,
@@ -73,15 +81,22 @@ void setup() {
   apps::agentWake();
   // And News's off face, each minute (apps/news_edition.h); true if PWR was pressed.
   const bool editionPwr = apps::editionWake();
+  // Woken for comms, by the sleep reachResume() ran or one these wakes went back to (power.h).
+  const bool woken = power::wake() == power::Wake::Comms;
   // Powered off behind a book's cover (apps/closed_book.h): this start opens the book again.
   const bool reopenBook = power::lastMode() == power::Mode::Book;
   // Behind the Agent face, HOLD PWR (not an alarm) opens the Agent.
   const bool reopenAgent =
-      power::lastMode() == power::Mode::Agent && power::wake() != power::Wake::Alarm;
+      power::lastMode() == power::Mode::Agent && power::wake() != power::Wake::Alarm && !woken;
   // Behind News's face, HOLD PWR opens News on the story it showed (so does PWR during a wake).
   const bool reopenNews = power::lastMode() == power::Mode::Edition &&
-                          (power::wake() != power::Wake::Alarm || editionPwr);
+                          ((power::wake() != power::Wake::Alarm && !woken) || editionPwr);
   power::markOn();
+#if INKDECK_COMMS
+  // A start by PWR, USB or a reset makes the board an ordinary one: the rings missed while silent
+  // (apps/missed_ring.h) have been seen. RTC wakes and a Comms wake keep them on the faces.
+  if (power::wake() != power::Wake::Alarm && !woken) comms::clearMissedRings();
+#endif
   pmic::status();  // first read logs what the PMIC reports
   net::begin();  // TLS buffers in PSRAM
   sensors::begin();
@@ -105,6 +120,7 @@ void setup() {
   // Woken for an alarm: show the Clock, and pollAlarms() rings over it.
   if (power::wake() == power::Wake::Alarm && !editionPwr) ui::nav::push(apps::makeClock());
   apps::lockNow();  // with a PIN and power_on (pin_places.h), every start asks (alarms ring over it)
+  if (woken) apps::reachFace(power::reachMode());  // the face again, over what a start shows
   ui::nav::flush();  // the first frame: Home, the Clock or the lock, whichever is on top
   devtools::begin();  // after the first frame, so a screenshot never catches a blank buffer
   // The clock came up unset (first boot, or the battery was out): fetch it from NTP once, in
@@ -114,8 +130,13 @@ void setup() {
     timesync::start();
   }
   tailnet::begin();  // on USB, the board stays on the tailnet (tailnet.h)
+#if INKDECK_COMMS
+  comms::begin();  // with a group, listens for the other boards on USB (comms.h)
+  power::reachWokenBegin();  // woken for comms: it listens, and the face holds
+#endif
+  power::bootDone();  // a power-off from now on restarts to sleep reachable (power.h)
   // Made it through setup() with a frame on the panel: if this is the first boot after an
-  // update over Wi-Fi, keep the new image (until now a reset would have rolled it back).
+  // update, keep the new image (until now a reset would have rolled it back).
   ota::confirmBoot();
 }
 
@@ -126,6 +147,9 @@ void loop() {
   apps::pollBoardTools();  // the assistant's calls to the board, and the screens they open
 #if INKDECK_AGENT
   apps::pollAgent();  // chirps, the ask sheet; on a nap's minute wake too, before it naps again
+#endif
+#if INKDECK_COMMS
+  apps::pollComms();  // the call sheet over the screen in use when a call starts playing
 #endif
   // The hourly forecast sync, in the background. Not while the Reader naps on battery: that
   // would wake the radio every hour (every 15 minutes out of range) with nobody reading. It

@@ -15,9 +15,8 @@ using fonts::slotFor;
 using ::text::appendUtf8;
 
 const GFXglyph *glyphFor(const GFXfont *f, uint8_t slot) {
-  if (slot < f->first || slot > f->last) return nullptr;
-  const GFXglyph *g = &f->glyph[slot - f->first];
-  return g->xAdvance ? g : nullptr;  // subset fonts leave empty entries
+  const GFXglyph *g = &fonts::glyph(f, slot);
+  return g->xAdvance ? g : nullptr;  // empty: outside the font's range, or left out of a subset
 }
 
 // Calls fn(slot, glyph) for every glyph text draws as in font f, transliterating code points

@@ -12,7 +12,7 @@ namespace {
 const GFXglyph *glyph(const GFXfont *font, char c) {
   auto ch = static_cast<uint8_t>(c);
   if (ch < font->first || ch > font->last) ch = '?';
-  return &font->glyph[ch - font->first];
+  return &ui::fonts::glyph(font, ch);
 }
 
 }  // namespace
@@ -36,7 +36,7 @@ int drawChar(GFXcanvas1 &canvas, int x, int baseline, char c, const GFXfont *fon
   if (ch < font->first || ch > font->last) ch = '?';
   canvas.setFont(ui::fonts::drawable(font));
   canvas.drawChar(x, baseline, ch, color, color, 1);
-  return x + font->glyph[ch - font->first].xAdvance;
+  return x + ui::fonts::glyph(font, ch).xAdvance;
 }
 
 int drawText(GFXcanvas1 &canvas, int x, int baseline, const std::string &s, const GFXfont *font,
@@ -290,7 +290,7 @@ void Typesetter::drawDropCap(GFXcanvas1 &canvas, char letter, int x, int y) cons
   const auto slot = static_cast<uint8_t>(letter);
   const GFXfont *f = drop_.font;
   if (slot < f->first || slot > f->last) return;
-  const GFXglyph &g = f->glyph[slot - f->first];
+  const GFXglyph &g = ui::fonts::glyph(f, slot);
   // Centre the glyph's ink in the box.
   const int gx = x + (drop_.box - g.width) / 2 - g.xOffset;
   const int baseline = y + (drop_.box - g.height) / 2 - g.yOffset;

@@ -7,10 +7,12 @@
 
 namespace sysinfo {
 
-inline constexpr const char *kFirmwareVersion = "0.1.0";
+// The firmware's version: a release's "0.2.0", or "0.2.0+5" for a build five commits after that
+// tag (scripts/gen_build_info.py). The updater compares it with the latest release's (ota.h).
+const char *firmwareVersion();
 
 // The git commit the firmware was built from, "+" if the tree had uncommitted changes
-// ("425d25c+"); scripts/gen_build_info.py. Tells you an update over Wi-Fi took.
+// ("425d25c+"); scripts/gen_build_info.py. Tells you an update took.
 const char *buildId();
 
 std::string idfVersion();  // "5.5.1"

@@ -8,17 +8,29 @@
 
 namespace ui::fonts {
 
-extern const GFXfont kLiterata16;  // wght 400, 16 px, line 24 px
-extern const GFXfont kLiterata16Bold;  // wght 600, 16 px, line 24 px
-extern const GFXfont kLiterata16Italic;  // wght 400 italic, 16 px, line 24 px
-extern const GFXfont kLiterata16BoldItalic;  // wght 600 italic, 16 px, line 24 px
-extern const GFXfont kLiterata19;  // wght 400, 19 px, line 28 px
-extern const GFXfont kLiterata19Bold;  // wght 600, 19 px, line 28 px
-extern const GFXfont kLiterata19Italic;  // wght 400 italic, 19 px, line 28 px
-extern const GFXfont kLiterata19BoldItalic;  // wght 600 italic, 19 px, line 28 px
-extern const GFXfont kLiterata23;  // wght 400, 23 px, line 34 px
-extern const GFXfont kLiterata23Bold;  // wght 600, 23 px, line 34 px
-extern const GFXfont kLiterata23Italic;  // wght 400 italic, 23 px, line 34 px
-extern const GFXfont kLiterata23BoldItalic;  // wght 600 italic, 23 px, line 34 px
+extern const PackedFont kLiterata16Packed;  // wght 400, 16 px, line 24 px
+inline constexpr const GFXfont &kLiterata16 = kLiterata16Packed.font;
+extern const PackedFont kLiterata16BoldPacked;  // wght 600, 16 px, line 24 px
+inline constexpr const GFXfont &kLiterata16Bold = kLiterata16BoldPacked.font;
+extern const PackedFont kLiterata16ItalicPacked;  // wght 400 italic, 16 px, line 24 px
+inline constexpr const GFXfont &kLiterata16Italic = kLiterata16ItalicPacked.font;
+extern const PackedFont kLiterata16BoldItalicPacked;  // wght 600 italic, 16 px, line 24 px
+inline constexpr const GFXfont &kLiterata16BoldItalic = kLiterata16BoldItalicPacked.font;
+extern const PackedFont kLiterata19Packed;  // wght 400, 19 px, line 28 px
+inline constexpr const GFXfont &kLiterata19 = kLiterata19Packed.font;
+extern const PackedFont kLiterata19BoldPacked;  // wght 600, 19 px, line 28 px
+inline constexpr const GFXfont &kLiterata19Bold = kLiterata19BoldPacked.font;
+extern const PackedFont kLiterata19ItalicPacked;  // wght 400 italic, 19 px, line 28 px
+inline constexpr const GFXfont &kLiterata19Italic = kLiterata19ItalicPacked.font;
+extern const PackedFont kLiterata19BoldItalicPacked;  // wght 600 italic, 19 px, line 28 px
+inline constexpr const GFXfont &kLiterata19BoldItalic = kLiterata19BoldItalicPacked.font;
+extern const PackedFont kLiterata23Packed;  // wght 400, 23 px, line 34 px
+inline constexpr const GFXfont &kLiterata23 = kLiterata23Packed.font;
+extern const PackedFont kLiterata23BoldPacked;  // wght 600, 23 px, line 34 px
+inline constexpr const GFXfont &kLiterata23Bold = kLiterata23BoldPacked.font;
+extern const PackedFont kLiterata23ItalicPacked;  // wght 400 italic, 23 px, line 34 px
+inline constexpr const GFXfont &kLiterata23Italic = kLiterata23ItalicPacked.font;
+extern const PackedFont kLiterata23BoldItalicPacked;  // wght 600 italic, 23 px, line 34 px
+inline constexpr const GFXfont &kLiterata23BoldItalic = kLiterata23BoldItalicPacked.font;
 
 }  // namespace ui::fonts

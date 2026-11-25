@@ -26,6 +26,9 @@
 //               it next opens)
 //   !newsfeed URL   add a news feed to SD:/News/feeds.txt
 //   !newssync   sync the news feeds now
+//   !update URL   the updater (ota.h) fetches its manifest.json from URL until the next boot,
+//               to try an image served from the computer before releasing it; !update alone
+//               goes back to GitHub's latest release
 //   !wxforget   drop the saved weather forecast (the Weather screen shows the room instead until
 //               the next sync)
 //   !wxmodels A,B,...   log the sky now (weather code, cloud layers) from each Open-Meteo model
@@ -54,6 +57,28 @@
 //   !wom [N [MG]]   arm the IMU's wake on motion for N seconds (10) at a threshold of MG
 //               (100 mg, as the picture viewer's nap does) and print each event; then the IMU
 //               goes back to normal
+//   !quiet [off]   testing next to someone: 30 dB less at the DAC for every sound, the ones that
+//               play at a minimum volume included (alarms, comms's LOST alarm and chirps). RAM
+//               only, off at boot; the volume itself is unchanged
+//   !comms...   comms (with INKDECK_COMMS, comms.h); AGENTS.md's Comms paragraph lists them all.
+//               The mic's:
+//   !commsmic [all|ID] [latch]   this board's mic on in the active group, to all of it or one
+//               board (hex id, as !comms lists it), as if BOOT were held (the far boards cut it off
+//               5 s after it vanishes), or latched (they go LOST after 10 s); again while on with
+//               another board or group: a new session
+//   !commsmicoff   the mic off (its off goes out)
+//   !commstone S DB   a 1 kHz tone peaking at DB dBFS added to what the mic hears for S seconds
+//               (nobody there to speak: the tone is the voice, over the room)
+//   !commsvanish [off]   the mic sends nothing more, its off neither, as if out of range (the
+//               boards that hear it see LOST after 10 s if it's latched, cut it off after 5 s if
+//               not); "off": back on air
+//   !commsack   LOST's alarm silenced
+//   !commslong S   a mic heard counts as on long after S seconds instead of 5 minutes (its off
+//               chirps once where it's heard; 0: 5 minutes again)
+//   !commstalk N [ID]   the mic on for N seconds, then off
+//   !commsbusy alarm|rec|stop   the alarm or a recording takes the audio (what a mic that's on
+//               does meanwhile); stop: neither
+//               !comms shows this board's mic, the mics on that it hears, and the duplex path
 #pragma once
 
 namespace devtools {

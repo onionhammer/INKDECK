@@ -21,7 +21,6 @@
 
 #include "ff.h"
 #include "input.h"
-#include "ota.h"  // kHostname: the board is inkdeck.local for both
 #include "paths.h"
 #include "sdcard.h"
 #include "tailnet.h"
@@ -1447,13 +1446,13 @@ std::string serveCard() {
     wlan::disconnect();
     return "COULDN'T OPEN PORT " + std::to_string(kPort);
   }
-  if (MDNS.begin(ota::kHostname)) {
+  if (MDNS.begin(kHostname)) {
     MDNS.addService("webdav", "tcp", kPort);
     MDNS.addServiceTxt("webdav", "tcp", "path", "/");
   }
   lastUseMs = millis();
   phase = Phase::Serving;
-  log_i("webdav: serving the card at http://%s.local/ (%s)", ota::kHostname,
+  log_i("webdav: serving the card at http://%s.local/ (%s)", kHostname,
         WiFi.localIP().toString().c_str());
   tailnet::join();  // on the tailnet too, once it's up (tailnet.h)
 

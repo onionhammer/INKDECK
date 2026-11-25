@@ -10,11 +10,13 @@
 #include "apps/agent_face.h"
 #include "apps/clock.h"
 #include "apps/closed_book.h"
+#include "apps/comms_ui.h"
 #include "apps/lock.h"
 #include "apps/news_edition.h"
 #include "apps/sleep.h"
 #include "agent_client.h"
 #include "audio.h"
+#include "comms.h"
 #include "features.h"
 #include "file_copy.h"
 #include "input.h"
@@ -82,7 +84,7 @@ bool mayNap() {
   // On USB the power doesn't matter, and light sleep would drop the console. Plugging USB into
   // a napping board ends the naps at the next wake (a key, or the minute).
   const pmic::Status p = pmic::status();
-  return p.ok && p.battery && !p.vbus;
+  return p.ok && p.battery && !p.vbus && !pmic::pretendingBattery();  // !reachtest: still on USB
 }
 
 void stopNapping() {
@@ -113,9 +115,64 @@ void restartIfUsbStuck() {
   esp_restart();
 }
 
+// A key on a board woken for comms made it an ordinary board that's on (power.h, reachable on
+// battery): its face goes, with the sheets over it. If the key answered (the board is in a
+// conversation, or its mic is on) the Comms screen opens, the place to talk from; else what a
+// start shows. While it still rings the ring sheet stays, over the face.
+bool wokenOnPending = false;
+void wokenOn() {
+  const ui::Screen *b = ui::nav::base();
+  if (!b || !b->offFace()) {
+    wokenOnPending = false;
+    return;
+  }
+#if INKDECK_COMMS
+  if (comms::incomingRing().on) return;
+#endif
+  wokenOnPending = false;
+  while (ui::nav::top() != b) ui::nav::pop();
+  ui::nav::pop();
+#if INKDECK_COMMS
+  if (comms::mic().on || comms::conversation(comms::status().group).in) ui::nav::push(makeComms());
+#endif
+}
+
 }  // namespace
 
 void pollPower() {
+  // Up after a Comms wake (power.h, reachable on battery): the face holds, no idle rules; once
+  // it's over, the sheets over the face go, and its tick powers it off again.
+  const power::Held before = power::reachHold();
+  power::reachStep();
+  if (before == power::Held::Stay && power::reachHold() == power::Held::None) wokenOnPending = true;
+  if (power::reachHold() != power::Held::None) wokenOnPending = false;
+  if (wokenOnPending) wokenOn();
+#if INKDECK_COMMS
+  // A key on a board that's up (not one held after a wake: reachStep() decides there): the rings
+  // missed while silent have been seen, and the off faces stop showing them (apps/missed_ring.h).
+  {
+    static uint32_t keyAt = 0;  // the last key as first seen (input::begin()'s start counts as one)
+    const uint32_t lastKey = millis() - input::idleMs();
+    if (!keyAt) keyAt = lastKey | 1;
+    if (static_cast<int32_t>(lastKey - keyAt) > 50) {
+      keyAt = lastKey;
+      if (power::reachHold() == power::Held::None) comms::clearMissedRings();
+    }
+  }
+#endif
+  switch (power::reachHold()) {
+    case power::Held::Stay: return;
+    case power::Held::Sleep: {
+      const ui::Screen *b = ui::nav::base();
+      if (b && b->offFace()) {
+        while (ui::nav::top() != b) ui::nav::pop();
+        return;
+      }
+      reachFace(power::reachMode());  // the face went some other way: it comes again
+      return;
+    }
+    case power::Held::None: break;
+  }
   pollAgentFace();  // the dev tools'
   pollEdition();
   const int request = standbyRequest.exchange(-1);
@@ -167,13 +224,15 @@ void pollPower() {
 }
 
 void powerKey() {
+  // Up after a Comms wake: PWR is a key like the others (it makes the board an ordinary one).
+  if (power::reachHold() == power::Held::Stay) return;
   if (wakeDesk() || reopenBook() || wakeAgentFace() || wakeEdition()) return;
   // On News, its edition; whether the Agent's face is wanted, worked out before the PIN is
   // forgotten.
   const bool edition = editionWanted();
   const bool agentFace = !edition && agentFaceWanted();
   forgetGuard(Guarded::Agent);  // back from the desk face, the Agent asks for the PIN again
-  const pmic::Status p = pmic::status();
+  const pmic::Status p = pmic::status();  // pretends to be on battery under !reachtest
   const ui::Screen *base = ui::nav::base();
   if (p.ok && p.vbus) {
     if (edition) {
@@ -207,9 +266,7 @@ bool napIfIdle() {
     napMotion = b && b->wakeOnMotion() && qmi8658::wakeOnMotion();
     if (!napMotion) qmi8658::setEnabled(false);
     if (b) b->onNap();
-    // The panel holds its image unpowered, and its switch draws about 0.3 mA while ALDO3 is on.
-    // The next refresh powers it again (Epd::show()).
-    screen::powerOff();
+    // The panel's power (ALDO3) is off already: every update ends by cutting it (Epd::show()).
   }
   // Until the next minute boundary (an alarm rings on the minute), a little after it.
   timeval tv;
@@ -231,6 +288,17 @@ bool napIfIdle() {
 }
 
 bool isNapping() { return napping; }
+
+void reachFace(power::Mode mode) {
+  switch (mode) {
+    case power::Mode::Standby: enterStandby(0); break;
+    case power::Mode::Book: closeBook(); break;
+    case power::Mode::Agent: showAgentFace(false); break;
+    case power::Mode::Edition: showEdition(false); break;
+    case power::Mode::Sleep:
+    case power::Mode::On: sleepNow(); break;
+  }
+}
 
 NapStats napStats() {
   NapStats s;

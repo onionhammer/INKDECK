@@ -3,6 +3,8 @@
 // rows are the 256 x fs entries of its coefficient table, which are identical for 8-48 kHz.
 #include "es8311.h"
 
+#include <algorithm>
+
 #include <Arduino.h>
 #include <Wire.h>
 
@@ -76,11 +78,19 @@ void powerDown() {
   if (!ok) log_w("ES8311: power-down write failed");
 }
 
+namespace {
+volatile bool quietOn = false;  // setQuiet()
+constexpr int kQuietSteps = 60;  // 30 dB at 0.5 dB a step
+}  // namespace
+
 void setVolume(int volume) {
   volume = constrain(volume, 0, 100);
   // REG32: 0xBF = 0 dB, 0.5 dB per step.
-  write(0x32, volume == 0 ? 0x00 : static_cast<uint8_t>(0xBF - (100 - volume)));
+  const int reg = 0xBF - (100 - volume) - (quietOn ? kQuietSteps : 0);
+  write(0x32, volume == 0 ? 0x00 : static_cast<uint8_t>(std::max(reg, 1)));
 }
+
+void setQuiet(bool on) { quietOn = on; }
 
 void mute(bool muted) { write(0x31, muted ? 0x60 : 0x00); }
 

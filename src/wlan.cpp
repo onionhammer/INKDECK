@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <string.h>
 
 #include <algorithm>
@@ -10,6 +11,7 @@
 #include <mutex>
 #include <vector>
 
+#include "features.h"
 #include "settings.h"  // the networks: SD:/inkdeck.ini's [wifi], else .env's
 
 namespace wlan {
@@ -23,6 +25,7 @@ std::mutex usersMutex;  // held through a connect, so a second caller waits for 
 int users = 0;          // successful connects not yet matched by a disconnect
 int holders = 0;        // holdRadio() calls not yet matched by a releaseRadio()
 std::atomic<bool> held{false};  // holders > 0, for radioOn() without the mutex
+std::atomic<bool> longRange{true};  // setLongRangeProtocol()
 
 // With several networks, how long one gets before the next one's turn, unless the driver says
 // sooner that it isn't in range or it fails twice. Joining a network in range takes 1 to 5 s.
@@ -126,6 +129,15 @@ Outcome attempt(const settings::WifiNetwork &net, uint32_t deadline, bool giveUp
   }
 }
 
+// The station's protocols, while it isn't joined (stationProtocols()).
+void setProtocols() {
+  uint8_t now = 0;
+  const uint8_t want = stationProtocols();
+  if (esp_wifi_get_protocol(WIFI_IF_STA, &now) != ESP_OK || now == want) return;
+  const esp_err_t e = esp_wifi_set_protocol(WIFI_IF_STA, want);
+  log_i("wlan: station protocols %02X -> %02X (%s)", now, want, esp_err_to_name(e));
+}
+
 void radioOff() {
   WiFi.disconnect(true);  // and Wi-Fi off
   WiFi.mode(WIFI_OFF);
@@ -203,6 +215,7 @@ bool connect(uint32_t timeoutMs, std::string &error) {
   state = State::Connecting;
   WiFi.persistent(false);  // settings.h keeps the networks; don't copy one into the driver's NVS
   WiFi.mode(WIFI_STA);
+  if (WiFi.status() != WL_CONNECTED) setProtocols();
   const uint32_t start = millis();
   const uint32_t deadline = start + timeoutMs;
   const bool several = networks.size() > 1;
@@ -249,6 +262,8 @@ bool connect(uint32_t timeoutMs, std::string &error) {
 
 bool radioOn() { return state.load() != State::Off || held.load(); }
 
+bool joining() { return state.load() == State::Connecting; }
+
 void disconnect() {
   std::lock_guard<std::mutex> lock(usersMutex);
   if (users > 0) --users;
@@ -266,7 +281,15 @@ void holdRadio() {
     WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
   }
+  if (WiFi.status() != WL_CONNECTED && state.load() != State::Connecting) setProtocols();
 }
+
+uint8_t stationProtocols() {
+  return WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N |
+         (INKDECK_COMMS && longRange.load() ? WIFI_PROTOCOL_LR : 0);
+}
+
+void setLongRangeProtocol(bool on) { longRange = on; }
 
 void releaseRadio() {
   std::lock_guard<std::mutex> lock(usersMutex);

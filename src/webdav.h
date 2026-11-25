@@ -37,6 +37,7 @@
 
 namespace webdav {
 
+constexpr const char *kHostname = "inkdeck";  // mDNS: inkdeck.local
 constexpr uint16_t kPort = 80;
 constexpr const char *kUser = "inkdeck";
 constexpr uint32_t kIdleMinutes = 10;

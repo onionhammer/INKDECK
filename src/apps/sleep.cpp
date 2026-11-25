@@ -10,6 +10,7 @@
 
 #include "alarms.h"
 #include "apps/lock.h"
+#include "apps/missed_ring.h"
 #include "covers.h"
 #include "picture.h"
 #include "pmic.h"
@@ -186,6 +187,9 @@ class SleepScreen : public OffFaceScreen {
 
     // The field, between the strips.
     drawField(c, {inner.x, inner.y + kTopH, inner.w, inner.h - kTopH - kBottomH});
+    // A ring missed while silent (apps/missed_ring.h): over the field's top rows, left of the Z's
+    // (column 28) and above the frog (row 8).
+    drawMissedRing(c, inner.x + kCell, inner.y + kTopH + 3 * kCell, 28, 26 * kCell);
 
     // Bottom strip: what to come back to.
     const int by = inner.bottom() - kBottomH;

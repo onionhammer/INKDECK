@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "rss.h"
+#include "sorting.h"
 #include "text.h"
 
 namespace article {
@@ -739,7 +740,7 @@ int Page::choose() {
 std::vector<uint32_t> Page::containerPath() {
   std::vector<uint32_t> out;
   for (int a = choose(); a >= 0; a = nodes_[a].parent) out.push_back(nodes_[a].start);
-  std::sort(out.begin(), out.end());
+  sorting::stable(out.begin(), out.end());
   return out;
 }
 

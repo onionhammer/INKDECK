@@ -10,6 +10,7 @@
 #include <algorithm>
 
 #include "paths.h"
+#include "sorting.h"
 
 namespace {
 
@@ -43,7 +44,7 @@ bool DirList::open(const std::string &dir) {
     if (entries_.size() >= kMaxEntries) break;
   }
   closedir(d);
-  std::sort(entries_.begin(), entries_.end(), [](const Entry &a, const Entry &b) {
+  sorting::stable(entries_.begin(), entries_.end(), [](const Entry &a, const Entry &b) {
     if (a.isDir != b.isDir) return a.isDir;
     return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
   });

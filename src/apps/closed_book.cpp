@@ -10,6 +10,7 @@
 #include "alarms.h"
 #include "apps/home.h"
 #include "apps/lock.h"
+#include "apps/missed_ring.h"
 #include "apps/off_face.h"
 #include "covers.h"
 #include "picture.h"
@@ -69,6 +70,8 @@ class ClosedBookScreen : public OffFaceScreen {
     } else {
       drawPlainCover(c, r);
     }
+    // A ring missed while silent (apps/missed_ring.h): over the cover's top, on a paper rim.
+    drawMissedRing(c, r.x + 16, r.y + 16 + 12, 24, r.w - 32, false, ui::kInk, true);
     drawn();
   }
 

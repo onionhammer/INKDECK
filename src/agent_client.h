@@ -35,6 +35,14 @@
 // connects never touch what the agent sheet shows, and a talk press takes over from one. What
 // the last list said is kept in NVS (Summary) for Home, the status bar, the chirps and the
 // Agent face, which checks in from an RTC wake (checkInNow()).
+//
+// Reading on battery (issue #72): the board naps between keys then (apps/idle.h), and a check-in
+// is its radio on with nobody asking. So while a reading screen is up on battery
+// (setReadingOnBattery()) polls come every 30 minutes whatever the list did, check_at still
+// bringing one sooner, and keys don't ask for more (apps::pollAgent()). On battery a poll that
+// went through the tailnet also lets it go at once (tailnet::release(false)): its minute's
+// linger is for whoever opens the sheet or a share next, and would be most of what the poll
+// costs.
 #pragma once
 #include <stdint.h>
 
@@ -338,6 +346,11 @@ void markSeen(uint32_t ask, uint32_t done);
 void checkSoon();
 // A poll is due or under way: the Reader shouldn't nap through it (apps/idle.cpp).
 bool polling();
+// A reading screen is up on battery, or no longer (apps::pollAgent(), every loop): while it is,
+// polls come at the ladder's last step. The poll already planned moves with it, counted from
+// the last one: out to 30 minutes when the book opens, back to the ladder's step when it
+// closes (at once, if that has passed). Safe from any task.
+void setReadingOnBattery(bool on);
 // From setup(), on an RTC wake (apps::agentWake()): joins, syncs, saves the summary and lets
 // go, within deadlineMs; when the newest result is a schedule's to show as a note, it gets that
 // session too (sessions().open). Starts the agent task if it isn't. abort, asked every 100 ms,
@@ -354,6 +367,9 @@ Sessions sessions();  // a copy
 
 // The session to get whole and keep current (Agent::open); empty for none.
 void follow(const std::string &session);
+// What follows goes out on the connection that's up. With none (an answer on the ask sheet,
+// away from the Agent's screens) the board checks in at once to send it, whatever the ladder
+// says; if that check-in fails, the request is dropped with it.
 void answer(const std::string &session, const std::string &ask, int choice);
 void stop(const std::string &session);
 void remove(const std::string &session);

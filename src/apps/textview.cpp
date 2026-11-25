@@ -13,6 +13,7 @@
 #include "sdcard.h"
 #include "textdoc.h"
 #include "ui/menu.h"
+#include "ui/packed_fonts.h"
 
 namespace apps {
 namespace {
@@ -131,7 +132,7 @@ class TextScreen : public ui::Screen {
     }
     const GFXfont *f = font();
     // Capitals centred in the line, as the Reader's typesetter does.
-    const int baseline = (lineH() - f->glyph['H' - f->first].yOffset) / 2;
+    const int baseline = (lineH() - ui::fonts::glyph(f, 'H').yOffset) / 2;
     const int last = std::min(doc_.lineCount(), top_ + visible());
     for (int i = top_; i < last; ++i) {
       doc_.drawLine(c, i, r.x + kPadX, textY + (i - top_) * lineH() + baseline, !mono_);

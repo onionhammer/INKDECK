@@ -1,6 +1,7 @@
 // The agent away from its screens (issue #52, "Asking you to choose" and "Chirps"): the ask
 // sheet that rises over the screen in use once per question, the chirps, and checking in when a
-// key comes while ?n shows. apps::pollAgent() runs it from loop().
+// key comes while ?n shows (not while a book is read on battery, where check-ins are kept to
+// one every 30 minutes: issue #72). apps::pollAgent() runs it from loop().
 //
 // The ask sheet: half the body, like the agent sheet. Not over the lock, an off face or the
 // desk face, another sheet or menu, the Recorder or a ringing alarm, the Agent's own screens,
@@ -257,14 +258,27 @@ void raise(const agent::Glance &g) {
   ui::nav::flush();  // now, even over a Reader about to nap again
 }
 
+// A reading screen is up and the board isn't on USB: it naps between keys (apps/idle.h), and
+// each check-in is its radio on for seconds, over the tailnet for longer (issue #72).
+bool readingOnBattery() {
+  const ui::Screen *base = ui::nav::base();
+  if (!base || !base->reading()) return false;
+  const pmic::Status p = pmic::status();
+  return !(p.ok && p.vbus);
+}
+
 }  // namespace
 
 void pollAgent() {
+  // The client checks in every 30 minutes then, whatever its ladder says.
+  const bool reading = readingOnBattery();
+  agent::setReadingOnBattery(reading);
   const agent::Glance g = agent::glance();
   if (!g.known) return;
   chirps(g);
-  // A key while ?n shows: look now (the client keeps it to once a minute).
-  if (g.asks > 0 && input::idleMs() < 1500) agent::checkSoon();
+  // A key while ?n shows: look now (the client keeps it to once a minute). Not from a page
+  // turn: with a question waiting, reading would join Wi-Fi every minute.
+  if (g.asks > 0 && input::idleMs() < 1500 && !reading) agent::checkSoon();
   raise(g);
 }
 

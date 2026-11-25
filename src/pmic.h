@@ -34,12 +34,20 @@ void configure();
 // to settle before returning; false if the PMIC didn't take it. Safe from any task.
 //   ALDO2: the codec's analog supply (AVDD) and the mic. On only while audio plays or records
 //          (audio.h); the codec is put in power-down first.
-//   ALDO3: the panel's power switch. Off while the Reader naps (Epd::powerOff()).
+//   ALDO3: the panel's power switch. On only during a panel update (Epd::show()).
 bool setAudioRail(bool on);
 bool setPanelRail(bool on);
 
 // Cached: reads the PMIC at most every few seconds. Begin Wire first.
 Status status();
+// USB power now: one register, read each call (the reachable sleep looks at every wake). False
+// while pretendBattery() is on, or if the PMIC doesn't answer.
+bool usbPower();
+
+// Dev tool (!reachtest, power.h): status() and detail() report USB power absent, so the board
+// behaves as on battery while it charges on USB. The charger itself carries on.
+void pretendBattery(bool on);
+bool pretendingBattery();
 
 // Battery current direction, register 0x01 bits 6:5.
 enum class Flow : uint8_t { Standby, Charging, Discharging };

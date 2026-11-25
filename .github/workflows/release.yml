@@ -1,0 +1,77 @@
+# Builds the firmware and publishes it as a GitHub release, which boards install from System →
+# CHECK FOR UPDATE (src/ota.h). To release, tag a commit and push the tag:
+#
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# The release gets the image (inkdeck-0.2.0.bin) and manifest.json (scripts/release_manifest.py),
+# and notes generated from the pull requests since the last one. A tag with a suffix
+# (v0.3.0-rc1) makes a pre-release, which boards don't see: they read the latest release.
+#
+# Run by hand (Actions → Release → Run workflow), it builds without releasing and keeps the
+# files as the run's artifact.
+#
+# The build has no .env, so the image carries no Wi-Fi, time zone or location: a board keeps the
+# ones it was built with (src/settings.h). It does take platformio.ini's build flags as committed.
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # gh release create
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # the tags, for a hand-run build's version (scripts/gen_build_info.py)
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.platformio
+          key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini', 'boards/**') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build
+        env:
+          # The tag (v0.2.0 → 0.2.0); a hand-run build takes its version from git describe.
+          INKDECK_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: pio run -e epaper397
+
+      - name: Package
+        run: |
+          build=.pio/build/epaper397
+          version=$(sed -n 's/^#define INKDECK_VERSION "\(.*\)"$/\1/p' "$build/generated/inkdeck_build.h")
+          asset="inkdeck-$version.bin"
+          mkdir dist
+          cp "$build/firmware.bin" "dist/$asset"
+          python scripts/release_manifest.py "dist/$asset" --version "$version" \
+            --url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$asset" \
+            --out dist/manifest.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: firmware
+          path: dist/
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=(--title "INKDECK $GITHUB_REF_NAME" --generate-notes --verify-tag)
+          [[ "$GITHUB_REF_NAME" == *-* ]] && flags+=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/* "${flags[@]}"

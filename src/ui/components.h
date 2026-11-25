@@ -20,9 +20,12 @@ constexpr int kPadX = 14;  // side padding of chrome bands and list rows
 constexpr int kRowH = 34;  // single-line list row
 constexpr int kRowTallH = 48;  // two-line list row
 
-// --- Status bar: inverted module tag, context text, then [▶/‖] [?n] [WIFI] [temp] battery % and
-// clock.
+// --- Status bar: inverted module tag, context text, then [▶/‖] [?n] [bubble n] [MIC] [WIFI]
+// [temp] battery % and clock.
 enum class Playback : uint8_t { None, Playing, Paused };
+// This board's comms mic (issue #66): on (an inverted MIC), or on but paused while something else
+// has the mic for now, the agent listening (an outlined MIC).
+enum class MicMark : uint8_t { None, On, Paused };
 struct StatusInfo {
   std::string tag;      // "01 READER"
   std::string context;  // "~/home", a path, a book title
@@ -34,11 +37,26 @@ struct StatusInfo {
   bool wifi = false;    // the radio is on: "WIFI" before the rest
   Playback playback = Playback::None;  // music or a podcast: an inverted ▶ or ‖ first
   int asks = 0;  // agent questions waiting: an inverted ?n after the ▶ (issue #52)
+  int conversation = 0;  // boards in a conversation this board isn't in: an inverted speech
+                         // bubble with the count after the ?n (issue #66)
+  MicMark mic = MicMark::None;  // after the bubble
+  bool ring = false;  // a ring rings here with no sound (silent): an inverted RING before the MIC
 };
 void drawStatusBar(Canvas &c, const Rect &r, const StatusInfo &info);
 int drawBattery(Canvas &c, int x, int centerY, int percent);  // returns its width
 // The inverted ▶ or ‖ box, 22 x 20, left edge at x; returns its width (0 for None).
 int drawPlaybackMark(Canvas &c, int x, int centerY, Playback playback);
+// The inverted speech bubble and count (a conversation on), 20 px tall, left edge at x; returns
+// its width (0 for a count of 0).
+int drawConversationMark(Canvas &c, int x, int centerY, int count);
+int conversationMarkWidth(int count);
+// The MIC mark, 20 px tall, left edge at x, in `color` (kPaper on ink); returns its width (0 for
+// None).
+int drawMicMark(Canvas &c, int x, int centerY, MicMark mark, uint16_t color = kInk);
+int micMarkWidth(MicMark mark);
+// The RING mark, 20 px tall, left edge at x; returns its width (0 when off).
+int drawRingMark(Canvas &c, int x, int centerY, bool ring, uint16_t color = kInk);
+int ringMarkWidth(bool ring);
 
 // --- Section header: "// LABEL" on the left, a count or address on the right, rule below.
 struct SectionOptions {
@@ -89,6 +107,7 @@ struct Row {
   std::string tag;       // optional boxed tag, right-aligned ("SD", "DIR")
   bool tagInverted = false;  // the tag filled instead of outlined: it needs you ("1 ASK")
   std::string trailing;  // optional plain text, right-aligned ("3:05")
+  const char *mark = nullptr;  // optional glyph in the marker column when not selected (✓)
 };
 void drawRow(Canvas &c, const Rect &r, const Row &row, bool selected);
 
