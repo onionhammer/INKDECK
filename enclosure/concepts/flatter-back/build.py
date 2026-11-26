@@ -30,10 +30,17 @@ Z_BACK = -9.11            # v0.6's flat back, set by the battery
 Z_FIELD = -7.2            # standoff_z - back_t: set by the screws (and the USB-C opening + 1.2)
 FLOOR = 1.2
 Z_FTOP = Z_FIELD + FLOOR  # -6.0
-BCX, BCY, HW, HH, HCH = 39.85, 33.8, 68.7, 48.2, 3.0   # hatch outline (hatch_w, hatch_h, hatch_ch)
-RISE = Z_FIELD - Z_BACK                                 # 1.91
-POCKET = (8.1, 12.3, 71.6, 55.3)       # battery pocket in plan
+# The battery: about 65 × 45 with room for the wiring out of its side, 4.61 thick, its top at z
+# -3.7 as in v0.6. The pocket is all the room the board leaves at that height: 65.0 long between
+# the USB-C socket's pins (x 7.86, z -3.62) and the thumbwheel's body (x 72.8, for y over 50.4),
+# 47.0 wide between the MX1.25 headers and the thumbwheel.
+POCKET = (7.8, 7.6, 72.8, 54.6)
+BATT = (7.8, 8.6, 72.8, 53.6, 4.61)    # the 65 × 45 envelope in it, centred across, and its thickness
 Z_POCKET = -8.31
+# the hatch outline (the seam, and the tub's outline) is the pocket and 2.6 round it, chamfer 3
+BCX, BCY = (POCKET[0] + POCKET[2]) / 2, (POCKET[1] + POCKET[3]) / 2
+HW, HH, HCH = POCKET[2] - POCKET[0] + 5.2, POCKET[3] - POCKET[1] + 5.2, 3.0
+RISE = Z_FIELD - Z_BACK                                 # 1.91
 HOLES = [(2.7, 2.7), (96.8, 2.7), (2.7, 57.3), (96.8, 57.3)]
 # the speaker: 14 × 10, long side along the case, between the antenna end's corner screw (its boss
 # on the floor reaches y 5.3) and the ESP32 module, where nothing hangs below the board: 4.1 of height
@@ -48,9 +55,10 @@ GRILLE = dict(w=0.8, pitch=2.0, patch=(10.0, 6.0), min_l=2.0)
 Z_LEDGE, LEDGE = -6.6, 0.6
 GAP = 0.15                     # seam gap round the tub; the 45° faces touch (that's the seat)
 WALL_IN = LEDGE + 0.1          # the tub's outer face above the floor (0.1 clear of the ledge's edge)
-# latches: one on each long side, centred on the hatch
-L_X0, L_X1 = BCX - 12.0, BCX + 12.0   # beam, 2 mm of it fixed at each end
-SLIT_X0, SLIT_X1 = BCX - 10.0, BCX + 10.0
+# latches, one on each long side: (side, centre x, the beam's half length, the slit's half length),
+# 2 mm of each beam fixed at each end. The PWR side's sits clear of the MX1.25 headers (free x 8.2
+# to 31), so its beam is 18 between its fixed ends; the thumbwheel side's is centred, 20.
+LATCHES = [(-1, 19.575, 11.0, 9.0), (1, BCX, 12.0, 10.0)]
 # The slit under the beam runs from z -6.55 up to the beam at -6.02: sliced at 0.2, two empty
 # layers, so the beam's first layer (a 20 mm bridge) goes down 0.4 over the rim. With one empty layer
 # (0.2) it would sag onto the rim and fuse the latch; with three, the profile, which supports
@@ -132,6 +140,12 @@ relief = box(70.35, -2.25, Z_FIELD, 87.65, -0.25, Z_FTOP)
 pocket_full = box(POCKET[0], POCKET[1], -20, POCKET[2], POCKET[3], 5)
 adds = pod.cut(pocket_full).union(hatch_field.union(cavity).union(relief).cut(pocket_all))
 pod_tray = v06_tray.cut(below.cut(pod)).union(adds)
+# v0.6's pocket is smaller: clear the new one down to its floor, and fill whatever v0.6 engraved on
+# its back inside the tub's face (the old hatch line) but the frog
+pod_tray = pod_tray.cut(pocket_all)
+face = pod.intersect(box(-10, -10, Z_BACK - 1, 115, 75, Z_POCKET)).intersect(pocket_full)
+frog = max(face.cut(v06_tray).solids().vals(), key=lambda v: v.Volume())
+pod_tray = pod_tray.union(face.cut(cq.Workplane().add(frog)))
 # screws: Ø2.8 through, 90° countersink Ø6.0 at the new back (M2.5 × 4 screws, not × 6)
 for (x, y) in HOLES:
     hole = cq.Workplane("XY", origin=(x, y, Z_FIELD - 1)).circle(1.4).extrude(5)
@@ -167,15 +181,15 @@ tray = pod_tray.cut(opening).cut(back)
 bezel = pod_bezel.cut(back).cut(cutter(FRONT))
 tub = pod_tray.intersect(envelope)
 # latches. y0 side: hatch edge at BCY - HH/2, outward -y; y1 side mirrored.
-for side in (-1, 1):
+for side, lx, beam_l, slit_l in LATCHES:
     edge = BCY + side * HH / 2
     yo, yi = edge - side * WALL_IN, edge - side * (WALL_IN + BEAM_T)     # beam's outer / inner face
-    beam = box(L_X0, min(yo, yi), Z_FTOP - 0.02, L_X1, max(yo, yi), Z_BEAM_TOP)
+    beam = box(lx - beam_l, min(yo, yi), Z_FTOP - 0.02, lx + beam_l, max(yo, yi), Z_BEAM_TOP)
     ring_o, ring_i = edge - side * GAP, edge - side * 2.6                # the tub's rim, to the pocket
-    slit = box(SLIT_X0, min(ring_o, ring_i) - 0.01, Z_SLIT, SLIT_X1, max(ring_o, ring_i) + 0.01, Z_FTOP)
+    slit = box(lx - slit_l, min(ring_o, ring_i) - 0.01, Z_SLIT, lx + slit_l, max(ring_o, ring_i) + 0.01, Z_FTOP)
     tip = edge - side * (WALL_IN - BARB_OUT)
     yb = yo - side * 0.01                                              # into the beam
-    barb = (cq.Workplane("YZ", origin=(BCX - BARB_W / 2, 0, 0))
+    barb = (cq.Workplane("YZ", origin=(lx - BARB_W / 2, 0, 0))
             .polyline([(yb, Z_FTOP), (tip, Z_FTOP + BARB_OUT), (tip, Z_FTOP + BARB_OUT + 0.1),
                        (yb, Z_FTOP + 2 * BARB_OUT + 0.1)])
             .close().extrude(BARB_W))
@@ -191,7 +205,7 @@ for name, shape in parts.items(): asm.add(shape, name=name)
 cq.exporters.export(asm.toCompound(), str(HERE / "flatter-back.step"))
 stl(v06_tray, BUILD / "v06_tray.stl"); stl(v06_bezel, BUILD / "v06_bezel.stl")
 spk = box(SPK["x0"], SPK["y0"], Z_FTOP, SPK["x0"] + SPK["l"], SPK["y0"] + SPK["w"], Z_FTOP + SPK["t"])
-batt = box(8.6, 12.8, Z_POCKET, 71.1, 54.8, Z_POCKET + 4.61)
+batt = box(BATT[0], BATT[1], Z_POCKET, BATT[2], BATT[3], Z_POCKET + BATT[4])
 cq.exporters.export(spk, str(BUILD / "speaker.stl")); cq.exporters.export(batt, str(BUILD / "battery.stl"))
 clash = tray.intersect(tub).vals()
 print(json.dumps(dict(

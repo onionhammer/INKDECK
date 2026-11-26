@@ -95,8 +95,9 @@ fig, ax = plt.subplots(figsize=(13, 8))
 im = ax.imshow(z, origin="lower", extent=[xs[0]-G/2, xs[-1]+G/2, ys[0]-G/2, ys[-1]+G/2], cmap="viridis_r", vmin=-5.7, vmax=-1.6)
 plt.colorbar(im, label="lowest part under the PCB, z mm (PCB bottom −1.6)")
 ax.add_patch(Rectangle((-2.4, -2.25), 104.3, 64.5, fill=False, ec="w", lw=1.5, ls="--"))
-ax.add_patch(Rectangle((8.6, 12.8), 62.5, 42, fill=False, ec="r", lw=2))
-ax.text(39.85, 33.8, "battery 62.5×42×4.61\ntop −3.7, back −9.11", color="r", ha="center", va="center", fontsize=11, weight="bold")
+ax.add_patch(Rectangle((7.8, 8.6), 65.0, 45.0, fill=False, ec="r", lw=2))     # build.py's BATT
+ax.add_patch(Rectangle((7.8, 7.6), 65.0, 47.0, fill=False, ec="r", lw=1, ls=":"))  # and its POCKET
+ax.text(40.3, 31.1, "battery about 65×45×4.61\n(wiring room in), top −3.7\npocket 65×47 dotted", color="r", ha="center", va="center", fontsize=11, weight="bold")
 # the speaker (build.py's SPK)
 ax.add_patch(Rectangle((85.4, 5.8), 14.0, 10.0, fill=False, ec="#ffb000", lw=2))
 ax.text(92.4, 10.8, "speaker\n14×10", color="#ffb000", ha="center", va="center", fontsize=9, weight="bold")

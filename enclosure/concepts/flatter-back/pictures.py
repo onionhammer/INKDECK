@@ -128,14 +128,14 @@ def zoom(ax, origin, normal, axes, xlim, title, notes):
 
 fig, axs = plt.subplots(2, 2, figsize=(15, 9.6))
 X, Y, L, R = [1, 0, 0], [0, 1, 0], (-3.6, 16.4), (44.6, 64.6)
-zoom(axs[0, 0], [39.85, 0, 0], X, [1, 2], L, "across at x 39.85, PWR side: a latch, and the 0.8 bevels back and front",
+zoom(axs[0, 0], [19.575, 0, 0], X, [1, 2], L, "across at x 19.6, PWR side: a latch, and the 0.8 bevels back and front",
      [((-1.85, -6.8), (-3.2, -8.9), "0.8 × 45°"), ((-1.85, 2.35), (1.0, 3.0), "0.8 × 45° (v0.6: 0.5)"),
-      ((10.0, -6.3), (1.5, -4.6), "45° seat (0.6)"), ((9.9, -5.4), (13.0, -1.0), "barb, 45° both faces"),
-      ((11.0, -6.2), (12.6, -8.9), "slit under the beam")])
-zoom(axs[0, 1], [39.85, 0, 0], X, [1, 2], R, "same section, thumbwheel side: the other latch",
-     [((63.05, -6.8), (60.5, -8.9), "0.8 × 45°"), ((61.85, 2.35), (56.0, 3.0), "0.8 × 45°"), ((57.7, -5.4), (52.5, -1.0), "barb")])
-zoom(axs[1, 0], [20.0, 0, 0], X, [1, 2], L, "across at x 20, no latch: the tub sits on the ledge",
-     [((10.0, -6.3), (1.5, -4.6), "45° seat"), ((9.78, -7.2), (3.0, -8.9), "seam, 0.15")])
+      ((5.3, -6.3), (0.8, -4.4), "45° seat (0.6)"), ((5.2, -5.4), (9.5, -1.0), "barb, 45° both faces"),
+      ((6.4, -6.2), (9.0, -8.9), "slit under the beam")])
+zoom(axs[0, 1], [40.3, 0, 0], X, [1, 2], R, "across at x 40.3, thumbwheel side: the other latch",
+     [((63.05, -6.8), (60.5, -8.9), "0.8 × 45°"), ((61.85, 2.35), (56.0, 3.0), "0.8 × 45°"), ((57.1, -5.4), (52.5, -1.0), "barb")])
+zoom(axs[1, 0], [45.0, 0, 0], X, [1, 2], L, "across at x 45, no latch: the tub sits on the ledge, under an MX1.25 header",
+     [((5.3, -6.3), (0.8, -4.4), "45° seat"), ((5.15, -7.2), (1.0, -8.9), "seam, 0.15")])
 zoom(axs[1, 1], [0, 30.0, 0], Y, [0, 2], L, "along the length at y 30: the USB-C end",
-     [((-1.95, -6.8), (-3.2, -8.9), "0.4 left under the opening"), ((5.6, -6.3), (8.0, -1.0), "45° seat")])
+     [((-1.95, -6.8), (-3.2, -8.9), "0.4 left under the opening"), ((5.5, -6.3), (9.0, -1.0), "45° seat")])
 legend(fig); plt.tight_layout(rect=(0, 0.03, 1, 1)); plt.savefig(HERE / "seam.png", dpi=110)
