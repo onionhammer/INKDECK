@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.10"
 # ///
-"""Does each part need supports? Slices the flatter back's parts and v0.6's, as they'd lie on the
+"""Does each part need supports? Slices the flatter back's parts, its test coupons and v0.6's parts, as they'd lie on the
 bed, with PrusaSlicer's own CORE One presets (the enclosure's printer, profile and PETG) and
 automatic supports on at the profile's threshold, and counts the support extrusions in the G-code.
 Run build.py first; gcode goes to build/.
@@ -20,7 +20,8 @@ PRESETS = ["--printer-profile", "Prusa CORE One HF0.4 nozzle", "--print-profile"
 # (name, mesh, extra args): trays and the tub print back-down as modelled, bezels face-down
 PARTS = [("v0.6 tray", BUILD / "v06_tray.stl", []), ("v0.6 bezel", BUILD / "v06_bezel.stl", ["--rotate-x", "180"]),
          ("back tray", OUT / "back-tray.stl", []), ("battery tub", OUT / "battery-tub.stl", []),
-         ("front bezel", OUT / "front-bezel.stl", ["--rotate-x", "180"])]
+         ("front bezel", OUT / "front-bezel.stl", ["--rotate-x", "180"]),
+         ("coupon tray", HERE / "coupon-tray.stl", []), ("coupon tub", HERE / "coupon-tub.stl", [])]
 
 def check(name, mesh, extra):
     out = BUILD / (re.sub(r"\W+", "_", name).strip("_") + ".gcode")

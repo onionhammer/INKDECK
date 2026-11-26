@@ -8,8 +8,8 @@
 - parts.png: the parts exploded, and as they lie on the bed
 - sections.png: v0.6 and the flatter back cut along the length at y 13.5 (battery and speaker) and
   across at x 44.8 (an MX1.25 header), with the board, battery and speaker
-- seam.png: close-ups of the tub's seat, the latches (a tongue on the tray in a window in the tub) and
-  the bevels
+- seam.png: close-ups of the tub's rim on the field, its lugs over the tray's seats, the notches they
+  come in through, the lock and the bevels
 
     uv run enclosure/concepts/flatter-back/pictures.py
 """
@@ -67,12 +67,12 @@ pl.subplot(0, 0); pl.set_background(BG)
 for m, col, dz in ((bezel, BEZEL, 0), (tray, TRAY, 0), (tub, TUB, -16)):
     pl.add_mesh(m.translate((0, 0, dz)), color=col, specular=0.15, ambient=0.28, diffuse=0.8)
 pl.camera_position = [(C[0]+110, C[1]-170, C[2]-150), (C[0], C[1], C[2]-7), (0, 0, 1)]
-pl.add_text("Exploded, from the back: the tub goes in from outside", position="upper_left", font_size=12, color="white")
+pl.add_text("Exploded, from the back: the tub drops in from outside and slides to lock", position="upper_left", font_size=12, color="white")
 pl.subplot(0, 1); pl.set_background(BG)
 pl.add_mesh(pv.Plane(center=(49.75, 62, -7.21), direction=(0, 0, 1), i_size=150, j_size=160), color="#55595f", ambient=0.4)
 pl.add_mesh(tray, color=TRAY, specular=0.15, ambient=0.28, diffuse=0.8)
 pl.add_mesh(tub.translate((0, 70, -7.2 - tub.bounds[4])), color=TUB, specular=0.15, ambient=0.28, diffuse=0.8)
-pl.camera_position = [(49.75 - 60, 62 - 150, 120), (49.75, 62, -6), (0, 0, 1)]
+pl.camera_position = [(49.75 - 70, 62 - 175, 140), (49.75, 62, -6), (0, 0, 1)]
 pl.add_text("As printed: tray on its back, tub on its pod face. No supports", position="upper_left", font_size=12, color="white")
 pl.screenshot(str(HERE / "parts.png")); pl.close()
 
@@ -125,33 +125,34 @@ for ax, case, o, n, axes, title in [
         ax.axhline(z, color="#999", lw=0.6, ls=":"); ax.text(103.5, z, f"z {z:.2f}".replace("-", "−"), fontsize=7, va="bottom", ha="right", color="#666")
 legend(fig); plt.tight_layout(rect=(0, 0.03, 1, 1)); plt.savefig(HERE / "sections.png", dpi=110)
 
-def zoom(ax, origin, normal, axes, xlim, title, notes, ylim=(-9.6, 3.4)):
+def zoom(ax, origin, normal, axes, xlim, title, notes, ylim=(-9.6, 3.4), lines=(-9.11, -7.2, -2.6)):
     cut(ax, "flatter back", origin, normal, axes, speaker=False)
     ax.set_xlim(*xlim); ax.set_ylim(*ylim); ax.set_title(title, loc="left", fontsize=10)
-    for z in (-9.11, -7.2, -2.6): ax.axhline(z, color="#999", lw=0.6, ls=":")
+    for z in lines: ax.axhline(z, color="#999", lw=0.6, ls=":")
     for (x, y), (tx, ty), text in notes:
         ax.annotate(text, (x, y), (tx, ty), fontsize=8, arrowprops=dict(arrowstyle="-", color="#333", lw=0.6))
 
 fig, axs = plt.subplots(3, 2, figsize=(15, 14.4))
-X, Y, L, R = [1, 0, 0], [0, 1, 0], (-3.6, 16.4), (44.6, 64.6)
-zoom(axs[0, 0], [19.6, 0, 0], X, [1, 2], L, "across the PWR side's latch at its window (x 19.6), and the 0.8 bevels",
+X, Y, Z, L, R = [1, 0, 0], [0, 1, 0], [0, 0, 1], (-3.6, 16.4), (44.6, 64.6)
+zoom(axs[0, 0], [14.0, 0, 0], X, [1, 2], L, "across a lug, locked (PWR side, x 14), and the 0.8 bevels",
      [((-1.85, -6.8), (-3.2, -8.9), "0.8 × 45°"), ((-1.85, 2.35), (1.0, 3.0), "0.8 × 45° (v0.6: 0.5)"),
-      ((4.6, -5.4), (0.2, -3.6), "the tray's tongue"), ((6.6, -4.5), (9.6, -4.7), "in the beam's window"),
-      ((6.55, -3.2), (9.6, -3.2), "lead-in, 30°"), ((7.1, -6.4), (9.6, -6.3), "beam, flexes in"),
-      ((6.9, -7.25), (9.5, -8.9), "slit, inside the wall")])
-zoom(axs[0, 1], [14.0, 0, 0], X, [1, 2], L, "the same latch beside its window (x 14)",
-     [((5.35, -6.25), (0.2, -4.4), "45° seat, on the skin"), ((6.15, -6.8), (1.0, -8.9), "0.4 gap"),
-      ((6.85, -5.0), (9.5, -4.0), "beam, 1.0 × 2.8, fixed at both ends"),
-      ((7.45, -7.8), (9.5, -8.9), "pocket widened to the beam")])
-zoom(axs[1, 0], [0, 6.6, 0], Y, [0, 2], (5.0, 34.0), "along the PWR side's beam, through the window (y 6.6)",
-     [((19.6, -5.2), (23.0, -1.4), "the tongue: a pull rests the arch on it"),
-      ((18.95, -4.6), (11.0, -1.4), "arch, 45° along the beam"),
-      ((24.0, -7.25), (24.0, -9.2), "slit, 18 long"), ((9.6, -5.0), (5.6, -1.4), "post")], ylim=(-9.6, -0.6))
-zoom(axs[1, 1], [45.0, 0, 0], X, [1, 2], L, "across at x 45, no latch: the tub sits on the ledge, under an MX1.25 header",
-     [((5.3, -6.3), (0.8, -4.4), "45° seat"), ((5.15, -7.2), (1.0, -8.9), "seam, 0.15")])
-zoom(axs[2, 0], [0, 30.0, 0], Y, [0, 2], L, "along the length at y 30: the USB-C end",
-     [((-1.95, -6.8), (-3.2, -8.9), "0.4 left under the opening"), ((5.5, -6.3), (9.0, -1.0), "45° seat")])
-zoom(axs[2, 1], [54.0, 0, 0], X, [1, 2], R, "across the thumbwheel side's antenna-end latch at its window (x 54)",
+      ((5.0, -5.2), (0.2, -3.4), "the tub's lug, solid"), ((4.6, -5.75), (0.2, -4.6), "over the tray's seat, 45°"),
+      ((4.6, -7.4), (0.4, -8.9), "rim laps 1.8 onto the field"), ((3.8, -7.4), (-3.2, -7.9), "0.4 edge")])
+zoom(axs[0, 1], [19.0, 0, 0], X, [1, 2], L, "across the notch that lug came up through (x 19)",
+     [((4.9, -6.6), (0.2, -4.6), "notch in the floor's edge, 1.45"), ((4.6, -7.4), (0.4, -8.9), "covered by the rim"),
+      ((6.4, -6.5), (9.5, -4.2), "the tub's wall, 1.85")])
+zoom(axs[1, 0], [0, 5.3, 0], Y, [0, 2], (6.0, 36.0), "along the PWR side, through the lugs just outside the tub's wall (y 5.3)",
+     [((14.0, -5.2), (9.0, -2.6), "lug, locked"), ((19.0, -6.6), (17.5, -2.6), "its notch"),
+      ((13.5, -6.2), (7.5, -8.9), "seat"), ((16.2, -6.35), (20.5, -8.9), "the seat falls 0.3 to the notch"),
+      ((26.0, -5.2), (27.5, -2.6), "the next lug")], ylim=(-9.6, -1.8), lines=(-9.11, -7.2))
+zoom(axs[1, 1], [0, 0, -6.6], Z, [0, 1], (9.0, 47.0), "the lock, seen from inside (cut at z −6.6, thumbwheel side)",
+     [((25.0, 55.3), (15.0, 51.6), "tooth, in a notch in the tub's wall"), ((31.0, 56.1), (27.0, 51.6), "finger: part of the floor, 14.5 long"),
+      ((31.0, 57.0), (33.0, 60.6), "slit, under the rim"), ((38.5, 56.2), (41.0, 51.6), "fixed here"),
+      ((19.0, 57.0), (11.0, 60.6), "a lug's notch")], ylim=(50.4, 61.6), lines=())
+zoom(axs[2, 0], [25.0, 0, 0], X, [1, 2], R, "across the lock's tooth (x 25)",
      [((63.05, -6.8), (60.5, -8.9), "0.8 × 45°"), ((61.85, 2.35), (56.0, 3.0), "0.8 × 45°"),
-      ((57.6, -5.4), (58.5, -3.4), "tongue"), ((55.6, -4.5), (49.5, -3.2), "window")])
+      ((56.1, -5.6), (58.6, -3.6), "tooth: 45° underneath,\nthe tub pushes it aside going in"), ((55.0, -5.4), (49.0, -3.4), "the tub's wall, raised")])
+zoom(axs[2, 1], [0, 30.0, 0], Y, [0, 2], (66.0, 86.0), "along the length at y 30: the antenna end of the tub, locked",
+     [((77.2, -6.6), (78.5, -3.6), "the 5 mm the tub slid, open inside"), ((77.2, -8.0), (70.0, -9.4), "covered by the pod"),
+      ((80.6, -7.4), (82.0, -9.4), "rim on the field")], lines=(-9.11, -7.2))
 legend(fig); plt.tight_layout(rect=(0, 0.03, 1, 1)); plt.savefig(HERE / "seam.png", dpi=110)

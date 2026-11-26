@@ -7,18 +7,17 @@ model is untouched). The back rises to the field level everywhere except a pod r
 the pod is its own part (a battery tub) so every part prints flat with no supports, and a 0.8 mm
 45° bevel runs round the back edge and the front bezel's front edge. Writes back-tray.stl,
 battery-tub.stl and front-bezel.stl to enclosure/ (the print meshes, in place of v0.6's),
-flatter-back.step here, and v0.6's meshes and the battery and speaker boxes to build/ for
-pictures.py.
+flatter-back.step and the joint's test coupons here, and v0.6's meshes and the battery and speaker
+boxes to build/ for pictures.py.
 
     uv run enclosure/concepts/flatter-back/build.py
 
-The tub goes in from outside and sits on a 45° ledge round the opening, so a push on the back (the
-case lying on a table) goes into the tray, not into the battery and board. Three latches hold it in.
-Each is a beam cut out of the tub's long wall, fixed at both ends. A tongue on the tray reaches into
-a window in it. Any catch printed on the tub's bed side is at most 45°, and a 45° barb across the
-beam pushes the beam in when pulled (the first version let go at about 11 N). So the window's top is
-a 45° arch running along the beam: pulled, it rests on the tongue's corners and pushes along the
-beam, so the latch holds until the beam gives (about 68 N for the three, by rough beam estimates).
+The tub drops in from the back and slides toward the USB end to lock. Its rim laps onto the field
+outside, so a push on the back (the case lying on a table) goes into the tray, not into the battery
+and board. Solid lugs on its long walls come up through notches in the tray's floor and, slid home,
+sit over seats on the floor: nothing has to bend to hold the tub in. A finger cut from the floor's
+edge springs into a notch in the tub's wall and stops it sliding back. The first two versions held
+the tub with flexing latches (barbs, then tongues in windows): both let go.
 """
 from pathlib import Path
 import cadquery as cq, math, json
@@ -46,41 +45,40 @@ HW, HH, HCH = POCKET[2] - POCKET[0] + 5.2, POCKET[3] - POCKET[1] + 5.2, 3.0
 RISE = Z_FIELD - Z_BACK                                 # 1.91
 HOLES = [(2.7, 2.7), (96.8, 2.7), (2.7, 57.3), (96.8, 57.3)]
 # the speaker: 14 × 10, long side along the case, between the antenna end's corner screw (its boss
-# on the floor reaches y 5.3) and the ESP32 module, where nothing hangs below the board: 4.1 of height
-# over the floor, less 0.3 clear. Its thickness isn't given; 3.0 is drawn.
-SPK = dict(x0=85.4, y0=5.8, l=14.0, w=10.0, t=3.0)
+# on the floor reaches y 5.3) and the ESP32 module (its shield starts about y 22). Nothing hangs below
+# the board to y 16.6, and small parts to z -2.4 from there: 3.6 of height over the floor under those,
+# less 0.3 clear. Its thickness isn't given; 3.0 is drawn.
+SPK = dict(x0=85.4, y0=7.8, l=14.0, w=10.0, t=3.0)
 # speaker grille: slots at 45°, parallel to the frog's hatch (its edges run along +X+Y), clipped to a
 # patch 2 in from the speaker's edges; a piece shorter than min_l at a corner is left out
 GRILLE = dict(w=0.8, pitch=2.0, patch=(10.0, 6.0), min_l=2.0)
 
 # --- the split: the tray's opening and the tub in it ----------------------------------------------
-# seat: the tray's opening is the hatch outline up to z -6.6, then a 45° ledge narrows it by 0.6
-Z_LEDGE, LEDGE = -6.6, 0.6
-GAP = 0.15                     # seam gap round the tub; the 45° faces touch (that's the seat)
-WALL_IN = LEDGE + 0.1          # the tub's outer face above the floor (0.1 clear of the ledge's edge)
-# --- the latches ---------------------------------------------------------------------------------
-# Three: one on the PWR side (between the corner and the MX1.25 headers, under the SD socket's end)
-# and two on the thumbwheel side. Each is a beam cut out of the tub's long wall, fixed at both ends,
-# that flexes in toward the pocket. A tongue on the tray reaches through the tub's skin into a window
-# in the beam. A pull rests the window's top, a 45° arch along the beam, on the tongue's top corners:
-# that pushes along the beam, not into it, so the latch doesn't let go. The tub comes out only from
-# inside, by pressing the beams in. (side, the beam's free span x0 to x1, the window's x)
-LATCHES = [(-1, 10.6, 28.6, 19.6), (1, 10.0, 28.0, 19.0), (1, 44.0, 64.0, 54.0)]
-# Insets from the seam outline: the tub's skin (it keeps the seat) from its seam face to 0.95, a 0.4
-# gap, the beam 1.0 thick, and the pocket widened to the beam's inner face along the span
-SKIN_IN, BEAM_IN = 0.95, (1.35, 2.35)
-END = 2.0                      # the beam's part above the floor top runs on 2 mm past the span, on posts
-# The slit under the beam, inside the wall (hidden): sliced at 0.2, two empty layers, so the beam's
-# first layer bridges the span 0.4 over the wall. With one it would sag onto it and fuse; with three,
-# the profile, which supports bridges, puts support in the slit.
-Z_SLIT = (-7.45, -7.02)
-Z_TOP, Z_HUMP, HUMP = -4.2, -2.8, 1.7      # the beam's top, and a hump over the window (flat ±1.7, 45° sides)
-# The tray's tongue: 1.6 wide, its underside 45° from the opening wall just above the field out to its
-# tip 0.4 inside the beam's outer face; its top flat. The window: 2.2 wide, 0.1 behind the tip, 0.15
-# of play round the tongue. The hump's outer top edge leads the tongue in at 30° off vertical.
-TONGUE = dict(w=1.6, tip=1.75, z0=-7.15, top=-4.9, back=-1.0)
-WIN = dict(w=2.2, depth=0.5, play=0.15)
-LEAD = 30.0
+# The tub drops in from the back and slides SLIDE toward the USB end to lock. Insets are measured in
+# from the hatch outline (negative: outside it).
+GROW = 1.2                     # the pod's edge at the field stands GROW outside the hatch outline
+LAND = 0.4                     # the pod's edge is vertical for LAND below the field, then the 45° flank
+OPEN_IN = 0.6                  # the tray's opening: the pod's rim laps GROW + OPEN_IN onto the field
+EF = 0.3                       # a 45° chamfer on the opening's bed edge, clear of elephant's foot
+GAP = 0.15                     # between the opening and the tub's wall through it
+SLIDE = 5.0                    # the opening, and the pod that covers it, run on SLIDE toward the antenna end
+WALL_IN = OPEN_IN + GAP        # the outer face of the tub's wall through the opening
+POCKET_IN = 2.6                # the pocket's face
+# The lugs: solid, on the tub's long walls, above the tray's floor. A lug's underside is 45° (it
+# prints as an overhang) and sits `play` over a seat of the same slope on the tray: the seat starts
+# on the opening's edge at z0 and rises `rise` outward, on a rail on the floor. The x given is the
+# lug's USB-end end when locked; its notch in the tray is SLIDE further on. The board leaves 2.4 or
+# more above the floor at each (depthmap.py), and 1.0 under the MX1.25 headers (PWR side, x 30 to 60).
+LUG = dict(l=4.0, out=1.3, top=-4.6, play=0.1)
+SEAT = dict(z0=-6.4, rise=1.2, flat=1.0, over=0.5, lead=(1.2, 0.3))   # lead: the last 1.2, to the notch, falls 0.3
+LUGS = {"y0": [12.0, 24.0, 63.0], "y1": [12.0, 40.0, 63.0]}
+NOTCH = 0.3                    # clearance round a lug in its notch
+# The lock: a finger cut from the floor's edge on the thumbwheel side, fixed at its antenna end, with
+# a tooth on its tip that springs into a notch in the tub's wall when the tub is home. The tub
+# pushes on it endways (it's a strut), so it stops the tub sliding back without bending. Going in,
+# the tub's wall pushes the tooth aside by its 45° underside. To let the tub out, push the tip away
+# from the tub, from inside.
+LOCK = dict(side="y1", tip=24.0, root=38.5, w=1.2, slit=0.4, tooth=1.0, tooth_l=2.0, top=-5.0, block=3.0, play=0.15)
 
 # --- the bevels ------------------------------------------------------------------------------------
 # 45°, S high, round the back edge and the front bezel's front edge. The lowest fin groove starts
@@ -92,10 +90,11 @@ XO0, XO1, YO0, YO1 = -2.4, 101.9, -2.25, 62.25       # tray walls
 MX, MY = (XO0 + XO1) / 2, (YO0 + YO1) / 2            # the outline is symmetric about these
 TABS = (69.35, 88.55)
 
-def hatch(inset):
-    """The hatch outline (a chamfered rectangle) offset inward by `inset`, mitred."""
+def hatch(inset, run=0.0):
+    """The hatch outline (a chamfered rectangle) offset inward by `inset`, mitred; `run` longer at
+    the antenna end."""
     w, h, c = HW - 2 * inset, HH - 2 * inset, HCH - inset * math.tan(math.radians(22.5))
-    x0, x1, y0, y1 = BCX - w / 2, BCX + w / 2, BCY - h / 2, BCY + h / 2
+    x0, x1, y0, y1 = BCX - w / 2, BCX + w / 2 + run, BCY - h / 2, BCY + h / 2
     return [(x0+c, y0), (x1-c, y0), (x1, y0+c), (x1, y1-c), (x1-c, y1), (x0+c, y1), (x0, y1-c), (x0, y0+c)]
 
 def prism(pts, z0, z1, taper=0.0):
@@ -142,9 +141,11 @@ def cutter(prof, skip=()):
 s = sorted(cq.importers.importStep(str(STEP)).solids().vals(), key=lambda v: v.BoundingBox().zmin)
 v06_tray, v06_bezel = cq.Workplane().add(s[0]), cq.Workplane().add(s[1])
 
-# The pod back. The pod: the hatch outline at the field level, its 45° flanks running down to a
-# face RISE smaller a side.
-pod = prism(hatch(RISE), Z_BACK, Z_FIELD, taper=-45)
+# The pod back. The pod: GROW outside the hatch outline at the field (and SLIDE longer), a LAND of
+# vertical edge, then 45° flanks running down to its face. The flanks' top outline is carried straight
+# up for the edge (the taper rounds the corners a little, so the hatch outline itself would overhang).
+pod = (prism(hatch(RISE - LAND - GROW, SLIDE), Z_BACK, Z_FIELD - LAND, taper=-45)
+       .faces(">Z").wires().toPending().extrude(LAND))
 below = box(-10, -10, -20, 115, 75, Z_FIELD)
 pocket_all = box(POCKET[0], POCKET[1], Z_POCKET, POCKET[2], POCKET[3], 5)
 hatch_field = prism(hatch(0), Z_FIELD, Z_FTOP)
@@ -186,63 +187,72 @@ for k in range(-k_max, k_max + 1):
     pod_tray = pod_tray.cut(slot); grille_mm2 += area
 pod_bezel = v06_bezel.cut(below)
 
-# The split: the tray's opening, and the envelope of the tub inside it
-opening = (prism(hatch(0), -20, Z_LEDGE).union(prism(hatch(0), Z_LEDGE, Z_FTOP, taper=45))
-           .union(prism(hatch(LEDGE), Z_FTOP, 5)))
-z_seat = Z_FTOP - (LEDGE - GAP)                       # where the tub's land meets the 45° seat
-envelope = (prism(hatch(GAP), -20, z_seat).union(prism(hatch(GAP), z_seat, Z_FTOP, taper=45))
-            .union(prism(hatch(WALL_IN), Z_FTOP, 5)))
+# The split. The tray: everything from the field up, less the opening. The tub: the pod below the
+# field, and the wall through the opening.
 back = cutter(BACK, skip=[("y0", *TABS)])
-tray = pod_tray.cut(opening).cut(back)
+opening = (prism(hatch(OPEN_IN, SLIDE), Z_FIELD - 1, 5)
+           .union(prism(hatch(OPEN_IN - EF, SLIDE), Z_FIELD, Z_FIELD + EF, taper=45)))
+tray = pod_tray.cut(below).cut(opening).cut(back)
 bezel = pod_bezel.cut(back).cut(cutter(FRONT))
-tub = pod_tray.intersect(envelope)
+tub = pod_tray.intersect(below.union(prism(hatch(WALL_IN), Z_FIELD - 0.5, 5)))
 
 def sweep(pts, vec):
     """A prism: the polygon `pts` (3D) swept along `vec`."""
     face = cq.Face.makeFromWires(cq.Wire.makePolygon([cq.Vector(*p) for p in pts], close=True))
     return cq.Workplane().add(cq.Solid.extrudeLinear(face, cq.Vector(*vec)))
 
-# latches. Insets are measured in from the seam outline: y0 side at BCY - HH/2, y1 side mirrored.
-z_apex = TONGUE["top"] + WIN["play"] + TONGUE["w"] / 2        # the arch clears the tongue's corners by the play
-z_spring = z_apex - WIN["w"] / 2
-flex = TONGUE["tip"] + 0.05 - BEAM_IN[0]                      # how far the beam flexes in going in
-k_lead = 1 / math.tan(math.radians(LEAD))
-z_lead = Z_HUMP - flex * k_lead                               # the lead-in's foot on the beam's outer face
-z_under = lambda i: TONGUE["z0"] + i                          # the tongue's underside at inset i
-for side, x0, x1, xw in LATCHES:
-    edge = BCY + side * HH / 2
-    Y = lambda i: edge - side * i
-    def ibox(a, b, xa, xb, za, zb):
-        ya, yb = sorted((Y(a), Y(b))); return box(xa, ya, za, xb, yb, zb)
-    along = lambda prof, xa, xb: sweep([(xa, Y(i), z) for i, z in prof], (xb - xa, 0, 0))       # (inset, z)
-    across = lambda prof, a, b: sweep([(x, Y(a), z) for x, z in prof], (0, Y(b) - Y(a), 0))   # (x, z)
-    # free the beam: the gap outside it, the slit under it, the pocket widened to its inner face
-    tub = (tub.cut(ibox(SKIN_IN, BEAM_IN[0], x0, x1, Z_SLIT[0], 5))
-              .cut(ibox(SKIN_IN, BEAM_IN[1], x0, x1, Z_SLIT[0], Z_SLIT[1]))
-              .cut(ibox(BEAM_IN[1], 2.61, x0, x1, Z_POCKET - 0.01, 5)))
-    # its part above the floor top, on posts the wall's width at both ends, and the hump over the window
-    tub = tub.union(ibox(BEAM_IN[0], BEAM_IN[1], x0 - END, x1 + END, Z_FTOP - 0.02, Z_TOP))
-    for xa, xb in ((x0 - END, x0), (x1, x1 + END)):
-        tub = tub.union(ibox(WALL_IN, 2.6, xa, xb, Z_FTOP - 0.02, Z_TOP))
-    hs = Z_HUMP - Z_TOP
-    tub = tub.union(across([(xw - HUMP - hs, Z_TOP - 0.01), (xw + HUMP + hs, Z_TOP - 0.01),
-                            (xw + HUMP, Z_HUMP), (xw - HUMP, Z_HUMP)], BEAM_IN[0], BEAM_IN[1]))
-    # the lead-in on the hump's outer top edge
-    tub = tub.cut(along([(BEAM_IN[0] - 1, z_lead - k_lead), (BEAM_IN[0] + 1.5, z_lead + 1.5 * k_lead),
-                         (BEAM_IN[0] + 1.5, 0), (BEAM_IN[0] - 1, 0)], xw - HUMP - hs, xw + HUMP + hs))
-    # the window: up to the arch along the beam, its floor 45° across it, the play under the tongue;
-    # and the notch in the skin the tongue passes through, the same floor
-    above = along([(-1, z_under(-1) - WIN["play"]), (3, z_under(3) - WIN["play"]), (3, 5), (-1, 5)], xw - 3, xw + 3)
-    hw = WIN["w"] / 2
-    window = across([(xw - hw, -9), (xw + hw, -9), (xw + hw, z_spring), (xw, z_apex), (xw - hw, z_spring)],
-                    BEAM_IN[0] - 0.01, BEAM_IN[0] + WIN["depth"])
-    notch = ibox(0, SKIN_IN + 0.01, xw - TONGUE["w"] / 2 - 0.2, xw + TONGUE["w"] / 2 + 0.2, -10, 5)
-    tub = tub.cut(window.intersect(above)).cut(notch.intersect(above))
-    # the tray's tongue: from the opening wall and the floor top, out to its tip
-    t = TONGUE
-    tray = tray.union(along([(t["back"], Z_FTOP - 0.02), (-0.02, Z_FTOP - 0.02), (-0.02, z_under(-0.02)),
-                             (t["tip"], z_under(t["tip"])), (t["tip"], t["top"]), (t["back"], t["top"])],
-                            xw - t["w"] / 2, xw + t["w"] / 2))
+# Along a long side: i the inset from the hatch outline, s along it (x)
+EDGE = {"y0": BCY - HH / 2, "y1": BCY + HH / 2}
+def Y(side, i): return EDGE[side] + i if side == "y0" else EDGE[side] - i
+def ibox(side, i0, i1, s0, s1, z0, z1):
+    ya, yb = sorted((Y(side, i0), Y(side, i1))); return box(s0, ya, z0, s1, yb, z1)
+def along(side, prof, s0, s1):
+    """An (inset, z) profile swept along the side."""
+    return sweep([(s0, Y(side, i), z) for i, z in prof], (s1 - s0, 0, 0))
+def loft(side, prof0, s0, prof1, s1):
+    """From one (inset, z) profile at s0 to another at s1, ruled."""
+    ws = [cq.Wire.makePolygon([cq.Vector(s, Y(side, i), z) for i, z in prof], close=True)
+          for prof, s in ((prof0, s0), (prof1, s1))]
+    return cq.Workplane().add(cq.Solid.makeLoft(ws, True))
+
+z_top = SEAT["z0"] + SEAT["rise"]                                   # the rail's top
+seat_z = lambda i: SEAT["z0"] + OPEN_IN - i                         # the seat's slope
+i_tip = WALL_IN - LUG["out"]                                        # the lug's outer face
+def over_seat(drop):
+    """What's above the seat's slope (`drop` lower), as a profile."""
+    i0 = OPEN_IN - SEAT["rise"] - drop
+    return [(i0, z_top), (OPEN_IN + 0.5, seat_z(OPEN_IN + 0.5) - drop), (OPEN_IN + 0.5, 5), (i0, 5)]
+features = []                                                       # (name, x0, y0, x1, y1, top) for the room check
+for side, starts in LUGS.items():
+    for h0 in starts:
+        h1 = h0 + LUG["l"]
+        # the tub's lug: the wall raised to the lug's top, and the lug out from it over the seat
+        tub = tub.union(ibox(side, WALL_IN, POCKET_IN, h0, h1, Z_FTOP - 0.02, LUG["top"]))
+        tub = tub.union(along(side, [(WALL_IN + 0.5, seat_z(WALL_IN + 0.5) + LUG["play"]), (i_tip, seat_z(i_tip) + LUG["play"]),
+                                     (i_tip, LUG["top"]), (WALL_IN + 0.5, LUG["top"])], h0, h1))
+        # the tray's seat: a rail on the floor beside the opening, its slope cut down to the opening's edge
+        a, b = h0 - SEAT["over"], h0 + SLIDE - NOTCH              # as far as the notch, so the lug slides straight on
+        ll, ld = SEAT["lead"]
+        tray = tray.union(ibox(side, OPEN_IN - SEAT["rise"] - SEAT["flat"], OPEN_IN, a, b, Z_FTOP - 0.02, z_top))
+        tray = tray.cut(along(side, over_seat(0.0), a - 0.01, b - ll)).cut(loft(side, over_seat(0.0), b - ll, over_seat(ld), b + 0.01))
+        # the notch the lug comes up through, SLIDE on
+        tray = tray.cut(ibox(side, i_tip - NOTCH, OPEN_IN + 0.01, h0 + SLIDE - NOTCH, h1 + SLIDE + NOTCH, Z_FIELD - 1, 5))
+        ya, yb = sorted((Y(side, i_tip), Y(side, POCKET_IN)))
+        features.append((f"lug {side} x {h0:g}", h0, ya, h1, yb, LUG["top"]))
+
+# the lock
+L = LOCK; sd = L["side"]
+i_f = OPEN_IN - L["w"]                                              # the finger's back
+tray = tray.union(ibox(sd, i_f, OPEN_IN, L["tip"], L["tip"] + L["block"], Z_FTOP - 0.02, L["top"]))
+tray = tray.union(along(sd, [(OPEN_IN - 0.02, Z_FIELD), (OPEN_IN + L["tooth"], Z_FIELD + L["tooth"] + 0.02),
+                             (OPEN_IN + L["tooth"], L["top"]), (OPEN_IN - 0.02, L["top"])], L["tip"], L["tip"] + L["tooth_l"]))
+tray = (tray.cut(ibox(sd, i_f - L["slit"], i_f, L["tip"] - L["slit"], L["root"], Z_FIELD - 1, 5))
+            .cut(ibox(sd, i_f - L["slit"], OPEN_IN + 0.01, L["tip"] - L["slit"], L["tip"], Z_FIELD - 1, 5)))
+no_tooth = tray.cut(ibox(sd, OPEN_IN, OPEN_IN + L["tooth"] + 0.1, L["tip"] - 0.1, L["tip"] + L["tooth_l"] + 0.1, Z_FIELD - 1, 5))
+tub = tub.union(ibox(sd, WALL_IN, POCKET_IN, L["tip"] - 2.5, L["tip"] + L["tooth_l"] + 2.5, Z_FTOP - 0.02, L["top"] + 0.2))
+tub = tub.cut(ibox(sd, WALL_IN - 0.01, OPEN_IN + L["tooth"] + 0.25, L["tip"] - L["play"], L["tip"] + L["tooth_l"] + 0.3, Z_FIELD, 5))
+ya, yb = sorted((Y(sd, i_f), Y(sd, POCKET_IN)))
+features.append(("lock", L["tip"] - 2.5, ya, L["tip"] + L["tooth_l"] + 2.5, yb, L["top"] + 0.2))
 
 def stl(shape, path):
     cq.exporters.export(shape, str(path), tolerance=0.02, angularTolerance=0.2)
@@ -256,10 +266,42 @@ stl(v06_tray, BUILD / "v06_tray.stl"); stl(v06_bezel, BUILD / "v06_bezel.stl")
 spk = box(SPK["x0"], SPK["y0"], Z_FTOP, SPK["x0"] + SPK["l"], SPK["y0"] + SPK["w"], Z_FTOP + SPK["t"])
 batt = box(BATT[0], BATT[1], Z_POCKET, BATT[2], BATT[3], Z_POCKET + BATT[4])
 cq.exporters.export(spk, str(BUILD / "speaker.stl")); cq.exporters.export(batt, str(BUILD / "battery.stl"))
-clash = tray.intersect(tub).vals()
+
+# Test coupons of the joint, to print before the whole parts: the USB-end 32 mm of the tub and the
+# floor beside it, with the middle (COUPON's y band) taken out and the two sides closed up. Three
+# lugs with their seats and notches, and the lock.
+COUPON = dict(band=(13.0, 49.2), tub=(8.0, 40.0), tray=(7.85, 46.0), bar=4.0, y=(1.0, 60.0))
+c = COUPON; shut = c["band"][1] - c["band"][0]
+def squeeze(shape, x0, x1, ya, yb):
+    near = shape.intersect(box(x0, ya, -20, x1, c["band"][0], 20))
+    far = shape.intersect(box(x0, c["band"][1], -20, x1, yb, 20)).translate((0, -shut, 0))
+    return near.union(far)
+coupon_tub = squeeze(tub, *c["tub"], -5, 70)
+coupon_tray = squeeze(tray, *c["tray"], *c["y"])
+for xa, xb in ((c["tray"][0] - c["bar"], c["tray"][0]), (c["tray"][1], c["tray"][1] + c["bar"])):
+    coupon_tray = coupon_tray.union(box(xa, c["y"][0], Z_FIELD, xb, c["y"][1] - shut, Z_FTOP))
+stl(coupon_tub, HERE / "coupon-tub.stl"); stl(coupon_tray, HERE / "coupon-tray.stl")
+
+def vol(w): return round(sum(v.Volume() for v in w.vals()), 4)
+# the way in: up through the notches SLIDE toward the antenna end, then along to home. The tooth is
+# left out (it springs aside); every other overlap should be nothing.
+way_in = {f"up, {dz:g} to go": vol(tub.translate((SLIDE, 0, -dz)).intersect(no_tooth)) for dz in (3.0, 1.5, 0.5)}
+way_in |= {f"slide, {d:g} to go": vol(tub.translate((d, 0, 0)).intersect(no_tooth)) for d in (5.0, 3.75, 2.5, 1.25)}
+# room under the board over each raised feature (needs depthmap.py's map)
+room = None
+if (BUILD / "depth.npz").exists():
+    import numpy as np
+    d = np.load(BUILD / "depth.npz"); zmin = np.minimum(np.where(np.isfinite(d["zmin"]), d["zmin"], -1.6), -1.6)
+    def under(x0, y0, x1, y1):
+        m = (d["xs"][None, :] >= x0 - 0.25) & (d["xs"][None, :] <= x1 + 0.25) & (d["ys"][:, None] >= y0 - 0.25) & (d["ys"][:, None] <= y1 + 0.25)
+        return float(zmin[m].min())
+    room = {name: round(under(x0, y0, x1, y1) - top, 2) for name, x0, y0, x1, y1, top in features}
 print(json.dumps(dict(
     mm3={k: round(v.val().Volume()) for k, v in parts.items()},
     v06_mm3=dict(tray=round(v06_tray.val().Volume()), bezel=round(v06_bezel.val().Volume())),
     valid={k: v.val().isValid() for k, v in parts.items()},
     solids={k: len(v.solids().vals()) for k, v in parts.items()},
-    tray_tub_overlap_mm3=round(clash[0].Volume(), 4) if clash else 0.0, grille_mm2=round(grille_mm2, 1))))
+    tray_tub_overlap_mm3=vol(tray.intersect(tub)), way_in_overlap_mm3=way_in, room_over_features_mm=room,
+    coupons=dict(valid=[coupon_tub.val().isValid(), coupon_tray.val().isValid()],
+                 solids=[len(coupon_tub.solids().vals()), len(coupon_tray.solids().vals())]),
+    grille_mm2=round(grille_mm2, 1)), indent=1))
