@@ -97,7 +97,7 @@ plt.colorbar(im, label="lowest part under the PCB, z mm (PCB bottom −1.6)")
 ax.add_patch(Rectangle((-2.4, -2.25), 104.3, 64.5, fill=False, ec="w", lw=1.5, ls="--"))
 ax.add_patch(Rectangle((7.8, 8.6), 65.0, 45.0, fill=False, ec="r", lw=2))     # build.py's BATT
 ax.add_patch(Rectangle((7.8, 7.6), 65.0, 47.0, fill=False, ec="r", lw=1, ls=":"))  # and its POCKET
-ax.text(40.3, 31.1, "battery about 65×45×4.61\n(wiring room in), top −3.7\npocket 65×47 dotted", color="r", ha="center", va="center", fontsize=11, weight="bold")
+ax.text(40.3, 31.1, "battery about 65×45×4.5\n(wiring room in), room to −3.7\npocket 65×47 dotted", color="r", ha="center", va="center", fontsize=11, weight="bold")
 # the speaker (build.py's SPK)
 ax.add_patch(Rectangle((85.4, 5.8), 14.0, 10.0, fill=False, ec="#ffb000", lw=2))
 ax.text(92.4, 10.8, "speaker\n14×10", color="#ffb000", ha="center", va="center", fontsize=9, weight="bold")

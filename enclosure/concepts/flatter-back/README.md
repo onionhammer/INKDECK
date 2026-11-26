@@ -81,18 +81,19 @@ case is three: back tray, battery tub and front bezel.
 
 | | |
 | --- | --- |
-| Cell | 1500 mAh 454261 pouch, about 65 long and 45 wide with room for the wiring out of its side, 4.61 thick (`batt_t`) |
+| Cell | 1500 mAh 454261 pouch, about 65 long and 45 wide with room for the wiring out of its side, about 4.5 thick |
 | Pocket | 65.0 × 47.0 (x 7.8 to 72.8, y 7.6 to 54.6), floor at z −8.31: all the room the board leaves at the cell's height |
 | In the pocket | none to spare along it, 1.0 a side across |
 | Ends | 0.12 to the USB-C socket's shell, and the thumbwheel's body at the other end (x 72.8, for y over 50.4) |
+| Height | no more than v0.5 gives: 4.61 (`batt_t`) from the pocket floor to z −3.7, so 0.11 over a 4.5 cell |
 | Under the cell | 0.8 of skin, the tub's face at z −9.11. The frog takes 0.2 of it, so 0.6 is under the frog |
-| Over the cell | 0.10 to the display FPC connector (z −3.60), as in v0.6, and 0.08 under the tips of the USB-C socket's pins at the very end. A swelling pouch has only that |
+| Over the cell | 0.10 over the room to the display FPC connector (z −3.60), as in v0.6: 0.21 over a 4.5 cell, which also passes 0.19 under the tips of the USB-C socket's pins at its very end |
 | Pocket walls | 2.31 up the cell's sides (to the floor top, z −6.0), 2.45 thick at the seam |
 | Latch beams | 1.9 from the cell's long sides. They flex 0.5 toward it going in, before the battery is |
 | Tub, outside | 69.9 × 51.9 at the seam, 66.4 × 48.4 at its face, 3.11 tall (4.51 at the latches) |
 
-The length is at the limit. With its top at z −3.7, the cell can't pass under the USB-C socket or
-the thumbwheel, and the board leaves 65.0 between them wherever a cell 45 wide sits; a longer one
+The length is at the limit. At that height the cell can't pass under the USB-C socket or the
+thumbwheel, and the board leaves 65.0 between them wherever a cell 45 wide sits; a longer one
 doesn't fit at this height at all. If it's 62.5, as the enclosure README has it measured with its
 protection board, there's 2.5 to spare. Either way it's more than v0.6's pocket (63.5 × 43) takes,
 so measure the cell's length, and which side its wiring leaves, before a print.

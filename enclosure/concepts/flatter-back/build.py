@@ -30,12 +30,12 @@ Z_BACK = -9.11            # v0.6's flat back, set by the battery
 Z_FIELD = -7.2            # standoff_z - back_t: set by the screws (and the USB-C opening + 1.2)
 FLOOR = 1.2
 Z_FTOP = Z_FIELD + FLOOR  # -6.0
-# The battery: about 65 × 45 with room for the wiring out of its side, 4.61 thick, its top at z
-# -3.7 as in v0.6. The pocket is all the room the board leaves at that height: 65.0 long between
+# The battery: about 65 × 45 with room for the wiring out of its side, about 4.5 thick. The tub
+# gives it no more height than v0.5 does: 4.61 (batt_t) over the pocket floor, to z -3.7. The pocket is all the room the board leaves at that height: 65.0 long between
 # the USB-C socket's pins (x 7.86, z -3.62) and the thumbwheel's body (x 72.8, for y over 50.4),
 # 47.0 wide between the MX1.25 headers and the thumbwheel.
 POCKET = (7.8, 7.6, 72.8, 54.6)
-BATT = (7.8, 8.6, 72.8, 53.6, 4.61)    # the 65 × 45 envelope in it, centred across, and its thickness
+BATT = (7.8, 8.6, 72.8, 53.6, 4.5)     # the 65 × 45 envelope in it, centred across, and its thickness
 Z_POCKET = -8.31
 # the hatch outline (the seam, and the tub's outline) is the pocket and 2.6 round it, chamfer 3
 BCX, BCY = (POCKET[0] + POCKET[2]) / 2, (POCKET[1] + POCKET[3]) / 2
