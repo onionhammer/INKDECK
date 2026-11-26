@@ -6,17 +6,19 @@
 model is untouched). The back rises to the field level everywhere except a pod round the battery,
 the pod is its own part (a battery tub) so every part prints flat with no supports, and a 0.8 mm
 45° bevel runs round the back edge and the front bezel's front edge. Writes back-tray.stl,
-battery-tub.stl, front-bezel.stl and flatter-back.step here, and v0.6's meshes and the battery and
-speaker boxes to build/ for pictures.py.
+battery-tub.stl and front-bezel.stl to enclosure/ (the print meshes, in place of v0.6's),
+flatter-back.step here, and v0.6's meshes and the battery and speaker boxes to build/ for
+pictures.py.
 
     uv run enclosure/concepts/flatter-back/build.py
 
 The tub goes in from outside and sits on a 45° ledge round the opening, so a push on the back (the
-case lying on a table) goes into the tray, not into the battery and board. Two snap latches on its
-long sides hold it in: a beam fixed at both ends, freed from the tub by a slit under it (a bridge
-when printed), with a barb that springs out over the tray's floor. The barb is 45° on both faces:
-a flat catch would be a ledge in mid-air, and the slicer supports it. So it's a soft latch, one a
-firm pull undoes (about 10 N for the pair, by a rough beam estimate).
+case lying on a table) goes into the tray, not into the battery and board. Three latches hold it in.
+Each is a beam cut out of the tub's long wall, fixed at both ends. A tongue on the tray reaches into
+a window in it. Any catch printed on the tub's bed side is at most 45°, and a 45° barb across the
+beam pushes the beam in when pulled (the first version let go at about 11 N). So the window's top is
+a 45° arch running along the beam: pulled, it rests on the tongue's corners and pushes along the
+beam, so the latch holds until the beam gives (about 68 N for the three, by rough beam estimates).
 """
 from pathlib import Path
 import cadquery as cq, math, json
@@ -24,6 +26,7 @@ import cadquery as cq, math, json
 HERE = Path(__file__).resolve().parent
 BUILD = HERE / "build"; BUILD.mkdir(exist_ok=True)
 STEP = HERE.parents[1] / "ereader-enclosure.step"
+OUT = HERE.parents[1]      # the print meshes go at enclosure/
 
 # --- the pod back -------------------------------------------------------------------------------
 Z_BACK = -9.11            # v0.6's flat back, set by the battery
@@ -55,16 +58,29 @@ GRILLE = dict(w=0.8, pitch=2.0, patch=(10.0, 6.0), min_l=2.0)
 Z_LEDGE, LEDGE = -6.6, 0.6
 GAP = 0.15                     # seam gap round the tub; the 45° faces touch (that's the seat)
 WALL_IN = LEDGE + 0.1          # the tub's outer face above the floor (0.1 clear of the ledge's edge)
-# latches, one on each long side: (side, centre x, the beam's half length, the slit's half length),
-# 2 mm of each beam fixed at each end. The PWR side's sits clear of the MX1.25 headers (free x 8.2
-# to 31), so its beam is 18 between its fixed ends; the thumbwheel side's is centred, 20.
-LATCHES = [(-1, 19.575, 11.0, 9.0), (1, BCX, 12.0, 10.0)]
-# The slit under the beam runs from z -6.55 up to the beam at -6.02: sliced at 0.2, two empty
-# layers, so the beam's first layer (a 20 mm bridge) goes down 0.4 over the rim. With one empty layer
-# (0.2) it would sag onto the rim and fuse the latch; with three, the profile, which supports
-# bridges, puts support in the slit.
-BEAM_T, Z_BEAM_TOP, Z_SLIT = 1.0, -4.6, -6.55
-BARB_W, BARB_OUT = 8.0, 0.6     # the barb overlaps the floor by 0.5, with 0.1 of play over its edge
+# --- the latches ---------------------------------------------------------------------------------
+# Three: one on the PWR side (between the corner and the MX1.25 headers, under the SD socket's end)
+# and two on the thumbwheel side. Each is a beam cut out of the tub's long wall, fixed at both ends,
+# that flexes in toward the pocket. A tongue on the tray reaches through the tub's skin into a window
+# in the beam. A pull rests the window's top, a 45° arch along the beam, on the tongue's top corners:
+# that pushes along the beam, not into it, so the latch doesn't let go. The tub comes out only from
+# inside, by pressing the beams in. (side, the beam's free span x0 to x1, the window's x)
+LATCHES = [(-1, 10.6, 28.6, 19.6), (1, 10.0, 28.0, 19.0), (1, 44.0, 64.0, 54.0)]
+# Insets from the seam outline: the tub's skin (it keeps the seat) from its seam face to 0.95, a 0.4
+# gap, the beam 1.0 thick, and the pocket widened to the beam's inner face along the span
+SKIN_IN, BEAM_IN = 0.95, (1.35, 2.35)
+END = 2.0                      # the beam's part above the floor top runs on 2 mm past the span, on posts
+# The slit under the beam, inside the wall (hidden): sliced at 0.2, two empty layers, so the beam's
+# first layer bridges the span 0.4 over the wall. With one it would sag onto it and fuse; with three,
+# the profile, which supports bridges, puts support in the slit.
+Z_SLIT = (-7.45, -7.02)
+Z_TOP, Z_HUMP, HUMP = -4.2, -2.8, 1.7      # the beam's top, and a hump over the window (flat ±1.7, 45° sides)
+# The tray's tongue: 1.6 wide, its underside 45° from the opening wall just above the field out to its
+# tip 0.4 inside the beam's outer face; its top flat. The window: 2.2 wide, 0.1 behind the tip, 0.15
+# of play round the tongue. The hump's outer top edge leads the tongue in at 30° off vertical.
+TONGUE = dict(w=1.6, tip=1.75, z0=-7.15, top=-4.9, back=-1.0)
+WIN = dict(w=2.2, depth=0.5, play=0.15)
+LEAD = 30.0
 
 # --- the bevels ------------------------------------------------------------------------------------
 # 45°, S high, round the back edge and the front bezel's front edge. The lowest fin groove starts
@@ -180,26 +196,59 @@ back = cutter(BACK, skip=[("y0", *TABS)])
 tray = pod_tray.cut(opening).cut(back)
 bezel = pod_bezel.cut(back).cut(cutter(FRONT))
 tub = pod_tray.intersect(envelope)
-# latches. y0 side: hatch edge at BCY - HH/2, outward -y; y1 side mirrored.
-for side, lx, beam_l, slit_l in LATCHES:
+
+def sweep(pts, vec):
+    """A prism: the polygon `pts` (3D) swept along `vec`."""
+    face = cq.Face.makeFromWires(cq.Wire.makePolygon([cq.Vector(*p) for p in pts], close=True))
+    return cq.Workplane().add(cq.Solid.extrudeLinear(face, cq.Vector(*vec)))
+
+# latches. Insets are measured in from the seam outline: y0 side at BCY - HH/2, y1 side mirrored.
+z_apex = TONGUE["top"] + WIN["play"] + TONGUE["w"] / 2        # the arch clears the tongue's corners by the play
+z_spring = z_apex - WIN["w"] / 2
+flex = TONGUE["tip"] + 0.05 - BEAM_IN[0]                      # how far the beam flexes in going in
+k_lead = 1 / math.tan(math.radians(LEAD))
+z_lead = Z_HUMP - flex * k_lead                               # the lead-in's foot on the beam's outer face
+z_under = lambda i: TONGUE["z0"] + i                          # the tongue's underside at inset i
+for side, x0, x1, xw in LATCHES:
     edge = BCY + side * HH / 2
-    yo, yi = edge - side * WALL_IN, edge - side * (WALL_IN + BEAM_T)     # beam's outer / inner face
-    beam = box(lx - beam_l, min(yo, yi), Z_FTOP - 0.02, lx + beam_l, max(yo, yi), Z_BEAM_TOP)
-    ring_o, ring_i = edge - side * GAP, edge - side * 2.6                # the tub's rim, to the pocket
-    slit = box(lx - slit_l, min(ring_o, ring_i) - 0.01, Z_SLIT, lx + slit_l, max(ring_o, ring_i) + 0.01, Z_FTOP)
-    tip = edge - side * (WALL_IN - BARB_OUT)
-    yb = yo - side * 0.01                                              # into the beam
-    barb = (cq.Workplane("YZ", origin=(lx - BARB_W / 2, 0, 0))
-            .polyline([(yb, Z_FTOP), (tip, Z_FTOP + BARB_OUT), (tip, Z_FTOP + BARB_OUT + 0.1),
-                       (yb, Z_FTOP + 2 * BARB_OUT + 0.1)])
-            .close().extrude(BARB_W))
-    tub = tub.cut(slit).union(beam).union(barb)
+    Y = lambda i: edge - side * i
+    def ibox(a, b, xa, xb, za, zb):
+        ya, yb = sorted((Y(a), Y(b))); return box(xa, ya, za, xb, yb, zb)
+    along = lambda prof, xa, xb: sweep([(xa, Y(i), z) for i, z in prof], (xb - xa, 0, 0))       # (inset, z)
+    across = lambda prof, a, b: sweep([(x, Y(a), z) for x, z in prof], (0, Y(b) - Y(a), 0))   # (x, z)
+    # free the beam: the gap outside it, the slit under it, the pocket widened to its inner face
+    tub = (tub.cut(ibox(SKIN_IN, BEAM_IN[0], x0, x1, Z_SLIT[0], 5))
+              .cut(ibox(SKIN_IN, BEAM_IN[1], x0, x1, Z_SLIT[0], Z_SLIT[1]))
+              .cut(ibox(BEAM_IN[1], 2.61, x0, x1, Z_POCKET - 0.01, 5)))
+    # its part above the floor top, on posts the wall's width at both ends, and the hump over the window
+    tub = tub.union(ibox(BEAM_IN[0], BEAM_IN[1], x0 - END, x1 + END, Z_FTOP - 0.02, Z_TOP))
+    for xa, xb in ((x0 - END, x0), (x1, x1 + END)):
+        tub = tub.union(ibox(WALL_IN, 2.6, xa, xb, Z_FTOP - 0.02, Z_TOP))
+    hs = Z_HUMP - Z_TOP
+    tub = tub.union(across([(xw - HUMP - hs, Z_TOP - 0.01), (xw + HUMP + hs, Z_TOP - 0.01),
+                            (xw + HUMP, Z_HUMP), (xw - HUMP, Z_HUMP)], BEAM_IN[0], BEAM_IN[1]))
+    # the lead-in on the hump's outer top edge
+    tub = tub.cut(along([(BEAM_IN[0] - 1, z_lead - k_lead), (BEAM_IN[0] + 1.5, z_lead + 1.5 * k_lead),
+                         (BEAM_IN[0] + 1.5, 0), (BEAM_IN[0] - 1, 0)], xw - HUMP - hs, xw + HUMP + hs))
+    # the window: up to the arch along the beam, its floor 45° across it, the play under the tongue;
+    # and the notch in the skin the tongue passes through, the same floor
+    above = along([(-1, z_under(-1) - WIN["play"]), (3, z_under(3) - WIN["play"]), (3, 5), (-1, 5)], xw - 3, xw + 3)
+    hw = WIN["w"] / 2
+    window = across([(xw - hw, -9), (xw + hw, -9), (xw + hw, z_spring), (xw, z_apex), (xw - hw, z_spring)],
+                    BEAM_IN[0] - 0.01, BEAM_IN[0] + WIN["depth"])
+    notch = ibox(0, SKIN_IN + 0.01, xw - TONGUE["w"] / 2 - 0.2, xw + TONGUE["w"] / 2 + 0.2, -10, 5)
+    tub = tub.cut(window.intersect(above)).cut(notch.intersect(above))
+    # the tray's tongue: from the opening wall and the floor top, out to its tip
+    t = TONGUE
+    tray = tray.union(along([(t["back"], Z_FTOP - 0.02), (-0.02, Z_FTOP - 0.02), (-0.02, z_under(-0.02)),
+                             (t["tip"], z_under(t["tip"])), (t["tip"], t["top"]), (t["back"], t["top"])],
+                            xw - t["w"] / 2, xw + t["w"] / 2))
 
 def stl(shape, path):
     cq.exporters.export(shape, str(path), tolerance=0.02, angularTolerance=0.2)
 
 parts = {"back-tray": tray, "battery-tub": tub, "front-bezel": bezel}
-for name, shape in parts.items(): stl(shape, HERE / f"{name}.stl")
+for name, shape in parts.items(): stl(shape, OUT / f"{name}.stl")
 asm = cq.Assembly()
 for name, shape in parts.items(): asm.add(shape, name=name)
 cq.exporters.export(asm.toCompound(), str(HERE / "flatter-back.step"))

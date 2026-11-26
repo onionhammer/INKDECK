@@ -8,15 +8,18 @@
 - parts.png: the parts exploded, and as they lie on the bed
 - sections.png: v0.6 and the flatter back cut along the length at y 13.5 (battery and speaker) and
   across at x 44.8 (an MX1.25 header), with the board, battery and speaker
-- seam.png: close-ups of the tub's seat, the latches and the bevels
+- seam.png: close-ups of the tub's seat, the latches (a tongue on the tray in a window in the tub) and
+  the bevels
 
     uv run enclosure/concepts/flatter-back/pictures.py
 """
 from pathlib import Path
-import pyvista as pv, trimesh, matplotlib; matplotlib.use("Agg")
+import numpy as np, pyvista as pv, trimesh, matplotlib; matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import Patch
+from matplotlib.patches import Patch, PathPatch
+from matplotlib.path import Path as MPath
 from shapely.geometry import Polygon
+from shapely.geometry.polygon import orient
 from PIL import Image
 
 HERE = Path(__file__).resolve().parent
@@ -24,7 +27,8 @@ BUILD = HERE / "build"
 TRAY, TUB, BEZEL, BG = "#b5561f", "#c9692c", "#3b4049", "#2d3035"   # the tub a shade lighter, to show the split
 TUB_2D, BATTERY, SPEAKER, BOARD = "#e08a4c", "#4a8fd4", "#d4b84a", "#2f7d4a"
 V06 = [(BUILD / "v06_tray.stl", TRAY), (BUILD / "v06_bezel.stl", BEZEL)]
-NEW = [(HERE / "back-tray.stl", TRAY), (HERE / "battery-tub.stl", TUB), (HERE / "front-bezel.stl", BEZEL)]
+OUT = HERE.parents[1]   # the print meshes, at enclosure/
+NEW = [(OUT / "back-tray.stl", TRAY), (OUT / "battery-tub.stl", TUB), (OUT / "front-bezel.stl", BEZEL)]
 
 # --- renders -----------------------------------------------------------------------------------------
 pv.OFF_SCREEN = True
@@ -89,12 +93,14 @@ def polys(mesh, origin, normal, axes):
     return [acc]
 
 def draw(ax, geoms, color, alpha=1.0, z=1):
+    """Fill polygons with their holes left open, so what's behind (a tongue in a window) shows."""
     for g in geoms:
         for p in getattr(g, "geoms", [g]):
             if p.is_empty or p.geom_type != "Polygon": continue
-            x, y = p.exterior.xy; ax.fill(x, y, color=color, alpha=alpha, lw=0, zorder=z)
-            for h in p.interiors:
-                x, y = h.xy; ax.fill(x, y, color="white", lw=0, zorder=z)
+            p = orient(p)
+            rings = [np.asarray(p.exterior.coords)] + [np.asarray(h.coords) for h in p.interiors]
+            codes = [c for r in rings for c in [MPath.MOVETO] + [MPath.LINETO] * (len(r) - 2) + [MPath.CLOSEPOLY]]
+            ax.add_patch(PathPatch(MPath(np.concatenate(rings), codes), fc=color, alpha=alpha, lw=0, zorder=z))
 
 def cut(ax, case, origin, normal, axes, speaker=True):
     draw(ax, polys(M["board"], origin, normal, axes), BOARD, 0.9, 2)
@@ -119,23 +125,33 @@ for ax, case, o, n, axes, title in [
         ax.axhline(z, color="#999", lw=0.6, ls=":"); ax.text(103.5, z, f"z {z:.2f}".replace("-", "−"), fontsize=7, va="bottom", ha="right", color="#666")
 legend(fig); plt.tight_layout(rect=(0, 0.03, 1, 1)); plt.savefig(HERE / "sections.png", dpi=110)
 
-def zoom(ax, origin, normal, axes, xlim, title, notes):
+def zoom(ax, origin, normal, axes, xlim, title, notes, ylim=(-9.6, 3.4)):
     cut(ax, "flatter back", origin, normal, axes, speaker=False)
-    ax.set_xlim(*xlim); ax.set_ylim(-9.6, 3.4); ax.set_title(title, loc="left", fontsize=10)
+    ax.set_xlim(*xlim); ax.set_ylim(*ylim); ax.set_title(title, loc="left", fontsize=10)
     for z in (-9.11, -7.2, -2.6): ax.axhline(z, color="#999", lw=0.6, ls=":")
     for (x, y), (tx, ty), text in notes:
         ax.annotate(text, (x, y), (tx, ty), fontsize=8, arrowprops=dict(arrowstyle="-", color="#333", lw=0.6))
 
-fig, axs = plt.subplots(2, 2, figsize=(15, 9.6))
+fig, axs = plt.subplots(3, 2, figsize=(15, 14.4))
 X, Y, L, R = [1, 0, 0], [0, 1, 0], (-3.6, 16.4), (44.6, 64.6)
-zoom(axs[0, 0], [19.575, 0, 0], X, [1, 2], L, "across at x 19.6, PWR side: a latch, and the 0.8 bevels back and front",
+zoom(axs[0, 0], [19.6, 0, 0], X, [1, 2], L, "across the PWR side's latch at its window (x 19.6), and the 0.8 bevels",
      [((-1.85, -6.8), (-3.2, -8.9), "0.8 × 45°"), ((-1.85, 2.35), (1.0, 3.0), "0.8 × 45° (v0.6: 0.5)"),
-      ((5.3, -6.3), (0.8, -4.4), "45° seat (0.6)"), ((5.2, -5.4), (9.5, -1.0), "barb, 45° both faces"),
-      ((6.4, -6.2), (9.0, -8.9), "slit under the beam")])
-zoom(axs[0, 1], [40.3, 0, 0], X, [1, 2], R, "across at x 40.3, thumbwheel side: the other latch",
-     [((63.05, -6.8), (60.5, -8.9), "0.8 × 45°"), ((61.85, 2.35), (56.0, 3.0), "0.8 × 45°"), ((57.1, -5.4), (52.5, -1.0), "barb")])
-zoom(axs[1, 0], [45.0, 0, 0], X, [1, 2], L, "across at x 45, no latch: the tub sits on the ledge, under an MX1.25 header",
+      ((4.6, -5.4), (0.2, -3.6), "the tray's tongue"), ((6.6, -4.5), (9.6, -4.7), "in the beam's window"),
+      ((6.55, -3.2), (9.6, -3.2), "lead-in, 30°"), ((7.1, -6.4), (9.6, -6.3), "beam, flexes in"),
+      ((6.9, -7.25), (9.5, -8.9), "slit, inside the wall")])
+zoom(axs[0, 1], [14.0, 0, 0], X, [1, 2], L, "the same latch beside its window (x 14)",
+     [((5.35, -6.25), (0.2, -4.4), "45° seat, on the skin"), ((6.15, -6.8), (1.0, -8.9), "0.4 gap"),
+      ((6.85, -5.0), (9.5, -4.0), "beam, 1.0 × 2.8, fixed at both ends"),
+      ((7.45, -7.8), (9.5, -8.9), "pocket widened to the beam")])
+zoom(axs[1, 0], [0, 6.6, 0], Y, [0, 2], (5.0, 34.0), "along the PWR side's beam, through the window (y 6.6)",
+     [((19.6, -5.2), (23.0, -1.4), "the tongue: a pull rests the arch on it"),
+      ((18.95, -4.6), (11.0, -1.4), "arch, 45° along the beam"),
+      ((24.0, -7.25), (24.0, -9.2), "slit, 18 long"), ((9.6, -5.0), (5.6, -1.4), "post")], ylim=(-9.6, -0.6))
+zoom(axs[1, 1], [45.0, 0, 0], X, [1, 2], L, "across at x 45, no latch: the tub sits on the ledge, under an MX1.25 header",
      [((5.3, -6.3), (0.8, -4.4), "45° seat"), ((5.15, -7.2), (1.0, -8.9), "seam, 0.15")])
-zoom(axs[1, 1], [0, 30.0, 0], Y, [0, 2], L, "along the length at y 30: the USB-C end",
+zoom(axs[2, 0], [0, 30.0, 0], Y, [0, 2], L, "along the length at y 30: the USB-C end",
      [((-1.95, -6.8), (-3.2, -8.9), "0.4 left under the opening"), ((5.5, -6.3), (9.0, -1.0), "45° seat")])
+zoom(axs[2, 1], [54.0, 0, 0], X, [1, 2], R, "across the thumbwheel side's antenna-end latch at its window (x 54)",
+     [((63.05, -6.8), (60.5, -8.9), "0.8 × 45°"), ((61.85, 2.35), (56.0, 3.0), "0.8 × 45°"),
+      ((57.6, -5.4), (58.5, -3.4), "tongue"), ((55.6, -4.5), (49.5, -3.2), "window")])
 legend(fig); plt.tight_layout(rect=(0, 0.03, 1, 1)); plt.savefig(HERE / "seam.png", dpi=110)

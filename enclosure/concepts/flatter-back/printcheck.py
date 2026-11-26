@@ -13,13 +13,14 @@ import re, subprocess, sys
 
 HERE = Path(__file__).resolve().parent
 BUILD = HERE / "build"
+OUT = HERE.parents[1]   # the print meshes, at enclosure/
 SLICER = "/Applications/Original Prusa Drivers/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"
 PRESETS = ["--printer-profile", "Prusa CORE One HF0.4 nozzle", "--print-profile", "0.20mm STRUCTURAL @COREONE 0.4",
            "--material-profile", "Generic PETG @COREONE HF0.4"]
 # (name, mesh, extra args): trays and the tub print back-down as modelled, bezels face-down
 PARTS = [("v0.6 tray", BUILD / "v06_tray.stl", []), ("v0.6 bezel", BUILD / "v06_bezel.stl", ["--rotate-x", "180"]),
-         ("back tray", HERE / "back-tray.stl", []), ("battery tub", HERE / "battery-tub.stl", []),
-         ("front bezel", HERE / "front-bezel.stl", ["--rotate-x", "180"])]
+         ("back tray", OUT / "back-tray.stl", []), ("battery tub", OUT / "battery-tub.stl", []),
+         ("front bezel", OUT / "front-bezel.stl", ["--rotate-x", "180"])]
 
 def check(name, mesh, extra):
     out = BUILD / (re.sub(r"\W+", "_", name).strip("_") + ".gcode")

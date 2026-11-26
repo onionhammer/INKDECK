@@ -28,8 +28,7 @@ no front) are in git history.
 | --- | --- |
 | `ereader-enclosure.scanruler` | Parametric source: 130 features (1 suppressed), 117 parameters (7 pinned), board STEP, battery dummy, 1 open note |
 | `ereader-enclosure.step` | Both parts as solids, `Back tray` and `Bezel` (read back and verified) |
-| `back-tray.stl` | Tray print mesh (0.02 mm chord), the right way up to print |
-| `front-bezel.stl` | Bezel print mesh (0.02 mm chord), as fitted: turn it face-down to print |
+| `back-tray.stl`, `battery-tub.stl`, `front-bezel.stl` | Print meshes of the flatter back ([`concepts/flatter-back/`](concepts/flatter-back/README.md)), not of this model: they replaced v0.6's tray and bezel on 2026-11-26 for a test print. v0.6's are in git history, and its solids in `ereader-enclosure.step` |
 | `revision_glyphs.py` | Draws the revision engraving's sketches (`uv run enclosure/revision_glyphs.py OUT_DIR`). Only for a new font, size or place: a revision bump is the parameter `rev` alone (**Revision**) |
 | `renders/*.png` | Assembly, the back with the frog, the revision close up, the tray and the bezel apart, the button side's seam, a corner cap, the USB-C / microSD end, the thumbwheel slot, sections through a side hook, an end hook, a button and the wheel |
 
@@ -384,5 +383,6 @@ fixed to the PCB. The panel glass covers their holes, so they must be.
 **Not done yet:** speaker mount and grille, mic port, raised labels, a test print for
 tolerances (`clr_side`, `clr_end`, `btn_gap`, `tab_t`, `cap_gap`, `hook_d` and `hook_play` are the knobs).
 
-**Concept, not built:** a flatter back that hugs the battery: 9.95 mm everywhere but a battery tub,
+**Flatter back, not printed yet:** a back that hugs the battery: 9.95 mm everywhere but a battery tub,
 in three parts that print without supports, with bevelled edges: [`concepts/flatter-back/`](concepts/flatter-back/README.md).
+Its meshes are the STLs in this folder. This model stays v0.6.

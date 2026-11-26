@@ -1,10 +1,11 @@
-# Concept: a flatter back (not built)
+# Concept: a flatter back (not printed yet)
 
 There's a lot of empty space between the back of the board and the back of the tray. This asks
 what the enclosure would look like if the back kept room for the battery and a speaker but was
 "sucked in" everywhere else, and still printed without supports. It's a mock-up cut from the v0.6
 solids in Python (cadquery), not a change to the ScanRuler model. Nothing here is printed or
-fitted, and v0.6 stays as it is.
+fitted yet. Its three print meshes are the STLs at the root of `enclosure/`, where they replaced
+v0.6's (2026-11-26, for a test print). The ScanRuler model and `ereader-enclosure.step` stay v0.6.
 
 ![v0.6 and the flatter back](sheet.png)
 
@@ -41,16 +42,30 @@ case is three: back tray, battery tub and front bezel.
 - **In from outside:** the tub's 45° shoulder sits on the ledge, so a push on the back (the case
   lying on a table) goes into the tray. Fitted from inside and held by a flange, nothing but the
   battery and the board would stop that push. The seam at the field is 0.15.
-- **Latches:** one on each long side. Each is a beam 1.0 thick, freed from the tub by a slit under
-  it, with an 8 mm barb that overlaps the tray's floor by 0.5. The thumbwheel side's is centred and
-  20 mm between its fixed ends; the PWR side's sits at x 8.6 to 30.6, clear of the MX1.25 headers,
-  and is 18. Sliced at 0.2 the slit is two empty layers, so the beam's first layer, a 20 mm bridge, goes
-  down 0.4 over the rim. With one (0.2) it would sag onto the rim and fuse; with three, the
-  profile, which supports bridges, puts support in the slit. The barb is 45° on both faces,
-  because the slicer supports a flat catch. That makes it a soft latch: about 12 N pulls the tub
-  out (a rough beam estimate: PETG at E ≈ 2 GPa, friction 0.3), against 0.3 N for the tub and
-  cell. Going in, the beams bend 0.5, about 1.5 % strain (1.9 % for the shorter one). Fit the tub before the battery: the beams
-  flex into the empty pocket. The board leaves about 1 mm or more above them.
+- **Latches:** three: one on the PWR side, between the corner and the MX1.25 headers, and two on
+  the thumbwheel side, one in each half of the tub. The tray reaches into the tub at each one:
+  - *The beam* is cut out of the tub's long wall. Outside it, a 0.4 gap separates it from the skin,
+    which keeps the seat. Under it is a slit inside the wall, and inside it the pocket is 0.25 wider.
+    It's 1.0 thick and 2.8 deep, fixed at both ends of an 18 mm span (20 for the antenna-end one).
+    Its lower half is part of the wall, joined at its ends within the same layers. Its upper half
+    runs on 2 mm past the span, on posts as wide as the wall.
+  - *The tongue* on the tray has a 45° underside rising from the opening wall just above the field.
+    It reaches through a notch in the skin into a 2.2 mm window in the beam, 0.4 past the beam's
+    face. The window and the slit sit inside the seam, so nothing shows from outside.
+  - *Going in*, the tongue meets a 30° lead-in on a hump over the window, and the beam flexes in
+    0.45 (1.7 % strain, 1.35 for the longer one). That takes about 7 N per latch, 20 N for the three.
+  - *Pulled*, the window's top, a 45° arch running along the beam, rests on the tongue's top corners
+    (0.15 of play). That pushes along the beam, not into it, so the latch doesn't let go. It holds
+    until the beam's ends reach about 40 MPa: roughly 24 N each, 21 for the longer one, 68 N for the
+    three. That's against 0.3 N for the tub and cell, so it takes a jolt of about 200 g. The tongue
+    itself takes about 31 N. These are rough beam estimates: PETG at E ≈ 2 GPa, friction 0.3.
+  - *Coming out*: only from inside, with the case open, by pressing the beams in. The cell plugs in
+    inside anyway.
+  - *The slit* is two empty layers when sliced at 0.2, so the beam's first layer bridges the span
+    0.4 over the wall. With one empty layer it would sag onto the wall and fuse; with three, the
+    profile, which supports bridges, puts support in the slit.
+  - *Clearance:* the beams' tops (z −4.2) are 0.6 under the SD socket and the FPC connector, and
+    the humps (−2.8) 0.65 or more under the board's parts.
 - **Bevels:** 0.8 × 45° round the back edge, on the tray's walls between the corner caps and on the
   caps' outer faces (they stand 0.8 proud), and on the front bezel's front edge (0.5 in v0.6), so it
   sits softer in the hand. Each is on the bed side of its part. The lowest fin groove starts 0.9
@@ -68,9 +83,11 @@ case is three: back tray, battery tub and front bezel.
   tub's rim passes under the headers with 1.0 to spare.
 - **Checked:** `printcheck.py` slices every part with PrusaSlicer's CORE One presets (0.20 mm
   STRUCTURAL, Generic PETG HF0.4) and automatic supports at the profile's 40°, bridges included:
-  none of the three needs any, nor do v0.6's two. Not checked: the tub going in (the barbs passing
-  the ledge), tolerances on the seat, and a notch for the battery leads.
-- **Solids:** tray 5,574 mm³, tub 3,643, bezel 5,438 (v0.6: tray 9,765, bezel 5,626), all valid
+  none of the three needs any, nor do v0.6's two. Sections through the G-code show the slit
+  staying two empty layers, the 0.4 gap open, the window's arch printing as steps over the tongue,
+  and the tongue's 45° underside. Not checked: the tub going in and the latches' strength (both only
+  estimated), tolerances on the seat and the tongue's play, and a notch for the battery leads.
+- **Solids:** tray 5,590 mm³, tub 3,682, bezel 5,438 (v0.6: tray 9,765, bezel 5,626), all valid
   single solids, and the tray and tub don't overlap. About 0.9 g of PETG saved.
 
 ![sections through v0.6 and the flatter back](sections.png)
@@ -88,9 +105,9 @@ case is three: back tray, battery tub and front bezel.
 | Height | no more than v0.5 gives: 4.61 (`batt_t`) from the pocket floor to z −3.7, so 0.11 over a 4.5 cell |
 | Under the cell | 0.8 of skin, the tub's face at z −9.11. The frog takes 0.2 of it, so 0.6 is under the frog |
 | Over the cell | 0.10 over the room to the display FPC connector (z −3.60), as in v0.6: 0.21 over a 4.5 cell, which also passes 0.19 under the tips of the USB-C socket's pins at its very end |
-| Pocket walls | 2.31 up the cell's sides (to the floor top, z −6.0), 2.45 thick at the seam |
-| Latch beams | 1.9 from the cell's long sides. They flex 0.5 toward it going in, before the battery is |
-| Tub, outside | 69.9 × 51.9 at the seam, 66.4 × 48.4 at its face, 3.11 tall (4.51 at the latches) |
+| Pocket walls | 2.31 up the cell's sides (to the floor top, z −6.0), 2.45 thick at the seam; 0.25 wider along the latches |
+| Latch beams | 1.25 from the cell's long sides. They flex 0.45 toward it going in, or to let the tub out |
+| Tub, outside | 69.9 × 51.9 at the seam, 66.4 × 48.4 at its face, 3.11 tall (4.91 at the latch beams, 6.31 at their humps) |
 
 The length is at the limit. At that height the cell can't pass under the USB-C socket or the
 thumbwheel, and the board leaves 65.0 between them wherever a cell 45 wide sits; a longer one
@@ -117,6 +134,10 @@ so measure the cell's length, and which side its wiring leaves, before a print.
 
 These are in this folder's git history.
 
+- **Barbed latches** (the first version): two 1.0 × 1.4 beams sitting on the wall's top, each with
+  a 45° barb over the tray's floor. A pull pushed the beam in, so the pair let go at about 11 N, a
+  jolt of about 35 g. At that pull the beams were at about PETG's yield, and their ends, held on by
+  2 × 1 mm patches of a single layer bond, were under about 20 MPa of peel.
 - **One piece:** the same back with the tub part of the tray. PrusaSlicer supports the field, on
   the visible back, over 11 layers.
 - **A bevel alone:** the back stays flat, with a 2 mm 45° bevel round its edge. One part, no
@@ -131,7 +152,7 @@ These are in this folder's git history.
 
 | File | What |
 | --- | --- |
-| `back-tray.stl`, `battery-tub.stl`, `front-bezel.stl` | The three parts (0.02 mm chord), as fitted: the tray and tub print on their backs, the bezel face-down |
+| `../../back-tray.stl`, `../../battery-tub.stl`, `../../front-bezel.stl` | The three parts (0.02 mm chord), as fitted: the tray and tub print on their backs, the bezel face-down. `build.py` writes them at the root of `enclosure/` |
 | `flatter-back.step` | The three as solids |
 | `sheet.png` | v0.6 and the flatter back: back view, side (USB-C end on the left), antenna end |
 | `parts.png` | Exploded, and as printed |
