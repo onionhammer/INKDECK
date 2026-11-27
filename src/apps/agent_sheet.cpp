@@ -258,7 +258,7 @@ class AgentSheet : public ui::Screen {
                              : drawnSent_.empty() ? s.reply
                              : typedInto_.empty() ? "Sent to " + drawnSent_ + "."
                                                   : "Typed into " + drawnSent_ + ".";
-    const Rect head = r.takeTop(kSectionH);
+    const Rect replyHead = r.takeTop(kSectionH);
     replyWidth_ = r.w - 2 * kPadX;
     replyFit_ = std::max(1, (r.h - 16) / lineHeight(style::kBody));
     const std::vector<std::string> lines = wrap(style::kBody, text, replyWidth_, 0);
@@ -267,7 +267,7 @@ class AgentSheet : public ui::Screen {
     if (!scrolls(s, total)) scroll_ = 0;
     scroll_ = std::clamp(scroll_, 0, std::max(0, total - replyFit_));
     const int end = std::min(total, scroll_ + replyFit_);
-    drawSectionHeader(c, head, "REPLY",
+    drawSectionHeader(c, replyHead, "REPLY",
                       total > replyFit_ ? std::to_string(scroll_ + 1) + "-" +
                                               std::to_string(end) + " OF " + std::to_string(total)
                                         : "");
