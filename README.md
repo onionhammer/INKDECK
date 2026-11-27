@@ -414,8 +414,7 @@ lasts until the next boot.
 A 3D-printed case in three parts, all printed without supports: a back tray, a battery tub that
 slides in from the back to lock, and a snap-on front bezel whose caps wrap the corners. It's
 105.9 × 66.1 mm, 9.95 mm thick and 11.86 at the tub, which carries the Sleep-screen frog. The
-speaker's grille and the case revision are beside it. These are drawings of v0.7, which isn't
-printed yet. [`enclosure/`](enclosure/README.md) has the STLs and how to print them.
+speaker's grille and the case revision are beside it. These are drawings of v0.7. [`enclosure/`](enclosure/README.md) has the STLs and how to print them.
 
 ## More
 
