@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include "apps/agent_ui.h"
 #include "audio.h"
@@ -98,10 +99,11 @@ class AgentSheet : public ui::Screen {
       return n;
     }
     if (agent::configured()) {
-      const agent::State s = agent::status().state;
-      const bool replying = s == agent::State::Thinking || s == agent::State::Speaking;
+      const agent::Status st = agent::status();
+      const bool replying =
+          st.state == agent::State::Thinking || st.state == agent::State::Speaking;
       out[n++] = {"HOLD BOOT", replying ? "INTERRUPT" : "TALK"};
-      out[n++] = {ui::glyph::kDial, "VOL"};
+      out[n++] = {ui::glyph::kDial, scrolls(st, replyLines(st)) ? "SCROLL" : "VOL"};
     }
     out[n++] = {"BOOT", "CLOSE"};
     return n;
@@ -129,9 +131,24 @@ class AgentSheet : public ui::Screen {
         default: return true;
       }
     }
+    const int lines = replyLines(s);
+    const bool scrolling = scrolls(s, lines);
+    const int step = std::max(1, replyFit_ - 1);  // a page less a line: the last one stays
     switch (key) {
-      case Key::Up: audio::changeVolume(+5); return true;
-      case Key::Down: audio::changeVolume(-5); return true;
+      case Key::Up:
+        if (scrolling) {
+          scroll_ = std::max(0, scroll_ - step);
+        } else {
+          audio::changeVolume(+5);
+        }
+        return true;
+      case Key::Down:
+        if (scrolling) {
+          scroll_ = std::min(scroll_ + step, std::max(0, lines - replyFit_));
+        } else {
+          audio::changeVolume(-5);
+        }
+        return true;
       default: return false;  // BOOT closes (the navigator pops)
     }
   }
@@ -151,6 +168,7 @@ class AgentSheet : public ui::Screen {
     // was typed from here is old news.
     if (s.turn != turn_) {
       turn_ = s.turn;
+      scroll_ = 0;
       typedInto_.clear();
       notTyped_.clear();
       const agent::Sessions a = agent::sessions();
@@ -230,17 +248,54 @@ class AgentSheet : public ui::Screen {
     }
     drawnSent_ = typedInto_.empty() ? sentTo(s) : typedInto_;
     drawnNotTyped_ = notTyped_;
-    drawSectionHeader(c, r.takeTop(kSectionH), "REPLY");
-    paragraph(c, r,
-              !notTyped_.empty()   ? notTyped_
-              : drawnSent_.empty() ? s.reply
-              : typedInto_.empty() ? "Sent to " + drawnSent_ + "."
-                                   : "Typed into " + drawnSent_ + ".",
-              std::max(1, (r.h - 16) / lineHeight(style::kBody)));
+    const std::string text = !notTyped_.empty()   ? notTyped_
+                             : drawnSent_.empty() ? s.reply
+                             : typedInto_.empty() ? "Sent to " + drawnSent_ + "."
+                                                  : "Typed into " + drawnSent_ + ".";
+    const Rect head = r.takeTop(kSectionH);
+    replyWidth_ = r.w - 2 * kPadX;
+    replyFit_ = std::max(1, (r.h - 16) / lineHeight(style::kBody));
+    const std::vector<std::string> lines = wrap(style::kBody, text, replyWidth_, 0);
+    const int total = static_cast<int>(lines.size());
+    // While the reply is spoken, its start; once it has played, where the dial left it.
+    if (!scrolls(s, total)) scroll_ = 0;
+    scroll_ = std::clamp(scroll_, 0, std::max(0, total - replyFit_));
+    const int end = std::min(total, scroll_ + replyFit_);
+    drawSectionHeader(c, head, "REPLY",
+                      total > replyFit_ ? std::to_string(scroll_ + 1) + "-" +
+                                              std::to_string(end) + " OF " + std::to_string(total)
+                                        : "");
+    int baseline = r.y + 12 + capHeight(style::kBody);
+    for (int i = scroll_; i < end; ++i) {
+      // The last line shown, with more below it, ends in "…", as a cut paragraph does.
+      drawText(c, r.x + kPadX, baseline,
+               i + 1 == end && end < total
+                   ? ellipsize(style::kBody, lines[i] + " " + lines[i + 1], replyWidth_)
+                   : lines[i],
+               style::kBody);
+      baseline += lineHeight(style::kBody);
+    }
   }
 
  private:
+  // The reply's lines, wrapped as draw() last laid them out (0 before the first draw).
+  int replyLines(const agent::Status &s) const {
+    return replyWidth_ > 0
+               ? static_cast<int>(ui::wrap(ui::style::kBody, s.reply, replyWidth_, 0).size())
+               : 0;
+  }
+
+  // The dial scrolls the reply, rather than setting the volume, once the reply has played (so
+  // nothing is speaking) if its `lines` don't fit. Not for the sheet's own words in its place.
+  bool scrolls(const agent::Status &s, int lines) const {
+    return replyFit_ > 0 && lines > replyFit_ && !s.mic && s.state == agent::State::Ready &&
+           notTyped_.empty() && (typedInto_.empty() ? sentTo(s) : typedInto_).empty();
+  }
+
   uint32_t drawn_ = 0;
+  int scroll_ = 0;         // the reply's first line shown: the dial moves it (scrolls())
+  int replyWidth_ = 0;     // the reply's lines as last drawn: their width
+  int replyFit_ = 0;       // and how many fit
   std::string drawnSent_;  // sentTo() as last drawn
   std::string typedInto_;  // a draft typed from here: its session's title
   uint32_t turn_ = 0;      // the utterance typedInto_ belongs to

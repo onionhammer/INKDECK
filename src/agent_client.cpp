@@ -900,7 +900,10 @@ void onControl(const uint8_t *payload, size_t len) {
   } else if (type == "text") {
     if (s.staleEnds == 0) {
       Locked l;
-      if (shared.reply.size() < kMaxText) shared.reply += field(json, "delta");
+      if (shared.reply.size() < kMaxText) {
+        shared.reply += field(json, "delta");
+        if (shared.reply.size() >= kMaxText) shared.reply += "\xE2\x80\xA6";  // the rest isn't kept
+      }
       generation++;
     }
   } else if (type == "reply_start") {
