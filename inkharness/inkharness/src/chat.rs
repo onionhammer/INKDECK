@@ -5,14 +5,17 @@
 //! nowhere.
 
 use std::io::{IsTerminal, Write};
+use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
+use crate::commands::{self, Commands, Expanded, Kind};
 use crate::config::Config;
 use crate::harness::Harness;
 use crate::llm::{self, Llm, Outcome, Piece, Role, Turn};
+use crate::meter;
 use crate::place::Place;
 use crate::tools::{THINK_TOOL, ToolSet};
 
@@ -26,6 +29,8 @@ pub struct Chat {
     tools: ToolSet,
     /// The thinking model and the tools it gets.
     think: Option<(Box<dyn Llm>, ToolSet)>,
+    /// Slash commands: the command files, and the skills.
+    commands: Arc<Commands>,
     pub model: String,
 }
 
@@ -48,12 +53,23 @@ impl Chat {
                 harness.tools.clone()
             },
             think,
+            commands: harness.commands.clone(),
             model: model.name().to_string(),
         })
     }
 
     pub fn tools(&self) -> &ToolSet {
         &self.tools
+    }
+
+    pub fn commands(&self) -> &Commands {
+        &self.commands
+    }
+
+    /// The prompt for `text` when it starts with a command file's or a skill's name
+    /// (commands.rs); None for anything else, which goes to the model as written.
+    pub fn expand(&self, text: &str) -> Result<Option<Expanded>, String> {
+        self.commands.expand(text).transpose()
     }
 
     /// One turn. The reply goes to `out` as it is written (with the tools it calls); returns
@@ -160,21 +176,107 @@ fn short(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
-const HELP: &str = "\
-/reset   start a new conversation
-/tools   the tools the model has
-/quit    leave (or Ctrl-D)
-Ctrl-C stops a reply.";
+/// The lines `/tools` shows: each tool and the first line of what it does.
+pub fn tool_lines(chat: &Chat) -> Vec<String> {
+    chat.tools()
+        .defs()
+        .iter()
+        .map(|def| {
+            let summary = def.description.lines().next().unwrap_or_default();
+            format!("{}  {}", def.name, cut(summary, 90))
+        })
+        .collect()
+}
 
-/// The conversation: a line is a turn. Prompts and the banner only when a person is typing;
+/// The lines `/skills` shows.
+pub fn skill_lines(harness: &Harness) -> Vec<String> {
+    let skills = harness.skills.described();
+    if skills.is_empty() {
+        return vec!["No skills here (skills/, .agents/skills/, .claude/skills/).".into()];
+    }
+    skills
+        .iter()
+        .map(|(name, description)| format!("/{name}  {}", cut(description, 90)))
+        .collect()
+}
+
+/// The lines `/mcp` shows.
+pub fn mcp_lines(harness: &Harness) -> Vec<String> {
+    let servers = harness.mcp.servers();
+    if servers.is_empty() {
+        return vec!["No MCP servers (.mcp.json, [[mcp]]).".into()];
+    }
+    servers
+        .iter()
+        .map(|(name, tools)| format!("{name}  {tools} tools, named {name}_…"))
+        .collect()
+}
+
+/// The lines `/help` shows: `keys`, then every command.
+pub fn help_lines(chat: &Chat, keys: &[&str]) -> Vec<String> {
+    let mut lines: Vec<String> = keys.iter().map(|k| k.to_string()).collect();
+    let listed = chat.commands().list();
+    let column = listed
+        .iter()
+        .map(|l| l.name.chars().count() + l.hint.chars().count() + 2)
+        .max()
+        .unwrap_or(0)
+        .min(32);
+    let mut kind = None;
+    for listed in listed {
+        if Some(listed.kind) != kind {
+            kind = Some(listed.kind);
+            lines.push(String::new());
+            lines.push(
+                match listed.kind {
+                    Kind::Builtin => "Commands",
+                    Kind::File => "Command files",
+                    Kind::Skill => "Skills",
+                }
+                .into(),
+            );
+        }
+        let name = if listed.hint.is_empty() {
+            format!("/{}", listed.name)
+        } else {
+            format!("/{} {}", listed.name, listed.hint)
+        };
+        lines.push(format!(
+            "  {name:<column$}  {}",
+            cut(&listed.description, 70)
+        ));
+    }
+    lines
+}
+
+/// What a list of turn costs says: "$0.0021", with how many requests stated none.
+pub fn cost_text(cost: f64, unpriced: usize) -> String {
+    // An empty sum of floats is -0.0.
+    let cost = if cost == 0.0 { 0.0 } else { cost };
+    match unpriced {
+        0 => format!("${cost:.4}"),
+        n => format!("${cost:.4} (+{n} unpriced)"),
+    }
+}
+
+const PLAIN_KEYS: &[&str] = &["A line is a turn. Ctrl-C stops a reply, Ctrl-D leaves."];
+
+/// The conversation in plain lines: a line is a turn. For pipes, `--plain`, and terminals the
+/// full-screen chat (tui/) isn't used in. Prompts and the banner only when a person is typing;
 /// from a pipe each line is a turn, answered in order.
-pub async fn repl(chat: &Chat, banner: &str) -> Result<()> {
+pub async fn plain(chat: &Chat, harness: &Harness, banner: &str) -> Result<()> {
     let typing = std::io::stdin().is_terminal();
     if typing {
         eprintln!("{banner}\n  /help for commands, Ctrl-D to quit\n");
     }
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut history: Vec<Turn> = Vec::new();
+    let mut costs: Vec<f64> = Vec::new();
+    let note = |lines: Vec<String>| {
+        for line in lines {
+            eprintln!("  {line}");
+        }
+    };
     loop {
         if typing {
             print!("› ");
@@ -191,50 +293,72 @@ pub async fn repl(chat: &Chat, banner: &str) -> Result<()> {
             return Ok(());
         };
         let line = line.trim();
-        match line {
-            "" => continue,
-            "/quit" | "/exit" => return Ok(()),
-            "/reset" | "/clear" => {
-                history.clear();
-                eprintln!("(a new conversation)");
-                continue;
-            }
-            "/tools" => {
-                for def in chat.tools().defs() {
-                    let summary = def.description.lines().next().unwrap_or_default();
-                    eprintln!("  {}  {}", def.name, cut(summary, 90));
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((name, _)) = commands::split(line)
+            && let Some(builtin) = commands::builtin(name)
+        {
+            match builtin.name {
+                "quit" | "exit" => return Ok(()),
+                "clear" | "reset" => {
+                    history.clear();
+                    eprintln!("(a new conversation)");
                 }
+                "tools" => note(tool_lines(chat)),
+                "skills" => note(skill_lines(harness)),
+                "mcp" => note(mcp_lines(harness)),
+                "help" => note(help_lines(chat, PLAIN_KEYS)),
+                "cost" => {
+                    let total: f64 = costs.iter().sum();
+                    eprintln!("  {} turns, {}", costs.len(), cost_text(total, 0));
+                }
+                other => eprintln!("  /{other} is in the full-screen chat"),
+            }
+            continue;
+        }
+        let printer_dim = Printer::new();
+        let expanded = match chat.expand(line) {
+            Ok(expanded) => expanded,
+            Err(e) => {
+                eprintln!("{}", printer_dim.dim(&format!("error: {e}")));
                 continue;
             }
-            "/help" => {
-                eprintln!("{HELP}");
-                continue;
-            }
-            _ => {}
+        };
+        let prompt = expanded.as_ref().map_or(line, |e| e.prompt.as_str());
+        if let Some(e) = &expanded
+            && typing
+        {
+            eprintln!("{}", printer_dim.dim(&format!("↳ {}", e.source)));
         }
         let mut printer = Printer::new();
         let (tx, mut rx) = mpsc::channel(64);
-        let turn = chat.turn(&history, line, tx);
+        let turn = meter::measure(chat.turn(&history, prompt, tx));
         let print = async {
             while let Some(piece) = rx.recv().await {
                 printer.piece(piece);
             }
         };
         let finished = tokio::select! {
-            (result, ()) = async { tokio::join!(turn, print) } => Some(result),
+            ((result, charges), ()) = async { tokio::join!(turn, print) } => Some((result, charges)),
             _ = tokio::signal::ctrl_c() => None,
         };
         printer.end();
         match finished {
-            Some(Ok(reply)) => remember(&mut history, line, &reply),
-            Some(Err(e)) => eprintln!("{}", printer.dim(&format!("error: {e:#}"))),
+            Some((Ok(reply), charges)) => {
+                costs.push(meter::total(&charges).0);
+                remember(&mut history, prompt, &reply);
+            }
+            Some((Err(e), _)) => eprintln!("{}", printer.dim(&format!("error: {e:#}"))),
             None => eprintln!("{}", printer.dim("(stopped)")),
         }
     }
 }
 
-/// One question: prints the answer and returns.
+/// One question: prints the answer and returns. A command expands as in a conversation.
 pub async fn once(chat: &Chat, question: &str) -> Result<()> {
+    let expanded = chat.expand(question).map_err(anyhow::Error::msg)?;
+    let prompt = expanded.as_ref().map_or(question, |e| e.prompt.as_str());
     let mut printer = Printer::new();
     let (tx, mut rx) = mpsc::channel(64);
     let print = async {
@@ -242,7 +366,7 @@ pub async fn once(chat: &Chat, question: &str) -> Result<()> {
             printer.piece(piece);
         }
     };
-    let (result, ()) = tokio::join!(chat.turn(&[], question, tx), print);
+    let (result, ()) = tokio::join!(chat.turn(&[], prompt, tx), print);
     printer.end();
     result.map(|_| ())
 }
@@ -277,7 +401,7 @@ impl Printer {
                 }
                 eprintln!("{}", self.dim(&format!("· {name}")));
             }
-            Piece::Audio(_) => {}
+            Piece::Audio(_) | Piece::ToolDone(..) => {}
         }
     }
 
@@ -297,7 +421,7 @@ impl Printer {
     }
 }
 
-fn cut(text: &str, max: usize) -> String {
+pub fn cut(text: &str, max: usize) -> String {
     match text.char_indices().nth(max) {
         Some((i, _)) => format!("{}…", &text[..i]),
         None => text.to_string(),
@@ -317,6 +441,7 @@ mod tests {
             read: vec![],
             instructions: vec![(std::path::PathBuf::from("AGENTS.md"), "Be brief.".into())],
             skill_dirs: vec![],
+            command_dirs: vec![],
         };
         let harness = Harness::build(&place, false).await.unwrap();
         assert!(

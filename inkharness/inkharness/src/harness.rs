@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::commands::Commands;
 use crate::config::{self, Config};
 use crate::mcp::Mcp;
 use crate::place::Place;
@@ -21,6 +22,8 @@ pub struct Harness {
     pub tools: ToolSet,
     pub mcp: Arc<Mcp>,
     pub skills: Arc<Skills>,
+    /// Slash commands for text turns: the command files, and the skills.
+    pub commands: Arc<Commands>,
     /// Follows the base prompt: a note when nothing in the home is connected, the
     /// instructions files, the skills.
     additions: String,
@@ -38,6 +41,7 @@ impl Harness {
             .build()?;
         let mcp = Mcp::connect(&cfg.mcp, server_logs).await;
         let skills = Arc::new(Skills::load(&place.skill_dirs));
+        let commands = Arc::new(Commands::load(&place.command_dirs, skills.clone()));
         let mut tools = ToolSet::build(
             cfg.home_assistant.as_ref(),
             &cfg.js,
@@ -68,6 +72,7 @@ impl Harness {
             tools,
             mcp,
             skills,
+            commands,
             additions,
         })
     }

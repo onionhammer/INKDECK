@@ -236,7 +236,19 @@ impl<A: ChatApi> Llm for ToolLoop<A> {
             for call in &round.calls {
                 speaker.tool(&call.name, call.input.as_ref()).await?;
             }
-            let results = join_all(round.calls.iter().map(|c| run(request.tools, c))).await;
+            let done = speaker.out.clone();
+            let results = join_all(round.calls.iter().map(|call| {
+                let done = done.clone();
+                async move {
+                    let result = run(request.tools, call).await;
+                    // Only shown; a reader that went away ends the turn at the next piece.
+                    let _ = done
+                        .send(Piece::ToolDone(call.name.clone(), !result.is_error))
+                        .await;
+                    result
+                }
+            }))
+            .await;
             api.add_round(&mut conversation, round.said, &round.calls, &results);
             for text in request.steer.map(|steer| steer()).unwrap_or_default() {
                 api.add_user(&mut conversation, &text);
@@ -345,6 +357,57 @@ mod tests {
         let (result, text) = collect(&llm, "one plus one").await;
         assert_eq!(result.unwrap(), Outcome::Done);
         assert_eq!(text, "Let me check.\nIt is 2.");
+    }
+
+    #[tokio::test]
+    async fn each_call_says_when_it_is_done() {
+        let llm = script(vec![
+            (
+                vec![],
+                vec![call("run_js", r#"{"code": "1+1"}"#), call("run_js", "{bad")],
+                Stop::ToolUse,
+            ),
+            (vec!["Done."], vec![], Stop::Done),
+        ]);
+        let tools = crate::tools::ToolSet::build(
+            None,
+            &crate::config::Js::default(),
+            Default::default(),
+            Default::default(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        let request = Request {
+            system: "s",
+            history: &[],
+            user: "q",
+            audio: None,
+            tools: &tools,
+            rounds: 4,
+            steer: None,
+        };
+        let (result, pieces) = tokio::join!(llm.respond(request, tx), async {
+            let mut pieces = Vec::new();
+            while let Some(piece) = rx.recv().await {
+                pieces.push(piece);
+            }
+            pieces
+        });
+        result.unwrap();
+        let marks: Vec<String> = pieces
+            .iter()
+            .filter_map(|p| match p {
+                Piece::Tool(name, _) => Some(format!("start {name}")),
+                Piece::ToolDone(name, ok) => Some(format!("done {name} {ok}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(marks[..2], ["start run_js", "start run_js"]);
+        // The calls run together, so either may finish first.
+        let mut done = marks[2..].to_vec();
+        done.sort();
+        assert_eq!(done, ["done run_js false", "done run_js true"]);
     }
 
     #[tokio::test]

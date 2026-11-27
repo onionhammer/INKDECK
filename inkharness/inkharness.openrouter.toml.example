@@ -108,3 +108,12 @@ api_key_env = "OPENROUTER_API_KEY"
 # dirs adds others.
 # [skills]
 # dirs = ["../shared-skills"]   # relative to this file
+
+# --- Slash commands --------------------------------------------------------------------
+# Prompts kept as markdown files, typed as /name in text turns (the terminal, HTTP), as Claude
+# Code keeps them: commands/play.md is /play, with $ARGUMENTS for what follows. Found
+# without any setting in commands/, .agents/commands/ and .claude/commands/ of the folder
+# inkharness starts in, and in ~/.config/inkharness/commands/; dirs adds others. Every skill is
+# a command too (/goodnight).
+# [commands]
+# dirs = ["../shared-commands"]   # relative to this file

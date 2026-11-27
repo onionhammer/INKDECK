@@ -43,6 +43,7 @@ From the folder it starts in, and from the global config folder (`~/.config/inkh
 | `.env` | Keys (`NAME=value` lines), the folder's over the global one's. The environment wins over both |
 | `AGENTS.md` | Instructions for the model, added to the system prompt (the global file first). `AGENT.md` or `CLAUDE.md` if there's no `AGENTS.md`. Cut at 64 KB |
 | `skills/` | [Agent Skills](https://agentskills.io), as are `.agents/skills/` and `.claude/skills/`, the global `skills/`, and `[skills] dirs`. Of two skills with one name, the folder's is kept |
+| `commands/` | Slash commands for text turns ([Commands](#commands)), as are `.agents/commands/` and `.claude/commands/`, the global `commands/`, and `[commands] dirs` |
 | `.mcp.json` | MCP servers, written as Claude Code, Cursor and others write them. They join `[[mcp]]`; of two servers with one name, the folder's wins |
 
 ```json
@@ -69,23 +70,84 @@ The conversation's first lines say what it read. `-v` logs each step, `-C DIR` s
 
 ## Chat
 
+In a terminal, `inkharness` is a full-screen chat:
+
 ```text
-$ inkharness
-inkharness 0.1.0 · openai/gpt-audio-mini
-  read    ~/.config/inkharness/.env, ~/.config/inkharness/inkharness.toml, AGENTS.md
-  skills  goodnight
-  tools   7
-› what's 17 times 23?
-· run_js
-17 times 23 is 391.
+  inkharness 0.1.0 · anthropic/claude-haiku-5.5
+  read    inkharness.toml, .mcp.json
+  skills  goodnight, shopping-list
+
+› /play Kind of Blue
+  ↳ play.md
+
+  The kitchen speaker is free, so I'll play it there.
+  ✓ list_speakers  0.4s
+  ⠹ play_music query="Kind of Blue" speaker=media_player.kitchen
+╭─────────────────────────────────────────────────────────────────────╮
+│› Ask anything, or / for commands                                    │
+╰─────────────────────────────────────────────────────────────────────╯
+ claude-haiku-5.5 · 2 skills · 1 MCP · 19 tools        ⠹ 4s · Esc stops
 ```
 
-The reply prints as it's written, and each tool call is shown on a dim line (on stderr). `/reset`
-starts over, `/tools` lists the tools, `/quit` or Ctrl-D leaves, and Ctrl-C stops a reply. From a
-pipe, each line is a turn. The chat uses `[llm]`, or `[chat.llm]` if there is one. A model that
-speaks (`output = "audio"`) still speaks there: OpenAI's audio models answer text only with
-audio, so the transcript is shown and the audio goes nowhere. A text model in `[chat.llm]` is
-cheaper and quicker.
+The reply is drawn as markdown while it's written, each tool call on a line that turns ✓ or ✗
+when it's done, and the status line keeps the model, what's connected and what the turns cost
+(as the responses state it). Typing `/` opens a menu of the commands, filtered as you type.
+
+| Keys | |
+| --- | --- |
+| Enter | Sends. Shift-Enter (in terminals with the kitty keyboard protocol), Alt-Enter or Ctrl-J: a new line |
+| ↑ / ↓ | The menu's choice, the input's lines, then earlier inputs |
+| Tab | Completes the menu's choice |
+| Esc, Ctrl-C | Stops a reply (what it wrote stays, out of the history). Esc closes the menu |
+| PgUp / PgDn, Shift-↑ / ↓, the wheel | Scroll; Ctrl-Home / Ctrl-End go to the top and the bottom |
+| Ctrl-A / E / U / K / W, Alt-B / F | Line editing |
+| Ctrl-D (empty input), Ctrl-C twice | Leave |
+
+The mouse scrolls, so selecting text takes Shift (or your terminal's modifier); `/copy` puts the
+last reply on the clipboard instead, by OSC 52.
+
+| Built-in | |
+| --- | --- |
+| `/help` | The keys, then every command and skill |
+| `/clear` (`/reset`) | A new conversation |
+| `/tools`, `/skills`, `/mcp` | What the model has |
+| `/cost` | Each turn's cost and the total |
+| `/copy` | The last reply, to the clipboard |
+| `/save [file]` | The conversation as markdown (`inkharness-<time>.md` here by default) |
+| `/log` | The last log lines: while the chat is full-screen, the log goes there instead of stderr, and warnings show in the status line |
+| `/quit` (`/exit`) | Leave |
+
+`//text` sends `/text` as it is. `--plain` (and any pipe) gives the chat as lines instead: the reply
+prints as it's written, tool calls on dim lines on stderr, and from a pipe each line is a turn.
+The built-ins there are `/help`, `/clear`, `/tools`, `/skills`, `/mcp`, `/cost` and `/quit`. The
+chat uses `[llm]`, or `[chat.llm]` if there is one. A model that speaks (`output = "audio"`)
+still speaks there: OpenAI's audio models answer text only with audio, so the transcript is shown
+and the audio goes nowhere. A text model in `[chat.llm]` is cheaper and quicker.
+
+### Commands
+
+A command file is a prompt kept as markdown, the way Claude Code keeps them, typed as `/name` in
+the chat, in `inkharness /name …` and over HTTP (never in a spoken turn):
+
+```markdown
+---
+description: Play music on a speaker
+argument-hint: <artist or album>
+---
+Play $ARGUMENTS. Unless I named a speaker, pick one that isn't playing.
+```
+
+`commands/play.md` is `/play`, and `commands/lights/off.md` is `/lights:off`. `$ARGUMENTS` is what
+follows the name and `$1` to `$9` its words ("quoted words" count as one); a prompt with neither
+gets the arguments after it. A file without frontmatter is described by its first line, and
+other keys (`allowed-tools`, `model`) are ignored. Files are read again each time they're used,
+so editing one needs no restart. `` !`shell` `` and `@file` stay as written: a folder's commands
+don't run programs. A file can't take a built-in's name.
+
+Every skill is a command too: `/goodnight not the bedroom` sends the goodnight skill's
+instructions with the request, which saves the model the round that loading the skill would
+take. A command file wins over a skill of the same name. The history keeps the prompt the model
+was sent, so later turns can follow it.
 
 ## Serve
 
@@ -114,8 +176,8 @@ curl -sN localhost:7392/chat -H 'content-type: application/json' \
 
 | Request | |
 | --- | --- |
-| `GET /health` | `{"ok": true, "model": …}`, and with the token (or none set) the tools and skills |
-| `POST /chat` | `{"text", "conversation"?, "stream"?}`. Without `conversation`, a new one starts and its id comes back; send it again to go on (the last 100 are kept, in memory). The answer is `{"reply", "conversation", "tools"}`; with `"stream": true`, server-sent events: `{"text"}` as it's written, `{"tool"}` as a call starts, then `{"done": true, "reply", "conversation"}` or `{"error"}` |
+| `GET /health` | `{"ok": true, "model": …}`, and with the token (or none set) the tools, skills and commands |
+| `POST /chat` | `{"text", "conversation"?, "stream"?}`. Without `conversation`, a new one starts and its id comes back; send it again to go on (the last 100 are kept, in memory). The answer is `{"reply", "conversation", "tools"}`; with `"stream": true`, server-sent events: `{"text"}` as it's written, `{"tool"}` as a call starts, then `{"done": true, "reply", "conversation"}` or `{"error"}`. Text that starts with a command's or a skill's name ([Commands](#commands)) is sent as its prompt, and the answer (or `done`) adds `"command"`; anything else, `/etc/hosts` included, goes as written |
 | `GET /read?url=…` | The article in a web page as a board's News gets it (below): `{"title", "byline", "site", "published", "url", "markdown", "pictures"}`, or 422 `{"error"}`; `&images=420x600` fetches and dithers the pictures |
 | `/sessions` | The agent sessions, with an `[agent]` table ([Agent sessions](#agent-sessions)) |
 
@@ -402,7 +464,7 @@ scripts can't call the skill tools.
 | Path | |
 | --- | --- |
 | `voice-proto/` | Framing and messages, shared by the daemon and the test client |
-| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns and the terminal), `http.rs` (the HTTP API), `serve.rs` (the daemon), `service.rs` (`serve` as a systemd user service), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `work.rs` the api backend's files, http_fetch and shell, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `reader.rs` (a web page's article for News), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
+| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns, and the plain chat), `tui/` (the full-screen chat: `app.rs` its state and keys, `render.rs` the screen, `markdown.rs`, `input.rs` the editor, `log.rs`), `commands.rs` (slash commands), `http.rs` (the HTTP API), `serve.rs` (the daemon), `service.rs` (`serve` as a systemd user service), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `work.rs` the api backend's files, http_fetch and shell, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `reader.rs` (a web page's article for News), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
 | `voice-client/` | Plays a board's part from a WAV file |
 | `skills/` | Agent Skills, found when inkharness starts in this folder; `goodnight` pauses every speaker that's playing in one `run_js` script |
 | `install.sh` | Installs inkharness from this checkout (`cargo install --path`) |

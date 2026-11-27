@@ -109,6 +109,9 @@ pub enum Piece {
     /// A tool the model is calling, as the call starts, and its input (null if it wasn't a
     /// JSON object): shown in a chat and logged by a session, not said.
     Tool(String, serde_json::Value),
+    /// A tool call finished: its name, and whether it worked. Shown in the terminal; the rest
+    /// ignore it.
+    ToolDone(String, bool),
 }
 
 /// How a reply ended.
@@ -304,7 +307,7 @@ pub(crate) mod testserver {
                 match piece {
                     super::Piece::Text(t) | super::Piece::Transcript(t) => text.push_str(&t),
                     super::Piece::Audio(a) => pcm.extend_from_slice(&a),
-                    super::Piece::Tool(..) => {}
+                    super::Piece::Tool(..) | super::Piece::ToolDone(..) => {}
                 }
             }
             (text, pcm)
