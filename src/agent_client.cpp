@@ -48,6 +48,9 @@ constexpr size_t kMicFrame = 1024;                    // 32 ms of the mic per fr
 constexpr size_t kRxBytes = kHeader + 65535 + 4096;   // the largest frame, and some of the next
 constexpr size_t kMaxText = 1500;                     // of the reply kept for the screen
 constexpr uint32_t kMaxTalkMs = 30000;
+// The mic stays on this long after BOOT goes up: people let go as they finish the last word, and
+// speech-to-text drops a word cut short.
+constexpr uint32_t kPostRollMs = 300;
 constexpr uint32_t kAnswerTimeoutMs = 45000;  // of silence from the daemon in an open turn
 // After the last holder lets go (the sheet closed, the Agent left), the connection waits this
 // long before it ends: one screen of the Agent often gives way to another (the sheet over the
@@ -167,6 +170,7 @@ struct Link {
   uint32_t cryptoUs = 0;     // spent sealing and opening since the last turn ended
   uint32_t cryptoBytes = 0;  // what that sealed and opened
   bool capturing = false;  // the mic is on
+  uint32_t micOffMs = 0;   // BOOT is up: the mic goes off at this time (kPostRollMs); 0: held
   bool draining = false;   // the mic is off; the utterance's tail is still in the ring
   bool turnOpen = false;   // listen_stop sent, reply_end not seen yet
   int staleEnds = 0;       // turns cut short whose reply_end is still to come: until then,
@@ -240,6 +244,7 @@ void endAudio() {
   if (s.capturing) audio::captureStop();
   if (s.stream) audio::streamAbort();
   s.capturing = s.draining = s.stream = s.playingOut = false;
+  s.micOffMs = 0;
 }
 
 // Answers for a session that has ended go nowhere.
@@ -1443,10 +1448,16 @@ void beginTalk() {
 }
 
 void endTalk() {
+  s.micOffMs = 0;
   if (!s.capturing) return;
   audio::captureStop();
   s.capturing = false;
   s.draining = true;  // sendMic() sends the tail, then listen_stop
+}
+
+// BOOT went up: the mic goes off kPostRollMs later (task()), unless BOOT goes down again first.
+void releaseTalk() {
+  if (s.capturing && s.micOffMs == 0) s.micOffMs = (millis() + kPostRollMs) | 1;
 }
 
 // Moves mic audio from the capture ring to the daemon. True if it sent any.
@@ -1747,9 +1758,13 @@ void handle(Event e) {
     case Event::Kick: break;  // agentPump() sends it, idleDuties() polls
     case Event::TalkStart:
       talkWanted = false;
+      if (s.capturing && s.micOffMs != 0) {  // BOOT down again before the mic went off: the
+        s.micOffMs = 0;                      // same utterance goes on
+        break;
+      }
       beginTalk();
       break;
-    case Event::TalkStop: endTalk(); break;
+    case Event::TalkStop: releaseTalk(); break;
     case Event::CheckIn: checkIn(); break;
     case Event::Speak: sayResult(); break;
     case Event::Read:
@@ -1776,6 +1791,9 @@ void task(void *) {
       continue;
     }
     refreshUsb();
+    if (s.capturing && s.micOffMs != 0 && static_cast<int32_t>(millis() - s.micOffMs) >= 0) {
+      endTalk();  // the post-roll after BOOT went up
+    }
     if (s.capturing && millis() - s.talkStartMs > kMaxTalkMs) endTalk();  // a stuck key
     pump(sent || s.capturing ? 0 : 20);
     if (s.fd < 0) continue;
