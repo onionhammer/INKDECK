@@ -7,9 +7,9 @@
 //! system prompt and get two tools: load_skill (the instructions, with the list of the skill's
 //! other files) and read_skill_file (one of those files). Reads stay inside the skill's folder.
 //!
-//! Files come in pages of whole lines, up to 16 KB each: read_skill_file's `offset` is the line
+//! Files come in pages of whole lines, up to 64 KB each: read_skill_file's `offset` is the line
 //! a page starts at, and a page that doesn't reach the end says where the next one starts. A
-//! SKILL.md over 16 KB still loads: load_skill gives its first page and points to the rest.
+//! SKILL.md over 64 KB still loads: load_skill gives its first page and points to the rest.
 //!
 //! The folders are scanned at startup. A skill that can't be used is logged and left out; of
 //! two with the same name the first is kept. Instructions and files are read from disk when the
@@ -38,7 +38,8 @@ const MAX_NAME: usize = 64;
 /// A description is cut to this many characters in the system prompt.
 const MAX_DESCRIPTION: usize = 250;
 /// SKILL.md and the files read_skill_file returns come in pages of at most this size.
-const MAX_FILE: usize = 16 * 1024;
+/// The same as an AGENTS.md's cap (place.rs): about 16k tokens.
+const MAX_FILE: usize = 64 * 1024;
 /// read_skill_file pages through at most this much of a file.
 const MAX_READ: usize = 4 * 1024 * 1024;
 /// load_skill lists at most this many of a skill's other files.
@@ -891,8 +892,9 @@ pub(crate) mod tests {
         assert_eq!(
             big,
             format!(
-                "{}\n(line 1 of 1 is over 16 KB and was cut there)",
-                "a".repeat(MAX_FILE - 1)
+                "{}\n(line 1 of 1 is over {} KB and was cut there)",
+                "a".repeat(MAX_FILE - 1),
+                MAX_FILE / 1024
             )
         );
         assert!(
@@ -910,18 +912,19 @@ pub(crate) mod tests {
             &dir.join("s/SKILL.md"),
             "---\nname: s\ndescription: d\n---\nx",
         );
-        // 3,000 numbered lines of 10 bytes: 30,000 bytes, so two pages.
-        let lines: String = (1..=3000).map(|n| format!("line {n:04}\n")).collect();
+        // Numbered lines of 12 bytes, a page and a half of them: two pages.
+        let per_page = MAX_FILE / 12;
+        let n = per_page * 3 / 2;
+        let lines: String = (1..=n).map(|i| format!("line {i:06}\n")).collect();
         write(&dir.join("s/api.yaml"), &lines);
         write(&dir.join("s/small.md"), "one\ntwo\n");
         let skills = Skills::load(&[dir]);
-        let per_page = MAX_FILE / 10;
 
         let first = skills.read("s", "api.yaml", None).unwrap();
-        assert!(first.starts_with("line 0001\n"), "{first}");
+        assert!(first.starts_with("line 000001\n"), "{first}");
         assert!(
             first.ends_with(&format!(
-                "line {per_page:04}\n(lines 1 to {per_page} of 3000; read on with offset {})",
+                "line {per_page:06}\n(lines 1 to {per_page} of {n}; read on with offset {})",
                 per_page + 1
             )),
             "{}",
@@ -929,9 +932,9 @@ pub(crate) mod tests {
         );
         // Every line comes once across the pages, whole.
         let second = skills.read("s", "api.yaml", Some(per_page + 1)).unwrap();
-        assert!(second.starts_with(&format!("line {:04}\n", per_page + 1)));
+        assert!(second.starts_with(&format!("line {:06}\n", per_page + 1)));
         assert!(second.ends_with(&format!(
-            "line 3000\n(lines {} to 3000 of 3000)",
+            "line {n:06}\n(lines {} to {n} of {n})",
             per_page + 1
         )));
 
@@ -955,17 +958,26 @@ pub(crate) mod tests {
         let out = skills
             .call(
                 READ_TOOL,
-                json!({"skill": "s", "path": "api.yaml", "offset": 2999}),
+                json!({"skill": "s", "path": "api.yaml", "offset": n - 1}),
             )
             .unwrap()
             .unwrap();
-        assert_eq!(out, "line 2999\nline 3000\n(lines 2999 to 3000 of 3000)");
+        assert_eq!(
+            out,
+            format!(
+                "line {:06}\nline {n:06}\n(lines {} to {n} of {n})",
+                n - 1,
+                n - 1
+            )
+        );
     }
 
     #[test]
     fn a_long_skill_md_loads_its_first_page() {
         let dir = scratch("long-skill");
-        let steps: String = (1..=2000).map(|n| format!("Step {n:04}.\n")).collect();
+        // Steps of 13 bytes, a page and a half of them.
+        let n = MAX_FILE * 3 / 2 / 13;
+        let steps: String = (1..=n).map(|i| format!("Step {i:06}.\n")).collect();
         write(
             &dir.join("big/SKILL.md"),
             &format!("---\nname: big\ndescription: d\n---\n{steps}"),
@@ -974,14 +986,14 @@ pub(crate) mod tests {
         assert_eq!(skills.names(), ["big"]);
 
         let loaded = skills.instructions("big").unwrap();
-        assert!(loaded.starts_with("Step 0001."));
+        assert!(loaded.starts_with("Step 000001."));
         let next: usize = loaded
             .rsplit("offset ")
             .next()
             .and_then(|rest| rest.split(',').next())
             .and_then(|n| n.parse().ok())
             .unwrap_or_else(|| panic!("no offset in {loaded}"));
-        assert!(loaded.contains("SKILL.md goes on past 16 KB"));
+        assert!(loaded.contains(&format!("SKILL.md goes on past {} KB", MAX_FILE / 1024)));
         // The rest, from the line it names: the steps carry on with no gap.
         let last_shown = loaded
             .lines()
@@ -990,8 +1002,8 @@ pub(crate) mod tests {
             .to_string();
         let rest = skills.read("big", "SKILL.md", Some(next)).unwrap();
         let first_rest = rest.lines().next().unwrap();
-        let number = |l: &str| l[5..9].parse::<usize>().unwrap();
+        let number = |l: &str| l[5..11].parse::<usize>().unwrap();
         assert_eq!(number(first_rest), number(&last_shown) + 1);
-        assert!(rest.contains("Step 2000."));
+        assert!(rest.contains(&format!("Step {n:06}.")));
     }
 }

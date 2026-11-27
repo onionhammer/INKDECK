@@ -381,7 +381,7 @@ Each stage is a trait with swappable backends, chosen in `inkharness.toml`:
 | Device tools | What the board can do itself, announced in its hello: the INKDECK's are `find_books`, `open_book`, `weather` (its own forecast), `board_status`, `set_volume`, `set_alarm`, `show`, `show_note` (a long answer on the screen, kept as a note) and `read_note` (`src/apps/voice_tools.h`). A call goes down the board's connection and waits for its answer (up to 15 s). Each client brings its own; none are built in ([protocol](../docs/voice-protocol.md#device-tools), `device.rs`) |
 | MCP | Any [MCP](https://modelcontextprotocol.io) server's tools (`[[mcp]]`, `.mcp.json`), over stdio or streamable HTTP, through the official Rust SDK (`rmcp`); named `<server>_<tool>`, optionally limited to an allowlist. `examples/mcp_demo.rs` is a small server to try it with |
 | Scripts | `run_js`: JavaScript in a [QuickJS](https://github.com/quickjs-ng/quickjs) sandbox (`rquickjs`), for arithmetic and dates, or to chain the home and device tools, which it calls as `tools.list_speakers()`; no network, files or timers, with time, memory and tool-call limits (`[js]`) |
-| Skills | [Agent Skills](https://agentskills.io) (`skills/`, `[skills]`): a folder per skill with a `SKILL.md`. The system prompt lists each one's name and description; `load_skill` returns the instructions and `read_skill_file` the skill's other files, read from inside its folder only. Files come in pages of whole lines up to 16 KB, and `read_skill_file`'s `offset` reads on (within a file's first 4 MB); a `SKILL.md` over 16 KB loads its first page and points to the rest. Up to 32 skills |
+| Skills | [Agent Skills](https://agentskills.io) (`skills/`, `[skills]`): a folder per skill with a `SKILL.md`. The system prompt lists each one's name and description; `load_skill` returns the instructions and `read_skill_file` the skill's other files, read from inside its folder only. Files come in pages of whole lines up to 64 KB, and `read_skill_file`'s `offset` reads on (within a file's first 4 MB); a `SKILL.md` over 64 KB loads its first page and points to the rest. Up to 32 skills |
 
 The stages overlap: the reply's first sentence is synthesised and sent while the model is still
 writing the rest. Each turn logs its timings from the end of speech (`stt_ms`,
@@ -398,7 +398,7 @@ without waiting for a request. The model's replies aren't cached: a cached "Play
 the kitchen" would skip the tool call that plays it.
 
 A skill costs the model a round to load, and another for each file it reads, so what a task
-always needs belongs in `SKILL.md` itself, within its first 16 KB (each page after that is
+always needs belongs in `SKILL.md` itself, within its first 64 KB (each page after that is
 another round): the goodnight skill carries its script. `run_js`
 scripts can't call the skill tools.
 
