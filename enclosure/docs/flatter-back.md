@@ -135,7 +135,7 @@ pod now, is filled.
 
 The length is at the limit. At that height the cell can't pass under the USB-C socket or the
 thumbwheel, and the board leaves 65.0 between them wherever a cell 45 wide sits; a longer one
-doesn't fit at this height at all. If it's 62.5, as the enclosure README has it measured with its
+doesn't fit at this height at all. If it's 62.5, as `base-case.md` has it measured with its
 protection board, there's 2.5 to spare. Either way it's more than v0.6's pocket (63.5 × 43) takes,
 so measure the cell's length, and which side its wiring leaves, before a print.
 
