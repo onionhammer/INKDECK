@@ -91,10 +91,14 @@ def calls_in(image, start, size):
     """The calls in a function whose target the image tells, as (address, target, how): call8,
     and callx8 through a register an l32r loaded in the instruction before. Xtensa instructions
     here are 2 or 3 bytes by their first byte's low nibble; after a jump or a return, zero bytes
-    are padding before the next block."""
+    are padding before the next block, up to the first place a branch seen so far goes to: an
+    instruction's own first byte can be zero (float.s f0, a5, 0 is 00 05 ca), and taking it for
+    padding puts every instruction after it out of step (2026-11-27: the l32r after that one,
+    read a byte late, looked like a call8 into poly1305_blocks)."""
     code = image.read(start, size)
     i = 0
     loaded = None  # (register, literal's address) if the instruction before was an l32r
+    targets = set()  # offsets in `code` that branches and jumps seen so far go to
     while code and i < len(code):
         first = code[i]
         low = first & 0x0F
@@ -118,6 +122,9 @@ def calls_in(image, start, size):
                 word = image.read(was_loaded[1], 4)
                 if word is not None:
                     yield address, struct.unpack("<I", word)[0], "callx8"
+            goes = branch_offset(first, second, third)
+            if goes is not None:
+                targets.add(i + 4 + goes)
             ends_block = (
                 first & 0x3F == 0x06  # j
                 or (first, second, third) in ((0x80, 0, 0), (0x90, 0, 0))  # ret, retw
@@ -125,10 +132,39 @@ def calls_in(image, start, size):
             )
         elif length == 2:
             ends_block = code[i : i + 2] in (b"\x1d\xf0", b"\x0d\xf0")  # retw.n, ret.n
+            if low == 0xC and first & 0x80:  # beqz.n, bnez.n: 6 bits, forward only
+                targets.add(i + 4 + (((first >> 4) & 3) << 4 | code[i + 1] >> 4))
         i += length
         if ends_block:
-            while i < len(code) and code[i] == 0:
-                i += 1
+            end = i
+            while end < len(code) and code[end] == 0:
+                end += 1
+            i = min((t for t in targets if i <= t <= end), default=end)
+
+
+def branch_offset(first, second, third):
+    """Where a 3-byte branch or jump goes, counted from 4 bytes after its address; None for
+    anything else."""
+    low = first & 0x0F
+    signed8 = third - 0x100 if third & 0x80 else third
+    if low == 0x7:  # bnone, beq, blt, bbci...: 8 bits
+        return signed8
+    if low != 0x6:
+        return None
+    n, m = (first >> 4) & 3, first >> 6
+    if n == 0:  # j: 18 bits
+        offset = (third << 10) | (second << 2) | m
+        return offset - 0x40000 if offset & 0x20000 else offset
+    if n == 1:  # beqz, bnez, bltz, bgez: 12 bits
+        offset = (third << 4) | (second >> 4)
+        return offset - 0x1000 if offset & 0x800 else offset
+    if n == 2:  # beqi, bnei, blti, bgei: 8 bits
+        return signed8
+    if m == 0:  # entry
+        return None
+    if m == 1:  # bf, bt: 8 bits; loop, loopnez, loopgtz: to the loop's end, 8 bits forward
+        return third if second >> 4 >= 8 else signed8
+    return signed8  # bltui, bgeui
 
 
 def partitions(map_path):
