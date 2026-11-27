@@ -65,6 +65,53 @@ pub struct App {
     pub think: Option<Thinker>,
     /// Agent sessions, when the daemon has an [agent] table.
     pub agent: Option<Arc<Agent>>,
+    /// Model rounds a talk turn gets ([talk] max_rounds).
+    pub rounds: usize,
+}
+
+/// Longest a status the device shows can be.
+const DOING_CHARS: usize = 60;
+
+/// What a tool call shows on the device while it runs: "Searching the web: plumbers", or for
+/// any other tool its name in words and its first text argument ("Play music: Kind of
+/// Blue").
+pub fn doing(name: &str, input: &serde_json::Value) -> String {
+    let arg = |key: &str| {
+        input
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let with = |what: &str, detail: String| {
+        if detail.is_empty() {
+            what.to_string()
+        } else {
+            format!("{what}: {detail}")
+        }
+    };
+    let text = match name {
+        crate::search::TOOL => with("Searching the web", arg("query")),
+        crate::tools::JS_TOOL => "Working it out".to_string(),
+        crate::skills::LOAD_TOOL => format!("Reading the {} skill", arg("name")),
+        crate::skills::READ_TOOL => with("Reading", arg("path")),
+        "propose_job" => with("Filing a job", arg("title")),
+        _ => {
+            let mut words = name.replace('_', " ");
+            if let Some(first) = words.get(..1) {
+                words.replace_range(..1, &first.to_uppercase());
+            }
+            let detail = input
+                .as_object()
+                .and_then(|m| m.values().find_map(serde_json::Value::as_str))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            with(&words, detail)
+        }
+    };
+    // cut() adds the ellipsis after the characters it keeps.
+    crate::chat::cut(&text, DOING_CHARS - 1)
 }
 
 /// The model a turn is handed to when the first one calls the think tool.
@@ -1058,7 +1105,7 @@ async fn turn_inner(
             user,
             audio,
             tools,
-            rounds: llm::MAX_ROUNDS,
+            rounds: app.rounds,
             steer: None,
         };
         let outcome = app
@@ -1174,9 +1221,29 @@ async fn speak(
     let split = async {
         let mut splitter = Splitter::new();
         let mut reply = String::new();
+        // A status is showing on the device: the reply going on clears it.
+        let mut doing_shown = false;
         while let Some(piece) = piece_rx.recv().await {
-            if let Piece::Tool(..) | Piece::ToolDone(..) = piece {
-                continue; // a device shows only what is said
+            match &piece {
+                Piece::Tool(name, input) => {
+                    // Shown while the reply waits on it, not said.
+                    let text = doing(name, input);
+                    send(tx, ServerMsg::Status { text }).await;
+                    doing_shown = true;
+                    continue;
+                }
+                Piece::ToolDone(..) => continue,
+                _ => {}
+            }
+            if doing_shown {
+                doing_shown = false;
+                send(
+                    tx,
+                    ServerMsg::Status {
+                        text: String::new(),
+                    },
+                )
+                .await;
             }
             first_token_ms.get_or_insert_with(ms);
             match piece {
@@ -1480,7 +1547,12 @@ mod tests {
                 .collect();
             assert!(names.contains(&"open_book"), "{names:?}");
             let code = r#"tools.open_book({path: "/sdcard/Books/Dune.epub"})"#;
+            // As the tool loop announces a call, and its end.
+            out.send(Piece::Tool("run_js".into(), json!({"code": code})))
+                .await?;
             let result = request.tools.call("run_js", json!({"code": code})).await;
+            out.send(Piece::ToolDone("run_js".into(), result.is_ok()))
+                .await?;
             out.send(Piece::Text(format!("{result:?}"))).await?;
             Ok(Outcome::Done)
         }
@@ -1508,6 +1580,7 @@ mod tests {
             tools,
             think: None,
             agent: None,
+            rounds: llm::TALK_ROUNDS,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1762,11 +1835,13 @@ mod tests {
             .unwrap();
 
         let mut said = String::new();
+        let mut statuses = Vec::new();
         loop {
             let Some(Frame::Control(json)) = reader.read().await.unwrap() else {
                 continue;
             };
             match serde_json::from_str::<ServerMsg>(&json).unwrap() {
+                ServerMsg::Status { text } => statuses.push(text),
                 ServerMsg::ToolCall { id, name, input } => {
                     assert_eq!(name, "open_book");
                     assert_eq!(input, json!({"path": "/sdcard/Books/Dune.epub"}));
@@ -1787,6 +1862,41 @@ mod tests {
             }
         }
         assert_eq!(said, r#"Ok("=> Opening Dune once the reply has played.")"#);
+        // Shown while it ran (beside the call: either may come first), then cleared when the
+        // reply went on.
+        assert_eq!(statuses, ["Working it out", ""]);
+    }
+
+    #[test]
+    fn what_a_tool_call_shows() {
+        assert_eq!(
+            doing("web_search", &json!({"query": "plumbers open Saturday"})),
+            "Searching the web: plumbers open Saturday"
+        );
+        assert_eq!(doing("run_js", &json!({"code": "1+1"})), "Working it out");
+        assert_eq!(
+            doing("load_skill", &json!({"name": "goodnight"})),
+            "Reading the goodnight skill"
+        );
+        assert_eq!(
+            doing("play_music", &json!({"query": "Kind of Blue"})),
+            "Play music: Kind of Blue"
+        );
+        assert_eq!(
+            doing("home_set_timer", &json!({"minutes": 10})),
+            "Home set timer"
+        );
+        assert_eq!(
+            doing(
+                "propose_job",
+                &json!({"prompt": "Plan it", "title": "Trip"})
+            ),
+            "Filing a job: Trip"
+        );
+        assert_eq!(
+            doing("x", &json!({"q": "y".repeat(100)})).chars().count(),
+            DOING_CHARS
+        );
     }
 
     #[tokio::test]
@@ -1811,6 +1921,7 @@ mod tests {
             tools,
             think: None,
             agent: None,
+            rounds: llm::TALK_ROUNDS,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1908,6 +2019,7 @@ mod tests {
             tools,
             think: None,
             agent: Some(agent.clone()),
+            rounds: llm::TALK_ROUNDS,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2408,6 +2520,7 @@ mod tests {
             tools,
             think: None,
             agent: Some(agent.clone()),
+            rounds: llm::TALK_ROUNDS,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

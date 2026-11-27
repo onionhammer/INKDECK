@@ -176,6 +176,7 @@ fn device_app(
         fast_tools,
         think,
         agent,
+        rounds: cfg.talk.max_rounds.max(1),
     });
     if app.think.is_some() && app.tts.is_none() {
         tracing::warn!("no [tts]: the think phrases go unsaid");

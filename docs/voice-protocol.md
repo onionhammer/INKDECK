@@ -86,6 +86,7 @@ Daemon → device:
 | `hello` | `proto`, `session` (this connection's name), `agent` (when the daemon has [agent sessions](#agent-sessions)), `reader` (true when it answers `read`) | Answer to the device's hello, in the handshake's message 2 |
 | `stt` | `text` | What the daemon heard (may be empty). When the model hears the recording itself, this comes alongside the reply, or not at all if the daemon has no speech-to-text |
 | `text` | `delta` | The reply's text as it is generated, for the display. Can arrive before `reply_start` |
+| `status` | `text` | What the turn is doing while the reply waits on it, such as a tool call (`Searching the web: plumbers`), for the display and not said; `""` once the reply goes on, and it's over at `reply_end` too. A device that doesn't know it ignores it, as it does any type it doesn't know |
 | `reply_start` | `rate` (Hz) | Audio frames follow at this sample rate |
 | `reply_end` | | The turn is over |
 | `error` | `message` | Something failed; a `reply_end` follows unless the connection closes |

@@ -67,6 +67,7 @@ struct Status {
   State state = State::Off;
   std::string heard;  // what the daemon made of the last utterance
   std::string reply;  // the reply's text so far
+  std::string doing;  // while the reply waits: what the daemon says it is doing (a tool call)
   std::string error;  // why the session failed, or what the daemon reported for this turn
   float levelDb = -96;  // the mic's level while listening
   bool mic = false;     // the mic is on: listening, or a talk that waits for the session

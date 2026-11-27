@@ -222,7 +222,8 @@ class AgentSheet : public ui::Screen {
       drawSectionHeader(c, head, s.agentTurn ? "AGENT" : "ASSISTANT", right, {s.mic});
     }
 
-    // The state word, and the mic's level beside it.
+    // The state word, and beside it the mic's level, or what the reply waits on (the tool call
+    // the daemon is making: its `status`).
     const Rect row = r.takeTop(kSheetStateH);
     const std::string word = s.mic ? "LISTENING" : stateWord(s.state);
     const int wordW = textWidth(style::kReading, "CONNECTING") + 24;
@@ -230,7 +231,12 @@ class AgentSheet : public ui::Screen {
              style::kReading);
     const Rect meter{row.x + kPadX + wordW, row.y + (row.h - 18) / 2,
                      row.w - 2 * kPadX - wordW, 18};
-    drawSegments(c, meter, kMeterSegments, meterFill(s));
+    if (!s.mic && !s.doing.empty()) {
+      drawText(c, Rect{meter.x, row.y, meter.w, row.h}, s.doing + ui::glyph::kEllipsis,
+               style::kBody);
+    } else {
+      drawSegments(c, meter, kMeterSegments, meterFill(s));
+    }
 
     drawSectionHeader(c, r.takeTop(kSectionH), "YOU");
     const Rect heard = r.takeTop(12 + kSheetHeardLines * lineHeight(style::kBody) + 6);
