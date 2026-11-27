@@ -156,6 +156,15 @@ api_key_env = "OPENAI_API_KEY"
 # [skills]
 # dirs = ["../shared-skills"]   # relative to this file
 
+# --- Slash commands --------------------------------------------------------------------
+# Prompts kept as markdown files, typed as /name in text turns (the terminal, HTTP), as Claude
+# Code keeps them: commands/play.md is /play, with $ARGUMENTS for what follows. Found
+# without any setting in commands/, .agents/commands/ and .claude/commands/ of the folder
+# inkharness starts in, and in ~/.config/inkharness/commands/; dirs adds others. Every skill is
+# a command too (/goodnight).
+# [commands]
+# dirs = ["../shared-commands"]   # relative to this file
+
 # --- Agent sessions --------------------------------------------------------------------
 # Tasks that live on the daemon, are kept on disk and go on working with no board connected:
 # a board starts one by talking on its Agent screen, follows its plan and log, and answers its

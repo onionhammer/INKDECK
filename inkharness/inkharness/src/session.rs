@@ -1175,7 +1175,7 @@ async fn speak(
         let mut splitter = Splitter::new();
         let mut reply = String::new();
         while let Some(piece) = piece_rx.recv().await {
-            if let Piece::Tool(..) = piece {
+            if let Piece::Tool(..) | Piece::ToolDone(..) = piece {
                 continue; // a device shows only what is said
             }
             first_token_ms.get_or_insert_with(ms);
@@ -1209,7 +1209,7 @@ async fn speak(
                     }
                     let _ = say_tx.send(Say::Pcm(pcm)).await;
                 }
-                Piece::Tool(..) => {}
+                Piece::Tool(..) | Piece::ToolDone(..) => {}
             }
         }
         if let Some(rest) = splitter.finish() {

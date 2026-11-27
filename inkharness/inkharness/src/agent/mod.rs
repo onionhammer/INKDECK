@@ -1514,7 +1514,7 @@ impl Agent {
                         self.log(id, run, &tools::short_call(&name, &input));
                     }
                 }
-                Piece::Audio(_) => {}
+                Piece::Audio(_) | Piece::ToolDone(..) => {}
             }
         }
         let result = if stretch.trim().is_empty() {
@@ -2450,6 +2450,7 @@ pub(crate) mod tests {
             read: vec![],
             instructions: vec![],
             skill_dirs: vec![],
+            command_dirs: vec![],
         };
         let harness = Harness::build(&place, false).await.unwrap();
         let agent = start(&place.config, &harness).await.unwrap().unwrap();

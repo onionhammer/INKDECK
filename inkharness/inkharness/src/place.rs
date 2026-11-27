@@ -9,6 +9,8 @@
 //!   the global file's first.
 //! - Skills: `skills/`, `.agents/skills/` and `.claude/skills/` in the folder, the global
 //!   `skills/`, and `[skills] dirs`. Of two skills with one name, the folder's is kept.
+//! - Slash commands: `commands/`, `.agents/commands/` and `.claude/commands/`, the global
+//!   `commands/`, and `[commands] dirs`, found the same way.
 //! - `.mcp.json`: MCP servers in the format other agents use (`mcpServers`), with `${VAR}`
 //!   and `${VAR:-default}` taken from the environment and `.env`, and `${workspaceFolder}`
 //!   the folder it starts in. A server's `cwd` is relative to the file's folder. They join
@@ -27,6 +29,8 @@ pub const CONFIG_FILE: &str = "inkharness.toml";
 const INSTRUCTION_FILES: [&str; 3] = ["AGENTS.md", "AGENT.md", "CLAUDE.md"];
 /// Folders that hold skills, in the folder it starts in.
 const SKILL_DIRS: [&str; 3] = ["skills", ".agents/skills", ".claude/skills"];
+/// Folders that hold slash commands, in the folder it starts in.
+const COMMAND_DIRS: [&str; 3] = ["commands", ".agents/commands", ".claude/commands"];
 const MCP_FILE: &str = ".mcp.json";
 /// In a .mcp.json, the folder inkharness started in (VS Code's name for it).
 const WORKSPACE_VAR: &str = "workspaceFolder";
@@ -41,6 +45,8 @@ pub struct Place {
     pub instructions: Vec<(PathBuf, String)>,
     /// Folders to look for skills in, the first to be kept first.
     pub skill_dirs: Vec<PathBuf>,
+    /// Folders to look for slash commands in, the same way.
+    pub command_dirs: Vec<PathBuf>,
 }
 
 /// The global config folder: `$INKHARNESS_HOME`, else `$XDG_CONFIG_HOME/inkharness`, else
@@ -154,24 +160,41 @@ pub fn load(dir: &Path, explicit: Option<&Path>) -> Result<Place> {
         }
     }
 
-    let mut skill_dirs: Vec<PathBuf> = config.skills.dirs.iter().map(PathBuf::from).collect();
-    skill_dirs.extend(
-        SKILL_DIRS
-            .iter()
-            .map(|s| dir.join(s))
-            .filter(|d| d.is_dir()),
+    let global = global.as_ref().filter(|g| !same(g, dir));
+    let skill_dirs = folders(&config.skills.dirs, &SKILL_DIRS, dir, global, "skills");
+    let command_dirs = folders(
+        &config.commands.dirs,
+        &COMMAND_DIRS,
+        dir,
+        global,
+        "commands",
     );
-    if let Some(g) = global.as_ref().filter(|g| !same(g, dir)) {
-        skill_dirs.extend(Some(g.join("skills")).filter(|d| d.is_dir()));
-    }
-    dedup(&mut skill_dirs);
 
     Ok(Place {
         config,
         read,
         instructions,
         skill_dirs,
+        command_dirs,
     })
+}
+
+/// Where to look for skills or commands: the config's folders, then the ones of `names` this
+/// folder has, then the global folder's `global_name`, each once.
+fn folders(
+    configured: &[String],
+    names: &[&str],
+    dir: &Path,
+    global: Option<&PathBuf>,
+    global_name: &str,
+) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = configured.iter().map(PathBuf::from).collect();
+    found.extend(names.iter().map(|s| dir.join(s)).filter(|d| d.is_dir()));
+    if let Some(g) = global {
+        found.extend(Some(g.join(global_name)).filter(|d| d.is_dir()));
+    }
+    dedup(&mut found);
+    found
 }
 
 fn same(a: &Path, b: &Path) -> bool {
@@ -222,10 +245,12 @@ fn resolve_paths(table: &mut toml::Table, base: &Path) {
             *s = resolve(base, s).to_string_lossy().into_owned();
         }
     };
-    if let Some(toml::Value::Table(skills)) = table.get_mut("skills")
-        && let Some(toml::Value::Array(dirs)) = skills.get_mut("dirs")
-    {
-        dirs.iter_mut().for_each(fix);
+    for key in ["skills", "commands"] {
+        if let Some(toml::Value::Table(section)) = table.get_mut(key)
+            && let Some(toml::Value::Array(dirs)) = section.get_mut("dirs")
+        {
+            dirs.iter_mut().for_each(fix);
+        }
     }
     // The folders MCP commands run in.
     if let Some(toml::Value::Array(servers)) = table.get_mut("mcp") {
@@ -580,6 +605,9 @@ mod tests {
             &here.join(".claude/skills/b/SKILL.md"),
             "---\nname: b\ndescription: d\n---\n",
         );
+        write(&here.join("commands/play.md"), "Add $ARGUMENTS");
+        write(&here.join(".claude/commands/other.md"), "x");
+        write(&global.join("commands/g.md"), "x");
         write(
             &here.join(MCP_FILE),
             r#"{"mcpServers": {"m": {"command": "true"}}}"#,
@@ -595,6 +623,14 @@ mod tests {
         assert_eq!(
             place.skill_dirs,
             [here.join(".claude/skills"), global.join("skills")]
+        );
+        assert_eq!(
+            place.command_dirs,
+            [
+                here.join("commands"),
+                here.join(".claude/commands"),
+                global.join("commands")
+            ]
         );
         assert_eq!(place.config.mcp.len(), 1);
         // No config anywhere: says how to get one.

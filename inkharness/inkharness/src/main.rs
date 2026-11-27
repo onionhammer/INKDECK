@@ -1,16 +1,18 @@
 //! inkharness: an assistant with tools, skills and MCP servers, started in any folder.
 //!
-//! - `inkharness`: a conversation in the terminal (or `inkharness <question>` for one answer).
+//! - `inkharness`: a conversation in the terminal, full-screen (tui/; `--plain` for lines), or
+//!   `inkharness <question>` for one answer. `/` commands work in both (commands.rs).
 //! - `inkharness serve`: the daemon. INKDECK boards talk to it over TCP
 //!   (docs/voice-protocol.md); programs send text over HTTP (http.rs).
 //! - `inkharness init`: a starter config in the global config folder.
 //! - `inkharness service install`: `serve` from this folder at every boot (service.rs).
 //!
 //! What it uses comes from the folder it starts in and the global config folder (place.rs):
-//! `inkharness.toml`, `AGENTS.md`, skills folders, `.mcp.json`, `.env`.
+//! `inkharness.toml`, `AGENTS.md`, skills and commands folders, `.mcp.json`, `.env`.
 
 mod agent;
 mod chat;
+mod commands;
 mod config;
 mod device;
 mod harness;
@@ -33,11 +35,14 @@ mod skills;
 mod stt;
 mod tools;
 mod tts;
+mod tui;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{ArgAction, Parser, Subcommand};
+use tracing_subscriber::fmt::writer::BoxMakeWriter;
 
 #[derive(Parser)]
 #[command(
@@ -65,6 +70,9 @@ struct Cli {
     /// Log more: -v each step, -vv everything.
     #[arg(short, long, action = ArgAction::Count, global = true)]
     verbose: u8,
+    /// The conversation as plain lines, even in a terminal (the default for pipes).
+    #[arg(long)]
+    plain: bool,
 }
 
 #[derive(Subcommand)]
@@ -130,9 +138,21 @@ async fn run() -> Result<()> {
         (0, true) | (1, _) => "info",
         _ => "info,inkharness=debug",
     };
+    // The full-screen chat, in a terminal: chosen now, since its log can't go to stderr.
+    let full_screen = cli.command.is_none()
+        && cli.question.is_empty()
+        && !cli.plain
+        && std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal();
+    let screen_log = tui::Log::default();
+    let writer = if full_screen {
+        BoxMakeWriter::new(screen_log.clone())
+    } else {
+        BoxMakeWriter::new(std::io::stderr)
+    };
     let log = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .with_writer(writer)
+        .with_ansi(!full_screen && std::io::stderr().is_terminal())
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| level.into()),
         );
@@ -215,12 +235,15 @@ async fn run() -> Result<()> {
         return serve::run(place, harness).await;
     }
 
-    let harness = harness::Harness::build(&place, cli.verbose > 0).await?;
+    // MCP servers' stderr would scribble over the full screen.
+    let harness = harness::Harness::build(&place, cli.verbose > 0 && !full_screen).await?;
     let chat = chat::Chat::build(&place.config, &harness)?;
-    if cli.question.is_empty() {
-        chat::repl(&chat, &chat::banner(&place, &harness, &chat)).await
-    } else {
+    if !cli.question.is_empty() {
         chat::once(&chat, &cli.question.join(" ")).await
+    } else if full_screen {
+        tui::run(&chat, &harness, &place, screen_log).await
+    } else {
+        chat::plain(&chat, &harness, &chat::banner(&place, &harness, &chat)).await
     }
 }
 
@@ -276,6 +299,6 @@ fallbacks = true
 # backend = "searxng"
 # url = "http://searxng.local:8080"
 
-# MCP servers also come from a folder's .mcp.json, skills from its skills/ folder, and
-# instructions from its AGENTS.md.
+# MCP servers also come from a folder's .mcp.json, skills from its skills/ folder, slash
+# commands from its commands/ folder, and instructions from its AGENTS.md.
 "#;

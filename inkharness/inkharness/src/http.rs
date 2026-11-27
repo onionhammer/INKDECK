@@ -11,6 +11,10 @@
 //!               → {"reply": "…", "conversation": "c1", "tools": ["run_js"]}
 //! ```
 //!
+//! Text that starts with a command file's or a skill's name (`/play Kind of Blue`, commands.rs)
+//! reaches the model as that command's prompt, and the reply names it: `"command": "play"`
+//! (in the stream, the `done` event). Other text, `/etc/hosts` included, goes as written.
+//!
 //! A turn without `conversation` starts one and returns its id; pass it back to go on. The last
 //! MAX_CONVERSATIONS are kept, in memory. With `"stream": true` the reply comes as server-sent
 //! events, each a JSON object: `{"text": "…"}` as it is written, `{"tool": "…"}` as a call
@@ -229,6 +233,7 @@ async fn health(State(api): State<Arc<Api>>, headers: HeaderMap) -> Json<Value> 
             .collect();
         status["tools"] = json!(tools);
         status["skills"] = json!(api.skills);
+        status["commands"] = json!(api.chat.commands().names());
     }
     Json(status)
 }
@@ -256,12 +261,18 @@ async fn chat_turn(
     if request.text.trim().is_empty() {
         return error(StatusCode::BAD_REQUEST, "no text".into());
     }
+    // The history keeps the prompt the model saw, so later turns can follow it.
+    let (text, command) = match api.chat.expand(&request.text) {
+        Ok(Some(expanded)) => (expanded.prompt, Some(expanded.name)),
+        Ok(None) => (request.text, None),
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
     let (id, history) = api.open(request.conversation);
     let (tx, mut rx) = mpsc::channel::<Piece>(64);
     // In a task of its own, which owns the history. A client that goes away drops `rx`, and
     // the turn ends there, unremembered.
     let task: JoinHandle<Result<String>> = {
-        let (api, id, text) = (api.clone(), id.clone(), request.text);
+        let (api, id) = (api.clone(), id.clone());
         tokio::spawn(async move {
             let reply = api.chat.turn(&history, &text, tx).await?;
             api.remember(&id, &text, &reply);
@@ -270,7 +281,7 @@ async fn chat_turn(
     };
 
     if request.stream {
-        return Sse::new(events(rx, task, id)).into_response();
+        return Sse::new(events(rx, task, id, command)).into_response();
     }
     let mut tools = Vec::new();
     while let Some(piece) = rx.recv().await {
@@ -280,7 +291,11 @@ async fn chat_turn(
     }
     match task.await {
         Ok(Ok(reply)) => {
-            Json(json!({"reply": reply.trim(), "conversation": id, "tools": tools})).into_response()
+            let mut body = json!({"reply": reply.trim(), "conversation": id, "tools": tools});
+            if let Some(command) = command {
+                body["command"] = json!(command);
+            }
+            Json(body).into_response()
         }
         Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, format!("{e:#}")),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -590,37 +605,46 @@ fn events(
     rx: mpsc::Receiver<Piece>,
     task: JoinHandle<Result<String>>,
     id: String,
+    command: Option<String>,
 ) -> impl futures_util::Stream<Item = Result<Event, Infallible>> {
     let event = |value: Value| Ok(Event::default().data(value.to_string()));
-    futures_util::stream::unfold(Stream::Turn(rx, task, id), move |state| async move {
-        let Stream::Turn(mut rx, task, id) = state else {
-            return None;
-        };
-        let next = loop {
-            match rx.recv().await {
-                Some(Piece::Audio(_)) => continue,
-                other => break other,
-            }
-        };
-        Some(match next {
-            Some(Piece::Text(text) | Piece::Transcript(text)) => {
-                (event(json!({"text": text})), Stream::Turn(rx, task, id))
-            }
-            Some(Piece::Tool(name, _)) => {
-                (event(json!({"tool": name})), Stream::Turn(rx, task, id))
-            }
-            Some(Piece::Audio(_)) => unreachable!(),
-            None => {
-                let end = match task.await {
-                    Ok(Ok(reply)) => {
-                        json!({"done": true, "reply": reply.trim(), "conversation": id})
-                    }
-                    Ok(Err(e)) => json!({"error": format!("{e:#}")}),
-                    Err(e) => json!({"error": e.to_string()}),
-                };
-                (event(end), Stream::Done)
-            }
-        })
+    futures_util::stream::unfold(Stream::Turn(rx, task, id), move |state| {
+        let command = command.clone();
+        async move {
+            let Stream::Turn(mut rx, task, id) = state else {
+                return None;
+            };
+            let next = loop {
+                match rx.recv().await {
+                    Some(Piece::Audio(_) | Piece::ToolDone(..)) => continue,
+                    other => break other,
+                }
+            };
+            Some(match next {
+                Some(Piece::Text(text) | Piece::Transcript(text)) => {
+                    (event(json!({"text": text})), Stream::Turn(rx, task, id))
+                }
+                Some(Piece::Tool(name, _)) => {
+                    (event(json!({"tool": name})), Stream::Turn(rx, task, id))
+                }
+                Some(Piece::Audio(_) | Piece::ToolDone(..)) => unreachable!(),
+                None => {
+                    let end = match task.await {
+                        Ok(Ok(reply)) => {
+                            let mut end =
+                                json!({"done": true, "reply": reply.trim(), "conversation": id});
+                            if let Some(command) = command {
+                                end["command"] = json!(command);
+                            }
+                            end
+                        }
+                        Ok(Err(e)) => json!({"error": format!("{e:#}")}),
+                        Err(e) => json!({"error": e.to_string()}),
+                    };
+                    (event(end), Stream::Done)
+                }
+            })
+        }
     })
 }
 
@@ -632,12 +656,17 @@ mod tests {
     use crate::place::Place;
 
     async fn start(token: &str) -> String {
+        start_with(token, vec![]).await
+    }
+
+    async fn start_with(token: &str, command_dirs: Vec<std::path::PathBuf>) -> String {
         let place = Place {
             config: Config::from_table(toml::from_str("[llm]\nbackend = \"mock\"\n").unwrap())
                 .unwrap(),
             read: vec![],
             instructions: vec![],
             skill_dirs: vec![],
+            command_dirs,
         };
         let harness = Harness::build(&place, false).await.unwrap();
         let chat = Chat::build(&place.config, &harness).unwrap();
@@ -701,6 +730,68 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_command_reaches_the_model_as_its_prompt() {
+        let dir = crate::skills::tests::scratch("http-commands");
+        crate::skills::tests::write(
+            &dir.join("play.md"),
+            "---\ndescription: Play music\n---\nPlay this: $ARGUMENTS",
+        );
+        let url = start_with("", vec![dir]).await;
+        let http = reqwest::Client::new();
+        let post = |text: &str, stream: bool| {
+            http.post(format!("{url}/chat"))
+                .json(&json!({"text": text, "stream": stream}))
+                .send()
+        };
+        let reply: Value = post("/play Coltrane", false)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        // The mock model says back what it was sent.
+        assert!(
+            reply["reply"]
+                .as_str()
+                .unwrap()
+                .starts_with("You said: Play this: Coltrane."),
+            "{reply}"
+        );
+        assert_eq!(reply["command"], "play");
+        let streamed = post("/play Monk", true)
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(streamed.contains(r#""command":"play""#), "{streamed}");
+        // Anything else goes as written.
+        let reply: Value = post("/etc/hosts", false)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            reply["reply"]
+                .as_str()
+                .unwrap()
+                .starts_with("You said: /etc/hosts."),
+            "{reply}"
+        );
+        assert!(reply.get("command").is_none());
+        let health: Value = http
+            .get(format!("{url}/health"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(health["commands"], json!(["play"]));
+    }
+
     /// An API with agent sessions (the mock session model) behind the token and the PIN 1234.
     async fn start_agent(name: &str) -> String {
         start_agent_with(name).await.0
@@ -713,6 +804,7 @@ mod tests {
             read: vec![],
             instructions: vec![],
             skill_dirs: vec![],
+            command_dirs: vec![],
         };
         let harness = Harness::build(&place, false).await.unwrap();
         let chat = Chat::build(&place.config, &harness).unwrap();

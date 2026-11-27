@@ -67,6 +67,14 @@ impl Skills {
         self.skills.iter().map(|s| s.name.as_str()).collect()
     }
 
+    /// Each skill's name and description, in order.
+    pub fn described(&self) -> Vec<(&str, &str)> {
+        self.skills
+            .iter()
+            .map(|s| (s.name.as_str(), s.description.as_str()))
+            .collect()
+    }
+
     /// Scans `dirs`: each holds one folder per skill, or is a skill's folder itself. Problems
     /// are logged and leave that skill out.
     pub fn load(dirs: &[PathBuf]) -> Skills {
@@ -203,7 +211,7 @@ impl Skills {
     }
 
     /// SKILL.md's body (its first page, and where the rest is), then the skill's other files.
-    fn instructions(&self, name: &str) -> Result<String, String> {
+    pub(crate) fn instructions(&self, name: &str) -> Result<String, String> {
         let skill = self.find(name)?;
         let page = read_page(&skill.root.join(SKILL_FILE), 1)?;
         let (_, body) = frontmatter(&page.text)?;
@@ -331,7 +339,7 @@ fn load_skill(folder: &Path) -> Result<Skill, String> {
 
 /// The spec's rule: 1 to 64 lowercase letters, digits and hyphens, with no hyphen at either
 /// end or two in a row.
-fn check_name(name: &str) -> Result<(), String> {
+pub(crate) fn check_name(name: &str) -> Result<(), String> {
     let ok = !name.is_empty()
         && name.len() <= MAX_NAME
         && name
@@ -355,7 +363,7 @@ fn check_name(name: &str) -> Result<(), String> {
 /// may go on over indented lines), plus YAML's `>` and `|` blocks. Indented lines under a key
 /// with no value (a nested map such as `metadata:`) are skipped, as are comments; only
 /// top-level keys are kept.
-fn frontmatter(text: &str) -> Result<(HashMap<String, String>, &str), String> {
+pub(crate) fn frontmatter(text: &str) -> Result<(HashMap<String, String>, &str), String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut lines = text.split_inclusive('\n');
     if lines.next().map(str::trim_end) != Some("---") {

@@ -46,6 +46,8 @@ pub struct Config {
     pub mcp: Vec<McpServer>,
     #[serde(default)]
     pub skills: Skills,
+    #[serde(default)]
+    pub commands: Commands,
     /// Web search (search.rs): `[search]` for one backend, `[[search]]` for several, tried in
     /// order until one answers.
     #[serde(default, deserialize_with = "one_or_more")]
@@ -410,6 +412,15 @@ fn default_tavily_url() -> String {
 #[serde(deny_unknown_fields)]
 pub struct Skills {
     /// Folders holding one folder per skill, relative to the config file. Empty: no skills.
+    #[serde(default)]
+    pub dirs: Vec<String>,
+}
+
+/// Slash commands (commands.rs): prompts kept as markdown files, typed as /name in text turns.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Commands {
+    /// Folders holding the command files, relative to the config file.
     #[serde(default)]
     pub dirs: Vec<String>,
 }
