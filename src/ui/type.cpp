@@ -126,7 +126,9 @@ std::vector<std::string> wrap(const TextStyle &s, const std::string &text, int w
   std::string line;
   size_t i = 0;
   while (i < text.size()) {
-    const size_t sp = text.find(' ', i);
+    // Any whitespace parts words: a reply's newlines (between its rounds, in a list) would
+    // otherwise join the words on either side, as they draw as nothing.
+    const size_t sp = text.find_first_of(" \n\r\t", i);
     const std::string word = text.substr(i, sp == std::string::npos ? std::string::npos : sp - i);
     i = sp == std::string::npos ? text.size() : sp + 1;
     if (word.empty()) continue;

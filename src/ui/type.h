@@ -79,7 +79,8 @@ void drawText(Canvas &c, const Rect &box, const std::string &text, const TextSty
 std::string ellipsize(const TextStyle &s, const std::string &text, int maxWidth);
 std::string ellipsizeFront(const TextStyle &s, const std::string &text, int maxWidth);
 
-// Greedy word wrap into at most maxLines lines; the last line is ellipsized.
+// Greedy word wrap into at most maxLines lines; the last line is ellipsized. Any whitespace
+// parts words (a newline too: it doesn't break the line).
 std::vector<std::string> wrap(const TextStyle &s, const std::string &text, int width,
                               int maxLines);
 
