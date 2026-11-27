@@ -1,0 +1,5 @@
+# What a running daemon keeps here: the token and keys, its sessions and their work.
+inkharness.toml
+.env
+sessions/
+work/
