@@ -215,6 +215,13 @@ async fn open(cfg: &config::McpServer, logs: bool) -> Result<Client> {
         (Some(command), None) => {
             let mut process = tokio::process::Command::new(command);
             process.args(&cfg.args).envs(&cfg.env);
+            if let Some(dir) = &cfg.cwd {
+                // A missing folder would otherwise read as a missing command.
+                if !std::path::Path::new(dir).is_dir() {
+                    bail!("its cwd {dir} isn't a folder");
+                }
+                process.current_dir(dir);
+            }
             let stderr = if logs {
                 std::process::Stdio::inherit()
             } else {
@@ -415,6 +422,41 @@ pub(crate) mod tests {
             server.talk = false;
         }
         mcp
+    }
+
+    fn command(command: &str, args: &[&str], cwd: Option<&str>) -> config::McpServer {
+        config::McpServer {
+            name: "c".into(),
+            url: None,
+            token_env: None,
+            command: Some(command.into()),
+            args: args.iter().map(|a| a.to_string()).collect(),
+            env: Default::default(),
+            cwd: cwd.map(str::to_string),
+            headers: Default::default(),
+            tools: None,
+            timeout_ms: 5000,
+            talk: true,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_command_runs_in_its_cwd() {
+        let dir = crate::skills::tests::scratch("mcp-run-cwd");
+        // Not an MCP server: it writes where it ran and leaves, so the handshake fails.
+        let cfg = command("sh", &["-c", "pwd > ran-here"], dir.to_str());
+        assert!(open(&cfg, false).await.is_err());
+        let ran = std::fs::read_to_string(dir.join("ran-here")).unwrap();
+        assert_eq!(
+            std::path::Path::new(ran.trim()).canonicalize().unwrap(),
+            dir.canonicalize().unwrap()
+        );
+
+        let missing = dir.join("missing");
+        let cfg = command("true", &[], missing.to_str());
+        let err = open(&cfg, false).await.err().unwrap().to_string();
+        assert!(err.contains("isn't a folder"), "{err}");
     }
 
     #[test]

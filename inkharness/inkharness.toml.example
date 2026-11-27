@@ -123,6 +123,7 @@ api_key_env = "OPENAI_API_KEY"
 # command = "target/release/examples/mcp_demo"
 # args = []
 # env = { }
+# cwd = "."                   # the folder it runs in, from this file's; unset: where inkharness started
 
 # --- Web search ------------------------------------------------------------------------
 # The web_search tool, for what the models don't know or what has changed: news, scores,
