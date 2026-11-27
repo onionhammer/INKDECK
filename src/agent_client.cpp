@@ -903,6 +903,13 @@ void onControl(const uint8_t *payload, size_t len) {
       if (shared.reply.size() < kMaxText) shared.reply += field(json, "delta");
       generation++;
     }
+  } else if (type == "status") {
+    // What the turn is doing while the reply waits ("" once it goes on): shown, not said.
+    if (s.staleEnds == 0) {
+      Locked l;
+      shared.doing = field(json, "text");
+      generation++;
+    }
   } else if (type == "reply_start") {
     const cJSON *rate = cJSON_GetObjectItemCaseSensitive(json, "rate");
     const int hz = cJSON_IsNumber(rate) ? rate->valueint : 0;
@@ -918,6 +925,13 @@ void onControl(const uint8_t *payload, size_t len) {
       --s.staleEnds;  // the end of a turn cut short; a new utterance is already under way
     } else if (s.turnOpen) {
       s.turnOpen = false;
+      {
+        Locked l;
+        if (!shared.doing.empty()) {
+          shared.doing.clear();
+          generation++;
+        }
+      }
       if (s.stream) {
         audio::streamEnd();
         s.playingOut = true;
@@ -1228,6 +1242,7 @@ bool connectLink(bool quiet, uint32_t deadline) {
       shared.error.clear();
       shared.heard.clear();
       shared.reply.clear();
+      shared.doing.clear();
       answers.clear();  // late ones, for a session that has gone
     }
     setState(State::Connecting);
@@ -1414,6 +1429,7 @@ void beginTalk() {
     Locked l;
     shared.heard.clear();
     shared.reply.clear();
+    shared.doing.clear();
     shared.error.clear();
   }
   if (!audio::captureStart(true)) {
@@ -1693,6 +1709,7 @@ void sayResult() {
     Locked l;
     shared.heard.clear();
     shared.reply.clear();
+    shared.doing.clear();
     shared.error.clear();
   }
   if (!sendControl("{\"type\":\"speak\",\"session\":" + quoted(id) + "}")) return;

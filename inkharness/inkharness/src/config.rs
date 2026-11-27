@@ -299,12 +299,32 @@ fn default_herdr_program() -> String {
 }
 
 /// [talk]: what a talk turn (HOLD BOOT outside the Agent) may use.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Talk {
     /// Tool names, or prefixes ending in `*`. The device's tools always stay. Unset: every
     /// tool.
     pub tools: Option<Vec<String>>,
+    /// Model rounds (each a reply that may call tools) before a turn gives up; the last is
+    /// told to answer with what it has. The board shows each tool call meanwhile.
+    #[serde(default = "default_talk_rounds")]
+    pub max_rounds: usize,
+}
+
+impl Default for Talk {
+    fn default() -> Self {
+        Talk {
+            tools: None,
+            max_rounds: default_talk_rounds(),
+        }
+    }
+}
+
+fn default_talk_rounds() -> usize {
+    crate::llm::TALK_ROUNDS
+}
+fn default_chat_rounds() -> usize {
+    crate::llm::CHAT_ROUNDS
 }
 
 pub(crate) fn default_agent_dir() -> String {
@@ -481,11 +501,17 @@ impl Default for Js {
     }
 }
 
-/// [chat]: a model for replies that are read, such as a text model where [llm] hears and speaks.
+/// [chat]: text turns (the terminal, HTTP): their own model, such as a text one where [llm]
+/// hears and speaks, and how many rounds they get.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatModel {
-    pub llm: Llm,
+    /// Unset: [llm].
+    pub llm: Option<Llm>,
+    /// Model rounds (each a reply that may call tools) before a turn gives up; the last is
+    /// told to answer with what it has.
+    #[serde(default = "default_chat_rounds")]
+    pub max_rounds: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -642,10 +668,26 @@ impl Config {
         if let Some(llm) = self.agent.as_ref().and_then(|a| a.llm.as_ref()) {
             return ("[agent.llm]", llm);
         }
-        match &self.chat {
-            Some(chat) => ("[chat.llm]", &chat.llm),
+        match self.chat.as_ref().and_then(|c| c.llm.as_ref()) {
+            Some(llm) => ("[chat.llm]", llm),
             None => ("[llm]", &self.llm),
         }
+    }
+
+    /// The model text turns use: [chat.llm], else [llm].
+    pub fn chat_model(&self) -> &Llm {
+        self.chat
+            .as_ref()
+            .and_then(|c| c.llm.as_ref())
+            .unwrap_or(&self.llm)
+    }
+
+    /// Model rounds a text turn gets.
+    pub fn chat_rounds(&self) -> usize {
+        self.chat
+            .as_ref()
+            .map_or(crate::llm::CHAT_ROUNDS, |c| c.max_rounds)
+            .max(1)
     }
 
     /// The stages a model needs are there: a transcript for a model that reads, speech for
@@ -790,7 +832,9 @@ pub fn spoken_prompt() -> String {
      aloud, so answer in one or two short plain sentences with no markdown, lists or emoji. \
      Use the tools to control things in the home; if no tool fits, say so. Only say you did \
      something if a tool call in this conversation did it, and don't offer to do things no \
-     tool can do."
+     tool can do. When an answer needs more than one tool call, first say a few words so they \
+     know you're on it (\"Let me check.\"), then make the calls, the ones that don't need \
+     each other's results together."
         .into()
 }
 /// For replies that are read: the terminal, HTTP.
@@ -957,6 +1001,27 @@ mod tests {
         assert_eq!(
             names(&cfg(&format!("{llm}[agent]\n"))),
             ("[llm]", "mock".into())
+        );
+    }
+
+    #[test]
+    fn rounds_for_talk_and_chat() {
+        let cfg = |toml: &str| -> super::Config { toml::from_str(toml).unwrap() };
+        let llm = "[llm]\nbackend = \"mock\"\n";
+        let plain = cfg(llm);
+        assert_eq!(plain.talk.max_rounds, crate::llm::TALK_ROUNDS);
+        assert_eq!(plain.chat_rounds(), crate::llm::CHAT_ROUNDS);
+        // [chat] without a model of its own keeps [llm].
+        let set = cfg(&format!(
+            "{llm}[talk]\nmax_rounds = 16\n[chat]\nmax_rounds = 30\n"
+        ));
+        assert_eq!(set.talk.max_rounds, 16);
+        assert_eq!(set.chat_rounds(), 30);
+        assert_eq!(set.chat_model().name(), "mock");
+        assert_eq!(set.agent_model().0, "[llm]");
+        assert_eq!(
+            cfg(&format!("{llm}[chat]\nmax_rounds = 0\n")).chat_rounds(),
+            1
         );
     }
 

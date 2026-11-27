@@ -477,6 +477,9 @@ async fn turn(
                         reply_rate = rate;
                         println!("[{:>5} ms] reply starts, {rate} Hz", ms());
                     }
+                    ServerMsg::Status { text } if !text.is_empty() => {
+                        println!("[{:>5} ms] doing: {text}", ms())
+                    }
                     ServerMsg::Text { delta } => {
                         if text.is_empty() {
                             println!("[{:>5} ms] first text", ms());

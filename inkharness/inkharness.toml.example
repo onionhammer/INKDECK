@@ -76,6 +76,11 @@ api_key_env = "OPENAI_API_KEY"
 # model = "claude-opus-5-5"
 # effort = "low"
 # api_key_env = "ANTHROPIC_API_KEY"
+#
+# A text turn gets 20 rounds (each a reply that may call tools; the last is told to answer
+# with what it has). [chat] without a [chat.llm] keeps [llm].
+# [chat]
+# max_rounds = 20
 
 # --- Speech cache ----------------------------------------------------------------------
 # Short sentences (up to 80 characters) are kept as audio and replayed without a request;
@@ -243,5 +248,8 @@ api_key_env = "OPENAI_API_KEY"
 # tool. Talk turns never see the sessions, whatever this says; their one way in is
 # propose_job, which files a job for someone behind the PIN to start (list it, or leave it
 # out of `tools` to keep talk from filing any).
+# A talk turn gets 12 rounds (each a reply that may call tools): the board shows each call
+# while it runs, and the last round is told to answer with what it has.
 # [talk]
 # tools = ["run_js", "web_search", "think_harder", "home_*"]
+# max_rounds = 12

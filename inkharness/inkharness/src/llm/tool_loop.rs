@@ -196,6 +196,11 @@ impl Speaker {
     }
 }
 
+/// Told to the model before the last round a turn allows.
+pub const LAST_ROUND: &str = "That is as many tool calls as this turn allows: don't call any \
+     more tools. Answer now with what you found and what you did, and say plainly what is \
+     left undone.";
+
 /// A backend: a provider's API driven by the shared loop.
 pub struct ToolLoop<A>(pub A);
 
@@ -213,7 +218,11 @@ impl<A: ChatApi> Llm for ToolLoop<A> {
         let api = &self.0;
         let mut conversation = api.start(&request);
         let mut speaker = Speaker::new(out);
-        for _ in 0..request.rounds {
+        for round in 0..request.rounds {
+            if round > 0 && round + 1 == request.rounds {
+                // Rather than fail with nothing said, the last round answers with what it has.
+                api.add_user(&mut conversation, LAST_ROUND);
+            }
             speaker.next_round();
             let round = api
                 .round(&conversation, request.tools.defs(), &mut speaker)
@@ -411,6 +420,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_last_round_is_told_to_answer() {
+        let calls = || {
+            (
+                vec![],
+                vec![call("run_js", r#"{"code": "1"}"#)],
+                Stop::ToolUse,
+            )
+        };
+        let llm = script(vec![
+            calls(),
+            calls(),
+            (vec!["Did two."], vec![], Stop::Done),
+        ]);
+        let tools = crate::tools::ToolSet::build(
+            None,
+            &crate::config::Js::default(),
+            Default::default(),
+            Default::default(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        let request = Request {
+            system: "s",
+            history: &[],
+            user: "q",
+            audio: None,
+            tools: &tools,
+            rounds: 3,
+            steer: None,
+        };
+        let drain = async { while rx.recv().await.is_some() {} };
+        let (result, ()) = tokio::join!(llm.respond(request, tx), drain);
+        assert_eq!(result.unwrap(), Outcome::Done);
+        let sent = llm.0.1.lock().unwrap();
+        let told = |round: &Vec<String>| round.iter().any(|m| m == &format!("user: {LAST_ROUND}"));
+        assert!(!told(&sent[1]), "{:?}", sent[1]);
+        assert!(told(&sent[2]), "{:?}", sent[2]);
+    }
+
+    #[tokio::test]
     async fn first_text_in_a_later_round_has_no_newline() {
         let llm = script(vec![
             (
@@ -453,7 +503,7 @@ mod tests {
         let (result, text) = collect(&llm, "q").await;
         assert_eq!((result.unwrap(), text.as_str()), (Outcome::Done, "Cut"));
 
-        let endless = (0..crate::llm::MAX_ROUNDS)
+        let endless = (0..crate::llm::TALK_ROUNDS)
             .map(|_| {
                 (
                     vec![],
@@ -519,7 +569,10 @@ mod tests {
                 "user: make it Saturday"
             ]
         );
-        assert_eq!(seen[2].len(), 4, "said once: {:?}", seen[2]);
+        let steered = seen[2].iter().filter(|m| *m == "user: make it Saturday");
+        assert_eq!(steered.count(), 1, "said once: {:?}", seen[2]);
+        // The third round is the last of three: it's told to answer.
+        assert_eq!(seen[2].last().unwrap(), &format!("user: {LAST_ROUND}"));
 
         // Three rounds of calls with only three allowed.
         let llm = script(

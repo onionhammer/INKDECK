@@ -69,8 +69,9 @@ pub struct Request<'a> {
     /// The recording of it, for a model that hears.
     pub audio: Option<&'a Recording>,
     pub tools: &'a ToolSet,
-    /// Model rounds allowed before the reply fails with [`TooManyRounds`]: [`MAX_ROUNDS`] for
-    /// a turn someone waits on, more for an agent session.
+    /// Model rounds allowed before the reply fails with [`TooManyRounds`]: `[talk]` and
+    /// `[chat]` `max_rounds` for a turn someone waits on, more for an agent session. The last
+    /// one is told to answer with what it has.
     pub rounds: usize,
     /// What the user said while the reply was being worked on (an agent session that is
     /// talked into): asked after each round's tool results, and whatever it returns joins the
@@ -81,8 +82,10 @@ pub struct Request<'a> {
 /// See [`Request::steer`].
 pub type Steer<'a> = dyn Fn() -> Vec<String> + Send + Sync + 'a;
 
-/// Model rounds in a turn someone is waiting on, before giving up.
-pub const MAX_ROUNDS: usize = 6;
+/// Model rounds in a spoken turn, by default (`[talk] max_rounds`).
+pub const TALK_ROUNDS: usize = 12;
+/// Model rounds in a text turn (the terminal, HTTP), by default (`[chat] max_rounds`).
+pub const CHAT_ROUNDS: usize = 20;
 
 /// The model was still calling tools after the rounds a request allows.
 #[derive(Debug)]
@@ -298,7 +301,7 @@ pub(crate) mod testserver {
             user,
             audio,
             tools: &tools,
-            rounds: super::MAX_ROUNDS,
+            rounds: super::TALK_ROUNDS,
             steer: None,
         };
         let (result, (text, pcm)) = tokio::join!(llm.respond(request, tx), async {

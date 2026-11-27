@@ -120,7 +120,8 @@ last reply on the clipboard instead, by OSC 52.
 `//text` sends `/text` as it is. `--plain` (and any pipe) gives the chat as lines instead: the reply
 prints as it's written, tool calls on dim lines on stderr, and from a pipe each line is a turn.
 The built-ins there are `/help`, `/clear`, `/tools`, `/skills`, `/mcp`, `/cost` and `/quit`. The
-chat uses `[llm]`, or `[chat.llm]` if there is one. A model that speaks (`output = "audio"`)
+chat uses `[llm]`, or `[chat.llm]` if there is one, and a turn gets 20 rounds of tool calls
+(`[chat] max_rounds`; the last is told to answer with what it has). A model that speaks (`output = "audio"`)
 still speaks there: OpenAI's audio models answer text only with audio, so the transcript is shown
 and the audio goes nowhere. A text model in `[chat.llm]` is cheaper and quicker.
 
@@ -240,6 +241,7 @@ shell = "deny"          # "allow": sh -c in the work folder, as the daemon's use
 
 [talk]                  # what HOLD BOOT outside the Agent may use; unset: every tool
 tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixes ending in *; the board's own always stay
+max_rounds = 12         # model rounds a talk turn gets (each a reply that may call tools)
 ```
 
 - A session runs on `[agent.llm]` if there is one, else on `[chat.llm]`, else on `[llm]`: any
@@ -426,6 +428,13 @@ mic → TCP → speech-to-text → model + tools → text-to-speech → TCP → 
 
 A model that hears can take the recording itself, and one that speaks can say its own reply,
 which leaves out one stage or both ([Models that hear or speak](#models-that-hear-or-speak)).
+
+A turn gets 12 rounds of tool calls (`[talk] max_rounds`). While the reply waits on a tool, the
+board shows what it's doing beside THINKING (a `status` message: `Searching the web: plumbers`,
+`Play music: Kind of Blue`), and the spoken prompt asks the model to say a few words
+first ("Let me check.") when an answer takes more than one call. On the last round the model is
+told to stop calling tools and answer with what it found and what's left undone, rather than
+the turn failing with nothing said.
 
 Each stage is a trait with swappable backends, chosen in `inkharness.toml`:
 

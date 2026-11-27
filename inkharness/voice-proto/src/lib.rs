@@ -296,6 +296,12 @@ pub enum ServerMsg {
     Text {
         delta: String,
     },
+    /// What the turn is doing while the reply waits on it, such as a tool call ("Searching
+    /// the web: …"), for the display and not said. "" when the reply goes on. A device that
+    /// doesn't know it ignores it.
+    Status {
+        text: String,
+    },
     /// The turn is over. May arrive without a `reply_start` (nothing to say, or an abort).
     ReplyEnd,
     /// The model calls one of the device's tools; the device answers `tool_result` with the

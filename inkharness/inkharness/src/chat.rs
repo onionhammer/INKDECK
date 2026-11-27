@@ -31,6 +31,8 @@ pub struct Chat {
     think: Option<(Box<dyn Llm>, ToolSet)>,
     /// Slash commands: the command files, and the skills.
     commands: Arc<Commands>,
+    /// Model rounds a turn gets ([chat] max_rounds).
+    rounds: usize,
     pub model: String,
 }
 
@@ -43,7 +45,7 @@ impl Chat {
             )),
             None => None,
         };
-        let model = cfg.chat.as_ref().map_or(&cfg.llm, |chat| &chat.llm);
+        let model = cfg.chat_model();
         Ok(Chat {
             system: harness.prompt(cfg, false),
             llm: llm::build(model, harness.http.clone())?,
@@ -54,6 +56,7 @@ impl Chat {
             },
             think,
             commands: harness.commands.clone(),
+            rounds: cfg.chat_rounds(),
             model: model.name().to_string(),
         })
     }
@@ -88,7 +91,7 @@ impl Chat {
                 user,
                 audio: None,
                 tools,
-                rounds: llm::MAX_ROUNDS,
+                rounds: self.rounds,
                 steer: None,
             };
             let outcome = self.llm.respond(request(&self.tools), tx.clone()).await?;
