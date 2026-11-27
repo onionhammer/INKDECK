@@ -10,8 +10,9 @@
 //! - Skills: `skills/`, `.agents/skills/` and `.claude/skills/` in the folder, the global
 //!   `skills/`, and `[skills] dirs`. Of two skills with one name, the folder's is kept.
 //! - `.mcp.json`: MCP servers in the format other agents use (`mcpServers`), with `${VAR}`
-//!   and `${VAR:-default}` taken from the environment and `.env`. They join `[[mcp]]`; of two
-//!   servers with one name, the folder's file wins.
+//!   and `${VAR:-default}` taken from the environment and `.env`, and `${workspaceFolder}`
+//!   the folder it starts in. A server's `cwd` is relative to the file's folder. They join
+//!   `[[mcp]]`; of two servers with one name, the folder's file wins.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -27,6 +28,8 @@ const INSTRUCTION_FILES: [&str; 3] = ["AGENTS.md", "AGENT.md", "CLAUDE.md"];
 /// Folders that hold skills, in the folder it starts in.
 const SKILL_DIRS: [&str; 3] = ["skills", ".agents/skills", ".claude/skills"];
 const MCP_FILE: &str = ".mcp.json";
+/// In a .mcp.json, the folder inkharness started in (VS Code's name for it).
+const WORKSPACE_VAR: &str = "workspaceFolder";
 /// An instructions file is cut at this size: all of it goes into every request.
 const MAX_INSTRUCTIONS: usize = 64 * 1024;
 
@@ -116,7 +119,7 @@ pub fn load(dir: &Path, explicit: Option<&Path>) -> Result<Place> {
         .map(|d| d.join(MCP_FILE))
         .filter(|f| f.is_file())
     {
-        for server in read_mcp_json(&file)? {
+        for server in read_mcp_json(&file, dir)? {
             if let Some(i) = config.mcp.iter().position(|s| s.name == server.name) {
                 tracing::info!(server = %server.name, file = %file.display(), "replaces an earlier MCP server of that name");
                 config.mcp.remove(i);
@@ -224,6 +227,16 @@ fn resolve_paths(table: &mut toml::Table, base: &Path) {
     {
         dirs.iter_mut().for_each(fix);
     }
+    // The folders MCP commands run in.
+    if let Some(toml::Value::Array(servers)) = table.get_mut("mcp") {
+        for server in servers {
+            if let toml::Value::Table(server) = server
+                && let Some(cwd) = server.get_mut("cwd")
+            {
+                fix(cwd);
+            }
+        }
+    }
     // The sessions' folder, from the file whose [agent] table is used, and the claude
     // backend's.
     if let Some(toml::Value::Table(agent)) = table.get_mut("agent") {
@@ -280,6 +293,8 @@ struct McpJsonServer {
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
+    /// The folder the command runs in, relative to the .mcp.json's folder.
+    cwd: Option<String>,
     url: Option<String>,
     #[serde(default)]
     headers: HashMap<String, String>,
@@ -293,18 +308,23 @@ struct McpJsonServer {
 }
 
 /// The servers in a .mcp.json. One that can't be used (a variable not set) is logged and left
-/// out; a file that isn't JSON stops the start.
-fn read_mcp_json(file: &Path) -> Result<Vec<McpServer>> {
+/// out; a file that isn't JSON stops the start. `workspace` is the folder inkharness started
+/// in, for `${workspaceFolder}`.
+fn read_mcp_json(file: &Path, workspace: &Path) -> Result<Vec<McpServer>> {
     let text =
         std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
     let parsed: McpJson =
         serde_json::from_str(&text).with_context(|| format!("parsing {}", file.display()))?;
+    let vars = Vars {
+        workspace,
+        base: file.parent().unwrap_or(Path::new(".")),
+    };
     let mut servers = Vec::new();
     for (name, server) in parsed.servers {
         if server.disabled {
             continue;
         }
-        match mcp_server(&name, server) {
+        match mcp_server(&name, server, &vars) {
             Ok(server) => servers.push(server),
             Err(e) => {
                 tracing::error!(server = %name, file = %file.display(), "MCP server left out: {e:#}")
@@ -314,7 +334,16 @@ fn read_mcp_json(file: &Path) -> Result<Vec<McpServer>> {
     Ok(servers)
 }
 
-fn mcp_server(name: &str, s: McpJsonServer) -> Result<McpServer> {
+/// What a .mcp.json's values are read against.
+struct Vars<'a> {
+    /// The folder inkharness started in: `${workspaceFolder}`, as VS Code names it.
+    workspace: &'a Path,
+    /// The .mcp.json's folder, where a relative cwd starts.
+    base: &'a Path,
+}
+
+fn mcp_server(name: &str, s: McpJsonServer, vars: &Vars) -> Result<McpServer> {
+    let expand = |text: &str| expand(text, vars.workspace);
     let kind = s
         .kind
         .as_deref()
@@ -342,6 +371,14 @@ fn mcp_server(name: &str, s: McpJsonServer) -> Result<McpServer> {
             .map(|(k, v)| Ok((k, expand(&v)?)))
             .collect()
     };
+    let cwd = match s.cwd.as_deref() {
+        Some(dir) => Some(
+            resolve(vars.base, &expand(dir)?)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        None => None,
+    };
     Ok(McpServer {
         name: name.to_string(),
         url,
@@ -349,6 +386,7 @@ fn mcp_server(name: &str, s: McpJsonServer) -> Result<McpServer> {
         command,
         args: s.args.iter().map(|a| expand(a)).collect::<Result<_>>()?,
         env: map(s.env)?,
+        cwd,
         headers: map(s.headers)?,
         tools: s.tools,
         timeout_ms: s.timeout_ms.unwrap_or_else(config::default_mcp_timeout_ms),
@@ -356,8 +394,9 @@ fn mcp_server(name: &str, s: McpJsonServer) -> Result<McpServer> {
     })
 }
 
-/// `${VAR}` and `${VAR:-default}` from the environment and `.env`.
-fn expand(text: &str) -> Result<String> {
+/// `${VAR}` and `${VAR:-default}` from the environment and `.env`, and `${workspaceFolder}`,
+/// the folder inkharness started in (so a .mcp.json written for VS Code works as it is).
+fn expand(text: &str, workspace: &Path) -> Result<String> {
     let mut out = String::new();
     let mut rest = text;
     while let Some(start) = rest.find("${") {
@@ -370,7 +409,12 @@ fn expand(text: &str) -> Result<String> {
             Some((var, default)) => (var, Some(default)),
             None => (&after[..end], None),
         };
-        match (config::lookup(var), default) {
+        let value = if var == WORKSPACE_VAR {
+            Some(workspace.to_string_lossy().into_owned())
+        } else {
+            config::lookup(var)
+        };
+        match (value, default) {
             (Some(value), _) => out.push_str(&value),
             (None, Some(default)) => out.push_str(default),
             (None, None) => bail!("${var} isn't set"),
@@ -445,6 +489,7 @@ mod tests {
 
     #[test]
     fn variables_expand() {
+        let expand = |text| expand(text, Path::new("/work"));
         unsafe { std::env::set_var("INKHARNESS_TEST_EXPAND", "secret") };
         assert_eq!(
             expand("Bearer ${INKHARNESS_TEST_EXPAND}").unwrap(),
@@ -457,6 +502,39 @@ mod tests {
         assert!(expand("${INKHARNESS_TEST_UNSET}").is_err());
         assert!(expand("${OPEN").is_err());
         assert_eq!(expand("plain").unwrap(), "plain");
+        assert_eq!(
+            expand("${workspaceFolder}/mcp/server.js").unwrap(),
+            "/work/mcp/server.js"
+        );
+    }
+
+    #[test]
+    fn mcp_cwd_resolves_from_its_file() {
+        let dir = crate::skills::tests::scratch("mcp-cwd");
+        let file = dir.join(".mcp.json");
+        crate::skills::tests::write(
+            &file,
+            r#"{"mcpServers": {
+                "rel": {"command": "x", "cwd": "tools"},
+                "abs": {"command": "x", "cwd": "/srv/mcp"},
+                "ws": {"command": "node", "args": ["./mcp/server.js"], "cwd": "${workspaceFolder}"},
+                "none": {"command": "x"}
+            }}"#,
+        );
+        let servers = read_mcp_json(&file, Path::new("/work")).unwrap();
+        let cwd = |name: &str| servers.iter().find(|s| s.name == name).unwrap().cwd.clone();
+        assert_eq!(cwd("rel"), Some(dir.join("tools").display().to_string()));
+        assert_eq!(cwd("abs").as_deref(), Some("/srv/mcp"));
+        assert_eq!(cwd("ws").as_deref(), Some("/work"));
+        assert_eq!(cwd("none"), None);
+
+        // [[mcp]] cwd, from the inkharness.toml's folder.
+        let mut t = table(
+            "[[mcp]]\nname = \"a\"\ncommand = \"x\"\ncwd = \"tools\"\n[[mcp]]\nname = \"b\"\ncommand = \"x\"\n",
+        );
+        resolve_paths(&mut t, Path::new("/base"));
+        assert_eq!(t["mcp"][0]["cwd"].as_str(), Some("/base/tools"));
+        assert!(t["mcp"][1].get("cwd").is_none());
     }
 
     #[test]
@@ -473,7 +551,7 @@ mod tests {
                 "broken": {"command": "${INKHARNESS_TEST_UNSET}"}
             }}"#,
         );
-        let servers = read_mcp_json(&file).unwrap();
+        let servers = read_mcp_json(&file, &dir).unwrap();
         let names: Vec<_> = servers.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["files", "remote"]);
         assert_eq!(servers[0].command.as_deref(), Some("npx"));

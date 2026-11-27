@@ -59,10 +59,14 @@ From the folder it starts in, and from the global config folder (`~/.config/inkh
 ```
 
 `${VAR}` and `${VAR:-default}` come from the environment and `.env`; a server whose variable isn't
-set is left out. `type` is `stdio` (the default with a `command`) or `http`; `sse` is tried as
-streamable HTTP. `"disabled": true` skips a server, and inkharness also reads `tools` (an
-allowlist), `timeout_ms` and `talk` (false: talk turns don't get its tools, only sessions). A folder's commands run when inkharness starts there, so read a
-`.mcp.json` you didn't write first.
+set is left out. `${workspaceFolder}` is the folder inkharness started in, as VS Code has it, so a
+file written for VS Code works as it is. `type` is `stdio` (the default with a `command`) or
+`http`; `sse` is tried as streamable HTTP. `cwd` is the folder a command runs in, relative to the
+`.mcp.json`'s folder (unset: the folder inkharness started in); `[[mcp]]` takes `cwd` too,
+relative to its `inkharness.toml`. `"disabled": true` skips a server, and inkharness also reads
+`tools` (an allowlist), `timeout_ms` and `talk` (false: talk turns don't get its tools, only
+sessions). A folder's commands run when inkharness starts there, so read a `.mcp.json` you didn't
+write first.
 
 The conversation's first lines say what it read. `-v` logs each step, `-C DIR` starts as if in
 `DIR`.

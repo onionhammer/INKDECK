@@ -430,6 +430,9 @@ pub struct McpServer {
     pub args: Vec<String>,
     #[serde(default)]
     pub env: std::collections::HashMap<String, String>,
+    /// The folder `command` runs in, relative to the file that names it. Unset: the folder
+    /// inkharness started in.
+    pub cwd: Option<String>,
     /// Headers sent with every request to `url` (from a .mcp.json's `headers`).
     #[serde(default)]
     pub headers: std::collections::HashMap<String, String>,
