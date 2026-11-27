@@ -90,6 +90,13 @@ pod now, is filled.
   bump of its own: 0.8 mm slots at 45°, parallel to the frog's hatch, on a 2 mm pitch over a 10 × 6
   patch under its middle (x 87.4 to 97.4, y 9.8 to 15.8), about 24 mm² open. Its thickness isn't
   given; the mock-up draws 3.0.
+- **Revision:** `v0.7` is engraved on the tray's field, at the antenna end: 3 mm above the speaker
+  grille as it reads (x 84.35 to 99.15, y 18.8 to 25.8), centred between the pod's rim and the
+  tray's edge, 2.75 from each. v0.6 has it in the corner by the PWR-side screw, where the pod's
+  corner is now. It's v0.6's engraving otherwise: the same glyphs (`../../revision_glyphs.py`),
+  read the same way as the frog, 0.4 deep with 45° walls in the full 1.2 floor, so 0.8 stays under
+  it. The digit is `REV["n"]` in `build.py`: 7, the next print after v0.6, which the ScanRuler
+  model stays. The first print of this back (2026-11-26) carried no mark.
 - **Plugs:** the MX1.25 plugs enter from +Y at z −5 to −1.6, above the new floor top (−6.0). The
   tub's wall passes under the headers with 1.0 to spare.
 - **Checked:**
@@ -142,7 +149,8 @@ so measure the cell's length, and which side its wiring leaves, before a print.
   mock-up roots them in the new floor.
 - **Fins:** the lowest fin groove goes. The other two re-centre.
 - **Back decoration:** the vents, hazard stripes and revision move up onto the field. The mock-up
-  drops them, and the 0.6 chamfer round the field's edges.
+  carries the revision (**Revision**) and drops the vents, the hazard stripes and the 0.6 chamfer
+  round the field's edges.
 - **Battery leads:** the pocket's walls rise 2.3 mm up the cell's sides, so they need a notch for
   the leads.
 

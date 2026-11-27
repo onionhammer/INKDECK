@@ -387,4 +387,5 @@ tolerances (`clr_side`, `clr_end`, `btn_gap`, `tab_t`, `cap_gap`, `hook_d` and `
 **Flatter back:** a back that hugs the battery: 9.95 mm everywhere but a battery tub, in three
 parts that print without supports, with bevelled edges: [`concepts/flatter-back/`](concepts/flatter-back/README.md).
 Its meshes are the STLs in this folder. Printed once (2026-11-26): the tub's latches were too
-flimsy, and it now holds with solid lugs, not printed yet. This model stays v0.6.
+flimsy, and it now holds with solid lugs, not printed yet. Its tray is engraved v0.7. This model
+stays v0.6.

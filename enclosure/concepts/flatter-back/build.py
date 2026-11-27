@@ -1,11 +1,12 @@
 # /// script
 # requires-python = ">=3.10,<3.13"
-# dependencies = ["cadquery>=2.4", "numpy"]
+# dependencies = ["cadquery>=2.4", "numpy", "shapely>=2.0"]
 # ///
 """The flatter back, from the v0.6 solids in ../../ereader-enclosure.step (a mock-up: the ScanRuler
 model is untouched). The back rises to the field level everywhere except a pod round the battery,
 the pod is its own part (a battery tub) so every part prints flat with no supports, and a 0.8 mm
-45° bevel runs round the back edge and the front bezel's front edge. Writes back-tray.stl,
+45° bevel runs round the back edge and the front bezel's front edge. The tray carries its revision
+(REV), engraved on the field. Writes back-tray.stl,
 battery-tub.stl and front-bezel.stl to enclosure/ (the print meshes, in place of v0.6's),
 flatter-back.step and the joint's test coupons here, and v0.6's meshes and the battery and speaker
 boxes to build/ for pictures.py.
@@ -52,6 +53,13 @@ SPK = dict(x0=85.4, y0=7.8, l=14.0, w=10.0, t=3.0)
 # speaker grille: slots at 45°, parallel to the frog's hatch (its edges run along +X+Y), clipped to a
 # patch 2 in from the speaker's edges; a piece shorter than min_l at a corner is left out
 GRILLE = dict(w=0.8, pitch=2.0, patch=(10.0, 6.0), min_l=2.0)
+
+# The revision, engraved on the tray. v0.6 has it where the pod's corner is now, so here it stands on
+# the field at the antenna end: centred between the pod's rim and the tray's edge, `over` above the
+# speaker grille. The glyphs are v0.6's (../../revision_glyphs.py), read the same way as the frog
+# (+X to -X, thumbwheel side up) and cut the same: `d` deep with 45° walls, in the full floor.
+# `n` is the digit, v0.n. The ScanRuler model is v0.6; this back is the next print, so 7.
+REV = dict(n=7, over=3.0, d=0.4)
 
 # --- the split: the tray's opening and the tub in it ----------------------------------------------
 # The tub drops in from the back and slides SLIDE toward the USB end to lock. Insets are measured in
@@ -254,6 +262,46 @@ tub = tub.cut(ibox(sd, WALL_IN - 0.01, OPEN_IN + L["tooth"] + 0.25, L["tip"] - L
 ya, yb = sorted((Y(sd, i_f), Y(sd, POCKET_IN)))
 features.append(("lock", L["tip"] - 2.5, ya, L["tip"] + L["tooth_l"] + 2.5, yb, L["top"] + 0.2))
 
+# the revision
+import sys; sys.path.insert(0, str(HERE.parents[1]))
+import revision_glyphs as rg
+from shapely.geometry.polygon import orient
+from shapely.ops import unary_union
+
+def groove(poly, z, d, g=0.05):
+    """A groove cut in (+z) from a face at z: `poly` at the face, d deep, walls 45°. It starts g outside
+    the face and g fatter, so the cut is clean there. Each corner moves along its mitre, which holds
+    while no edge closes up on the way in (the revision's volume is checked below)."""
+    def ring(r, grow, zz):
+        pts, out = list(r.coords)[:-1], []
+        for i, b in enumerate(pts):
+            n = []                                                   # the two edges' normals, out of the material
+            for (x0, y0), (x1, y1) in ((pts[i - 1], b), (b, pts[(i + 1) % len(pts)])):
+                l = math.hypot(x1 - x0, y1 - y0); n.append(((y1 - y0) / l, (x0 - x1) / l))
+            k = grow / (1 + n[0][0] * n[1][0] + n[0][1] * n[1][1])
+            out.append(cq.Vector(b[0] + k * (n[0][0] + n[1][0]), b[1] + k * (n[0][1] + n[1][1]), zz))
+        return out
+    poly = orient(poly.simplify(1e-6), 1.0)                          # outline anticlockwise, counters clockwise
+    rings = [poly.exterior, *poly.interiors]
+    lo, hi = [ring(r, g, z - g) for r in rings], [ring(r, -d, z + d) for r in rings]
+    faces = []
+    for level in (lo, hi):
+        wires = [cq.Wire.makePolygon(pts, close=True) for pts in level]
+        faces.append(cq.Face.makeFromWires(wires[0], wires[1:]))
+    for a, b in zip(lo, hi):
+        for i in range(len(a)):
+            j = (i + 1) % len(a)
+            faces.append(cq.Face.makeFromWires(cq.Wire.makePolygon([a[i], a[j], b[j], b[i]], close=True)))
+    return cq.Workplane().add(cq.Solid.makeSolid(cq.Shell.makeShell(faces)))
+
+rev_text = f"v0.{REV['n']}"
+placed = rg.layout(rev_text)
+rev_left = (BCX + HW / 2 + GROW + SLIDE + XO1) / 2 + (placed[-1][1] + rg.W) / 2      # its reading-left edge, at +X
+rev_base = SPK["y0"] + SPK["w"] / 2 + GRILLE["patch"][1] / 2 + REV["over"]
+rev_plan = unary_union([rg.to_world(rg.GLYPHS[ch], gx, rev_left, rev_base) for ch, gx in placed])
+tray_plain = tray
+for glyph in rev_plan.geoms: tray = tray.cut(groove(glyph, Z_FIELD, REV["d"]))
+
 def stl(shape, path):
     cq.exporters.export(shape, str(path), tolerance=0.02, angularTolerance=0.2)
 
@@ -296,6 +344,16 @@ if (BUILD / "depth.npz").exists():
         m = (d["xs"][None, :] >= x0 - 0.25) & (d["xs"][None, :] <= x1 + 0.25) & (d["ys"][:, None] >= y0 - 0.25) & (d["ys"][:, None] <= y1 + 0.25)
         return float(zmin[m].min())
     room = {name: round(under(x0, y0, x1, y1) - top, 2) for name, x0, y0, x1, y1, top in features}
+# the revision: what was cut against the glyphs' own volume (area is quadratic in depth), and that it
+# stands on full floor, 1 clear all round
+area = lambda h: rev_plan.buffer(-h, join_style="mitre").area
+rb = rev_plan.bounds
+revision = dict(
+    text=rev_text, x=[round(rb[0], 2), round(rb[2], 2)], y=[round(rb[1], 2), round(rb[3], 2)],
+    cut_mm3=round(tray_plain.val().Volume() - tray.val().Volume(), 3),
+    glyphs_mm3=round(REV["d"] / 6 * (area(0) + 4 * area(REV["d"] / 2) + area(REV["d"])), 3),
+    floor_left_mm=round(FLOOR - REV["d"], 2),
+    not_floor_mm3=vol(box(rb[0] - 1, rb[1] - 1, Z_FIELD, rb[2] + 1, rb[3] + 1, Z_FTOP).cut(tray_plain)))
 print(json.dumps(dict(
     mm3={k: round(v.val().Volume()) for k, v in parts.items()},
     v06_mm3=dict(tray=round(v06_tray.val().Volume()), bezel=round(v06_bezel.val().Volume())),
@@ -304,4 +362,4 @@ print(json.dumps(dict(
     tray_tub_overlap_mm3=vol(tray.intersect(tub)), way_in_overlap_mm3=way_in, room_over_features_mm=room,
     coupons=dict(valid=[coupon_tub.val().isValid(), coupon_tray.val().isValid()],
                  solids=[len(coupon_tub.solids().vals()), len(coupon_tray.solids().vals())]),
-    grille_mm2=round(grille_mm2, 1)), indent=1))
+    grille_mm2=round(grille_mm2, 1), revision=revision), indent=1))
