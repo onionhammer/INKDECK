@@ -4,9 +4,10 @@
 # ///
 """How deep the board reaches below the PCB, everywhere: rasterises every part of Waveshare's board
 STEP that hangs below the PCB into a min-z map (0.25 mm grid, enclosure frame) and plots it as
-depthmap.png, with the battery and the speaker on it. Also writes build/board.stl for pictures.py.
+../docs/img/depthmap.png, with the battery and the speaker on it. Also writes ../build/board.stl
+for pictures.py and ../build/depth.npz for build.py.
 
-    uv run enclosure/concepts/flatter-back/depthmap.py
+    uv run enclosure/tools/depthmap.py
 """
 from pathlib import Path
 import numpy as np
@@ -30,9 +31,9 @@ from OCP.TopAbs import TopAbs_FACE
 from OCP.BRep import BRep_Tool
 from OCP.TopoDS import TopoDS
 
-HERE = Path(__file__).resolve().parent
-BUILD = HERE / "build"; BUILD.mkdir(exist_ok=True)
-BOARD = HERE.parents[2] / "docs/mechanical/ESP32-S3-EPAPER-3_97-20260821.stp"
+ENC = Path(__file__).resolve().parents[1]   # enclosure/
+BUILD = ENC / "build"; BUILD.mkdir(exist_ok=True)
+BOARD = ENC.parent / "docs/mechanical/ESP32-S3-EPAPER-3_97-20260821.stp"
 
 doc = TDocStd_Document(TCollection_ExtendedString("doc"))
 r = STEPCAFControl_Reader(); r.SetNameMode(True); r.ReadFile(str(BOARD)); r.Transfer(doc)
@@ -105,6 +106,6 @@ for x in np.arange(0, 104, 10): ax.axvline(x, color="w", lw=0.2)
 for y in np.arange(0, 64, 10): ax.axhline(y, color="w", lw=0.2)
 ax.set_title("Depth map under the board (board STEP), enclosure frame")
 ax.set_xlabel("x"); ax.set_ylabel("y")
-plt.savefig(HERE / "depthmap.png", dpi=110, bbox_inches="tight")
+plt.savefig(ENC / "docs/img/depthmap.png", dpi=110, bbox_inches="tight")
 
 cq.exporters.export(cq.importers.importStep(str(BOARD)), str(BUILD / "board.stl"), tolerance=0.05, angularTolerance=0.3)

@@ -1,4 +1,8 @@
-# E-reader enclosure
+# The base case: the ScanRuler model (v0.6)
+
+The case as it's modelled in ScanRuler. The parts that get printed are cut from it by
+`tools/build.py`: see [`flatter-back.md`](flatter-back.md), and [`../README.md`](../README.md) for
+what's where.
 
 Enclosure for the Waveshare ESP32-S3-ePaper-3.97, modelled in ScanRuler's Reverse engineer around
 Waveshare's own STEP of the board (`docs/mechanical/*.stp`, imported as reference bodies), so
@@ -20,18 +24,18 @@ no front) are in git history.
 
 ## v0.6: back tray + snap-on front bezel with corner caps (11.86 mm)
 
-![assembly](renders/assembly_iso.png)
+![assembly](img/assembly_iso.png)
 
-![back with the frog](renders/back_frog.png)
+![back with the frog](img/back_frog.png)
 
 | File | What |
 | --- | --- |
-| `ereader-enclosure.scanruler` | Parametric source: 130 features (1 suppressed), 117 parameters (7 pinned), board STEP, battery dummy, 1 open note |
-| `ereader-enclosure.step` | Both parts as solids, `Back tray` and `Bezel` (read back and verified) |
-| `back-tray.stl`, `battery-tub.stl`, `front-bezel.stl` | Print meshes of the flatter back ([`concepts/flatter-back/`](concepts/flatter-back/README.md)), not of this model: they replaced v0.6's tray and bezel on 2026-11-26 for a test print. v0.6's are in git history, and its solids in `ereader-enclosure.step` |
-| `board_one_body.py`, `board-one-body.step` | Waveshare's board STEP as one light body, to bring into ScanRuler beside the enclosure (Import STEP; it comes in as one body, in this frame, in about 25 s). The PCB, the panel and the standoffs are as drawn; every other part is its outline carried to the board, so it keeps its footprint and height and loses its detail. 3,713 faces, 17.6 MB; the script takes about 6 minutes (`uv run enclosure/board_one_body.py`). The board as drawn (678 bodies) is `docs/mechanical/*.stp` |
-| `revision_glyphs.py` | Draws the revision engraving's sketches (`uv run enclosure/revision_glyphs.py OUT_DIR`). Only for a new font, size or place: a revision bump is the parameter `rev` alone (**Revision**) |
-| `renders/*.png` | Assembly, the back with the frog, the revision close up, the tray and the bezel apart, the button side's seam, a corner cap, the USB-C / microSD end, the thumbwheel slot, sections through a side hook, an end hook, a button and the wheel |
+| `../model/ereader-enclosure.scanruler` | Parametric source: 130 features (1 suppressed), 117 parameters (7 pinned), board STEP, battery dummy, 1 open note |
+| `../model/ereader-enclosure.step` | Both parts as solids, `Back tray` and `Bezel` (read back and verified) |
+| `../back-tray.stl`, `../battery-tub.stl`, `../front-bezel.stl` | Print meshes of the flatter back ([`flatter-back.md`](flatter-back.md)), not of this model: they replaced v0.6's tray and bezel on 2026-11-26 for a test print. v0.6's are in git history, and its solids in `../model/ereader-enclosure.step` |
+| `../tools/board_one_body.py`, `../model/board-one-body.step` | Waveshare's board STEP as one light body, to bring into ScanRuler beside the enclosure (Import STEP; it comes in as one body, in this frame, in about 25 s). The PCB, the panel and the standoffs are as drawn; every other part is its outline carried to the board, so it keeps its footprint and height and loses its detail. 3,713 faces, 17.6 MB; it isn't in git, and the script writes it in about 6 minutes (`uv run enclosure/tools/board_one_body.py`). The board as drawn (678 bodies) is `docs/mechanical/*.stp` |
+| `../tools/revision_glyphs.py` | Draws the revision engraving's sketches (`uv run enclosure/tools/revision_glyphs.py OUT_DIR`). Only for a new font, size or place: a revision bump is the parameter `rev` alone (**Revision**) |
+| `img/*.png` | This model's renders (the flatter back's pictures are there too): assembly, the back with the frog, the revision close up, the tray and the bezel apart, the button side's seam, a corner cap, the USB-C / microSD end, the thumbwheel slot, sections through a side hook, an end hook, a button and the wheel |
 
 **Size:** 105.9 × 66.1 mm over the corner caps (the tray alone is 104.3 × 64.5). **11.86 mm**
 from the flat back to the bezel's flat front (v0.1 was 14.85). The seam is 6.51 up from the back
@@ -81,7 +85,7 @@ beside it. Over the controls, 19.2 mm of each long side, it's still 2.55 deep. T
 cap leg is now joined to a skirt at its free end, as only the USB-C end's were before, and that
 stiffens the hooks (**Hooks**).
 
-![button side: the seam climbs over PWR / BOOT](renders/button_side.png)
+![button side: the seam climbs over PWR / BOOT](img/button_side.png)
 
 **Battery:** a 1500 mAh 454261 pouch, measured 62.5 long (with its protection board) and ~4.61
 thick, 42 wide by its name. Centred at x 39.85, y 33.8, it spans x 8.6–71.1, y 12.8–54.8, with
@@ -120,9 +124,9 @@ walls. Its
 four corner caps run down over the tray's corners to the back face, and two hooks inside each one
 (one per leg) click into grooves in the tray.
 
-![tray and bezel apart](renders/tray_inside.png)
+![tray and bezel apart](img/tray_inside.png)
 
-![bezel](renders/bezel_alone.png)
+![bezel](img/bezel_alone.png)
 
 **Front bezel.** One piece, standing on the tray's wall tops at z 0.2 at the corners and over the
 controls. Its skirts reach down to z −2.45 everywhere else (**Deeper skirts**). From its front (z 2.75,
@@ -208,11 +212,11 @@ also how far the bezel can lift before the hooks bear, less what the print takes
 still sit short, raise `hook_play` to 0.3. Past that the lowered lead-in closes on the groove's
 bottom ledge: 0.112 mm clear at 0.2, 0.075 at 0.3, 0.025 at 0.4.
 
-![corner cap](renders/corner_cap.png)
+![corner cap](img/corner_cap.png)
 
-![side hook section](renders/section_cap.png)
+![side hook section](img/section_cap.png)
 
-![end hook section](renders/section_end_hook.png)
+![end hook section](img/section_end_hook.png)
 
 **Frog.** The sleeping frog from the Sleep screen (`kFrog` in `src/apps/sleep.cpp`) is engraved
 in the hatch panel on the back as an outline with a 45° hatch over its body, centred on the
@@ -266,7 +270,7 @@ bottom. The glyphs are a small font of their own: digits 3.6 × 7.0 on a seven-s
 45° chamfers on the outer corners like the hatch outline and the caps. Like the frog, the text is
 fixed in its sketches, so it doesn't follow the battery parameters the vent slots follow.
 
-![revision, turned to read](renders/back_revision.png)
+![revision, turned to read](img/back_revision.png)
 
 The revision is one parameter, `rev` (pinned), engraved as v0.`rev`. ScanRuler's sketches have no
 text and its parameters are numbers, so the model picks the digit itself. `Rev digits plan` holds
@@ -305,7 +309,7 @@ back-edge chamfer runs round the slot too. The slot follows
 the notch parameters (`wheel_*`). The cost is stiffness: that side wall is open for its full
 height there, so only the back plate and the block hold it together.
 
-![thumbwheel slot](renders/wheel_slot.png)
+![thumbwheel slot](img/wheel_slot.png)
 
 **USB-C and microSD openings.** Both are in the end wall, and each is formed half by the tray and
 half by the bezel, so neither part has a hole with a roof to print. Between the corner caps the
@@ -326,9 +330,9 @@ the socket, where the panel's flex cable wraps the board edge (0.72 mm away). Th
 `End wall seam` (tray) and `End skirt` with the `Skirt *` cuts (bezel). The cuts reuse the tray's
 `USB plan` and `SD plan` sketches, so both halves follow the same parameters.
 
-![USB-C and microSD end, fitted](renders/usb_sd_end.png)
+![USB-C and microSD end, fitted](img/usb_sd_end.png)
 
-![tray and bezel halves of the openings](renders/usb_sd_apart.png)
+![tray and bezel halves of the openings](img/usb_sd_apart.png)
 
 1. Plug the battery into `BAT`, and tape it into the pocket in the floor.
 2. Drop the board in face up, letting the wheel slide down its notch.
@@ -385,7 +389,7 @@ fixed to the PCB. The panel glass covers their holes, so they must be.
 tolerances (`clr_side`, `clr_end`, `btn_gap`, `tab_t`, `cap_gap`, `hook_d` and `hook_play` are the knobs).
 
 **Flatter back:** a back that hugs the battery: 9.95 mm everywhere but a battery tub, in three
-parts that print without supports, with bevelled edges: [`concepts/flatter-back/`](concepts/flatter-back/README.md).
-Its meshes are the STLs in this folder. Printed once (2026-11-26): the tub's latches were too
+parts that print without supports, with bevelled edges: [`flatter-back.md`](flatter-back.md).
+Its meshes are the STLs at the root of `enclosure/`. Printed once (2026-11-26): the tub's latches were too
 flimsy, and it now holds with solid lugs, not printed yet. Its tray is engraved v0.7. This model
 stays v0.6.

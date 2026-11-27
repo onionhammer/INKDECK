@@ -1,22 +1,23 @@
-# Concept: a flatter back
+# The flatter back: the parts that get printed (v0.7)
 
 There's a lot of empty space between the back of the board and the back of the tray. This asks
 what the enclosure would look like if the back kept room for the battery and a speaker but was
 "sucked in" everywhere else, and still printed without supports. It's a mock-up cut from the v0.6
 solids in Python (cadquery), not a change to the ScanRuler model. Its three print meshes are the
 STLs at the root of `enclosure/`, where they replaced v0.6's (2026-11-26). The ScanRuler model and
-`ereader-enclosure.step` stay v0.6.
+`../model/ereader-enclosure.step` stay v0.6: [`base-case.md`](base-case.md) has that model, and
+[`../README.md`](../README.md) what's where.
 
 **Printed once** (2026-11-26), with the tub held by flexing latches: they were too flimsy, and the
 tub popped out the back. Fitting it from the back was easy. This version keeps that and holds the
 tub with solid lugs instead (see **Lugs**); it isn't printed yet. Print the two coupons first
 (see **Test coupons**).
 
-![v0.6 and the flatter back](sheet.png)
+![v0.6 and the flatter back](img/sheet.png)
 
 ## What sets the depth
 
-![what hangs under the board](depthmap.png)
+![what hangs under the board](img/depthmap.png)
 
 The back face of v0.6 is at z −9.11 (PCB top z 0, bezel front 2.75, 11.86 overall). It's set by the
 battery: `bottom_z = min(standoff_z − back_t, batt_top − batt_t − batt_skin)`, which is
@@ -34,7 +35,7 @@ flanks down to the old back face, so the frog stays on it. That's the battery po
 it, and 5 more at the antenna end, which the tub slides. The hatch line v0.6 engraves, inside the
 pod now, is filled.
 
-![exploded, and as printed](parts.png)
+![exploded, and as printed](img/parts.png)
 
 - **Look:** 11.86 at the tub, 9.95 everywhere else. The tub sits off-centre toward the USB-C end and
   the thumbwheel side, which leaves about 20 mm of thin case at the antenna end.
@@ -93,7 +94,7 @@ pod now, is filled.
 - **Revision:** `v0.7` is engraved on the tray's field, at the antenna end: 3 mm above the speaker
   grille as it reads (x 84.35 to 99.15, y 18.8 to 25.8), centred between the pod's rim and the
   tray's edge, 2.75 from each. v0.6 has it in the corner by the PWR-side screw, where the pod's
-  corner is now. It's v0.6's engraving otherwise: the same glyphs (`../../revision_glyphs.py`),
+  corner is now. It's v0.6's engraving otherwise: the same glyphs (`../tools/revision_glyphs.py`),
   read the same way as the frog, 0.4 deep with 45° walls in the full 1.2 floor, so 0.8 stays under
   it. The digit is `REV["n"]` in `build.py`: 7, the next print after v0.6, which the ScanRuler
   model stays. The first print of this back (2026-11-26) carried no mark.
@@ -113,9 +114,9 @@ pod now, is filled.
 - **Solids:** tray 5,368 mm³, tub 4,802, bezel 5,438 (v0.6: tray 9,765, bezel 5,626), all valid
   single solids. About 0.3 g of PETG more than v0.6: the pod's rim and the lugs.
 
-![sections through v0.6 and the flatter back](sections.png)
+![sections through v0.6 and the flatter back](img/sections.png)
 
-![the lugs, their notches, the lock and the bevels](seam.png)
+![the lugs, their notches, the lock and the bevels](img/seam.png)
 
 ## Battery and tub
 
@@ -156,7 +157,7 @@ so measure the cell's length, and which side its wiring leaves, before a print.
 
 ## Test coupons
 
-`coupon-tray.stl` and `coupon-tub.stl` are the joint alone, to print before the whole parts: the
+`../coupons/coupon-tray.stl` and `coupon-tub.stl` are the joint alone, to print before the whole parts: the
 USB-end 32 mm of the tub and the floor beside it, with the middle taken out and the two sides closed
 up (46 × 23 and 32 × 18 mm). They carry three lugs with their seats and notches, and the lock. Print
 both as they are, no supports; PrusaSlicer puts them at about 3 and 5 minutes.
@@ -170,7 +171,7 @@ both as they are, no supports; PrusaSlicer puts them at about 3 and 5 minutes.
 
 ## Tried, and left out
 
-These are in this folder's git history.
+These are in git history, under `enclosure/concepts/flatter-back/`, where this lived until 2026-11-27.
 
 - **Tongue-in-window latches** (the second version, printed 2026-11-26): three beams cut from the
   tub's wall, each with a window that a tongue on the tray reached into. The tongue went 0.4 into
@@ -194,24 +195,24 @@ These are in this folder's git history.
 
 | File | What |
 | --- | --- |
-| `../../back-tray.stl`, `../../battery-tub.stl`, `../../front-bezel.stl` | The three parts (0.02 mm chord), as fitted: the tray and tub print on their backs, the bezel face-down. `build.py` writes them at the root of `enclosure/` |
-| `flatter-back.step` | The three as solids |
-| `coupon-tray.stl`, `coupon-tub.stl` | The joint alone, to print first (**Test coupons**) |
-| `sheet.png` | v0.6 and the flatter back: back view, side (USB-C end on the left), antenna end |
-| `parts.png` | Exploded, and as printed |
-| `sections.png` | v0.6 and the flatter back along y 13.5 and across x 44.8, with the board, battery and speaker |
-| `seam.png` | Close-ups of the lugs, their notches, the lock and the bevels |
-| `depthmap.png` | The lowest part under the PCB, everywhere, with the battery and speaker |
-| `build.py` | v0.6 STEP → the parts and the coupons (constants at the top); checks the tub's way in and the room under the board |
-| `depthmap.py` | Board STEP → `depthmap.png`, and `build/board.stl` for the pictures |
-| `pictures.py` | The pictures |
-| `printcheck.py` | Slices the parts and the coupons in PrusaSlicer with automatic supports and counts them |
+| `../back-tray.stl`, `../battery-tub.stl`, `../front-bezel.stl` | The three parts (0.02 mm chord), as fitted: the tray and tub print on their backs, the bezel face-down. `build.py` writes them at the root of `enclosure/` |
+| `../model/flatter-back.step` | The three as solids |
+| `../coupons/coupon-tray.stl`, `coupon-tub.stl` | The joint alone, to print first (**Test coupons**) |
+| `img/sheet.png` | v0.6 and the flatter back: back view, side (USB-C end on the left), antenna end |
+| `img/parts.png` | Exploded, and as printed |
+| `img/sections.png` | v0.6 and the flatter back along y 13.5 and across x 44.8, with the board, battery and speaker |
+| `img/seam.png` | Close-ups of the lugs, their notches, the lock and the bevels |
+| `img/depthmap.png` | The lowest part under the PCB, everywhere, with the battery and speaker |
+| `../tools/build.py` | v0.6 STEP → the parts, the coupons and `flatter-back.step` (constants at the top); checks the tub's way in and the room under the board |
+| `../tools/depthmap.py` | Board STEP → `img/depthmap.png`, and `../build/board.stl` for the pictures |
+| `../tools/pictures.py` | The pictures |
+| `../tools/printcheck.py` | Slices the parts and the coupons in PrusaSlicer with automatic supports and counts them |
 
-To rebuild, from the repo root (`build/` holds the intermediates and isn't committed):
+To rebuild, from the repo root (`enclosure/build/` holds the intermediates and isn't committed):
 
 ```sh
-uv run enclosure/concepts/flatter-back/depthmap.py      # about a minute
-uv run enclosure/concepts/flatter-back/build.py
-uv run enclosure/concepts/flatter-back/pictures.py
-uv run enclosure/concepts/flatter-back/printcheck.py    # needs PrusaSlicer, at its macOS path
+uv run enclosure/tools/depthmap.py      # about a minute
+uv run enclosure/tools/build.py
+uv run enclosure/tools/pictures.py
+uv run enclosure/tools/printcheck.py    # needs PrusaSlicer, at its macOS path
 ```

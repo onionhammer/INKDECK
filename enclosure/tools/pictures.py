@@ -11,7 +11,7 @@
 - seam.png: close-ups of the tub's rim on the field, its lugs over the tray's seats, the notches they
   come in through, the lock and the bevels
 
-    uv run enclosure/concepts/flatter-back/pictures.py
+    uv run enclosure/tools/pictures.py
 """
 from pathlib import Path
 import numpy as np, pyvista as pv, trimesh, matplotlib; matplotlib.use("Agg")
@@ -22,12 +22,12 @@ from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient
 from PIL import Image
 
-HERE = Path(__file__).resolve().parent
-BUILD = HERE / "build"
+OUT = Path(__file__).resolve().parents[1]   # enclosure/: the print meshes are at its root
+BUILD = OUT / "build"
+IMG = OUT / "docs/img"                      # where the pictures go
 TRAY, TUB, BEZEL, BG = "#b5561f", "#c9692c", "#3b4049", "#2d3035"   # the tub a shade lighter, to show the split
 TUB_2D, BATTERY, SPEAKER, BOARD = "#e08a4c", "#4a8fd4", "#d4b84a", "#2f7d4a"
 V06 = [(BUILD / "v06_tray.stl", TRAY), (BUILD / "v06_bezel.stl", BEZEL)]
-OUT = HERE.parents[1]   # the print meshes, at enclosure/
 NEW = [(OUT / "back-tray.stl", TRAY), (OUT / "battery-tub.stl", TUB), (OUT / "front-bezel.stl", BEZEL)]
 
 # --- renders -----------------------------------------------------------------------------------------
@@ -58,7 +58,7 @@ bw = W * 7 // 12; b = b.resize((bw, int(b.height * bw / b.width)))
 cw = W - bw; c = c.resize((cw, int(c.height * cw / c.width)))
 row2 = Image.new("RGB", (W, max(b.height, c.height)), BG); row2.paste(b, (0, 0)); row2.paste(c, (bw, 0))
 sheet = Image.new("RGB", (W, a.height + row2.height), BG); sheet.paste(a, (0, 0)); sheet.paste(row2, (0, a.height))
-sheet.save(HERE / "sheet.png")
+sheet.save(IMG / "sheet.png")
 
 # the parts: exploded from the back (the tub goes in from outside), and as they print, on one bed
 tray, tub, bezel = (pv.read(p) for p, _ in NEW)
@@ -74,7 +74,7 @@ pl.add_mesh(tray, color=TRAY, specular=0.15, ambient=0.28, diffuse=0.8)
 pl.add_mesh(tub.translate((0, 70, -7.2 - tub.bounds[4])), color=TUB, specular=0.15, ambient=0.28, diffuse=0.8)
 pl.camera_position = [(49.75 - 70, 62 - 175, 140), (49.75, 62, -6), (0, 0, 1)]
 pl.add_text("As printed: tray on its back, tub on its pod face. No supports", position="upper_left", font_size=12, color="white")
-pl.screenshot(str(HERE / "parts.png")); pl.close()
+pl.screenshot(str(IMG / "parts.png")); pl.close()
 
 # --- sections ----------------------------------------------------------------------------------------
 M = {p.stem: trimesh.load(p) for p, _ in V06 + NEW}
@@ -123,7 +123,7 @@ for ax, case, o, n, axes, title in [
     ax.set_title(title, loc="left", fontsize=10); ax.set_ylim(-10, 3.5); ax.set_xlim(-4, 104)
     for z in (-9.11, -7.2):
         ax.axhline(z, color="#999", lw=0.6, ls=":"); ax.text(103.5, z, f"z {z:.2f}".replace("-", "−"), fontsize=7, va="bottom", ha="right", color="#666")
-legend(fig); plt.tight_layout(rect=(0, 0.03, 1, 1)); plt.savefig(HERE / "sections.png", dpi=110)
+legend(fig); plt.tight_layout(rect=(0, 0.03, 1, 1)); plt.savefig(IMG / "sections.png", dpi=110)
 
 def zoom(ax, origin, normal, axes, xlim, title, notes, ylim=(-9.6, 3.4), lines=(-9.11, -7.2, -2.6)):
     cut(ax, "flatter back", origin, normal, axes, speaker=False)
@@ -155,4 +155,4 @@ zoom(axs[2, 0], [25.0, 0, 0], X, [1, 2], R, "across the lock's tooth (x 25)",
 zoom(axs[2, 1], [0, 30.0, 0], Y, [0, 2], (66.0, 86.0), "along the length at y 30: the antenna end of the tub, locked",
      [((77.2, -6.6), (78.5, -3.6), "the 5 mm the tub slid, open inside"), ((77.2, -8.0), (70.0, -9.4), "covered by the pod"),
       ((80.6, -7.4), (82.0, -9.4), "rim on the field")], lines=(-9.11, -7.2))
-legend(fig); plt.tight_layout(rect=(0, 0.03, 1, 1)); plt.savefig(HERE / "seam.png", dpi=110)
+legend(fig); plt.tight_layout(rect=(0, 0.03, 1, 1)); plt.savefig(IMG / "seam.png", dpi=110)

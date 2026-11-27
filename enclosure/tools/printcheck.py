@@ -6,14 +6,13 @@ bed, with PrusaSlicer's own CORE One presets (the enclosure's printer, profile a
 automatic supports on at the profile's threshold, and counts the support extrusions in the G-code.
 Run build.py first; gcode goes to build/.
 
-    uv run enclosure/concepts/flatter-back/printcheck.py
+    uv run enclosure/tools/printcheck.py
 """
 from pathlib import Path
 import re, subprocess, sys
 
-HERE = Path(__file__).resolve().parent
-BUILD = HERE / "build"
-OUT = HERE.parents[1]   # the print meshes, at enclosure/
+OUT = Path(__file__).resolve().parents[1]   # enclosure/: the print meshes are at its root
+BUILD = OUT / "build"
 SLICER = "/Applications/Original Prusa Drivers/PrusaSlicer.app/Contents/MacOS/PrusaSlicer"
 PRESETS = ["--printer-profile", "Prusa CORE One HF0.4 nozzle", "--print-profile", "0.20mm STRUCTURAL @COREONE 0.4",
            "--material-profile", "Generic PETG @COREONE HF0.4"]
@@ -21,7 +20,7 @@ PRESETS = ["--printer-profile", "Prusa CORE One HF0.4 nozzle", "--print-profile"
 PARTS = [("v0.6 tray", BUILD / "v06_tray.stl", []), ("v0.6 bezel", BUILD / "v06_bezel.stl", ["--rotate-x", "180"]),
          ("back tray", OUT / "back-tray.stl", []), ("battery tub", OUT / "battery-tub.stl", []),
          ("front bezel", OUT / "front-bezel.stl", ["--rotate-x", "180"]),
-         ("coupon tray", HERE / "coupon-tray.stl", []), ("coupon tub", HERE / "coupon-tub.stl", [])]
+         ("coupon tray", OUT / "coupons/coupon-tray.stl", []), ("coupon tub", OUT / "coupons/coupon-tub.stl", [])]
 
 def check(name, mesh, extra):
     out = BUILD / (re.sub(r"\W+", "_", name).strip("_") + ".gcode")

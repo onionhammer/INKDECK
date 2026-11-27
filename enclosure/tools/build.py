@@ -2,16 +2,16 @@
 # requires-python = ">=3.10,<3.13"
 # dependencies = ["cadquery>=2.4", "numpy", "shapely>=2.0"]
 # ///
-"""The flatter back, from the v0.6 solids in ../../ereader-enclosure.step (a mock-up: the ScanRuler
+"""The flatter back, from the v0.6 solids in ../model/ereader-enclosure.step (a mock-up: the ScanRuler
 model is untouched). The back rises to the field level everywhere except a pod round the battery,
 the pod is its own part (a battery tub) so every part prints flat with no supports, and a 0.8 mm
 45° bevel runs round the back edge and the front bezel's front edge. The tray carries its revision
 (REV), engraved on the field. Writes back-tray.stl,
-battery-tub.stl and front-bezel.stl to enclosure/ (the print meshes, in place of v0.6's),
-flatter-back.step and the joint's test coupons here, and v0.6's meshes and the battery and speaker
-boxes to build/ for pictures.py.
+battery-tub.stl and front-bezel.stl to enclosure/ (the print meshes, in place of v0.6's), the
+joint's test coupons to ../coupons/, flatter-back.step to ../model/, and v0.6's meshes and the
+battery and speaker boxes to ../build/ for pictures.py.
 
-    uv run enclosure/concepts/flatter-back/build.py
+    uv run enclosure/tools/build.py
 
 The tub drops in from the back and slides toward the USB end to lock. Its rim laps onto the field
 outside, so a push on the back (the case lying on a table) goes into the tray, not into the battery
@@ -23,10 +23,10 @@ the tub with flexing latches (barbs, then tongues in windows): both let go.
 from pathlib import Path
 import cadquery as cq, math, json
 
-HERE = Path(__file__).resolve().parent
-BUILD = HERE / "build"; BUILD.mkdir(exist_ok=True)
-STEP = HERE.parents[1] / "ereader-enclosure.step"
-OUT = HERE.parents[1]      # the print meshes go at enclosure/
+OUT = Path(__file__).resolve().parents[1]      # enclosure/: the print meshes go at its root
+BUILD = OUT / "build"; BUILD.mkdir(exist_ok=True)
+MODEL, COUPONS = OUT / "model", OUT / "coupons"
+STEP = MODEL / "ereader-enclosure.step"
 
 # --- the pod back -------------------------------------------------------------------------------
 Z_BACK = -9.11            # v0.6's flat back, set by the battery
@@ -56,7 +56,7 @@ GRILLE = dict(w=0.8, pitch=2.0, patch=(10.0, 6.0), min_l=2.0)
 
 # The revision, engraved on the tray. v0.6 has it where the pod's corner is now, so here it stands on
 # the field at the antenna end: centred between the pod's rim and the tray's edge, `over` above the
-# speaker grille. The glyphs are v0.6's (../../revision_glyphs.py), read the same way as the frog
+# speaker grille. The glyphs are v0.6's (revision_glyphs.py), read the same way as the frog
 # (+X to -X, thumbwheel side up) and cut the same: `d` deep with 45° walls, in the full floor.
 # `n` is the digit, v0.n. The ScanRuler model is v0.6; this back is the next print, so 7.
 REV = dict(n=7, over=3.0, d=0.4)
@@ -263,8 +263,7 @@ ya, yb = sorted((Y(sd, i_f), Y(sd, POCKET_IN)))
 features.append(("lock", L["tip"] - 2.5, ya, L["tip"] + L["tooth_l"] + 2.5, yb, L["top"] + 0.2))
 
 # the revision
-import sys; sys.path.insert(0, str(HERE.parents[1]))
-import revision_glyphs as rg
+import revision_glyphs as rg                                         # beside this script
 from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 
@@ -309,7 +308,7 @@ parts = {"back-tray": tray, "battery-tub": tub, "front-bezel": bezel}
 for name, shape in parts.items(): stl(shape, OUT / f"{name}.stl")
 asm = cq.Assembly()
 for name, shape in parts.items(): asm.add(shape, name=name)
-cq.exporters.export(asm.toCompound(), str(HERE / "flatter-back.step"))
+cq.exporters.export(asm.toCompound(), str(MODEL / "flatter-back.step"))
 stl(v06_tray, BUILD / "v06_tray.stl"); stl(v06_bezel, BUILD / "v06_bezel.stl")
 spk = box(SPK["x0"], SPK["y0"], Z_FTOP, SPK["x0"] + SPK["l"], SPK["y0"] + SPK["w"], Z_FTOP + SPK["t"])
 batt = box(BATT[0], BATT[1], Z_POCKET, BATT[2], BATT[3], Z_POCKET + BATT[4])
@@ -328,7 +327,7 @@ coupon_tub = squeeze(tub, *c["tub"], -5, 70)
 coupon_tray = squeeze(tray, *c["tray"], *c["y"])
 for xa, xb in ((c["tray"][0] - c["bar"], c["tray"][0]), (c["tray"][1], c["tray"][1] + c["bar"])):
     coupon_tray = coupon_tray.union(box(xa, c["y"][0], Z_FIELD, xb, c["y"][1] - shut, Z_FTOP))
-stl(coupon_tub, HERE / "coupon-tub.stl"); stl(coupon_tray, HERE / "coupon-tray.stl")
+stl(coupon_tub, COUPONS / "coupon-tub.stl"); stl(coupon_tray, COUPONS / "coupon-tray.stl")
 
 def vol(w): return round(sum(v.Volume() for v in w.vals()), 4)
 # the way in: up through the notches SLIDE toward the antenna end, then along to home. The tooth is

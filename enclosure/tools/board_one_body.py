@@ -3,9 +3,9 @@
 # dependencies = ["cadquery>=2.4", "shapely>=2.0", "numpy"]
 # ///
 """Waveshare's board STEP as one light body, for ScanRuler: one body to show, hide or cut with the
-enclosure, in the frame the file was drawn in. Writes board-one-body.step here.
+enclosure, in the frame the file was drawn in. Writes ../model/board-one-body.step (not in git).
 
-    uv run enclosure/board_one_body.py
+    uv run enclosure/tools/board_one_body.py
 
 The file's 678 solids fused as they are come to 64,000 faces, a 329 MB STEP, and still 76 pieces
 (parts that stand a hair off the board). So this is a stand-in: the PCB, the panel and the standoffs
@@ -30,8 +30,8 @@ from OCP.TopLoc import TopLoc_Location
 from OCP.Interface import Interface_Static
 
 HERE = Path(__file__).resolve().parent
-BOARD = HERE.parent / "docs/mechanical/ESP32-S3-EPAPER-3_97-20260821.stp"
-OUT = HERE / "board-one-body.step"
+BOARD = HERE.parents[1] / "docs/mechanical/ESP32-S3-EPAPER-3_97-20260821.stp"
+OUT = HERE.parent / "model/board-one-body.step"
 PCB = (-1.6, 0.0)                        # the PCB's faces, z
 KEEP = ("BOARD", "3_97-E_PAPER", "STUDS")  # kept as drawn (names start with these)
 INTO = 0.05                              # a part's outline runs this far into the PCB, so the two join
