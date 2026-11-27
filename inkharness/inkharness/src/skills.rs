@@ -7,6 +7,10 @@
 //! system prompt and get two tools: load_skill (the instructions, with the list of the skill's
 //! other files) and read_skill_file (one of those files). Reads stay inside the skill's folder.
 //!
+//! Files come in pages of whole lines, up to 64 KB each: read_skill_file's `offset` is the line
+//! a page starts at, and a page that doesn't reach the end says where the next one starts. A
+//! SKILL.md over 64 KB still loads: load_skill gives its first page and points to the rest.
+//!
 //! The folders are scanned at startup. A skill that can't be used is logged and left out; of
 //! two with the same name the first is kept. Instructions and files are read from disk when the
 //! model asks, so editing them needs no restart; adding a skill or changing a description does.
@@ -33,8 +37,11 @@ const MAX_SKILLS: usize = 32;
 const MAX_NAME: usize = 64;
 /// A description is cut to this many characters in the system prompt.
 const MAX_DESCRIPTION: usize = 250;
-/// SKILL.md and the files read_skill_file returns are cut at this size.
-const MAX_FILE: usize = 16 * 1024;
+/// SKILL.md and the files read_skill_file returns come in pages of at most this size.
+/// The same as an AGENTS.md's cap (place.rs): about 16k tokens.
+const MAX_FILE: usize = 64 * 1024;
+/// read_skill_file pages through at most this much of a file.
+const MAX_READ: usize = 4 * 1024 * 1024;
 /// load_skill lists at most this many of a skill's other files.
 const MAX_LISTED: usize = 50;
 /// How deep the file listing goes below the skill's folder.
@@ -154,14 +161,16 @@ impl Skills {
                 name: READ_TOOL.into(),
                 description: format!(
                     "Reads one of a skill's files, when its instructions point to it. Text \
-                     only, cut at {} KB.",
+                     only, {} KB at a time: a longer file comes in pages, and each page that \
+                     doesn't reach the end says the offset to read on from.",
                     MAX_FILE / 1024
                 ),
                 schema: json!({
                     "type": "object",
                     "properties": {
                         "skill": {"type": "string", "enum": names},
-                        "path": {"type": "string", "description": "The file's path inside the skill, as load_skill lists it"}
+                        "path": {"type": "string", "description": "The file's path inside the skill, as load_skill lists it"},
+                        "offset": {"type": "integer", "minimum": 1, "description": "The line to start at, as the last page said. Unset: the first"}
                     },
                     "required": ["skill", "path"],
                     "additionalProperties": false
@@ -179,7 +188,7 @@ impl Skills {
         Some(if name == LOAD_TOOL {
             parse::<LoadInput>(input).and_then(|i| self.instructions(&i.name))
         } else {
-            parse::<ReadInput>(input).and_then(|i| self.read(&i.skill, &i.path))
+            parse::<ReadInput>(input).and_then(|i| self.read(&i.skill, &i.path, i.offset))
         })
     }
 
@@ -193,12 +202,20 @@ impl Skills {
         })
     }
 
-    /// SKILL.md's body, then the skill's other files.
+    /// SKILL.md's body (its first page, and where the rest is), then the skill's other files.
     fn instructions(&self, name: &str) -> Result<String, String> {
         let skill = self.find(name)?;
-        let (text, _) = read_capped(&skill.root.join(SKILL_FILE))?;
-        let (_, body) = frontmatter(&text)?;
+        let page = read_page(&skill.root.join(SKILL_FILE), 1)?;
+        let (_, body) = frontmatter(&page.text)?;
         let mut out = body.trim().to_string();
+        if page.more() {
+            out.push_str(&format!(
+                "\n\n({SKILL_FILE} goes on past {} KB: read the rest with {READ_TOOL}, path \
+                 {SKILL_FILE}, offset {}, before you act on it.)",
+                MAX_FILE / 1024,
+                page.last + 1
+            ));
+        }
         let mut files = Vec::new();
         list_files(&skill.root, &skill.root, 0, &mut files);
         files.retain(|f| f != SKILL_FILE);
@@ -217,13 +234,18 @@ impl Skills {
         Ok(out)
     }
 
-    /// A file inside the skill's folder, as text.
-    fn read(&self, name: &str, path: &str) -> Result<String, String> {
+    /// A page of a file inside the skill's folder, as text, from line `offset` (unset: 1).
+    fn read(&self, name: &str, path: &str, offset: Option<usize>) -> Result<String, String> {
         let skill = self.find(name)?;
         let file = inside(&skill.root, path)?;
-        let (mut text, cut) = read_capped(&file)?;
-        if cut {
-            text.push_str(&format!("\n(cut at {} KB)", MAX_FILE / 1024));
+        let page = read_page(&file, offset.unwrap_or(1))?;
+        let note = page.note();
+        let mut text = page.text;
+        if !note.is_empty() {
+            if !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&note);
         }
         Ok(text)
     }
@@ -240,6 +262,7 @@ struct LoadInput {
 struct ReadInput {
     skill: String,
     path: String,
+    offset: Option<usize>,
 }
 
 fn parse<T: for<'de> Deserialize<'de>>(input: Value) -> Result<T, String> {
@@ -251,11 +274,14 @@ fn load_skill(folder: &Path) -> Result<Skill, String> {
     let root = folder
         .canonicalize()
         .map_err(|e| format!("can't resolve the folder: {e}"))?;
-    let (text, cut) = read_capped(&root.join(SKILL_FILE))?;
-    if cut {
-        return Err(format!("{SKILL_FILE} is over {} KB", MAX_FILE / 1024));
-    }
-    let (fields, body) = frontmatter(&text)?;
+    let page = read_page(&root.join(SKILL_FILE), 1)?;
+    let (fields, body) = frontmatter(&page.text).map_err(|e| {
+        if page.more() {
+            format!("{e} in its first {} KB", MAX_FILE / 1024)
+        } else {
+            e
+        }
+    })?;
     let name = fields
         .get("name")
         .filter(|n| !n.is_empty())
@@ -277,8 +303,16 @@ fn load_skill(folder: &Path) -> Result<Skill, String> {
         .map(|d| d.split_whitespace().collect::<Vec<_>>().join(" "))
         .filter(|d| !d.is_empty())
         .ok_or("the frontmatter has no description")?;
-    if body.trim().is_empty() {
+    if body.trim().is_empty() && !page.more() {
         return Err("no instructions after the frontmatter".into());
+    }
+    if page.more() {
+        tracing::warn!(
+            skill = %name,
+            "{SKILL_FILE} is over {} KB: load_skill gives the first {0} KB and points to the rest, \
+             which costs the model another round",
+            MAX_FILE / 1024
+        );
     }
     let description = if description.chars().count() > MAX_DESCRIPTION {
         tracing::warn!(skill = %name, "description cut to {MAX_DESCRIPTION} characters");
@@ -441,22 +475,103 @@ fn end_of_quoted(rest: &str) -> Result<(), String> {
     }
 }
 
-/// Up to MAX_FILE bytes of a text file, and whether it was longer.
-fn read_capped(path: &Path) -> Result<(String, bool), String> {
+/// Whole lines of a text file, from line `first`, up to MAX_FILE bytes.
+#[derive(Debug)]
+struct Page {
+    text: String,
+    /// The first line shown, from 1.
+    first: usize,
+    /// The last line shown (first - 1 for an empty file).
+    last: usize,
+    /// The file's lines, as far as MAX_READ.
+    total: usize,
+    /// The one line shown is longer than MAX_FILE, and was cut there.
+    cut_line: bool,
+    /// The file goes on past MAX_READ.
+    beyond: bool,
+}
+
+impl Page {
+    /// More lines come after this page.
+    fn more(&self) -> bool {
+        self.last < self.total
+    }
+
+    /// Where the page sits in the file and how to read on, for the end of the page. Empty for
+    /// a whole file.
+    fn note(&self) -> String {
+        let mut parts = Vec::new();
+        if self.cut_line {
+            parts.push(format!(
+                "line {} of {} is over {} KB and was cut there",
+                self.first,
+                self.total,
+                MAX_FILE / 1024
+            ));
+        } else if self.first > 1 || self.more() {
+            parts.push(format!(
+                "lines {} to {} of {}",
+                self.first, self.last, self.total
+            ));
+        }
+        if self.more() {
+            parts.push(format!("read on with offset {}", self.last + 1));
+        } else if self.beyond {
+            parts.push(format!(
+                "the file goes on past {} MB, which can't be read",
+                MAX_READ / 1024 / 1024
+            ));
+        }
+        if parts.is_empty() {
+            String::new()
+        } else {
+            format!("({})", parts.join("; "))
+        }
+    }
+}
+
+/// The page of a text file that starts at line `first` (0 is taken as 1): as many whole lines
+/// as fit in MAX_FILE bytes, or the start of one longer line. Only the first MAX_READ bytes
+/// are read.
+fn read_page(path: &Path, first: usize) -> Result<Page, String> {
     let shown = path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into(),
     );
     let mut bytes = Vec::new();
     std::fs::File::open(path)
-        .and_then(|f| f.take(MAX_FILE as u64 + 1).read_to_end(&mut bytes))
+        .and_then(|f| f.take(MAX_READ as u64 + 1).read_to_end(&mut bytes))
         .map_err(|e| format!("can't read {shown}: {e}"))?;
-    let cut = bytes.len() > MAX_FILE;
-    bytes.truncate(MAX_FILE);
-    let text = match String::from_utf8(bytes) {
+    let beyond = bytes.len() > MAX_READ;
+    bytes.truncate(MAX_READ);
+    let lines: Vec<&[u8]> = bytes.split_inclusive(|&b| b == b'\n').collect();
+    let total = lines.len();
+    let first = first.max(1);
+    if first > total.max(1) {
+        return Err(format!(
+            "{shown} has {total} lines: offset {first} is past its end"
+        ));
+    }
+    let (mut page, mut last, mut cut_line) = (Vec::new(), first - 1, false);
+    for line in &lines[first - 1..] {
+        if page.len() + line.len() <= MAX_FILE {
+            page.extend_from_slice(line);
+            last += 1;
+            continue;
+        }
+        if page.is_empty() {
+            page.extend_from_slice(&line[..MAX_FILE]);
+            last += 1;
+            cut_line = true;
+        }
+        break;
+    }
+    // A cut line, or the end of what was read, may have split a character.
+    let split_end = cut_line || (beyond && last == total);
+    let text = match String::from_utf8(page) {
         Ok(text) => text,
-        // The cut may have split a character: keep what comes before it.
-        Err(e) if cut && e.utf8_error().error_len().is_none() => {
+        // Keep what comes before the split character.
+        Err(e) if split_end && e.utf8_error().error_len().is_none() => {
             let valid = e.utf8_error().valid_up_to();
             let mut bytes = e.into_bytes();
             bytes.truncate(valid);
@@ -464,7 +579,14 @@ fn read_capped(path: &Path) -> Result<(String, bool), String> {
         }
         Err(_) => return Err(format!("{shown} is not a text file")),
     };
-    Ok((text, cut))
+    Ok(Page {
+        text,
+        first,
+        last,
+        total,
+        cut_line,
+        beyond,
+    })
 }
 
 /// `path` inside the skill's folder `root` (canonical), or why it can't be read. Absolute
@@ -637,11 +759,12 @@ pub(crate) mod tests {
             "---\nname: empty\ndescription: d\n---\n\n",
         );
         write(&dir.join("plain/SKILL.md"), "No frontmatter.");
+        // Over a page, and its frontmatter isn't closed within it.
         write(
-            &dir.join("big/SKILL.md"),
+            &dir.join("unclosed/SKILL.md"),
             &format!(
-                "---\nname: big\ndescription: d\n---\n{}",
-                "x".repeat(MAX_FILE)
+                "---\nname: unclosed\ndescription: d\n{}---\nx",
+                "k: v\n".repeat(MAX_FILE / 5)
             ),
         );
         write(&dir.join("not-a-skill/README.md"), "x");
@@ -717,7 +840,7 @@ pub(crate) mod tests {
         write(&dir.join("s/.env"), "KEY=1");
         write(&dir.join("secret.txt"), "outside");
         let skills = Skills::load(std::slice::from_ref(&dir));
-        let read = |path: &str| skills.read("s", path);
+        let read = |path: &str| skills.read("s", path, None);
 
         assert_eq!(read("ok.js"), Ok("1 + 1".into()));
         assert_eq!(read("./ok.js"), Ok("1 + 1".into()));
@@ -730,7 +853,7 @@ pub(crate) mod tests {
         assert!(read("missing.md").unwrap_err().contains("no file"));
         assert!(
             skills
-                .read("t", "ok.js")
+                .read("t", "ok.js", None)
                 .unwrap_err()
                 .contains("no skill named")
         );
@@ -765,13 +888,122 @@ pub(crate) mod tests {
         );
         std::fs::write(dir.join("s/blob.bin"), [0xff, 0xfe, 0x00]).unwrap();
         let skills = Skills::load(&[dir]);
-        let big = skills.read("s", "big.md").unwrap();
-        assert_eq!(big, format!("{}\n(cut at 16 KB)", "a".repeat(MAX_FILE - 1)));
+        let big = skills.read("s", "big.md", None).unwrap();
+        assert_eq!(
+            big,
+            format!(
+                "{}\n(line 1 of 1 is over {} KB and was cut there)",
+                "a".repeat(MAX_FILE - 1),
+                MAX_FILE / 1024
+            )
+        );
         assert!(
             skills
-                .read("s", "blob.bin")
+                .read("s", "blob.bin", None)
                 .unwrap_err()
                 .contains("not a text file")
         );
+    }
+
+    #[test]
+    fn long_files_come_in_pages() {
+        let dir = scratch("pages");
+        write(
+            &dir.join("s/SKILL.md"),
+            "---\nname: s\ndescription: d\n---\nx",
+        );
+        // Numbered lines of 12 bytes, a page and a half of them: two pages.
+        let per_page = MAX_FILE / 12;
+        let n = per_page * 3 / 2;
+        let lines: String = (1..=n).map(|i| format!("line {i:06}\n")).collect();
+        write(&dir.join("s/api.yaml"), &lines);
+        write(&dir.join("s/small.md"), "one\ntwo\n");
+        let skills = Skills::load(&[dir]);
+
+        let first = skills.read("s", "api.yaml", None).unwrap();
+        assert!(first.starts_with("line 000001\n"), "{first}");
+        assert!(
+            first.ends_with(&format!(
+                "line {per_page:06}\n(lines 1 to {per_page} of {n}; read on with offset {})",
+                per_page + 1
+            )),
+            "{}",
+            &first[first.len() - 80..]
+        );
+        // Every line comes once across the pages, whole.
+        let second = skills.read("s", "api.yaml", Some(per_page + 1)).unwrap();
+        assert!(second.starts_with(&format!("line {:06}\n", per_page + 1)));
+        assert!(second.ends_with(&format!(
+            "line {n:06}\n(lines {} to {n} of {n})",
+            per_page + 1
+        )));
+
+        // A whole file has no note; offset 0 is the first line; past the end is refused.
+        assert_eq!(skills.read("s", "small.md", None), Ok("one\ntwo\n".into()));
+        assert_eq!(
+            skills.read("s", "small.md", Some(0)),
+            Ok("one\ntwo\n".into())
+        );
+        assert_eq!(
+            skills.read("s", "small.md", Some(2)),
+            Ok("two\n(lines 2 to 2 of 2)".into())
+        );
+        assert!(
+            skills
+                .read("s", "small.md", Some(3))
+                .unwrap_err()
+                .contains("past its end")
+        );
+        // Through the tool, as a model sends it.
+        let out = skills
+            .call(
+                READ_TOOL,
+                json!({"skill": "s", "path": "api.yaml", "offset": n - 1}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            out,
+            format!(
+                "line {:06}\nline {n:06}\n(lines {} to {n} of {n})",
+                n - 1,
+                n - 1
+            )
+        );
+    }
+
+    #[test]
+    fn a_long_skill_md_loads_its_first_page() {
+        let dir = scratch("long-skill");
+        // Steps of 13 bytes, a page and a half of them.
+        let n = MAX_FILE * 3 / 2 / 13;
+        let steps: String = (1..=n).map(|i| format!("Step {i:06}.\n")).collect();
+        write(
+            &dir.join("big/SKILL.md"),
+            &format!("---\nname: big\ndescription: d\n---\n{steps}"),
+        );
+        let skills = Skills::load(&[dir]);
+        assert_eq!(skills.names(), ["big"]);
+
+        let loaded = skills.instructions("big").unwrap();
+        assert!(loaded.starts_with("Step 000001."));
+        let next: usize = loaded
+            .rsplit("offset ")
+            .next()
+            .and_then(|rest| rest.split(',').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no offset in {loaded}"));
+        assert!(loaded.contains(&format!("SKILL.md goes on past {} KB", MAX_FILE / 1024)));
+        // The rest, from the line it names: the steps carry on with no gap.
+        let last_shown = loaded
+            .lines()
+            .rfind(|l| l.starts_with("Step "))
+            .unwrap()
+            .to_string();
+        let rest = skills.read("big", "SKILL.md", Some(next)).unwrap();
+        let first_rest = rest.lines().next().unwrap();
+        let number = |l: &str| l[5..11].parse::<usize>().unwrap();
+        assert_eq!(number(first_rest), number(&last_shown) + 1);
+        assert!(rest.contains(&format!("Step {n:06}.")));
     }
 }

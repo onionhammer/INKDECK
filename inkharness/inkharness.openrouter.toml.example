@@ -98,6 +98,7 @@ api_key_env = "OPENROUTER_API_KEY"
 # command = "target/release/examples/mcp_demo"
 # args = []
 # env = { }
+# cwd = "."                   # the folder it runs in, from this file's; unset: where inkharness started
 
 # --- Skills ----------------------------------------------------------------------------
 # Agent Skills: a folder per skill with a SKILL.md (name and description between --- lines,
