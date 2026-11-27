@@ -8,7 +8,8 @@
 // session's state, the mic's level, what the daemon heard and the reply's text as it is spoken.
 // Let go to send. On the sheet:
 //   HOLD BOOT  talk again; during a reply it stops the reply and listens
-//   ▲▼         volume
+//   ▲▼         volume; once a reply too long for the sheet has played, they scroll it instead
+//              ("1-6 OF 14" beside REPLY), a page less a line at a time
 //   BOOT       close (ends the session and lets Wi-Fi go)
 // It closes by itself 30 s after the last reply, or once a reply has played that opens a screen
 // (a book, a module: apps/board_tools.h). Over the Agent's screens the words go to the agent (a
