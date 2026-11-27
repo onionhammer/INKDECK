@@ -407,11 +407,21 @@ repository. To try an image before releasing it, serve it and a manifest from th
 point the board there with dev command `!update http://<computer>:8000/manifest.json`, which
 lasts until the next boot.
 
+## Enclosure
+
+<img src="enclosure/docs/img/front.png" width="420" alt="The case from the front"> <img src="enclosure/docs/img/back.png" width="420" alt="The case from the back, with the battery tub, the speaker grille, the frog and the revision">
+
+A 3D-printed case in three parts, all printed without supports: a back tray, a battery tub that
+slides in from the back to lock, and a snap-on front bezel whose caps wrap the corners. It's
+105.9 × 66.1 mm, 9.95 mm thick and 11.86 at the tub, which carries the Sleep-screen frog. The
+speaker's grille and the case revision are beside it. These are drawings of v0.7, which isn't
+printed yet. [`enclosure/`](enclosure/README.md) has the STLs and how to print them.
+
 ## More
 
 - [`AGENTS.md`](AGENTS.md): hardware, power architecture, driver notes and gotchas.
 - [`docs/ui-design.md`](docs/ui-design.md): the UI spec, one entry per screen, and a link to the
   design canvas.
 - [`docs/`](docs/README.md): schematic, datasheets, mechanical files and the vendor wiki.
-- [`enclosure/`](enclosure/README.md): a 3D-printable back tray and a snap-on front bezel whose
-  caps wrap the corners, with the Sleep-screen frog and the case revision engraved on the back.
+- [`enclosure/`](enclosure/README.md): the case's STLs, its ScanRuler model, the scripts that build
+  and check the parts, and the write-ups.

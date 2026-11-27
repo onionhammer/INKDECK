@@ -4,7 +4,7 @@
 # ///
 """Draws the revision engraving on the back of the tray as ScanRuler sketches.
 
-    uv run enclosure/revision_glyphs.py OUT_DIR [--preview]
+    uv run enclosure/tools/revision_glyphs.py OUT_DIR [--preview]
 
 ScanRuler's sketches have no text and its parameters are numbers, so the revision is engraved
 from the sketches this script writes, and the model picks the digit itself:
