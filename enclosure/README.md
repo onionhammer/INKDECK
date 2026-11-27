@@ -6,9 +6,11 @@ the battery tub, and all three parts print without supports. The revision is **v
 the tray. This revision isn't printed yet: the first print of this back (2026-11-26) held the tub
 with latches that were too flimsy.
 
-![the parts, exploded and as printed](docs/img/parts.png)
+<img src="docs/img/front.png" width="420" alt="The case from the front"> <img src="docs/img/back.png" width="420" alt="The case from the back, with the battery tub, the speaker grille, the frog and the revision">
 
 ## To print
+
+![the parts, exploded and as printed](docs/img/parts.png)
 
 | Part | File | On the bed |
 | --- | --- | --- |
@@ -50,7 +52,7 @@ and the revision change in the constants at the top of `tools/build.py`.
 ```sh
 uv run enclosure/tools/depthmap.py         # how deep the board reaches under the PCB (about a minute)
 uv run enclosure/tools/build.py            # the STLs, the coupons, flatter-back.step, and its checks
-uv run enclosure/tools/pictures.py         # docs/img/sheet, parts, sections, seam
+uv run enclosure/tools/pictures.py         # docs/img/front, back, sheet, parts, sections, seam
 uv run enclosure/tools/printcheck.py       # slices everything and counts supports (needs PrusaSlicer)
 uv run enclosure/tools/board_one_body.py   # model/board-one-body.step (about 6 minutes)
 uv run enclosure/tools/revision_glyphs.py OUT_DIR   # the engraving's font, as ScanRuler sketches

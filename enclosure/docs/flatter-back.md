@@ -198,6 +198,7 @@ These are in git history, under `enclosure/concepts/flatter-back/`, where this l
 | `../back-tray.stl`, `../battery-tub.stl`, `../front-bezel.stl` | The three parts (0.02 mm chord), as fitted: the tray and tub print on their backs, the bezel face-down. `build.py` writes them at the root of `enclosure/` |
 | `../model/flatter-back.step` | The three as solids |
 | `../coupons/coupon-tray.stl`, `coupon-tub.stl` | The joint alone, to print first (**Test coupons**) |
+| `img/front.png`, `img/back.png` | The case closed, with the board in it, for the front pages |
 | `img/sheet.png` | v0.6 and the flatter back: back view, side (USB-C end on the left), antenna end |
 | `img/parts.png` | Exploded, and as printed |
 | `img/sections.png` | v0.6 and the flatter back along y 13.5 and across x 44.8, with the board, battery and speaker |

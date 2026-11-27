@@ -4,6 +4,7 @@
 # ///
 """The pictures, from build.py's parts and depthmap.py's board (run both first):
 
+- front.png, back.png: the case closed, with the board in it: the repo's front page shows these
 - sheet.png: v0.6 and the flatter back, a back view, a side and an end elevation
 - parts.png: the parts exploded, and as they lie on the bed
 - sections.png: v0.6 and the flatter back cut along the length at y 13.5 (battery and speaker) and
@@ -27,6 +28,7 @@ BUILD = OUT / "build"
 IMG = OUT / "docs/img"                      # where the pictures go
 TRAY, TUB, BEZEL, BG = "#b5561f", "#c9692c", "#3b4049", "#2d3035"   # the tub a shade lighter, to show the split
 TUB_2D, BATTERY, SPEAKER, BOARD = "#e08a4c", "#4a8fd4", "#d4b84a", "#2f7d4a"
+PAPER, EDGE = "#d6d3c8", "#1c1e22"                                   # the panel as it shows in the bezel; the outlines
 V06 = [(BUILD / "v06_tray.stl", TRAY), (BUILD / "v06_bezel.stl", BEZEL)]
 NEW = [(OUT / "back-tray.stl", TRAY), (OUT / "battery-tub.stl", TUB), (OUT / "front-bezel.stl", BEZEL)]
 
@@ -59,6 +61,26 @@ cw = W - bw; c = c.resize((cw, int(c.height * cw / c.width)))
 row2 = Image.new("RGB", (W, max(b.height, c.height)), BG); row2.paste(b, (0, 0)); row2.paste(c, (bw, 0))
 sheet = Image.new("RGB", (W, a.height + row2.height), BG); sheet.paste(a, (0, 0)); sheet.paste(row2, (0, a.height))
 sheet.save(IMG / "sheet.png")
+
+# the case closed, for the front page: tray and tub in one colour, as one filament prints them. The
+# back is drawn turned over (up is −z), so the frog and the revision read upright, as they do with
+# the case face down on a table
+def closed(out, cam, up):
+    pl = pv.Plotter(window_size=(1600, 900), off_screen=True, border=False); pl.set_background(BG)
+    for path, color in [(p, TRAY if c == TUB else c) for p, c in NEW] + [(BUILD / "board.stl", PAPER)]:
+        m = pv.read(path)
+        pl.add_mesh(m, color=color, specular=0.15, ambient=0.28, diffuse=0.8)
+        if color != PAPER:                                               # the case's edges, not every part on the board
+            pl.add_mesh(m.extract_feature_edges(feature_angle=25, boundary_edges=False, manifold_edges=False),
+                        color=EDGE, line_width=1.5)
+    pl.camera_position = [cam, C, up]; pl.camera.OrthogonalizeViewUp()
+    drop = -6.3 * np.array(pl.camera.up)                                 # the near corner hangs low: centre the case
+    pl.camera.position, pl.camera.focal_point = tuple(np.array(cam) + drop), tuple(np.array(C) + drop)
+    pl.camera.zoom(1.35); pl.enable_anti_aliasing("ssaa")
+    pl.screenshot(str(out)); pl.close()
+
+closed(IMG / "front.png", (C[0]+75, C[1]-150, C[2]+135), (0, 0, 1))
+closed(IMG / "back.png", (C[0]-75, C[1]-150, C[2]-135), (0, 0, -1))
 
 # the parts: exploded from the back (the tub goes in from outside), and as they print, on one bed
 tray, tub, bezel = (pv.read(p) for p, _ in NEW)
