@@ -116,6 +116,38 @@ struct Partial {
     arguments: String,
 }
 
+/// What OpenAI's GPT-4o family (gpt-audio among them) sometimes calls instead of making
+/// parallel calls: a tool nobody defined, its arguments the real calls, as
+/// `{"tool_uses": [{"recipient_name": "functions.NAME", "parameters": {...}}, ...]}`.
+const MULTI_TOOL_USE: &str = "multi_tool_use.parallel";
+
+/// A streamed call, or the calls a `multi_tool_use.parallel` wraps, each with an id of its own:
+/// the wrapper's, numbered (the server takes ids it didn't issue). A wrapper that can't be read
+/// stays as it is and fails as a tool that doesn't exist.
+fn unpack(id: String, name: String, arguments: String) -> Vec<Call> {
+    let uses = (name == MULTI_TOOL_USE)
+        .then(|| serde_json::from_str::<Value>(&arguments).ok())
+        .flatten()
+        .and_then(|args| args["tool_uses"].as_array().cloned())
+        .filter(|uses| !uses.is_empty());
+    let Some(uses) = uses else {
+        return vec![Call::new(id, name, arguments)];
+    };
+    tracing::info!(calls = uses.len(), "unpacked {MULTI_TOOL_USE}");
+    uses.iter()
+        .enumerate()
+        .map(|(i, used)| {
+            let name = used["recipient_name"].as_str().unwrap_or_default();
+            let name = name.strip_prefix("functions.").unwrap_or(name);
+            let raw = match &used["parameters"] {
+                Value::Null => String::new(),
+                parameters => parameters.to_string(),
+            };
+            Call::new(format!("{id}_{i}"), name.to_string(), raw)
+        })
+        .collect()
+}
+
 #[async_trait]
 impl ChatApi for OpenAiCompat {
     /// The messages, system prompt first.
@@ -231,7 +263,7 @@ impl ChatApi for OpenAiCompat {
         }
         let calls: Vec<Call> = partials
             .into_iter()
-            .map(|p| Call::new(p.id, p.name, p.arguments))
+            .flat_map(|p| unpack(p.id, p.name, p.arguments))
             .collect();
         // Servers differ in the finish reason they give with tool calls; the calls decide.
         let stop = if !calls.is_empty() {
@@ -382,6 +414,56 @@ mod tests {
                 .unwrap()
                 .starts_with("Error: ")
         );
+    }
+
+    #[tokio::test]
+    async fn multi_tool_use_parallel_becomes_its_calls() {
+        let wrapped = json!({"tool_uses": [
+            {"recipient_name": "functions.get_fixtures", "parameters": {"league": "Premier League"}},
+            {"recipient_name": "functions.list_speakers", "parameters": {}},
+        ]})
+        .to_string();
+        let first = sse(&[
+            json!({"tool_calls": [{"index": 0, "id": "call_9", "function": {"name": "multi_tool_use.parallel", "arguments": ""}}]}),
+            json!({"tool_calls": [{"index": 0, "function": {"arguments": wrapped}}]}),
+        ]);
+        let second = sse(&[json!({"content": "Done."})]);
+        let (url, mut bodies) = serve(vec![first, second]).await;
+        let llm = ToolLoop(OpenAiCompat::new(
+            reqwest::Client::new(),
+            &url,
+            "INKHARNESS_TEST_NO_SUCH_KEY",
+            "m",
+            500,
+            None,
+        ));
+        let (result, text) = collect(&llm, "fixtures, and the speakers").await;
+        assert_eq!(result.unwrap(), Outcome::Done);
+        assert_eq!(text, "Done.");
+
+        bodies.recv().await.unwrap();
+        let request2 = bodies.recv().await.unwrap();
+        let echoed = &request2["messages"][2]["tool_calls"];
+        assert_eq!(echoed.as_array().unwrap().len(), 2);
+        assert_eq!(echoed[0]["id"], "call_9_0");
+        assert_eq!(echoed[0]["function"]["name"], "get_fixtures");
+        assert_eq!(
+            echoed[0]["function"]["arguments"],
+            r#"{"league":"Premier League"}"#
+        );
+        assert_eq!(echoed[1]["id"], "call_9_1");
+        assert_eq!(echoed[1]["function"]["name"], "list_speakers");
+        assert_eq!(request2["messages"][3]["tool_call_id"], "call_9_0");
+        assert_eq!(request2["messages"][4]["tool_call_id"], "call_9_1");
+    }
+
+    #[test]
+    fn an_unreadable_wrapper_stays_a_call() {
+        let calls = unpack("c".into(), MULTI_TOOL_USE.into(), "{}".into());
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, MULTI_TOOL_USE);
+        let calls = unpack("c".into(), "weather".into(), r#"{"tool_uses": []}"#.into());
+        assert_eq!(calls[0].name, "weather");
     }
 
     #[tokio::test]
