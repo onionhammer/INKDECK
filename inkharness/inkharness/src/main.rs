@@ -14,6 +14,7 @@ mod agent;
 mod chat;
 mod commands;
 mod config;
+mod delegate;
 mod device;
 mod harness;
 mod hc;
@@ -286,6 +287,9 @@ fallbacks = true
 # base_url = "https://openrouter.ai/api/v1"
 # model = "..."
 # api_key_env = "OPENROUTER_API_KEY"
+
+# The chat and the HTTP API can have a model of their own, so a model that hears and speaks
+# stays the boards': [chat.llm], any backend [llm] takes (inkharness.toml.example).
 
 # For boards (inkharness serve): speech to text and text to speech, or a model that hears and
 # speaks. inkharness.toml.example in the repo has every section; setup_openrouter.py writes one.

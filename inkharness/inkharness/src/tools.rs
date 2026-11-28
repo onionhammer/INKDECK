@@ -5,7 +5,8 @@
 //! skill tools
 //! (skills.rs), and the think tool, which the chat backends hand back to the session instead of
 //! running. An agent session adds its own (agent/tools.rs: `ask_choice`, `plan`) as [`Extra`]
-//! tools, and `[talk]` can narrow what a talk turn gets ([`ToolSet::only`]).
+//! tools, talk adds `propose_job` and each turn's `delegate` (delegate.rs), and `[talk]` can
+//! narrow what a talk turn gets ([`ToolSet::only`]).
 
 use std::sync::Arc;
 
@@ -35,8 +36,8 @@ pub struct ToolDef {
 }
 
 /// Tools a front-end adds for itself, such as an agent session's `ask_choice` and `plan`, or
-/// talk's `propose_job`. The model gets them, scripts don't, and an allow list (`[talk]
-/// tools`) filters them like any other.
+/// talk's `propose_job` and `delegate`. The model gets them, scripts don't, and an allow list
+/// (`[talk] tools`) filters them like any other.
 #[async_trait]
 pub trait Extra: Send + Sync {
     fn defs(&self) -> Vec<ToolDef>;
@@ -57,7 +58,7 @@ pub struct ToolSet {
     backends: Backends,
     js: Option<js::Limits>,
     skills: Arc<Skills>,
-    extra: Option<Arc<dyn Extra>>,
+    extra: Vec<Arc<dyn Extra>>,
     /// Only the tools these name (a name, or a prefix ending in `*`), besides the device's.
     /// None: all.
     allow: Option<Arc<Vec<String>>>,
@@ -145,12 +146,32 @@ impl ToolSet {
             },
             js,
             skills,
-            extra: None,
+            extra: Vec::new(),
             allow: None,
             deny: None,
         };
         tools.assemble();
         Ok(tools)
+    }
+
+    /// No tools at all: for a request that only says something.
+    pub fn none() -> ToolSet {
+        ToolSet {
+            defs: Vec::new(),
+            callable: Vec::new(),
+            think: false,
+            backends: Backends {
+                ha: None,
+                mcp: Default::default(),
+                search: None,
+                device: None,
+            },
+            js: None,
+            skills: Default::default(),
+            extra: Vec::new(),
+            allow: None,
+            deny: None,
+        }
     }
 
     fn assemble(&mut self) {
@@ -175,7 +196,7 @@ impl ToolSet {
         if self.think && self.allows(THINK_TOOL) {
             defs.push(think_definition());
         }
-        if let Some(extra) = &self.extra {
+        for extra in &self.extra {
             defs.extend(extra.defs().into_iter().filter(|d| self.allows(&d.name)));
         }
         self.defs = defs;
@@ -223,10 +244,10 @@ impl ToolSet {
         tools
     }
 
-    /// The same tools plus a front-end's own.
+    /// The same tools plus a front-end's own (after any it has already).
     pub fn with_extra(&self, extra: Arc<dyn Extra>) -> ToolSet {
         let mut tools = self.clone();
-        tools.extra = Some(extra);
+        tools.extra.push(extra);
         tools.assemble();
         tools
     }
@@ -265,6 +286,7 @@ impl ToolSet {
     pub fn names(&self) -> Vec<&str> {
         let mut names: Vec<&str> = self.defs.iter().map(|d| d.name.as_str()).collect();
         names.push(THINK_TOOL);
+        names.push(crate::delegate::TOOL);
         names
     }
 
@@ -276,11 +298,12 @@ impl ToolSet {
 
     /// Runs a tool. `Err` is a message for the model (bad input, or the call failed).
     pub async fn call(&self, name: &str, input: Value) -> Result<String, String> {
-        if let Some(extra) = &self.extra
-            && self.allows(name)
-            && let Some(result) = extra.call(name, &input).await
-        {
-            return result;
+        if self.allows(name) {
+            for extra in &self.extra {
+                if let Some(result) = extra.call(name, &input).await {
+                    return result;
+                }
+            }
         }
         if !self.allows(name) {
             return Err(format!("no tool named {name}"));

@@ -35,6 +35,7 @@ use voice_proto::{
 };
 
 use crate::agent::{self, Agent, Unlock};
+use crate::delegate;
 use crate::device::Device;
 use crate::llm::{self, Llm, Outcome, Piece, Recording, Role, Turn};
 use crate::meter;
@@ -67,6 +68,8 @@ pub struct App {
     pub agent: Option<Arc<Agent>>,
     /// Model rounds a talk turn gets ([talk] max_rounds).
     pub rounds: usize,
+    /// `[talk] delegate`: what the delegate tool hands tasks to.
+    pub delegate: Option<Arc<delegate::Helper>>,
 }
 
 /// Longest a status the device shows can be.
@@ -97,6 +100,7 @@ pub fn doing(name: &str, input: &serde_json::Value) -> String {
         crate::skills::LOAD_TOOL => format!("Reading the {} skill", arg("name")),
         crate::skills::READ_TOOL => with("Reading", arg("path")),
         "propose_job" => with("Filing a job", arg("title")),
+        delegate::TOOL => with("On it", arg("task")),
         _ => {
             let mut words = name.replace('_', " ");
             if let Some(first) = words.get(..1) {
@@ -1097,21 +1101,50 @@ async fn turn_inner(
     // The first model answers, or hands the turn to the thinking model: then a phrase covers
     // the wait (unless the first model already said something) and the thinking model's
     // answer follows.
+    // The date, which the models don't know: a request for the latest anything otherwise
+    // searched for 2023 (2026-11-28). The day only, so the prompt stays the same all day.
+    let system = format!(
+        "{}\n\nToday is {}.",
+        app.system_prompt,
+        chrono::Local::now().format("%A %-d %B %Y")
+    );
     let mut thought = false;
     let model = async {
-        let request = |user, audio, tools| llm::Request {
-            system: &app.system_prompt,
+        // The delegate tool sends the helper's steps and updates into this turn's reply, so each
+        // turn gets its own, gone with the turn; the nudge reminds the model of it, once.
+        let used = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let nudge = delegate::Nudge::new(used.clone());
+        let after_round = || nudge.after_round();
+        let delegating;
+        let (fast_tools, steer): (_, Option<&llm::Steer<'_>>) = match &app.delegate {
+            Some(helper) => {
+                delegating = tools
+                    .fast_tools
+                    .with_extra(Arc::new(delegate::DelegateTool {
+                        helper: helper.clone(),
+                        tools: tools.tools.clone(),
+                        history: past.clone(),
+                        heard: transcript.clone(),
+                        out: piece_tx.clone(),
+                        used,
+                    }));
+                (&delegating, Some(&after_round))
+            }
+            None => (&tools.fast_tools, None),
+        };
+        let request = |user, audio, tools, steer| llm::Request {
+            system: &system,
             history: &past,
             user,
             audio,
             tools,
             rounds: app.rounds,
-            steer: None,
+            steer,
         };
         let outcome = app
             .llm
             .respond(
-                request(&user, recording.as_deref(), &tools.fast_tools),
+                request(&user, recording.as_deref(), fast_tools, steer),
                 piece_tx.clone(),
             )
             .await?;
@@ -1134,7 +1167,10 @@ async fn turn_inner(
         }
         think
             .llm
-            .respond(request(&text, recording.as_deref(), &tools.tools), piece_tx)
+            .respond(
+                request(&text, recording.as_deref(), &tools.tools, None),
+                piece_tx,
+            )
             .await?;
         Ok(())
     };
@@ -1195,6 +1231,18 @@ async fn turn_inner(
     Ok(())
 }
 
+/// `delta` as it joins the reply so far: what would open it with blank space, or put a blank
+/// line where two models' replies meet (the voice model's, a delegated task's updates), goes.
+fn tidy<'a>(reply: &str, delta: &'a str) -> &'a str {
+    if reply.trim().is_empty() {
+        delta.trim_start()
+    } else if reply.ends_with('\n') {
+        delta.trim_start_matches('\n')
+    } else {
+        delta
+    }
+}
+
 /// What came of playing a reply on the device.
 struct Spoken {
     /// Its text.
@@ -1246,6 +1294,14 @@ async fn speak(
                 .await;
             }
             first_token_ms.get_or_insert_with(ms);
+            let piece = match piece {
+                Piece::Text(delta) => Piece::Text(tidy(&reply, &delta).to_string()),
+                Piece::Transcript(delta) => Piece::Transcript(tidy(&reply, &delta).to_string()),
+                other => other,
+            };
+            if matches!(&piece, Piece::Text(d) | Piece::Transcript(d) if d.is_empty()) {
+                continue;
+            }
             match piece {
                 Piece::Text(delta) => {
                     send(
@@ -1581,6 +1637,7 @@ mod tests {
             think: None,
             agent: None,
             rounds: llm::TALK_ROUNDS,
+            delegate: None,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1867,6 +1924,168 @@ mod tests {
         assert_eq!(statuses, ["Working it out", ""]);
     }
 
+    /// Hears the recording, says a few words and delegates, then says what the helper reported,
+    /// as the tool loop would.
+    struct Delegates;
+
+    #[async_trait]
+    impl Llm for Delegates {
+        fn hears(&self) -> bool {
+            true
+        }
+
+        async fn respond(
+            &self,
+            request: llm::Request<'_>,
+            out: mpsc::Sender<Piece>,
+        ) -> Result<Outcome> {
+            let names: Vec<&str> = request
+                .tools
+                .defs()
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect();
+            assert!(names.contains(&delegate::TOOL), "{names:?}");
+            out.send(Piece::Text("On it.".into())).await?;
+            let input = json!({"task": "Find a plumber open on Saturday."});
+            out.send(Piece::Tool(delegate::TOOL.into(), input.clone()))
+                .await?;
+            let result = request.tools.call(delegate::TOOL, input).await;
+            out.send(Piece::ToolDone(delegate::TOOL.into(), result.is_ok()))
+                .await?;
+            // The report, after what the voice model is told to do with it.
+            let report = result.unwrap();
+            let report = report.rsplit("\n\n").next().unwrap();
+            out.send(Piece::Text(format!("\n{report}"))).await?;
+            Ok(Outcome::Done)
+        }
+    }
+
+    /// The helper: a search, then its report.
+    struct Searches;
+
+    #[async_trait]
+    impl Llm for Searches {
+        async fn respond(
+            &self,
+            request: llm::Request<'_>,
+            out: mpsc::Sender<Piece>,
+        ) -> Result<Outcome> {
+            assert!(
+                request
+                    .user
+                    .starts_with("Find a plumber open on Saturday.\n\nIt's "),
+                "{}",
+                request.user
+            );
+            let names: Vec<&str> = request
+                .tools
+                .defs()
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect();
+            assert!(!names.contains(&delegate::TOOL), "{names:?}");
+            out.send(Piece::Tool(
+                "web_search".into(),
+                json!({"query": "plumbers open Saturday"}),
+            ))
+            .await?;
+            out.send(Piece::Text("Found one: Pipe Bros, open 9 to 5.".into()))
+                .await?;
+            Ok(Outcome::Done)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_talk_turn_delegates_and_the_board_sees_the_steps() {
+        let tools = ToolSet::build(
+            None,
+            &config::Js::default(),
+            Default::default(),
+            Default::default(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        let app = Arc::new(App {
+            token: "t".into(),
+            psk: psk("t"),
+            plaintext: false,
+            system_prompt: String::new(),
+            stt: None,
+            llm: Box::new(Delegates),
+            tts: None,
+            fast_tools: tools.clone(),
+            tools,
+            think: None,
+            agent: None,
+            rounds: llm::TALK_ROUNDS,
+            delegate: Some(Arc::new(delegate::Helper {
+                worker: Box::new(Searches),
+                system: delegate::worker_prompt(),
+                rounds: llm::CHAT_ROUNDS,
+                voice: llm::build(&config::Llm::Mock, reqwest::Client::new()).unwrap(),
+            })),
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            run(stream, app, "s1".into()).await
+        });
+        let (_, board) = handshake(addr, "t", hello(PROTO_VERSION, "", Vec::new())).await;
+        let (mut reader, mut writer) = board.unwrap();
+        writer
+            .write(
+                &Frame::control(&ClientMsg::ListenStart {
+                    mode: None,
+                    session: None,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let speech: Vec<u8> = (0..1600)
+            .flat_map(|i| ((i % 64) as i16 * 100).to_le_bytes())
+            .collect();
+        writer.write(&Frame::Audio(speech)).await.unwrap();
+        writer
+            .write(&Frame::control(&ClientMsg::ListenStop).unwrap())
+            .await
+            .unwrap();
+
+        let mut said = String::new();
+        let mut statuses = Vec::new();
+        loop {
+            let Some(Frame::Control(json)) = reader.read().await.unwrap() else {
+                continue;
+            };
+            match serde_json::from_str::<ServerMsg>(&json).unwrap() {
+                ServerMsg::Status { text } => statuses.push(text),
+                ServerMsg::Text { delta } => said.push_str(&delta),
+                ServerMsg::ReplyEnd => break,
+                ServerMsg::Error { message } => panic!("{message}"),
+                _ => {}
+            }
+        }
+        assert_eq!(said, "On it.\nFound one: Pipe Bros, open 9 to 5.");
+        assert_eq!(
+            statuses,
+            [
+                "On it: Find a plumber open on Saturday.",
+                "Searching the web: plumbers open Saturday",
+                ""
+            ]
+        );
+    }
+
+    #[test]
+    fn a_reply_opens_and_joins_without_blank_lines() {
+        assert_eq!(tidy("", "\n  Hello"), "Hello");
+        assert_eq!(tidy("On it.", "\nDone."), "\nDone.");
+        assert_eq!(tidy("On it.\n", "\nDone."), "Done.");
+        assert_eq!(tidy("On it.\n", "Done."), "Done.");
+    }
+
     #[test]
     fn what_a_tool_call_shows() {
         assert_eq!(
@@ -1922,6 +2141,7 @@ mod tests {
             think: None,
             agent: None,
             rounds: llm::TALK_ROUNDS,
+            delegate: None,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2020,6 +2240,7 @@ mod tests {
             think: None,
             agent: Some(agent.clone()),
             rounds: llm::TALK_ROUNDS,
+            delegate: None,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -2521,6 +2742,7 @@ mod tests {
             think: None,
             agent: Some(agent.clone()),
             rounds: llm::TALK_ROUNDS,
+            delegate: None,
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

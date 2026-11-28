@@ -309,6 +309,11 @@ pub struct Talk {
     /// told to answer with what it has. The board shows each tool call meanwhile.
     #[serde(default = "default_talk_rounds")]
     pub max_rounds: usize,
+    /// The model gets a `delegate` tool, which hands a task of many steps to a helper on the
+    /// text turns' model ([chat.llm], else [llm]) with their rounds, while the user hears how it
+    /// goes (delegate.rs). `[talk] tools` doesn't filter it out.
+    #[serde(default)]
+    pub delegate: bool,
 }
 
 impl Default for Talk {
@@ -316,6 +321,7 @@ impl Default for Talk {
         Talk {
             tools: None,
             max_rounds: default_talk_rounds(),
+            delegate: false,
         }
     }
 }
@@ -831,15 +837,23 @@ fn default_http() -> String {
 }
 /// For replies a device speaks.
 pub fn spoken_prompt() -> String {
+    format!("{} {}", spoken_base(), SPOKEN_CALLS)
+}
+
+/// The spoken prompt without what it says about turns of several tool calls: for `[talk]
+/// delegate`, whose rule says otherwise (delegate.rs).
+pub fn spoken_base() -> String {
     "You are a voice assistant on a small device in someone's home. Your replies are spoken \
      aloud, so answer in one or two short plain sentences with no markdown, lists or emoji. \
      Use the tools to control things in the home; if no tool fits, say so. Only say you did \
      something if a tool call in this conversation did it, and don't offer to do things no \
-     tool can do. When an answer needs more than one tool call, first say a few words so they \
-     know you're on it (\"Let me check.\"), then make the calls, the ones that don't need \
-     each other's results together."
+     tool can do."
         .into()
 }
+
+const SPOKEN_CALLS: &str = "When an answer needs more than one tool call, first say a few words \
+     so they know you're on it (\"Let me check.\"), then make the calls, the ones that don't \
+     need each other's results together.";
 /// For replies that are read: the terminal, HTTP.
 pub fn written_prompt() -> String {
     "You are an assistant with tools, answering in a text chat. Keep answers short and plain; \

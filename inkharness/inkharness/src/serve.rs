@@ -13,7 +13,7 @@ use crate::chat::Chat;
 use crate::harness::Harness;
 use crate::http;
 use crate::place::Place;
-use crate::{llm, session, stt, tts};
+use crate::{delegate, llm, session, stt, tts};
 
 pub async fn run(place: Place, harness: Harness) -> Result<()> {
     let cfg = &place.config;
@@ -113,7 +113,12 @@ fn device_app(
     };
     let tools = match &cfg.talk.tools {
         Some(patterns) => {
-            let tools = base.only(patterns);
+            // `[talk] delegate` turns the delegate tool on: the list doesn't need to name it.
+            let mut patterns = patterns.clone();
+            if cfg.talk.delegate {
+                patterns.push(delegate::TOOL.to_string());
+            }
+            let tools = base.only(&patterns);
             let names: Vec<&str> = tools.defs().iter().map(|d| d.name.as_str()).collect();
             tracing::info!(?names, "talk tools");
             tools
@@ -144,6 +149,26 @@ fn device_app(
         None => None,
     };
     let llm = llm::build(&cfg.llm, http.clone())?;
+    let delegate = if cfg.talk.delegate {
+        let model = cfg.chat_model();
+        let worker = llm::build(model, http.clone())?;
+        if worker.speaks().is_some() {
+            anyhow::bail!(
+                "[talk] delegate hands tasks to [chat.llm], else [llm], and {} speaks its replies: \
+                 give [chat.llm] a model that writes",
+                model.name()
+            );
+        }
+        tracing::info!(model = %model.name(), rounds = cfg.chat_rounds(), "talk turns can delegate");
+        Some(Arc::new(delegate::Helper {
+            worker,
+            system: harness.prompt_from(delegate::worker_prompt()),
+            rounds: cfg.chat_rounds(),
+            voice: llm::build(&cfg.llm, http.clone())?,
+        }))
+    } else {
+        None
+    };
     // One reply_start per turn: every voice in a reply has to play at the same rate.
     let mut rates: Vec<(&str, u32)> = Vec::new();
     rates.extend(llm.speaks().map(|r| ("[llm] audio_rate", r)));
@@ -164,7 +189,10 @@ fn device_app(
         token: cfg.token.clone(),
         psk: voice_proto::psk(&cfg.token),
         plaintext: cfg.plaintext,
-        system_prompt: harness.prompt(cfg, true),
+        system_prompt: match &delegate {
+            Some(_) => harness.prompt_from(delegate::voice_prompt(cfg.system_prompt.as_deref())),
+            None => harness.prompt(cfg, true),
+        },
         stt: cfg
             .stt
             .as_ref()
@@ -177,6 +205,7 @@ fn device_app(
         think,
         agent,
         rounds: cfg.talk.max_rounds.max(1),
+        delegate,
     });
     if app.think.is_some() && app.tts.is_none() {
         tracing::warn!("no [tts]: the think phrases go unsaid");
