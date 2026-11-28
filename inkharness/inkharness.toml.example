@@ -251,6 +251,11 @@ api_key_env = "OPENAI_API_KEY"
 # out of `tools` to keep talk from filing any).
 # A talk turn gets 12 rounds (each a reply that may call tools): the board shows each call
 # while it runs, and the last round is told to answer with what it has.
+# delegate = true gives the model a delegate tool: a task of many steps goes to a helper on
+# [chat.llm] (else [llm]; a model that writes) with [chat]'s rounds, the same tools and the
+# skills, while the board shows its steps and the model says now and then how it's going;
+# the helper's report comes back for the model to tell. `tools` doesn't need to name it.
 # [talk]
 # tools = ["run_js", "web_search", "think_harder", "home_*"]
 # max_rounds = 12
+# delegate = true

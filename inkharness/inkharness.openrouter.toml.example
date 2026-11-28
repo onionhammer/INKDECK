@@ -61,7 +61,8 @@ api_key_env = "OPENROUTER_API_KEY"
 # --- Text turns (optional) -------------------------------------------------------------
 # The terminal chat and the HTTP API use [llm]. With a model that hears and speaks there (such as
 # openai/gpt-audio-mini) they get it too: asked for its audio, with only the transcript shown.
-# A text model here keeps [llm] for the boards' voice and gives text turns their own.
+# A text model here keeps [llm] for the boards' voice and gives text turns their own, and with
+# [talk] delegate = true (inkharness.toml.example) the voice hands it tasks of many steps.
 # [chat.llm]
 # backend = "openai_compat"
 # base_url = "https://openrouter.ai/api/v1"

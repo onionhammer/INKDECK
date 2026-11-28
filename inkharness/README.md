@@ -246,6 +246,7 @@ shell = "deny"          # "allow": sh -c in the work folder, as the daemon's use
 [talk]                  # what HOLD BOOT outside the Agent may use; unset: every tool
 tools = ["run_js", "web_search", "think_harder", "home_*"]   # names, or prefixes ending in *; the board's own always stay
 max_rounds = 12         # model rounds a talk turn gets (each a reply that may call tools)
+delegate = true         # a delegate tool: tasks of many steps go to [chat.llm] (below); `tools` needn't name it
 ```
 
 - A session runs on `[agent.llm]` if there is one, else on `[chat.llm]`, else on `[llm]`: any
@@ -468,6 +469,52 @@ are cached as audio (`[cache]`), and the phrases are synthesised at startup, so 
 without waiting for a request. The model's replies aren't cached: a cached "Playing jazz in
 the kitchen" would skip the tool call that plays it.
 
+With `[talk] delegate = true` the model gets a `delegate` tool for tasks of many steps (more
+than two tool calls, or a skill): it says one short sentence ("Let me check."), writes the task
+out so it stands alone, and a helper does it, on the text turns' model (`[chat.llm]`, else
+`[llm]`, which has to write rather than speak) with their rounds (`[chat] max_rounds`, 20), the
+talk tools, the board's and the skills, but not `delegate` itself or `think_harder`. Its message
+is the task, the user's own words (which win where the two differ: the voice model once wrote
+"in 2023" into a task) and the local time. It works inside the turn, and the user hears how it
+goes:
+
+- Each tool it calls shows on the board as the turn's status, again after an update and every
+  15 s, so the board doesn't give up on the turn (it does after 45 s with nothing before the
+  reply's audio starts).
+- From 8 s in, and then at most every 20 s once it has done something new (4 at most), the voice
+  model says in a sentence, in the first person, what it's doing: told the steps by the last
+  update and since (as what was looked for, not found: it took the helper's search terms for
+  results until told so), the helper's latest notes as the only findings it may mention, and
+  the updates said already.
+- The helper ends with two to four plain sentences that answer every part of the task, and the
+  voice model is told to say them nearly as they are (told to tell "every part", it still kept
+  only the titles of a winners-and-titles answer).
+
+A helper still working after 5 minutes is stopped, and the voice model hears what it had done.
+The helper's and the updates' requests count in the turn's `cost`, and the log has a line for
+each update and one for the task (`delegated task done`: seconds, steps, failed calls, updates,
+the report's start).
+
+The choice is the voice model's, steered three ways, since the tool's description alone didn't
+make `gpt-audio-mini` use it: the spoken prompt opens with a rule (more than two tool calls, or
+a skill, go to `delegate`, before any other tool, and nothing is said about what its own calls
+return until it answers; `delegate::VOICE_RULE`), its own advice to make several calls itself
+is left out, and after two rounds of its own tool calls without delegating it is reminded once,
+as a note it isn't to answer (`delegate::Nudge`, through the tool loop's `steer`). A request of
+a round or two never meets the reminder. Every talk turn also ends its system prompt with
+today's date, which the voice model otherwise guessed (2023).
+
+Tried 2026-11-28 through `voice-client` with Haiku 5.5 helping, the request "find the winners of
+the last three Formula One races, then look up how many world championships each of them has
+won": before the reminder `gpt-audio-mini` delegated in about half of the runs and otherwise
+made four to six searches itself; with it, in the last three runs, it searched once or twice,
+was reminded, and delegated every time. The helper took 12 to 30 s for 7 to 14 searches, one or
+two updates were said, and each answer had the three winners and their titles; the turns took
+24 to 39 s and $0.022 to $0.031. Still rough: before the reminder it sometimes says what its own
+first search returned, which may be wrong (once it named three wrong winners, and its answer
+then gave their titles too), and the updates are plain ("I'm gathering details on the most
+recent winners one by one").
+
 A skill costs the model a round to load, and another for each file it reads, so what a task
 always needs belongs in `SKILL.md` itself, within its first 64 KB (each page after that is
 another round): the goodnight skill carries its script. `run_js`
@@ -478,7 +525,7 @@ scripts can't call the skill tools.
 | Path | |
 | --- | --- |
 | `voice-proto/` | Framing and messages, shared by the daemon and the test client |
-| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns, and the plain chat), `tui/` (the full-screen chat: `app.rs` its state and keys, `render.rs` the screen, `markdown.rs`, `input.rs` the editor, `log.rs`), `commands.rs` (slash commands), `http.rs` (the HTTP API), `serve.rs` (the daemon), `service.rs` (`serve` as a systemd user service), `session.rs` (a board's connection and its turns), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `work.rs` the api backend's files, http_fetch and shell, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `reader.rs` (a web page's article for News), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
+| `inkharness/` | The program: `main.rs` (the commands), `place.rs` (what it picks up from a folder), `harness.rs` (the tools and prompt both front-ends share), `chat.rs` (text turns, and the plain chat), `tui/` (the full-screen chat: `app.rs` its state and keys, `render.rs` the screen, `markdown.rs`, `input.rs` the editor, `log.rs`), `commands.rs` (slash commands), `http.rs` (the HTTP API), `serve.rs` (the daemon), `service.rs` (`serve` as a systemd user service), `session.rs` (a board's connection and its turns), `delegate.rs` (talk's `delegate` tool), `agent/` (agent sessions: `store.rs` on disk and as boards see them, `lock.rs` the PIN, `tools.rs` `ask_choice`, `plan`, `schedule`, `watch`, `show_panel` and talk's `propose_job`, `work.rs` the api backend's files, http_fetch and shell, `schedule.rs` local times, `mock.rs` a scripted session model, `claude.rs` the claude backend, `bridge.rs` its way to inkharness's tools, `herdr.rs` the herdr backend), `hc.rs` (herdr's API), `device.rs` (the board's own tools), `reader.rs` (a web page's article for News), `stt.rs`, `llm/` (`tool_loop.rs`, the turn every model backend shares, and one file per provider API: `anthropic.rs`, `openai.rs`), `tts.rs` (and its cache), `tools.rs`, `search.rs` (web search), `js.rs` (the JavaScript sandbox), `mcp.rs` (MCP servers as tools), `skills.rs` (Agent Skills), `meter.rs` (what a turn cost), `sentence.rs`, `local.rs` (sherpa-onnx) |
 | `voice-client/` | Plays a board's part from a WAV file |
 | `skills/` | Agent Skills, found when inkharness starts in this folder; `goodnight` pauses every speaker that's playing in one `run_js` script |
 | `install.sh` | Installs inkharness from this checkout (`cargo install --path`) |

@@ -14,6 +14,7 @@ mod agent;
 mod chat;
 mod commands;
 mod config;
+mod delegate;
 mod device;
 mod harness;
 mod hc;
